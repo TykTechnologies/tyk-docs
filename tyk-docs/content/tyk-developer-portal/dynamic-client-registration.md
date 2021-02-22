@@ -26,7 +26,7 @@ This feature is optional and you can still have a great level of security only u
 
 # I have an identity provider, how can connect it? 
 
-Tyk making the intermediation, we recommend that you also read the documentation on your identity provider side as there will be some steps to follow there and you will probably get started from your IdP: 
+Tyk making the intermediation, we recommend that you also read the documentation of your identity provider as there will be some steps to follow on your IDP and the flow below assumes that you have completed the steps on your IdP.
 
 Gluu: https://www.gluu.org/how-to-dynamically-register-openid-connect-client/
 Okta: https://developer.okta.com/docs/reference/api/oauth-clients/
