@@ -46,7 +46,7 @@ Enable DCR.
 
 This step is a little more tricky and the information there will depend on your identity provider. Let's go field by field and take the example of Gluu as we go through: 
 
-1. Select a provider
+1. Select a '' 'provider' ''
 We have tested DCR with the 4 identity providers highlighted above (Keycloack, Gluu, Auth0 and Okta). Gluu and Keycloack have some slight specificities. Hence why we require to explicitely state if you are using one of the two. If you are using any other IdP, select "other". 
 
 2. Select one or more grant type
