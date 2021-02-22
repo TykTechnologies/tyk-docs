@@ -46,31 +46,38 @@ Enable DCR.
 
 This step is a little more tricky and the information there will depend on your identity provider. Let's go field by field and take the example of Gluu as we go through: 
 
-1. Select a `` `provider` ``
+1. Select a ``provider``
+
 We have tested DCR with the 4 identity providers highlighted above (Keycloack, Gluu, Auth0 and Okta). Gluu and Keycloack have some slight specificities. Hence why we require to explicitely state if you are using one of the two. If you are using any other IdP, select "other". 
 
-2. Select one or more grant type
+2. Select one or more ``grant type``
+
 Grant types are arguments passed to different endpoints in the OAuth protocol. For example Password or token credentials. [write down types based on Page 8 of the RFC: https://tools.ietf.org/html/rfc7591#page-8 ]
 
-3. Select a token endpoint auth method
+3. Select a ``token endpoint auth method``
+
 Specify which authentication method should be used for the token endpoint. 
 * "None" if the client is public and does not have a 'secret'
 * "Client secret post" if the client uses the HTTP POST parameters
 * "Client secret basic" if the cleint uses HTTP basic 
 
-4. Select one or more Response type 
-"code" used for the Authorization Code grant OAuth 2.0 flow. 
-"token" is used for implicit grant. 
+4. Select one or more ``Response type``
+
+``code`` used for the Authorization Code grant OAuth 2.0 flow. 
+``token`` is used for implicit grant. 
 
 There are more options for complex use cases, though you only need to pick Code or Token.
 
-5. Enter an Identity Provider host URL
+5. Enter an ``Identity Provider host`` URL
+
 This is the URL of your IDP. For example https://gluu.do.myproject
 
-6. Enter a Client registration endpoint URL 
+6. Enter a ``Client registration endpoint`` URL 
+
 Usually an extension of the Identity provider host URL
 
-7. Initial registration access token (optional)
+7. Initial ``registration access token`` (optional)
+
 The use of an initial access token is only required when the authorisation server limits the parties that can register a client. The value comes from IdP. 
 
 
