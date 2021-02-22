@@ -24,7 +24,7 @@ Some of our users leverage Identity Providers because they provide a variety of 
 
 This feature is optional and you can still have a great level of security only using tyk as your identity provider. 
 
-## I have an identity provider, how can connect it? 
+# I have an identity provider, how can connect it? 
 
 Tyk making the intermediation, we recommend that you also read the documentation on your identity provider side as there will be some steps to follow there and you will probably get started from your IdP: 
 
@@ -34,15 +34,15 @@ Auth0: https://auth0.com/docs/applications/dynamic-client-registration
 Keycloack: https://www.keycloak.org/docs/latest/securing_apps/#openid-connect-dynamic-client-registration
 
 
-# Step 1: Create an API with JWT Authentification mode
+## Step 1: Create an API with JWT Authentification mode
 If you're not sure how to do that, refer to : [Link to how to create an API]
 In the "public key" section, make sure you enter your JWKS url. This should come from your identity provider. 
 
-# Step 2: Enable DCR
+## Step 2: Enable DCR
 Go to Portal Settings, in the security tab you should have a "Dynamic Client Registration" section. 
 Enable DCR. 
 
-# Step 3: Fill the fields
+## Step 3: Fill the fields
 
 This step is a little more tricky and the information there will depend on your identity provider. Let's go field by field and take the example of Gluu as we go through: 
 
