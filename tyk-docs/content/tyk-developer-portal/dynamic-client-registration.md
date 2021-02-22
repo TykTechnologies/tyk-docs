@@ -8,7 +8,7 @@ weight: 1
 ---
 
 ## OAuth 2.0 Dynamic Client Registration Protocol (DCR)
-From 3.2 onwards
+From v3.2 onwards
 
 #What is it? 
 
@@ -42,7 +42,7 @@ In the "public key" section, make sure you enter your JWKS url. This should come
 Go to Portal Settings, in the security tab you should have a "Dynamic Client Registration" section. 
 Enable DCR. 
 
-# Step 3: Fill the information
+# Step 3: Fill the fields
 
 This step is a little more tricky and the information there will depend on your identity provider. Let's go field by field and take the example of Gluu as we go through: 
 
@@ -71,7 +71,7 @@ This is the URL of your IDP. For example https://gluu.do.myproject
 Usually an extension of the Identity provider host URL
 
 7. Initial registration access token (optional)
-The use of an initial access token is only required when the authorisation server limits the parties that can register a client.
+The use of an initial access token is only required when the authorisation server limits the parties that can register a client. The value comes from IdP. 
 
 
 🎉 All done! 
