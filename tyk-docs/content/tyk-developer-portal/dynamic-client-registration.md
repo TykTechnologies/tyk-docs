@@ -99,4 +99,7 @@ The use of an initial access token is only required when the authorisation serve
 
 
 # It's not working! help!
-Mati to add more
+Mati to add more on debugging / where and how to find logs. 
+
+# A step-by-step guide using Gluu
+Mati to use his google docs and create step by step guide. 
