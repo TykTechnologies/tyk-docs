@@ -13,31 +13,30 @@ Available on version 3.2.0 onwards - currently not generally available but if yo
 # What is it? 
 
 DCR is a protocol of the Internet Engineering Task Force put in place to set standards in the dynamic registration of clients with authorisation servers. 
-We will go into the specifics of how it works in the context of Tyk, but if you are interested in reading the full RFC, go to: http://www.rfc-editor.org/info/rfc7591
+We will go into the specifics of how it works in the context of Tyk, but if you are interested in reading the full RFC, go to: https://tools.ietf.org/html/rfc7591
 
 # Why should I use it? 
 
-DCR is a way for you to integrate your developer portal with an external identity provider such as Keycloack, Gluu, Auth0, Okta etc... 
-The user won't see a difference, but when they register a client on the portal, Tyk will proxy that request to your identity provider(IdP) and you will be able to manage their access crendentials either from the IdP or from Tyk. 
-
+DCR is a way for you to integrate your developer portal with an external identity provider such as Keycloak, Gluu, Auth0, Okta etc... 
+The portal developer won't notice a difference. However when they create the app via Tyk Developer portal, Tyk will dynamically register that client with your authorization server. This means that it is the Authorization Server who will issue issue the Client ID and Client Secret for the app.
 Some of our users leverage external Identity Providers because they provide a variety of features to support organisations in managing identity in one place across all their stack. 
 
-This feature is optional and you can still have a great level of security only using tyk as your identity provider. 
+This feature is optional and you can still have a great level of security only using tyk as your authorisation server. 
 
 # I have an identity provider, how can connect it? 
 
 Tyk making the intermediation, we recommend that you also read the documentation of your identity provider as there will be some steps to follow on your IDP and the flow below assumes that you have completed the steps on your IdP.
 
-Gluu: https://www.gluu.org/how-to-dynamically-register-openid-connect-client/
-Okta: https://developer.okta.com/docs/reference/api/oauth-clients/
 Auth0: https://auth0.com/docs/applications/dynamic-client-registration
-Keycloack: https://www.keycloak.org/docs/latest/securing_apps/#openid-connect-dynamic-client-registration
+Gluu: https://www.gluu.org/how-to-dynamically-register-openid-connect-client/
+Keycloak: https://www.keycloak.org/docs/latest/securing_apps/#openid-connect-dynamic-client-registration
+Okta: https://developer.okta.com/docs/reference/api/oauth-clients/
 Other options include Azure, Amazon, Ping... 
 
 
-## Step 1: Create an API with JWT Authentification mode
+## Step 1: Create an API with JWT Authentication mode
 If you're not sure how to do that, refer to : [https://tyk.io/docs/getting-started/tutorials/create-api/]
-In the "public key" section, make sure you enter your JWKS url. This should come from your identity provider. 
+In the "public key" section, make sure you enter your ``JWKS_uri``. This should come from your identity provider. You would typically find it in the ``.well-known/openid-configuration endpoint``.
 
 ## Step 2: Enable DCR
 Go to Portal Settings, in the security tab you should have a "Dynamic Client Registration" section. 
@@ -49,15 +48,15 @@ This step is a little more tricky and the information there will depend on your 
 
 1. Select a ``provider``
 
-We have tested DCR with the 4 identity providers highlighted above (Keycloack, Gluu, Auth0 and Okta). Gluu and Keycloack have some slight specificities. Hence why we require to explicitely state if you are using one of the two. If you are using any other IdP, select "other". 
+We have tested DCR with the 4 identity providers highlighted above (Keycloak, Gluu, Auth0 and Okta). Gluu and Keycloak have some slight specificities. Hence why we require to explicitely state if you are using one of the two. If you are using any other IdP, select "other". 
 
 2. Select one or more ``grant type``
 
 Grant types are arguments passed to different endpoints in the OAuth protocol. For example Password or token credentials. In the RFC 7 common grant types are mentioned which can be selected in the UI, but you can also add your own string.
 Recommended
-* ``Authorization code`` Defined in https://tools.ietf.org/html/rfc6749#section-1.3.1
-* ``Client credentials`` Defined in https://tools.ietf.org/html/rfc6749#section-4.4
-* ``Refresh token`` Defined in https://tools.ietf.org/html/rfc6749#section-1.5
+* ``Authorization code`` Defined in https://tools.ietf.org/html/rfc6749#section-1.3.1 - Most commonly used for web apps
+* ``Client credentials`` Defined in https://tools.ietf.org/html/rfc6749#section-4.4 - Mainly used for machine to machine. 
+* ``Refresh token`` Defined in https://tools.ietf.org/html/rfc6749#section-1.5 - Essentially PKCE + Refresh 
 * ``JWT Bearer token`` Defined in https://tools.ietf.org/html/rfc7523 Value is ``urn:ietf:params:oauth:grant-type:jwt-bearer``
 * ``SAML 2.0 Bearer Assertion`` Defined in https://tools.ietf.org/html/rfc7522 Value is ``urn:ietf:params:oauth:grant-type:saml2-bearer``
 
@@ -79,6 +78,7 @@ Specify which authentication method should be used for the token endpoint.
 
 ``code`` used for the Authorization Code grant OAuth 2.0 flow. 
 ``token`` is used for implicit grant. 
+Leave the field blank for client credential grant. 
 
 There are more options for complex use cases, though you only need to pick Code or Token.
 
@@ -90,7 +90,7 @@ This is the URL of your IDP. For example https://gluu.do.myproject
 
 Usually an extension of the Identity provider host URL
 
-7. Initial ``registration access token`` (optional)
+7. ``registration access token`` (optional)
 
 The use of an initial access token is only required when the authorisation server limits the parties that can register a client. The value comes from IdP. 
 
