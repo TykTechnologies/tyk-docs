@@ -10,7 +10,7 @@ weight: 1
 ## OAuth 2.0 Dynamic Client Registration Protocol (DCR)
 Available on version 3.2.0 onwards - currently not generally available but if you want beta access, get in touch! 
 
-# What is it? 
+# What is Dynamic client registration? 
 
 DCR is a protocol of the Internet Engineering Task Force put in place to set standards in the dynamic registration of clients with authorisation servers. 
 We will go into the specifics of how it works in the context of Tyk, but if you are interested in reading the full RFC, go to: https://tools.ietf.org/html/rfc7591
