@@ -9,7 +9,7 @@ menu:
 weight: 2
 ---
 
-On this page we describe how to configure Tyk's API response cache per endpoint within an API. For details on the API level (Global) cache you should refer to the [global-cache]({{< ref "/basic-config-and-security/reduce-latency/caching/global-cache">}}) configuration page.
+On this page we describe how to configure Tyk's API response cache per endpoint within an API. This gives granular control over which paths are cached and allows you to vary cache configuration across API versions. For details on the API level (Global) cache you should refer to the [global-cache]({{< ref "/basic-config-and-security/reduce-latency/caching/global-cache">}}) configuration page.
 
 By default Tyk maintains a cache entry for each combination of request method, request path (endpoint) and API key (if authentication is enabled) for an API.
 
