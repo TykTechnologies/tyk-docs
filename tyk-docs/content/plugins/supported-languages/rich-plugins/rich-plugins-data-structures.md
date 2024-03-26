@@ -101,22 +101,18 @@ Contains the URL scheme, e.g. `http`, `https`.
 
 ### Object (coprocess_object.proto)
 
-The `Coprocess.Object` data structure data structure wraps a `Coprocess.MiniRequestObject` It contains additional fields that are useful for users that implement their own request dispatchers, like the middleware hook type and name.
+The `Coprocess.Object` data structure wraps a `Coprocess.MiniRequestObject` and `Coprocess.ResponseObject` It contains additional fields that are useful for users that implement their own request dispatchers, like the middleware hook type and name.
 It also includes the session state object (`SessionState`), which holds information about the current key/user that's used for authentication.
 
-```{.copyWrapper}
+```protobuf
 message Object {
- HookType hook_type = 1;
-
- string hook_name = 2;
-
- MiniRequestObject request = 3;
-
- SessionState session = 4;
-
- map<string, string> metadata = 5;
-
- map<string, string> spec = 6;
+  HookType hook_type = 1;
+  string hook_name = 2;
+  MiniRequestObject request = 3;
+  SessionState session = 4;
+  map<string, string> metadata = 5;
+  map<string, string> spec = 6;
+  ResponseObject response = 7;
 }
 ```
 
@@ -139,6 +135,10 @@ Contains the metadata. This is a dynamic field.
 
 `spec`
 Contains information about API definition, including `APIID`, `OrgID` and `config_data`.
+
+`response`
+Contains information populated from the upstream HTTP response data, for response hooks. See [ResponseObject](#responseobject-coprocess_response_objectproto) for more details. All the field contents can be modified.
+
 
 ### ReturnOverrides (coprocess_return_overrides.proto)
 
@@ -270,10 +270,9 @@ Overrides the global session lifetime, see [Physical Token Expiry]({{< ref "basi
 
 ### ResponseObject (coprocess_response_object.proto)
 
-The `ResponseObject` is used by response hooks, the fields are populated with the upstream HTTP response data.
-All the field contents can be modified.
+The `ResponseObject` exists within an [object](#object-coprocess_objectproto) for response hooks. The fields are populated with the upstream HTTP response data. All the field contents can be modified.
 
-```{.copyWrapper}
+```protobuf
 syntax = "proto3";
 
 package coprocess;
