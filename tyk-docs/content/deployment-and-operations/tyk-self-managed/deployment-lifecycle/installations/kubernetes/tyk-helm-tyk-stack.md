@@ -111,7 +111,7 @@ The Bitnami chart also creates a secret `tyk-redis` which stores the connection 
 If you do not already have PostgreSQL installed, you may use these charts provided by Bitnami.
 
 ```bash
-helm upgrade tyk-postgres oci://registry-1.docker.io/bitnamicharts/postgresql --set "auth.database=tyk_analytics" -n $NAMESPACE --install
+helm upgrade tyk-postgres oci://registry-1.docker.io/bitnamicharts/postgresql --version 11.9.7 --set "auth.database=tyk_analytics" -n $NAMESPACE --install
 ```
 
 Follow the notes from the installation output to get connection details.
@@ -341,7 +341,7 @@ helm install tyk-mongo bitnami/mongodb --version {HELM_CHART_VERSION} --set "rep
 
 **PostgresSQL Installation**
 ```bash
-helm install tyk-postgres bitnami/postgresql --set "auth.database=tyk_analytics" -n tyk
+helm install tyk-postgres bitnami/postgresql --version 11.9.7 --set "auth.database=tyk_analytics" -n tyk
 ```
 
 Follow the notes from the installation output to get connection details.
@@ -784,7 +784,7 @@ If you are using the SQL pumps in the tyk-oss installation you will require Post
 To install PostgreSQL you can use these rather excellent charts provided by Bitnami:
 
 ```bash
-helm install tyk-postgres bitnami/postgresql --set "auth.database=tyk_analytics" -n tyk
+helm install tyk-postgres bitnami/postgresql --version 11.9.7 --set "auth.database=tyk_analytics" -n tyk
 ```
 
 (follow notes from the installation output to get connection details and update them in `values.yaml` file)
