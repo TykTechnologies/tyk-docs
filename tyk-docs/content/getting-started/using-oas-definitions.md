@@ -14,6 +14,18 @@ weight: 7
 
 The OpenAPI Specification (OAS) is a ‘vendor neutral’ open standard specification for APIs supported by a large number of tools that will help you design and create APIs for your services. You can even generate them from your source code. Tyk supports you to work with APIs that you've designed to the OpenAPI Specification, making it even easier to get your API up and running.
 
+{{< warning success >}}
+
+**Warning**
+
+It is not possible to rollback to previous versions after commiting to Tyk OAS 5.3.0 APIs.
+
+In Tyk Gateway release 5.3.0, Tyk OAS APIs gained feature maturity with Tyk Classic APIs. Tyk OAS APIs using the 5.3.0 API definition may not work with pre-5.3.0 versions of Tyk Gateway.
+
+For further details, please refer to the [release notes]({{< ref "product-stack/tyk-gateway/release-notes/overview" >}}) for Tyk Gateway `v5.3.0`.
+
+{{< /warning >}}
+
 There's lots of detail on how Tyk works with OAS APIs in the dedicated [section]({{< ref "/getting-started/key-concepts/high-level-concepts" >}}) in the docs, but here we offer a series of tutorials that will get you up to speed with using this powerful and flexible feature.
 
 We'll show you how to:

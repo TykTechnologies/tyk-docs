@@ -15,6 +15,17 @@ aliases:
 
 Your onboarding is now complete! The next step will be to setup a very basic API to demonstrate how APIs are managed within Tyk Cloud.
 
+{{< warning success >}}
+
+**Warning**
+
+It is not possible to rollback to previous versions after commiting to Tyk OAS 5.3.0 APIs.
+
+In Tyk Gateway release 5.3.0, Tyk OAS APIs gained feature maturity with Tyk Classic APIs. Tyk OAS APIs using the 5.3.0 API definition may not work with pre-5.3.0 versions of Tyk Gateway.
+
+For further details, please refer to the [release notes]({{< ref "product-stack/tyk-gateway/release-notes/overview" >}}) for Tyk Gateway `v5.3.0`.
+{{< /warning >}}
+
 ## Steps to add an API in Tyk Cloud
 
 * **Step 1 - Access the Dashboard:** Go to the Control Plane overview and click the dashboard link in the Ingress list. You'll be redirected to the Tyk Dashboard for your [Control Plane]({{< ref "tyk-cloud/troubleshooting-&-support/glossary.md#control-plane" >}}).
