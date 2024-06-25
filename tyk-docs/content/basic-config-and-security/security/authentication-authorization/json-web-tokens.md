@@ -10,9 +10,18 @@ weight: 5
 aliases:
   - /security/your-apis/json-web-tokens/
   - /tyk-apis/tyk-gateway-api/api-definition-objects/jwt/docs/basic-config-and-security/security/authentication-authorization/json-web-tokens/
+  - /advanced-configuration/integrate/api-auth-mode/
 ---
 
+A [JSON Web Token](https://jwt.io/introduction/) (JWT) is a JSON-based open standard (RFC 7519) for passing claims between parties in a web application environment. The tokens are designed to be compact, URL-safe and usable especially in web browser single sign-on (SSO) context.
 
+One of the best things about a JWT is that it is cryptographically signed, and can be signed in a number of ways such as using HMAC shared secret and RSA public/private key pairs.
+
+What is useful is when a token is issued by a third-party (e.g. an OAuth provider, or an SSO interface), that third party can use a private key to sign the claims of the token, and then any third-party can verify that the claims were issued by a safe third-party by validating the signature using a public key.
+
+JSON Web Tokens provide Tyk Gateway with built-in federation support. 
+
+---
 
 ### Protecting an API with JWT
 
@@ -64,15 +73,6 @@ $ curl http://localhost:8080/my-jwt-api/get \
 ```
 
 You should receive response from your Upstream API.
-
----
-
-## About JWTs
-A [JSON Web Token](https://jwt.io/introduction/) (JWT) is a JSON-based open standard (RFC 7519) for passing claims between parties in a web application environment. The tokens are designed to be compact, URL-safe and usable especially in web browser single sign-on (SSO) context.
-
-One of the best things about a JWT is that it is cryptographically signed, and can be signed in a number of ways such as using HMAC shared secret and RSA public/private key pairs.
-
-What is useful is when a token is issued by a third-party (e.g. an OAuth provider, or an SSO interface), that third party can use a private key to sign the claims of the token, and then any third-party can verify that the claims were issued by a safe third-party by validating the signature using a public key.
 
 ---
 

@@ -9,9 +9,6 @@ aliases:
   - /integrate/3rd-party-identity-providers/social/dashboard-login-with-gplus/
 ---
 
-
-## Log into Dashboard with Google
-
 Similarly to logging into an app using Tyk, OAuth and Google Plus, if we have our callback URL and client IDs set up with Google, we can use the following profile setup to access our Dashboard using a social provider:
 
 ```{.copyWrapper}

@@ -1,143 +1,47 @@
 ---
 date: 2017-03-24T16:40:31Z
-title: Single Sign On
+title: Single Sign-On
 menu: 
     main:
         parent: "Tyk Dashboard"
 weight: 0
 ---
 
+Single Sign-On (SSO) gives users the ability to log in to multiple applications without the need to enter their password more than once.
 
-## Introduction to Single Sign On (SSO)
+[OpenID Connect]({{< ref "basic-config-and-security/security/authentication-authorization/openid-connect" >}}) (OIDC) and Security Assertion Markup Language (SAML) enables an application (such as Tyk Dashboard) to verify the identity of users without having to manage usernames and passwords locally, by offloading the identification process and secure storage of user credentials to a dedicated Identity Provider (IdP). The Authorisation server of the IdP identifies the users for a pre-registered and approved application (`client` in OAuth and OIDC terminology).
 
-### SSO - The generic use case
+[Tyk Identity Broker]({{< ref "tyk-identity-broker" >}}) is an open-source project that can be used to integrate Tyk Dashboard and Classic Portal with 3rd party identity providers (IDPs). TIB has been included as a built-in feature of the Tyk Dashboard since Tyk 3.0: no configuration is required and it is readily available for use.
 
-SSO gives users the ability to log in to multiple applications without the need to enter their password more than once.
-[OIDC]({{< ref "basic-config-and-security/security/authentication-authorization/openid-connect" >}}) or SAML enables an application to verify the identity of users from an organisation without the need to self store and manage them, and without doing the identification process and exposing their passwords to that application. Their lists of users and passwords are kept safe in one single place, in the IDP that the organisation has chosen to use. The Authorisation server of the IdP identify the users for a pre-registered and approved application (`client` in OAuth and OIDC terminology).
+TIB allows you to implement single sign-on and use your existing user directory for login to the Tyk products. It has been designed as a glue-code solution, so it can integrate with almost any IdP.
+<br>
+<br>
+{{< note success >}}
+**Note**  
 
-### SSO in Tyk
+To find out how to integrate with 3rd Party IdPs using different protocols, check out [this section]({{< ref "advanced-configuration/integrate/3rd-party-identity-providers" >}}).
+<br>
+<br>
+For worked examples of specific 3rd Party integrations, including Auth0 and Okta, check out [this section]({{< ref "advanced-configuration/integrate" >}}).
+{{< /note >}}
 
-SSO is sometimes complicated to understand or set up but can be easily accomplished by using the built-in [Tyk Identity Broker (TIB)]({{< ref "tyk-identity-broker" >}}).
+## How SSO works with Tyk Dashboard
 
-Using our Tyk-Identity-Broker (TIB), you can do both - use your existing users directory to login to the **Dashboard** or **Developer Portal** and have an SSO. TIB, among other options, supports four methods for login to Tyk's UI:
+Once you have configured the integration between Tyk Dashboard and your Identity Provider (typically using Tyk Identity Broker) then your users can simply log into Tyk Dashboard through your IdP.
 
-1. Login with 3rd party social providers
-2. Login with any IdP that supports OIDC
-3. Login with any IdP that supports SAML
-3. Login with LDAP (not using OIDC)
+You can set custom login pages for the Dashboard and Classic Portal using the `sso_custom_login_url` and `sso_custom_portal_login_url` options respectively in the Tyk Dashboard config file (`tyk_analytics.conf`).
 
-#### Tyk Identity Broker (TIB)
+## SSO user permissions
 
-TIB is an open-source project which can be used to integrate Tyk authentication with 3rd party identity providers (IDPs). Starting from Tyk v3.0, TIB has been added as a built-in feature of the Tyk Dashboard meaning there is no configuration required and it is readily available for use. TIB has been designed as a glue-code solution, so it can integrate with almost any identity provider (IDP) including all the known Social providers. See our [TIB detailed overview]({{< ref "tyk-identity-broker" >}}) for further information.
+Logging in via SSO will grant the user **admin** rights in Tyk Dashboard, giving the user full access to configure and control the Dashboard.
 
-#### SSO with Open ID Connect or Social Providers
+You may not want all SSO users to assume administrator rights to your Tyk Dashboard, so you can configure alternative [default permissions](#setting-default-sso-permissions) that will be inherited instead. Of course, you might want certain users to have additional permissions (for example, your admin users) and so you can also assign [per-user permissions](#setting-user-specific-permissions).
 
-SSO is sometimes complicated to understand or set up but once you get it and learn to use our Tyk-Identity-Broker it becomes an easy task.
+### Setting default SSO permissions
 
-In short, all you need is as follow:
+The `sso_permission_defaults` option can be configured in the Tyk Dashboard config file (`tyk_analytics.conf`) to specify the [user permissions]({{< ref "basic-config-and-security/security/dashboard/user-roles" >}}) that should be granted to SSO users.
 
-1. Access the Identity Manager under System Management in the Tyk Dashboard
-2. Create a profile for your preferred IDP
-3. Get the `client_id` + `secret` that are defined on your IDP
-4. Set the `Callback URL` generated by Tyk on your IDP
-5. Provide your SSO profile in Tyk with the `Discover URL (well known endpoint)`
-6. Visit the Login URL after saving your profile to initialize the login
-7. More Docs for the flow can be found on our [GitHub TIB repo README](https://github.com/TykTechnologies/tyk-identity-broker) and our [3rd Party integration docs]({{< ref "advanced-configuration/integrate/3rd-party-identity-providers" >}})
-
-### SSO with Social Identity Providers
-
-See [using a Social Identity Provider]({{< ref "advanced-configuration/integrate/3rd-party-identity-providers/social" >}}) for details of using SSO with Social Identity Providers.
-
-### SSO with OpenID Connect (OIDC)
-
-- Instruction on setting [SSO with Okta]({{< ref "tyk-stack/tyk-manager/sso/dashboard-login-okta-tib" >}})
-- Instructions on setting [SSO with Auth0]({{< ref "tyk-stack/tyk-manager/sso/sso-auth0-tib" >}})
-- Instructions on setting SSO with PingID   - will be added soon
-- Instructions on setting [SSO with Keycloak]({{< ref "product-stack/tyk-dashboard/advanced-configurations/sso/dashboard-login-keycloak-sso" >}})
-
-### SSO with SAML
-
-SAML authentication is a way for a service provider, such as the Tyk Dashboard or Portal, to assert the Identity of a User via a third party.
-
-Tyk Identity Broker can act as the go-between for the Tyk Dashboard and Portal and a third party identity provider. Tyk Identity broker can also interpret and pass along information about the user who is logging in such as Name, Email and group or role metadata for enforcing role based access control in the Tyk Dashboard.
-
-The provider config for SAML has the following values that can be configured in a Profile:
-
-`SAMLBaseURL` - The host of TIB that will be used in the metadata document for the Service Provider. This will form part of the metadata URL used as the Entity ID by the IDP. The redirects configured in the IDP must match the expected Host and URI configured in the metadata document made available by Tyk Identity Broker.
-
-`FailureRedirect` - Where to redirect failed login requests.
-
-`IDPMetaDataURL` - The metadata URL of your IDP which will provide Tyk Identity Broker with information about the IDP such as EntityID, Endpoints (Single Sign On Service Endpoint, Single Logout Service Endpoint), its public X.509 cert, NameId Format, Organisation info and Contact info.
-
-This metadata XML can be signed providing a public X.509 cert and the private key.     
-
-`CertLocation`: An X.509 certificate and the private key for signing your requests to the IDP, this should be one single file with the cert and key concatenated. When using internal identity broker, this value should be the id of the certificate uploaded via certificate manager in dashboard, otherwise it should be a path where the certificate is placed.
-
-`ForceAuthentication` - Ignore any session held by the IDP and force re-login every request.
-
-`SAMLEmailClaim` - Key for looking up the email claim in the SAML assertion form the IDP. Defaults to: `http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress`
-
-`SAMLForenameClaim` - Key for looking up the forename claim in the SAML assertion form the IDP. Defaults to: `http://schemas.xmlsoap.org/ws/2005/05/identity/claims/forename`
-
-`SAMLSurnameClaim` - Key for looking up the surname claim in the SAML assertion form the IDP. Defaults to: `http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname`
-
-Example profile configuration:
-
-```
-{
-    "ActionType": "GenerateOrLoginUserProfile",
-    "ID": "saml-sso-login",
-    "OrgID": "{YOUR_ORGANISATION_ID}",
-    "CustomEmailField": "",
-    "IdentityHandlerConfig": {
-        "DashboardCredential": "{DASHBOARD_USER_API_KEY}"
-    },
-    "ProviderConfig": {
-        "SAMLBaseURL": "https://{HOST}",
-        "FailureRedirect": "http://{DASHBOARD_HOST}:{PORT}/?fail=true",
-        "IDPMetaDataURL": "{IDP_METADATA_URL}",
-        "CertLocation":"myservice.cert",
-        "ForceAuthentication": false,
-        "SAMLEmailClaim": "",
-        "SAMLForenameClaim": "",
-        "SAMLSurnameClaim": ""
-    },
-    "ProviderName": "SAMLProvider",
-    "ReturnURL": "http://{DASHBOARD_URL}:{PORT}/tap",
-    "Type": "redirect"
-}
-```
-## Example Video
-
-We have a video that walks you through getting Tyk Dashboard SSO Access via SAML using Microsoft Azure as IDP and our internal Dashboard TIB.
-
-{{< youtube 4L9aetRrHqI >}}
-
-## Tyk's REST API for SSO
-
-The SSO API allows you to implement custom authentication schemes for the Dashboard and Portal. You can access the API by both admin and dashboard APIs.
-Our Tyk Identity Broker (TIB) internally also uses these APIs.
-
-### Generate authentication token
-
-The Dashboard exposes two APIs:
-
-- `/admin/sso` - See [Dashboard Admin API SSO]({{< ref "tyk-apis/tyk-dashboard-admin-api/sso" >}}) for more details.
-- `/api/sso` -  See [Dashboard API SSO]({{< ref "tyk-apis/tyk-dashboard-api/sso" >}}) for more details.
-
-which allow you to generate a temporary authentication token, valid for 60 seconds. They make same thing you can select one of them and use it.
-However, the admin API requires `admin-auth` header which should be same with `admin-secret` parameter in `tyk_analytics.conf`, the regular API requires `authorization` header which should be same with the user authentication token.  
-
-### Using the Token
-
-Once you have issued a token you can login to the dashboard using the `/tap` url, or to the portal using the `<portal-url>/sso` URL, and provide an authentication token via the `nonce` query param.
-If `nonce` is valid, Tyk will create a temporary user and log them in. 
-
-If you want to re-use existing dashboard users, instead of creating temporary ones, you can set `"sso_enable_user_lookup": true` variable in the Dashboard config file (`tyk_analytics.conf`). This way you can set individual permissions for users logged via SSO.
-
-#### Set up default permissions for the dashboard
-
-If you use the token with `dashboard` scope, and would like to avoid login in as admin user (which is the default permissions), you can add the `sso_permission_defaults` configuration option to the Dashboard config file (`tyk_analytics.conf`) to specify SSO user permissions in the following format:
+This option has the following format:
 
 ```
 "sso_permission_defaults": {
@@ -154,19 +58,22 @@ If you use the token with `dashboard` scope, and would like to avoid login in as
 }
 ```
 
-As alternative, you can set `sso_default_group_id` to specify User Group ID assigned to SSO users.
+Alternatively, you can set `sso_default_group_id` in the Tyk Dashboard config file to assign SSO users to a [User Group]({{< ref "basic-config-and-security/security/dashboard/create-user-groups" >}}) where they will be granted the permissions associated with the group.
 
-In order to set individual user permissions, you should first create this users in the dashboard first, set needed permissions, enable `sso_enable_user_lookup` to `true` inside dashboard config. If SSO user with the same email will be found in Dashboard users, it will re-use his permissions. 
+### Setting user-specific permissions
 
-#### Sample Login Request
+If `sso_enable_user_lookup` is set to `true` in the Tyk Dashboard config file then when someone logs in via SSO their email address is checked against all Tyk users configured in the Dashboard. If there is a match then they will inherit the permissions of that Tyk user. Thus, you can set permissions for a specific user by [creating a user]({{< ref "basic-config-and-security/security/dashboard/create-users" >}}) in the Dashboard first and assigning the required user permissions (e.g. `IsAdmin`) to this user.
 
-```{.copyWrapper}
+## Creating a custom SSO user using Tyk Dashboard API
+
+You can implement custom authentication schemes for the Dashboard and Classic Portal from either [Tyk Dashboard Admin API]({{< ref "tyk-apis/tyk-dashboard-admin-api/sso" >}}) or [Tyk Dashboard API]({{< ref "tyk-apis/tyk-dashboard-api/sso" >}}). The functionality of the two APIs for SSO configuration are identical, however they require a different auth header to secure requests to the API:
+- the Tyk Dashboard Admin API requires an `admin-auth` header which should match the `admin-secret` parameter in `tyk_analytics.conf`
+- the Tyk Dashboard API requires an `authorization` header which should match the user authentication token
+
+Both APIs' `/sso` endpoints will generate a temporary authentication token, valid for 60 seconds, that can be used to log in to the `/tap` endpoint, or to the portal using the `<portal-url>/sso` endpoint, providing the token via the `nonce` query param. If `nonce` is valid, Tyk will create a temporary user and log them in. 
+
+For example:
+```http
 GET /tap?nonce=YTNiOGUzZjctYWZkYi00OTNhLTYwODItZTAzMDI3MjM0OTEw HTTP/1.1
 Host: localhost:3000    
 ```
-
-
-## SSO with LDAP Integration
-Detailed instruction on setting [SSO with LDAP]({{< ref "advanced-configuration/integrate/3rd-party-identity-providers/dashboard-login-ldap-tib" >}}).
-
-See [apply search filters]({{< ref "advanced-configuration/integrate/3rd-party-identity-providers/ldap#a-name-ldap-search-a-using-advanced-ldap-search" >}}) to add advanced search to your LDAP authentication.

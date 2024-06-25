@@ -1,13 +1,11 @@
 ---
 date: 2017-03-24T16:59:41Z
-title: Custom
+title: Integrate with Custom Proxy
 menu:
   main:
     parent: "3rd Party Identity Providers"
 weight: 0 
 ---
-
-## <a name="integration"></a>Integration Tutorials: Custom Proxy Identity Provider
 
 The proxy identity provider is a generic solution to more legacy problems, as well as a way to handle flows such as basic auth access with third party providers or OAuth password grants where the request can just be passed through to the providing endpoint to return a direct response.
 
