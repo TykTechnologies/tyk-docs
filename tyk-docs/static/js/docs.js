@@ -207,3 +207,7 @@ $(document).ready(function(e){
 	}
 	
 });
+
+function sendFeedback(isUseful) {
+
+}
