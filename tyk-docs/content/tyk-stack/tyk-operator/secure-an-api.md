@@ -1,10 +1,6 @@
 ---
 date: 2017-03-24T16:39:31Z
-title: Secure an API with Tyk Operator
-weight: 4
-menu:
-    main:
-        parent: "Getting started with Tyk Operator"
+title: Protect an API with a Security Policy
 ---
 
 ### Introduction
@@ -44,7 +40,7 @@ spec:
 You can link this Security Policy to any APIs you have defined in `access_rights_array`. In this example, the security policy is applied to `httpbin` API in `default` namespace.
 
 #### Step 2: Deploy the SecurityPolicy resource
-You can do so either by applying sample manifests defined in [our repository](https://github.com/TykTechnologies/tyk-operator/tree/master/docs/policies), for example:
+You can do so either by applying the above manifest:
 
 ```console
 $ kubectl apply -f docs/policies/ratelimit.yaml
@@ -169,4 +165,4 @@ Meta data:
 
 - `meta_data`: Metadata key and values.
 
-You can go to the [Policies](https://github.com/TykTechnologies/tyk-operator/blob/master/docs/policies.md) page on GitHub to see all the latest Security Policies fields and features we support.
+You can go to the [Security Policy features]({{<ref "product-stack/tyk-operator/reference/security-policy">}}) page to see all the latest Security Policies fields and features Operator support.
