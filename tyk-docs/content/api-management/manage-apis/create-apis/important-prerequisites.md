@@ -1,12 +1,9 @@
 ---
 date: 2020-02-18T15:08:55Z
 Title: Important Prerequisites
-menu:
-  main:
-    parent: Tyk Gateway
-weight: 6
 aliases:
   - /getting-started/tutorials/important-prerequisites/
+  - /tyk-stack/tyk-gateway/important-prerequisites/
 ---
 
 These are some common settings that you need before proceeding with other parts of our tutorials.
