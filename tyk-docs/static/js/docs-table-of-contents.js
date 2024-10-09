@@ -150,6 +150,7 @@ $(document).on("turbolinks:load", buildTableOfContents);
 function activeTocToggle() {
     var tocLabel = $('.toc__label');
     var tocItems = $('.toc__item');
+    var subTocItems = $('.sub_toc__item.sub-accordion-title')
     var pageContent = $('.page-content__container, .header');
 
     tocLabel.on('click', function (e) {
@@ -160,11 +161,17 @@ function activeTocToggle() {
         }
     });
 
-    /* tocItems.on('click', function(e) {
+    tocItems.on('click', function(e) {
         if (window.innerWidth < 1024) {
             tocLabel.removeClass('js-open');
         }
-    }); */
+    });
+
+    subTocItems.on('click', function(e) {
+        if (window.innerWidth < 1024) {
+            tocLabel.removeClass('js-open');
+        }
+    });
 
     pageContent.on('click', function () {
         if (tocLabel.hasClass('js-open')) {
@@ -196,16 +203,16 @@ function highlightAnchor() {
             $(".toc__item, .sub_toc__item, .sub-sub-toc-item, .sub-sub-sub-toc-item").removeClass("js-active accordion-up");
             $(`.toc__item[href*="#${currentSectionId}"], .sub_toc__item[href*="#${currentSectionId}"], .sub-sub-toc-item[href*="#${currentSectionId}"], .sub-sub-sub-toc-item[href*="#${currentSectionId}"]`).addClass("js-active accordion-up");
 
-            $('.accordion-up').each(function() {
+           /* $('.accordion-up').each(function() {
                 $(this).siblings('.accordion-content').show();
                 $(this).siblings('.sub-accordion-content').show();
             });
-          
+          */
             return false; 
         }
-        $('.sub_toc__item.accordion-up').click(function() {
+        /*$('.sub_toc__item.accordion-up').click(function() {
             $(this).siblings('.sub-accordion-content').hide();
-        });
+        });*/
     });
 }
 
