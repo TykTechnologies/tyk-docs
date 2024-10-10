@@ -10,6 +10,6 @@ menu:
     name: Home
 weight: 1
 diffTitle: true
-hideSidebar: true
+hideSidebar: false
 url: /
 ---
