@@ -21,7 +21,7 @@ This release has no breaking changes.
 There are no deprecations in this release.
 
 #### Upgrade Instructions
-Go to the [Upgrading Tyk Operator]({{<ref "tyk-stack/tyk-operator/installing-tyk-operator#upgrading-tyk-operator">}}) section for detailed upgrade instructions.
+Go to the [Upgrading Tyk Operator]({{<ref "/api-management/automations#install-and-configure-tyk-operator#upgrading-tyk-operator">}}) section for detailed upgrade instructions.
 
 #### Release Highlights
 This release added support for Tyk 5.4 API definition.
