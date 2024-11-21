@@ -104,6 +104,22 @@ openssl rsa -in key.rsa -pubout > key.rsa.pub
 
 ---
 
+### RSA Supported Algorithms
+
+Both RSA & PSA classes of RSA algorithms are supported by Tyk, including:
+- RS256
+- RS384
+- RS512 
+- PS256
+- PS384
+- PS512
+
+Read more about the differences between RSA & PSA classes of RSA algorithms [here](https://www.encryptionconsulting.com/overview-of-rsassa-pss/).
+
+To use either - simply select the "RSA" signing method in the Dashboard, and Tyk will use the appropriate algorithm based on the key you provide.
+
+---
+
 ### Individual JWT secrets
 Tyk supports validating an inbound token against a stored key. Tyk will not issue JWTs, but can issue a token ID that is bound to a JWT key so that inbound tokens that bear this id (key) can be validated.
 
