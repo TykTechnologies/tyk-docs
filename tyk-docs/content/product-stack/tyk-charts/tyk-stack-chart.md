@@ -290,7 +290,7 @@ global:
 
 **PostgresSQL Installation**
 ```bash
-helm install tyk-postgres bitnami/postgresql --set "auth.database=tyk_analytics" -n tyk --version 12.12.10
+helm install tyk-postgres oci://registry-1.docker.io/bitnamicharts/postgresql --set "auth.database=tyk_analytics" -n tyk
 ```
 
 Follow the notes from the installation output to get connection details.
