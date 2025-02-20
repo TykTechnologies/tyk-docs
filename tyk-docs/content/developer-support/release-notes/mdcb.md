@@ -26,7 +26,54 @@ Licensed Protected Product
 Our minor releases are supported until our next minor comes out.
 
 ---
+## 2.8 Release Notes
 
+### Release Date xxx
+
+#### Release Highlights
+
+This release introduces Seamless API Key Rotation for MDCB Data Planes, eliminating the need for gateway restarts when rotating API keys. This enhancement improves security and operational efficiency by ensuring uninterrupted communication between MDCB and data planes while allowing smooth key updates.
+
+#### Breaking Changes
+This release has no breaking changes.
+
+#### Dependencies {#dependencies-X.Y.Z}
+
+##### 3rd Party Dependencies & Tools
+| Third Party Dependency                                     | Tested Versions        | Compatible Versions    | Comments | 
+| ---------------------------------------------------------- | ---------------------- | ---------------------- | -------- | 
+| [Redis](https://redis.io/download/)  | 6.2.x, 7.x  | 6.2.x, 7.x  | Used by MDCB | 
+| [MongoDB](https://www.mongodb.com/try/download/community)  | 5.0.x, 6.0.x, 7.0.x | 4.4.x, 5.0.x, 6.0.x, 7.0.x | Used by MDCB | 
+| [PostgreSQL](https://www.postgresql.org/download/)         | 13.x - 17.x LTS        | 13.x - 17.x            | Used by MDCB | 
+
+Given the time difference between your upgrade and the release of this version, we recommend customers verify the ongoing support of third-party dependencies they install, as their status may have changed since the release.
+
+#### Deprecations
+There are no deprecations in this release.
+
+#### Upgrade instructions
+For users currently on v2.8.0, we strongly recommend promptly upgrading to the latest release. If you are working with an older version (lower minor), it is advisable to bypass version 2.8.0 and proceed directly to this latest patch release.
+<br/>
+Go to the [Upgrading Tyk](#upgrading-tyk) section for detailed upgrade Instructions.
+
+#### Downloads
+- [Docker image v2.8.0](https://hub.docker.com/r/tykio/tyk-mdcb-docker/tags?page=&page_size=&ordering=&name=v2.8.0)
+  - ```bash
+    docker pull tykio/tyk-mdcb-docker:v2.8.0
+    ```
+#### Changelog {#Changelog-v2.8.0}
+
+##### Added
+<ul>
+   <li>
+ <details>
+ <summary>Seamless API Key Rotation for MDCB Data Planes </summary>
+MDCB now supports a seamless key rotation mechanism, allowing data planes to update their authentication keys without requiring service restarts. When a new API key is issued, MDCB temporarily retains the old key only to notify gateways that are still using it, instructing them to switch to the new key. However, the old key does not remain functional for authentication. Additionally, if a data plane gateway goes down during the key rotation process, it will automatically retrieve the new key upon restart, ensuring a smoother recovery process.
+    </details>
+  </li>
+</ul>
+
+---
 ## 2.7 Release Notes
 ### 2.7.2 Release Notes
 
