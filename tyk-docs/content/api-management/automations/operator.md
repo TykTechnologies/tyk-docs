@@ -251,7 +251,7 @@ To address this challenge, Tyk Operator allows you to directly reference certifi
 | Custom domain certificates | ✅ [TLS and SSL]({{<ref "api-management/certificates#dynamically-setting-ssl-certificates-for-custom-domains">}}) | ✅ [TLS and SSL]({{<ref "api-management/certificates#dynamically-setting-ssl-certificates-for-custom-domains">}}) | Certificate ID can be set in the API Definition but configuring certificates from Secrets in CRD is not supported. |
 | Public keys pinning | ✅ [Certificate pinning]({{<ref "api-management/certificates#certificate-pinning">}}) | ✅ [Certificate pinning]({{<ref "api-management/certificates#certificate-pinning">}}) | Certificate ID can be set in the API Definition but configuring certificates from Secrets in CRD is not supported. |
 | Upstream mTLS | ✅ [Upstream mTLS via Operator]({{<ref "api-management/client-authentication#via-tyk-operator-using-the-tyk-classic-api-definition">}}) | ✅ [Upstream mTLS via Operator]({{<ref "api-management/client-authentication#tyk-operator-oas">}}) | Certificate ID can be set in the API Definition but configuring certificates from Secrets in CRD is not supported. |
-
+| Upstream Request Signing Using HMAC keys | ✅ [Upstream Request Signing Using HMAC keys]({{<ref "api-management/client-authentication#via-tyk-operator-using-the-tyk-classic-api-definition">}}) | ✅ [Upstream Request Signing Using HMAC keys]({{<ref "api-management/client-authentication/#sign-requests-with-hmac">}}) | `certificateRef` References a Secret containing the private and secret key for signing client API requests. This should be used if `secretRef` is not specified. Example can be found [here]({{<ref "api-management/client-authentication#via-tyk-operator-using-the-tyk-classic-api-definition">}}) |
 
 ## Install and Configure Tyk Operator
 
@@ -4914,11 +4914,12 @@ Tyk provides multiple authentication options for client-to-gateway interactions,
 ##### Gateway to Upstream Authentication
 Tyk supports secure upstream connections through mutual TLS, certificate pinning, and public key verification to ensure data integrity between the gateway and backend services.
 
-| Type                                            | Supported | Supported From | Comments                     |
-|-------------------------------------------------|-----------|----------------|------------------------------|
-| Upstream Certificates mTLS                      | ✅        | v0.9           | Mutual TLS authentication for upstream connections. |
-| Public Key Certificate Pinning                  | ✅        | v0.9           | Ensures that the upstream certificate matches a known key. |
-| Upstream Request Signing                        | ❌        | -              | Upstream request signing is not implemented. |
+| Type                                    | Supported | Supported From | Comments                                      |
+|-----------------------------------------|-----------|----------------|------------------------------------------------|
+| Upstream Certificates mTLS              | ✅        | v0.9           | Mutual TLS authentication for upstream connections. |
+| Public Key Certificate Pinning          | ✅        | v0.9           | Ensures that the upstream certificate matches a known key. |
+| Upstream Request Signing                | ✅        | v1.2.0         | Supports HMAC signing to verify request authenticity using a secret key or an Upstream certificate. |
+
 
 ##### API-level (Global) Features
 Tyk offers global features for APIs, such as detailed traffic logging, CORS management, rate limiting, header transformations, and analytics plugins, with support for tagging, load balancing, and dynamic variables.
