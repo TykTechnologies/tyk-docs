@@ -41,7 +41,145 @@ aliases:
 Our minor releases are supported until our next minor comes out.
 
 ---
+## 5.8.0 Release Notes
 
+#### Release Date xxx
+
+#### Release Highlights
+
+We are thrilled to announce new updates and improvements in Tyk 5.8.0, delivering more control, flexibility, and performance.  For a comprehensive list of changes, please refer to the detailed [changelog]({{< ref "#Changelog-v5.8.0" >}}) below.
+
+##### Add release highlight summary
+
+Add release highlight description
+
+#### Breaking Changes
+
+
+There are no breaking changes in this release.
+
+#### Dependencies {#dependencies-5.8.0}
+
+##### Compatibility Matrix For Tyk Components
+
+| Gateway Version | Recommended Releases | Backwards Compatibility |
+|----    |---- |---- |
+| 5.8.0 | MDCB v2.7.2     | MDCB v2.4.2 |
+|         | Operator v1.1.0  | Operator v0.17 |
+|         | Sync v2.0.1    | Sync v1.4.3 |
+|         | Helm Chart v2.2  | Helm all versions |
+| | EDP v1.12 | EDP all versions |
+| | Pump v1.11.1 | Pump all versions |
+| | TIB (if using standalone) v1.6.1 | TIB all versions |
+
+##### 3rd Party Dependencies & Tools
+
+| Third Party Dependency                                       | Tested Versions        | Compatible Versions    | Comments | 
+| ------------------------------------------------------------ | ---------------------- | ---------------------- | -------- | 
+| [Go](https://go.dev/dl/)                                     | 1.22  |  1.22  | [Go plugins]({{< ref "/plugins/supported-languages/golang" >}}) must be built using Go 1.22 | 
+| [Redis](https://redis.io/download/)  | 6.2.x, 7.x  | 6.2.x, 7.x  | Used by Tyk Gateway | 
+| [OpenAPI Specification](https://spec.openapis.org/oas/v3.0.3)| v3.0.x                 | v3.0.x                 | Supported by [Tyk OAS]({{< ref "/tyk-apis/tyk-gateway-api/oas/x-tyk-oas-doc" >}}) |
+
+Given the potential time difference between your upgrade and the release of this version, we recommend users verify the ongoing support of third-party dependencies they install, as their status may have changed since the release.
+
+#### Deprecations
+
+There are no deprecations in this release.
+
+#### Upgrade instructions {#upgrade-5.8.0}
+
+If you are upgrading to 5.8.0, please follow the detailed [upgrade instructions](#upgrading-tyk).
+
+#### Downloads
+
+- [Docker image to pull](https://hub.docker.com/r/tykio/tyk-gateway/tags?page=&page_size=&ordering=&name=v5.8.0)
+  - ```bash
+    docker pull tykio/tyk-gateway:v5.8.0
+    ``` 
+- Helm charts
+  - [tyk-charts v2.2.0]({{<ref "developer-support/release-notes/helm-chart#220-release-notes" >}})
+
+- [Source code tarball for OSS projects](https://github.com/TykTechnologies/tyk/releases)
+
+#### Changelog {#Changelog-v5.8.0}
+
+##### Added
+
+<ul>
+<li>
+<details>
+<summary>Tyk OAS Feature Parity</summary>
+
+Tyk OAS has now reached feature parity with the legacy Tyk Classic APIs. You can now leverage the majority of Tyk Gateway’s capabilities through Tyk OAS APIs, making them a viable alternative to Tyk Classic APIs.
+
+From Tyk 5.8.0, we support the following features when using Tyk OAS APIs with Tyk Gateway:
+- Uptime Testing
+- Event Handling: Custom Handler (MVP)
+- Upstream Authentication: HMAC Request Signing
+- Preserve Client Request Headers
+- Batch Request Support
+- Granular Control Over Client-to-Gateway HTTP
+- Upstream Load Balancing
+- Analytics Tag Headers
+- IP Access Control
+- Analytics Expiry Period
+- Custom Analytics Plugins
+- Gateway-to-Upstream SSL Configuration
+- API-Level Request Size Limit
+
+If you have existing Tyk Classic APIs, you can now consider migrating to Tyk OAS APIs for a modern and feature-complete experience.
+</details>
+</li>
+<li>
+<details>
+<summary>Upgraded to Golang 1.23</summary>
+
+Tyk Gateway now runs on Golang 1.23, bringing security and performance improvements. Key changes include unbuffered Timer/Ticker channels, removal of 3DES cipher suites, and updates to X509KeyPair handling. Users may need to adjust their setup for compatibility.
+</details>
+</li>
+<li>
+<details>
+<summary>Seamless API Key Rotation for MDCB Data Planes</summary>
+
+We have enhanced Tyk Gateway’s handling of API key rotation for MDCB Data Planes. The Gateway now listens for ResetUserKey events, verifies the key update, and dynamically applies the new API key without requiring a restart. For environments using KV storage (e.g., Vault), key rotation is fully resilient even if an edge Gateway restarts. However, for config file or environment variable setups, if the Gateway is stopped and restarted, a manual update will be required.
+</details>
+</li>
+</ul>
+
+##### Fixed
+
+<ul>
+<li>
+<details>
+<summary>Resolved API authentication issue while handling redirects using "tyk://" Scheme</summary>
+
+This fix ensures that when API A redirects to API B using the tyk:// scheme, API B will now correctly authenticate using its own credentials, improving access control and preventing access denials. Users can now rely on the expected authentication flow without workarounds, providing a smoother experience when integrating APIs.
+</details>
+</li>
+<li>
+<details>
+<summary>Reduced False Alarms in Gateway Startup Logging</summary>
+
+We've improved gateway logging to reduce misleading error messages during startup, making it easier to distinguish real issues from expected initialization behavior. A new initial delay seconds config lets you control when errors are logged, minimizing noise and improving troubleshooting.
+</details>
+</li>
+<li>
+<details>
+<summary>Edge Gateways Now Enter Emergency Mode When Disconnected from MDCB</summary>
+
+Fixed an issue where edge gateways failed to enter emergency mode when disconnected from MDCB, preventing traffic processing. Now, gateways properly load APIs and policies from the Redis backup when MDCB is unavailable.
+</details>
+</li>
+<li>
+<details>
+<summary>Multi-Value Response Headers in Coprocess Middleware</summary>
+
+Multi-value response headers were previously lost after synchronization with coprocess middleware, as only the first value was retained. This has been resolved, ensuring all response headers are properly synchronized and preserved
+</details>
+</li>
+</ul>
+
+---
 ## 5.7 Release Notes
 
 ### 5.7.2 Release Notes
