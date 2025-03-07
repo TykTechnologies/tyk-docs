@@ -252,6 +252,100 @@ To address this challenge, Tyk Operator allows you to directly reference certifi
 | Public keys pinning | ✅ [Certificate pinning]({{<ref "api-management/certificates#certificate-pinning">}}) | ✅ [Certificate pinning]({{<ref "api-management/certificates#certificate-pinning">}}) | Certificate ID can be set in the API Definition but configuring certificates from Secrets in CRD is not supported. |
 | Upstream mTLS | ✅ [Upstream mTLS via Operator]({{<ref "api-management/client-authentication#via-tyk-operator-using-the-tyk-classic-api-definition">}}) | ✅ [Upstream mTLS via Operator]({{<ref "api-management/client-authentication#tyk-operator-oas">}}) | Certificate ID can be set in the API Definition but configuring certificates from Secrets in CRD is not supported. |
 
+### Upstream Request Signing Using HMAC keys
+Hash-Based Message Authentication Code (HMAC) Signing enhances security by requiring the requesting client to include a cryptographic signature with each request. This signature is generated using a secret key or an upstream certificate, ensuring that the request is properly encrypted.
+
+#### Configuring Upstream Request Signing in Tyk OAS API Definition
+
+The below yaml manifest shows how [Upstream Request Signing]({{<ref "api-management/client-authentication/#sign-requests-with-hmac">}}) are configured differently for [Tyk OAS APIs]({{< ref "#tyk-oas-api" >}}).
+
+Here's an example:
+
+```yaml{linenos=true, linenostart=1, hl_lines=["12-24"]}
+apiVersion: v1
+data:
+  secretKey: cGFzc3dvcmQxMjM=
+kind: Secret
+metadata:
+  name: upstream-secret
+  namespace: default
+type: Opaque
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: booking
+  namespace: default
+data:
+  test_oas.json: |-
+    {
+      "info": {
+        "title": "bin",
+        "version": "1.0.0"
+      },
+      "openapi": "3.0.3",
+      "components": {},
+      "paths": {},
+      "x-tyk-api-gateway": {
+        "info": {
+          "name": "bin",
+          "state": {
+            "active": true,
+            "internal": false
+          }
+        },
+        "server": {
+          "listenPath": {
+            "strip": true,
+            "value": "/bin/"
+          }
+        },
+        "upstream": {
+          "url": "http://httpbin.org/",
+          "authentication": {
+            "requestSigning": {
+              "enabled": true,
+              "signatureHeader": "Signature",
+              "algorithm": "hmac-sha256",
+              "keyId": "random-key-id", 
+              "headers": [],
+              "secret": ""
+            }
+          }
+        }
+      }
+    }
+---
+apiVersion: tyk.tyk.io/v1alpha1
+kind: TykOasApiDefinition
+metadata:
+  name: booking
+  namespace: default
+spec:
+  tykOAS:
+    configmapRef:
+      namespace: default
+      name: booking
+      keyName: test_oas.json
+  upstreamRequestSigning:
+    certificateRef: ""
+    secretRef:
+      namespace: default
+      name: upstream-secret
+      secretKey: secretKey   
+    algorithm: "hmac-sha256"
+    keyId: ""
+```
+
+In this example, a Tyk OAS API was created using the `upstreamRequestSigning` field. It can be broken down as follows:
+- `upstreamRequestSigning`: This defines the settings for Upstream Request Signing. in the example manifest, it configures Upstream Request Signing using the `booking` API.
+    - `certificateRef`: References a Secret containing the private and secret key for signing client API requests. This should be used if `secretRef` is not specified.
+    - `secretRef`: References a Kubernetes Secret that holds the secret key for signing client requests.
+    - `algorithm`: Specifies the algorithm used for signing.
+      - For `secretRef`, supported algorithms include: `hmac-sha1`, `hmac-sha256`, `hmac-sha384`, and `hmac-sha512`.
+      - For `certificateRef`, the required algorithm is `rsa-sha256`.
+    - `keyId`: A user-defined key assumed to be available on the upstream service. This is used in the `SignatureHeader` and should be included when using `certificateRef`. It is required when using the RSA algorithm.
 
 ## Install and Configure Tyk Operator
 
@@ -4914,11 +5008,12 @@ Tyk provides multiple authentication options for client-to-gateway interactions,
 ##### Gateway to Upstream Authentication
 Tyk supports secure upstream connections through mutual TLS, certificate pinning, and public key verification to ensure data integrity between the gateway and backend services.
 
-| Type                                            | Supported | Supported From | Comments                     |
-|-------------------------------------------------|-----------|----------------|------------------------------|
-| Upstream Certificates mTLS                      | ✅        | v0.9           | Mutual TLS authentication for upstream connections. |
-| Public Key Certificate Pinning                  | ✅        | v0.9           | Ensures that the upstream certificate matches a known key. |
-| Upstream Request Signing                        | ❌        | -              | Upstream request signing is not implemented. |
+| Type                                    | Supported | Supported From | Comments                                      |
+|-----------------------------------------|-----------|----------------|------------------------------------------------|
+| Upstream Certificates mTLS              | ✅        | v0.9           | Mutual TLS authentication for upstream connections. |
+| Public Key Certificate Pinning          | ✅        | v0.9           | Ensures that the upstream certificate matches a known key. |
+| Upstream Request Signing                | ✅        | v1.2.0         | Supports HMAC signing to verify request authenticity using a secret key or an Upstream certificate. |
+
 
 ##### API-level (Global) Features
 Tyk offers global features for APIs, such as detailed traffic logging, CORS management, rate limiting, header transformations, and analytics plugins, with support for tagging, load balancing, and dynamic variables.
