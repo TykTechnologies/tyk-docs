@@ -7,6 +7,19 @@ algolia:
   importance: 0
 ---
 
+{{< warning success >}}
+
+**Attention: Upcoming deprecation for Tyk Classic portal**
+
+You’ve reached a page related to the *Tyk Classic Developer Portal*. This product will soon be discontinued. If you
+haven’t started using it, please use our new [Developer Portal]({{< ref "portal/overview" >}}) instead.
+
+This page is for the classic developer portal, which has been superseded by our latest portal. Please note that the
+classic developer portal has limited support and maintenance. Please contact us at 
+[support@tyk.io](<mailto:support@tyk.io?subject=Tyk classic developer portal>)if you have any questions.
+
+{{< /warning >}}
+
 This section describes the Tyk Classic Portal API endpoints. It includes the following:
 
 * [Portal Keys]({{< ref "tyk-apis/tyk-portal-api/portal-keys" >}})
