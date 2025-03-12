@@ -109,7 +109,7 @@ The [Circuit Breaker]({{< ref "tyk-self-managed#circuit-breakers" >}}) is a prot
 
 #### Do Not Track Endpoint
 
-If [traffic logging]({{< ref "api-management/logs-metrics#logging-api-traffic" >}}) is enabled for your Tyk Gateway, then it will create transaction logs for all API requests (and responses) to deployed APIs. You can use the [Do-Not-Track]({{< ref "api-management/traffic-transformation#do-not-track-overview" >}}) middleware to suppress creation of transaction records for specific endpoints.
+If [traffic logging]({{< ref "api-management/logs-metrics#api-traffic-logs" >}}) is enabled for your Tyk Gateway, then it will create transaction logs for all API requests (and responses) to deployed APIs. You can use the [Do-Not-Track]({{< ref "api-management/traffic-transformation#do-not-track-overview" >}}) middleware to suppress creation of transaction records for specific endpoints.
 
 #### Enforced Timeout
 
@@ -182,7 +182,7 @@ The [Response Header Transform]({{< ref "api-management/traffic-transformation#r
 
 The Allow List middleware is a feature designed to restrict access to only specific API endpoints. It rejects requests to endpoints not specifically "allowed", returning `HTTP 403 Forbidden`. This enhances the security of the API by preventing unauthorized access to endpoints that are not explicitly permitted.
 
-Note that this is not the same as Tyk's [IP allow list]({{< ref "api-management/gateway-config-tyk-classic#ip-allowlist-middleware" >}}) feature, which is used to restrict access to APIs based upon the IP of the requestor.
+Note that this is not the same as Tyk's [IP allow list]({{< ref "api-management/gateway-config-tyk-classic#ip-access-control" >}}) feature, which is used to restrict access to APIs based upon the IP of the requestor.
 
 #### Use Cases
 
@@ -500,7 +500,7 @@ In this example the allow list middleware has been configured for `HTTP GET` req
 
 The Block List middleware is a feature designed to block access to specific API endpoints. Tyk Gateway rejects all requests made to endpoints with the block list enabled, returning `HTTP 403 Forbidden`.
 
-Note that this is not the same as Tyk's [IP block list]({{< ref "api-management/gateway-config-tyk-classic#ip-blocklist-middleware" >}}) feature, which is used to restrict access to APIs based upon the IP of the requestor.
+Note that this is not the same as Tyk's [IP block list]({{< ref "api-management/gateway-config-tyk-classic#ip-access-control" >}}) feature, which is used to restrict access to APIs based upon the IP of the requestor.
 
 #### Use Cases
 
@@ -805,7 +805,7 @@ Note also that the endpoint path has not been terminated with `$`. Requests to, 
 
 ### Overview {#do-not-track-overview}
 
-When [transaction logging]({{< ref "api-management/logs-metrics#logging-api-traffic" >}}) is enabled in the Tyk Gateway, a transaction record will be generated for every request made to an API endpoint deployed on the gateway. You can suppress the generation of transaction records for any API by enabling the do-not-track middleware. This provides granular control over request tracking.
+When [transaction logging]({{< ref "api-management/logs-metrics#api-traffic-logs" >}}) is enabled in the Tyk Gateway, a transaction record will be generated for every request made to an API endpoint deployed on the gateway. You can suppress the generation of transaction records for any API by enabling the do-not-track middleware. This provides granular control over request tracking.
 
 #### Use Cases
 
@@ -5632,7 +5632,7 @@ The format for these advanced trigger context variables is: `$tyk_context.trigge
 
 You can retrieve a value from KV storage by including a reference in the [appropriate notation]({{< ref "tyk-self-managed#transformation-middleware" >}}) for the KV location where the key-value pair is stored.
 
-If you use a value retrieved from [Consul]({{< ref "tyk-self-managed#consul">}}) or [Vault]({{< ref "tyk-self-managed#vault">}}), this must be the <b>last</b> part in the `rewriteTo` URL.
+If you use a value retrieved from [Consul]({{< ref "tyk-self-managed#consul" >}}) or [Vault]({{< ref "tyk-self-managed#vault" >}}), this must be the <b>last</b> part in the `rewriteTo` URL.
 
 For example, say you have a key named `userName` with value `jo` in my Consul KV store:
 - if you configure `rewriteTo` as `/my-api/users/$secret_consul.userName` this will redirect calls to `/my-api/users/jo`
