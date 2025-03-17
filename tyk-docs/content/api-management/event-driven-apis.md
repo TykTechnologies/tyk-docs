@@ -101,14 +101,14 @@ aliases:
 
 ## Overview
 
-We are excited to introduce our new product, *Tyk Streams*! 
-*Tyk Streams* is a powerful new feature in the Tyk API management platform that enables organizations to securely expose,
+*Tyk Streams* is a feature of Tyk API management platform that enables organizations to securely expose,
 manage and monetize real-time event streams and asynchronous APIs.
 
 With *Tyk Streams*, you can easily connect to event brokers and streaming platforms, such as
 [Apache Kafka](https://github.com/TykTechnologies/tyk-pro-docker-demo/tree/kafka), and expose them as
 managed API endpoints to internal and external consumers.
 
+<!-- TODO: Need to chanage Image -->
 <div style="display: flex; justify-content: center;">
 {{< img src="/img/streams/tyk-streams-overview.png" alt="Tyk Streams Overview" width="670px" height="500px" >}}
 </div>
@@ -117,8 +117,6 @@ The purpose of Tyk Streams is to provide a unified platform for managing both sy
 GraphQL) and asynchronous APIs, in addition to event-driven architectures. This allows organizations to leverage the
 full potential of their event-driven systems while maintaining the same level of security, control and visibility they
 expect from their API management solution.
-
-
 
 ### How Tyk Streams Enables Async API Support?
 
@@ -131,55 +129,6 @@ alongside your existing synchronous APIs. It provides a range of capabilities to
 - **Analytics**: Monitor the usage and performance of your async APIs with detailed analytics and reporting. Gain insights into consumer behavior and system health.
 - **Developer Portal**: Publish your async APIs to the Tyk Developer Portal, providing a centralised catalog for discovery, documentation and subscription management.
 
-
-##### Configuration as Code
-
-Tyk Streams configuration natively integrates with Tyk OAS (our OpenAPI format for APIs), enabling *configuration-as-code*
-approach. This allows async API definitions to be version-controlled, collaborated on and deployed using GitOps workflows.
-
-```yaml
-{
-  "openapi": "3.0.3",
-  "info": {
-    "title": "test-api",
-    "version": "1.0.0"
-  },
-  …
-  "x-tyk-streaming": {
-    "streams": {
-      "test": {
-        "input": {
-          "kafka": {
-            "addresses": ["TODO"],
-            "topics": ["foo", "bar"],
-            "consumer_group": "foogroup"
-          }
-        },
-        "output": {
-          "http_server": {
-            "consumer_group": "$tyk_context.request_ip",
-            "ws_path": "/subscribe"
-          }
-        }
-      }
-    }
-  }
-  …
-}
-```
-
-
-
-### Configuring Async APIs via Dashboard UI
-
-The Tyk Dashboard provides a user-friendly interface for defining and managing async APIs. You can easily specify event
-broker details, subscribe to specific topics or channels, configure security policies, transformations and other API
-management capabilities.
-
-{{< img src="/img/streams/configure-streams.png" alt="Screenshot of Tyk Dashboard configuring API Streams" width="1000px" >}}
-
-
-
 ### Comparison to Other Products
 
 While some API management platforms offer basic support for async APIs and event-driven architectures, Tyk Streams
@@ -190,18 +139,131 @@ stands out by providing a comprehensive and flexible solution:
 - **Seamless integration**: Async APIs are managed alongside synchronous APIs within the Tyk platform, providing a unified developer portal, consistent security policies and centralised analytics.
 - **Flexibility and scalability**: Tyk Streams can be deployed in various architectures, from simple single-node setups to large-scale distributed deployments and can handle high-throughput event processing scenarios.
 
-By leveraging Tyk Streams, organizations can unlock the full potential of their event-driven architectures while
-benefiting from the robust API management capabilities of the Tyk platform.
-
-
-
 To effectively use Tyk Streams for managing async APIs, it's important to first understand the terminology and [key concepts]({{< ref "api-management/event-driven-apis#key-concepts" >}})
 
 ## Getting started
 
-Our first release of Tyk Streams is now available, and we'd love for you to try it out. Click the button to sign up and take it for a spin:
+This section provides a detailed guide for creating, configuring, and securing a **Streams API** using the Dashboard UI. Follow the steps below:
+
+<br>
+
+{{< note >}}
+**Note**
+
+Our first release of Tyk Streams is now available, and we'd love for you to try it out. To follow along, you will require a license. Click the button to sign up and take it for a spin:
 
 {{< button_left href="https://survey.hsforms.com/1ItPCBg-_Tre8WFJZL4pp6Q3ifmg" color="green" content="Get started with Tyk Streams" >}}
+
+{{< /note >}}
+
+### Prerequisites
+
+- **Docker**: We will run the entire Tyk Stack on Docker. For installation, refer to this [guide](https://docs.docker.com/desktop/setup/install/mac-install/).
+- **wscat**: A WebSocket testing tool to test our async APIs. For installation, refer to this [guide](https://www.npmjs.com/package/wscat)
+- **Git**: A CLI tool to work with git repositories. For installation, refer to this [guide](https://git-scm.com/downloads)
+- **Dashboard License**: We will configure Streams API using Dashboard. [Contact support](https://tyk.io/contact/) to obtain a license.
+- **Familiarity with Tyk Streams concepts**: Such as Input, Output, and  Processor. If you’re not familiar with these concepts, please refer to this [documentation]({{< ref "api-management/stream-config#overview" >}}).
+
+### Install Tyk Streams Demo
+
+The [tyk-pro-docker-demo](https://github.com/TykTechnologies/tyk-pro-docker-demo) repository offers a docker-compose environment you can run locally to explore Tyk streams. Follow the below instructions to set it up.
+
+<!-- TODO: Is this required for cloud as well? -->
+
+1. Open your terminal and clone the git repository using the below command
+
+    ```bash
+    git clone https://github.com/TykTechnologies/tyk-pro-docker-demo
+    ```
+
+2. Create a `.env` file with the below content inside the `tyk-pro-docker-demo` directory 
+
+    ```bash
+    DASH_LICENSE=<paste_your_license_here>
+    DASHBOARD_VERSION=<paste_latest_dashboard_version>
+    GATEWAY_VERSION=<paste_latest_gateway_version>
+    MDCB_VERSION=<paste_latest_mdcb_version>
+    TYK_DB_STREAMING_ENABLED=true
+    TYK_GW_STREAMING_ENABLED=true
+    ```
+<!-- 3. TODO Need to modify docker-compose gateway docker image with gateway-ee -->
+
+3. Start the Tyk Streams demo by issuing the following command:
+
+    ```bash
+    ./up.sh
+    ```
+
+4. Open Tyk Dashboard in your browser by visiting http://localhost:3000 and login with the provided credentials.
+
+### Create the Streams API
+
+1. Click on **Streams & Events** from the sidebar. This will open a form for creating the Streams API.  
+
+   {{< img src="/img/streams/sidebar-navigation.png" alt="Sidebar Navigation" width="670px" height="500px" >}}
+   {{< img src="/img/streams/streams-and-events-wizard.png" alt="Streams & Events Wizard" width="670px" height="500px" >}}
+
+2. Enter a **unique API name**, select the **Streams** option, and click **Continue**.
+
+   {{< img src="/img/streams/streams-option.png" alt="Streams Option" width="670px" height="500px" >}}
+
+3. On the next screen, configure your Streams API:
+
+   - **Input**: Select one or more data sources.  
+   - **Processor**: Choose a single processor for handling the data.  
+   - **Output**: Define one or more output destinations.     
+   - For manual configuration, enable the **Advanced** checkbox to create a custom YAML template.  
+
+   {{< img src="/img/streams/selection.png" alt="Output Selection" width="670px" height="500px" >}}
+
+4. Click **Finish** to proceed to the API Details page.
+
+5. On the **API Details page**, review the auto-generated YAML configuration.  
+
+   {{< img src="/img/streams/api-details-page.png" alt="API Details Page" width="670px" height="500px" >}}
+
+6. Configure additional settings:
+
+   - **Authentication**: Choose an authentication mechanism (e.g., API Key, OAuth2).  
+   - **Gateway Status**: Set to **Active** or **Disabled**.
+   - **Access**: Select **Internal** (restricted) or **External** (public) access.
+
+7. Click **Save API**.  
+
+   - The API is now created, and a unique **API ID** is assigned.
+   - The API will appear in the **APIs listing screen**.
+
+
+### Secure the API
+
+1. Navigate to **Policies** in the sidebar and click **Add Policy**.  
+
+2. Select the newly created Streams API.  
+
+3. Configure the following:
+
+   - **Limits**: Define **Rate Limiting**, **Throttling**, and **Usage Quota**.
+   - **Configuration**: Provide a policy name and set a key expiration interval.  
+
+   {{< img src="/img/streams/pol-details-page.png" alt="Policy Details Page" width="670px" height="500px" >}}
+   
+4. Click **Create Policy** to save.
+
+5. Go to **Keys** from the sidebar and click **Add Key**.  
+
+6. On the key creation page:
+
+   - Select the newly created policy under the **Access Rights** tab.  
+
+   - Review the applied limits for the API.
+
+7. Click **Create Key**.  
+
+   - A popup will display the **Key Hash** and **Key ID**.  
+   - Use the **Key ID** to access the protected Streams API.
+
+<!-- TODO: Add this section -->
+
 
 ## Use Cases
 
@@ -211,22 +273,16 @@ comprehensive set of capabilities to secure, transform, monitor and monetize you
 ### Security
 
 [Tyk Streams]({{< ref "api-management/event-driven-apis#" >}}) supports all the authentication and authorization options available for traditional synchronous APIs. This
-ensures that your async APIs are protected with the same level of security as your REST, GraphQL, and other API types.
+ensures that your async APIs are protected with the same level of security as your REST, GraphQL, and other API types. 
 
-- **Authentication**: Tyk supports multiple authentication methods for async APIs, including:
-
-    - Token-based authentication (e.g., JWT, OAuth 2.0)
-    - Basic authentication
-    - Custom authentication plugins
-
-- **Authorization**: Tyk enables fine-grained access control for async APIs based on policies and user roles. You can define granular permissions for specific topics, events or message types. 
+Refer this docs, to know more about [Authentication]({{< ref "api-management/client-authentication">}}) and [Authorization]({{< ref "api-management/policies" >}}) in Tyk.
 
 ### Transformations and Enrichment
 
 [Tyk Streams]({{< ref "api-management/event-driven-apis#" >}}) allows you to transform and enrich the messages flowing through your async APIs. You can modify message payloads, filter events, combine data from multiple sources and more.
 
-- **Transformation**: Use Tyk's powerful middleware and plugin system to transform message payloads on the fly. You can convert between different data formats (e.g., JSON to XML), filter fields, or apply custom logic.
-- **Enrichment**: Enrich your async API messages with additional data from external sources. For example, you can lookup customer information from a database and append it to the message payload.
+- **[Transformation]({{< ref "api-management/traffic-transformation" >}})**: Use Tyk's powerful middleware and plugin system to transform message payloads on the fly. You can convert between different data formats (e.g., JSON to XML), filter fields, or apply custom logic.
+- **[Enrichment]({{< ref "api-management/plugins/overview" >}})**: Enrich your async API messages with additional data from external sources. For example, you can lookup customer information from a database and append it to the message payload.
 
 ### Analytics and Monitoring
 
@@ -239,9 +295,6 @@ Tyk captures detailed analytics data for async API usage, including message rate
 
 - **Developer Portal Integration**: Async APIs can be published to the Tyk Developer Portal, allowing developers to browse, subscribe, and access documentation. Developers can manage their async API subscriptions just like traditional APIs.
 - **Webhooks**: Tyk supports exposing async APIs as webhooks, enabling developers to receive event notifications via HTTP callbacks. Developers can configure their webhook endpoints and subscribe to specific events or topics.
-
-With [Tyk Streams]({{< ref "api-management/event-driven-apis#" >}}), you can easily monetize your async APIs, provide a seamless developer experience, and manage the entire lifecycle of your event-driven architecture.
-
 
 ### Complex Event Processing
 
@@ -422,96 +475,6 @@ output:
     - The broker output with a fan_out pattern sends processed messages to multiple destinations: two different Kafka topics and an HTTP endpoint, demonstrating the capability to distribute events to various downstream consumers.
 
 These are just a few examples of the advanced async API scenarios made possible with Tyk Streams. The platform provides a flexible and extensible framework to design, deploy and manage sophisticated event-driven architectures.
-
-## Configure Streams API using dashboard
-
-### Overview
-
-This page provides a detailed guide for creating, configuring, and securing a **Streams API** using the Dashboard UI. Follow these steps to set up real-time streaming with authentication and access control.
-
-### Prerequisites
-
-Before you begin, make sure you have:
-
-- Access to the Dashboard.
-- Permissions to create APIs, policies, and keys.
-- A clear understanding of your streaming input, processing, and output requirements.
-
-### Create a Streams API
-
-#### Step 1: Define API Name and Type
-1. Click on **Streams & Events** from the sidebar. This will open a form for creating the Streams API.  
-   {{< img src="/img/streams/sidebar-navigation.png" alt="Sidebar Navigation" width="670px" height="500px" >}}
-   {{< img src="/img/streams/streams-and-events-wizard.png" alt="Streams & Events Wizard" width="670px" height="500px" >}}
-
-2. Enter a **unique API name**, select the **Streams** option, and click **Continue**.
-   {{< img src="/img/streams/streams-option.png" alt="Streams Option" width="670px" height="500px" >}}
-
-#### Step 2: Configure API Inputs, Processors, and Outputs
-1. On the next screen, configure your Streams API:
-   - **Input**: Select one or more data sources.  
-   - **Processor**: Choose a single processor for handling the data.  
-   - **Output**: Define one or more output destinations.     
-   - For manual configuration, enable the **Advanced** checkbox to create a custom YAML template.  
-
-   {{< img src="/img/streams/selection.png" alt="Output Selection" width="670px" height="500px" >}}
-
-2. Click **Finish** to proceed to the API Details page.
-
-#### Step 3: Review and Finalize API Details
-1. On the **API Details page**, review the auto-generated YAML configuration.  
-   {{< img src="/img/streams/api-details-page.png" alt="API Details Page" width="670px" height="500px" >}}
-
-2. Configure additional settings:
-   - **Authentication**: Choose an authentication mechanism (e.g., API Key, OAuth2).  
-   - **Gateway Status**: Set to **Active** or **Disabled**.
-   - **Access**: Select **Internal** (restricted) or **External** (public) access.
-
-3. Click **Save API**.  
-
-   - The API is now created, and a unique **API ID** is assigned.
-   - The API will appear in the **APIs listing screen**.
-
-### Access the Streams API
-
-#### Step 1: Create a Policy
-1. Navigate to **Policies** in the sidebar and click **Add Policy**.  
-
-2. Select the newly created Streams API.  
-
-3. Configure the following:
-   - **Limits**: Define **Rate Limiting**, **Throttling**, and **Usage Quota**.
-   - **Configuration**: Provide a policy name and set a key expiration interval.  
-
-   {{< img src="/img/streams/pol-details-page.png" alt="Policy Details Page" width="670px" height="500px" >}}
-   
-4. Click **Create Policy** to save.
-
-#### Step 2: Generate a Key
-1. Go to **Keys** from the sidebar and click **Add Key**.  
-
-2. On the key creation page:
-   - Select the newly created policy under the **Access Rights** tab.  
-
-   - Review the applied limits for the API.
-
-3. Click **Create Key**.  
-
-   - A popup will display the **Key Hash** and **Key ID**.  
-
-   - Use the **Key ID** to access the protected Streams API.
-
-### Summary
-
-By completing the steps outlined above, you will have:
-
-- A functional **Streams API** with real-time data delivery capabilities.
-- Policies and keys for authentication and access control.
-
-You can now use the **Key ID** to securely access the API for your applications.
-
-
-
 
 ## Glossary
 
@@ -735,3 +698,51 @@ By enabling webhook subscriptions, developers can easily integrate real-time upd
 <!-- [Placeholder for a diagram illustrating the flow of webhook subscriptions and event notifications] -->
 
 With Tyk Streams and the Developer Portal integration, API publishers can effectively manage and expose async APIs, while developers can discover, subscribe to, and consume event streams effortlessly, enabling powerful real-time functionality in their applications.
+
+## TO BE Decided
+
+### Configuration as Code
+
+Tyk Streams configuration natively integrates with Tyk OAS (our OpenAPI format for APIs), enabling *configuration-as-code*
+approach. This allows async API definitions to be version-controlled, collaborated on and deployed using GitOps workflows.
+
+```yaml
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "test-api",
+    "version": "1.0.0"
+  },
+  …
+  "x-tyk-streaming": {
+    "streams": {
+      "test": {
+        "input": {
+          "kafka": {
+            "addresses": ["TODO"],
+            "topics": ["foo", "bar"],
+            "consumer_group": "foogroup"
+          }
+        },
+        "output": {
+          "http_server": {
+            "consumer_group": "$tyk_context.request_ip",
+            "ws_path": "/subscribe"
+          }
+        }
+      }
+    }
+  }
+  …
+}
+```
+
+
+
+### Configuring Async APIs via Dashboard UI
+
+The Tyk Dashboard provides a user-friendly interface for defining and managing async APIs. You can easily specify event
+broker details, subscribe to specific topics or channels, configure security policies, transformations and other API
+management capabilities.
+
+{{< img src="/img/streams/configure-streams.png" alt="Screenshot of Tyk Dashboard configuring API Streams" width="1000px" >}}
