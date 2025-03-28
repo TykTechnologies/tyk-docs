@@ -99,16 +99,18 @@ aliases:
   - /product-stack/tyk-streaming/guides/bloblang/methods/type-coercion/
 ---
 
+<!-- ## TODO: Add availability -->
+
 ## Overview
 
-We are excited to introduce our new product, *Tyk Streams*! 
-*Tyk Streams* is a powerful new feature in the Tyk API management platform that enables organizations to securely expose,
+*Tyk Streams* is a feature of Tyk API management platform that enables organizations to securely expose,
 manage and monetize real-time event streams and asynchronous APIs.
 
 With *Tyk Streams*, you can easily connect to event brokers and streaming platforms, such as
 [Apache Kafka](https://github.com/TykTechnologies/tyk-pro-docker-demo/tree/kafka), and expose them as
 managed API endpoints to internal and external consumers.
 
+<!-- TODO: Need to chanage Image -->
 <div style="display: flex; justify-content: center;">
 {{< img src="/img/streams/tyk-streams-overview.png" alt="Tyk Streams Overview" width="670px" height="500px" >}}
 </div>
@@ -118,9 +120,7 @@ GraphQL) and asynchronous APIs, in addition to event-driven architectures. This 
 full potential of their event-driven systems while maintaining the same level of security, control and visibility they
 expect from their API management solution.
 
-
-
-### How Tyk Streams Enables Async API Support?
+### Key Benefits
 
 Tyk Streams seamlessly integrates with the Tyk API Gateway, allowing you to manage asynchronous APIs and event streams
 alongside your existing synchronous APIs. It provides a range of capabilities to support async API management, including:
@@ -131,77 +131,397 @@ alongside your existing synchronous APIs. It provides a range of capabilities to
 - **Analytics**: Monitor the usage and performance of your async APIs with detailed analytics and reporting. Gain insights into consumer behavior and system health.
 - **Developer Portal**: Publish your async APIs to the Tyk Developer Portal, providing a centralised catalog for discovery, documentation and subscription management.
 
+### Supported Connectors and Protocols
 
-##### Configuration as Code
+Tyk Streams provides out-of-the-box connectors for popular event brokers and async protocols, including:
 
-Tyk Streams configuration natively integrates with Tyk OAS (our OpenAPI format for APIs), enabling *configuration-as-code*
-approach. This allows async API definitions to be version-controlled, collaborated on and deployed using GitOps workflows.
+- [Apache Kafka](https://kafka.apache.org/documentation/)
+- [MQTT](https://mqtt.org/) (Coming Soon)
+- [Solace](https://docs.solace.com/Get-Started/Solace-PubSub-Platform.htm) (Coming Soon)
+- [AMQP](https://www.amqp.org/) (Coming Soon)
+- [WebSocket](https://websocket.org/guides/websocket-protocol/)
+- [Server-Sent Events](https://en.wikipedia.org/wiki/Server-sent_events) (SSE)
+- [Webhooks](https://en.wikipedia.org/wiki/Webhook)
 
-```yaml
-{
-  "openapi": "3.0.3",
-  "info": {
-    "title": "test-api",
-    "version": "1.0.0"
-  },
-  …
-  "x-tyk-streaming": {
-    "streams": {
-      "test": {
-        "input": {
-          "kafka": {
-            "addresses": ["TODO"],
-            "topics": ["foo", "bar"],
-            "consumer_group": "foogroup"
-          }
+## Quick Start
+
+This guide will walk you through setting up a basic streaming pipeline, demonstrating how to ingest data from one endpoint and stream it to another in real time.
+
+#### Use Case: Live Task Updates
+
+Imagine a project management tool where a server sends task updates (e.g., "Task completed") via POST requests, and a user’s dashboard receives them in real time via a streaming endpoint. Tyk Streams makes this possible with a lightweight, HTTP-based approach akin to Server-Sent Events (SSE)—simpler than Kafka but perfect for low-latency updates. 
+
+As depicted in the below diagram, one endpoint accepts updates, and another delivers the results to connected clients.
+
+<br>
+
+<div style="display: flex; justify-content: center;">
+{{< img src="/img/streams/tyk-streams-getting-started-use-case.png" alt="Tyk Streams Request Processing Flow" height="700px" >}}
+</div>
+
+<br>
+<br>
+
+{{< note >}}
+**Note**
+
+Our first release of Tyk Streams is now available, and we'd love for you to try it out. To follow along, you will require a license. Click the button to sign up and take it for a spin:
+
+{{< button_left href="https://survey.hsforms.com/1ItPCBg-_Tre8WFJZL4pp6Q3ifmg" color="green" content="Get started with Tyk Streams" >}}
+
+{{< /note >}}
+
+### Prerequisites
+
+- **Docker**: We will run the entire Tyk Stack on Docker. For installation, refer to this [guide](https://docs.docker.com/desktop/setup/install/mac-install/).
+- **Git**: A CLI tool to work with git repositories. For installation, refer to this [guide](https://git-scm.com/downloads)
+- **Dashboard License**: We will configure Streams API using Dashboard. [Contact support](https://tyk.io/contact/) to obtain a license.
+
+### Instructions
+
+1. **Clone Git Repository:**
+
+    The [tyk-demo](https://github.com/TykTechnologies/tyk-demo) repository offers a docker-compose environment you can run locally to explore Tyk streams. Open your terminal and clone the git repository using the below command.
+
+    ```bash
+    git clone https://github.com/TykTechnologies/tyk-demo
+    cd tyk-demo
+    ```
+
+2. **Enable Tyk Streams:**
+
+   By default, Tyk Streams is disabled. To enable Tyk Streams in the Gateway and Dashboard, you need to configure the following settings:
+
+   Create an `.env` file and populate it with the values below:
+
+   ```bash
+   DASHBOARD_LICENCE=<your-dashboard-license>
+   GATEWAY_IMAGE_REPO=tyk-gateway-ee
+   TYK_DB_STREAMING_ENABLED=true
+   TYK_GW_STREAMING_ENABLED=true
+   ```
+
+   - `DASHBOARD_LICENCE`: Add your license key. Contact [support](https://tyk.io/contact/) to obtain a license.
+   - `GATEWAY_IMAGE_REPO`: Tyk Streams is available in the Enterprise Edition of the Gateway.
+   - `TYK_DB_STREAMING_ENABLED` and `TYK_GW_STREAMING_ENABLED`: These must be set to `true` to enable Tyk Streams in the Dashboard and Gateway, respectively. Refer to the [configuration options]({{< ref "" >}}) for more details.
+
+3. **Start Tyk Streams**
+
+    Execute the following command:
+    ```bash
+    ./up.sh
+    ```
+
+    This process will take a couple of minutes to complete and will display some credentials upon completion. Copy the Dashboard **username, password, and API key**, and save them for later use.
+    ```
+            ▾ Tyk Demo Organisation
+                  Username : admin-user@example.org
+                  Password : 3LEsHO1jv1dt9Xgf
+          Dashboard API Key : 5ff97f66188e48646557ba7c25d8c601
+    ```
+
+4. **Verify Setup:**
+
+    Open Tyk Dashboard in your browser by visiting [http://localhost:3000](http://localhost:3000) or [http://tyk-dashboard.localhost:3000](http://tyk-dashboard.localhost:3000) and login with the provided **admin** credentials.
+
+5. **Configure Streams API:**
+
+    Create a file `streams-api.json` with the below content:
+
+    ```json
+    {
+        "components": {},
+        "info": {
+            "title": "Test Streams API",
+            "version": "1.0.0"
         },
-        "output": {
-          "http_server": {
-            "consumer_group": "$tyk_context.request_ip",
-            "ws_path": "/subscribe"
-          }
+        "openapi": "3.0.3",
+        "paths": {},
+        "servers": [
+            {
+                "url": "http://tyk-gateway.localhost:8080/test-streams-api/"
+            }
+        ],
+        "x-tyk-api-gateway": {
+            "info": {
+                "name": "Test Streams API",
+                "state": {
+                    "active": true
+                }
+            },
+            "server": {
+                "listenPath": {
+                    "value": "/test-streams-api/",
+                    "strip": true
+                }
+            },
+            "upstream": {
+              "url": ""
+            }
+        },
+        "x-tyk-streaming": {
+            "streams": {
+                "default_stream": {
+                    "input": {
+                        "http_server": {
+                            "address": "",
+                            "allowed_verbs": [
+                                "POST"
+                            ],
+                            "path": "/post",
+                            "rate_limit": "",
+                            "timeout": "5s"
+                        },
+                        "label": ""
+                    },
+                    "output": {
+                        "http_server": {
+                            "address": "",
+                            "allowed_verbs": [
+                                "GET"
+                            ],
+                            "stream_path": "/get/stream"
+                        },
+                        "label": ""
+                    }
+                }
+            }
+        }
+    }
+    ```
+
+6. **Create the API:**
+    
+    Create the API by executing the following command. Be sure to replace `<your-api-key>` with the API key you saved earlier:
+
+    ```bash
+    curl -H "Authorization: <your-api-key>" -H "Content-Type: application/vnd.tyk.streams.oas" http://localhost:3000/api/apis/streams -d @streams-api.json
+    ```
+
+    You should expect a response as shown below
+    ```bash
+    {"Status":"OK","Message":"API created","Meta":"67e54cadbfa2f900013b501c","ID":"3ddcc8e1b1534d1d4336dc6b64a0d22f"}
+    ```
+
+7. **Test the API:**
+
+   Open a terminal and execute the following command to start listening for messages from the Streams API you created:
+
+   ```bash
+   curl -N http://tyk-gateway.localhost:8080/test-streams-api/get/stream
+   ```
+
+   In a second terminal, execute the command below to send a message to the Streams API. You can run this command multiple times and modify the message to send different messages:
+
+   ```bash
+   curl -X POST http://tyk-gateway.localhost:8080/test-streams-api/post -H "Content-Type: text/plain" -d "Sending Stream Data..."
+   ```
+
+   Now, you will see the message appear in the terminal window where you are listening for messages.
+
+**Wrapping Up:** And that’s it—you’ve just set up a real-time streaming pipeline with Tyk Streams! From here, you can tweak the configuration to suit your needs, [explore key concepts]({{< ref "" >}}), or explore more [advanced use cases]({{< ref "" >}}).
+
+## How It Works
+
+Imagine you’re at a busy coffee shop where orders are shouted out by customers and instantly relayed to baristas who whip up the drinks. **Tyk Streams is like the efficient barista crew in this scenario—it takes in requests (orders) from one side, processes them in real time, and delivers the results (drinks) to the other side without anyone waiting around or shouting twice.** Built right into the Tyk Gateway, Tyk Streams ensures that messages—like task updates or live notifications—move from sender to receiver effortlessly, even as the crowd (traffic) grows.
+
+Tyk Streams is implemented as a middleware component in the Tyk Gateway. The architecture consists of the following logical components:
+
+1. **Stream Middleware:** Think of this as the barista taking your order. It grabs incoming API requests and decides if they need streaming, slotting them into the right workflow after checking credentials and limits—just like making sure you’ve paid before handing over your latte.
+2. **Stream Manager**: This is the shift supervisor. It oversees the creation and management of streaming tasks, starting or stopping them as needed, so everything runs like clockwork.
+3. **Stream Instance**: These are the baristas at work. Each one handles a specific stream of data, processing it based on the instructions (configuration) it’s given.
+4. **Stream Analytics**: Picture a chalkboard tracking how many coffees were made and how fast. This captures usage stats and performance metrics, feeding them into Tyk’s analytics system for a clear picture of what’s happening.
+
+<div style="display: flex; justify-content: center;">
+{{< img src="/img/streams/tyk-streams-how-it-works.png" alt="How Tyk Streams work" width="500px" height="500px" >}}
+</div>
+
+### Request Processing Flow
+
+<div style="display: flex; justify-content: center;">
+{{< img src="/img/streams/tyk-streams-request-processing-flow.png" alt="Tyk Streams Request Processing Flow" height="500px" >}}
+</div>
+
+1. **Initial Request Handling:** 
+
+    When a request arrives at the Tyk Gateway, it goes through the standard middleware chain. If the API has streaming enabled, the request eventually reaches the streaming middleware.
+
+    In the overall Tyk middleware chain, the Streaming middleware runs after authentication and rate limiting but before the request is proxied to the upstream service. This allows it to:
+
+    1. Authenticate and authorize requests before streaming.
+    2. Apply rate limits to streaming connections.
+    3. Intercept requests that should be handled by streams before they reach the upstream.
+
+2. **Stream Configuration Loading:**
+
+    The middleware first loads the stream configuration from the API definition.
+
+3. **Stream Manager and Stream Creation**
+
+    - For each unique configuration, a Stream Manager is either created or retrieved from cache.
+
+    - The Stream Manager initializes individual streams based on the configuration.
+
+6. **Request Path Matching and Stream Execution:**
+
+    When a request comes in, the middleware checks if the path matches any registered stream routes When a route is matched, the corresponding handler is executed. The handler is wrapped with analytics tracking.
+
+7. **Stream Response**
+
+    The result of Stream handler execution is then streamed back to the client.
+
+### Scaling and Availability
+
+The beauty of Tyk Streams is that it’s baked into the Tyk Gateway, so it scales naturally as your API traffic ramps up—no extra setup or separate systems required. It’s efficient too, reusing the same resources as the Gateway to keep things lean. 
+
+Tyk Streams ensures reliable message delivery across a cluster of Tyk Gateway instances. Whether clients connect through a load balancer or directly to individual gateway nodes, Tyk Streams guarantees that messages are delivered to each connected consumer.
+
+Under the hood, Tyk Streams utilizes [Redis Streams](https://redis.io/docs/latest/develop/data-types/streams/) for efficient and reliable message distribution within the Tyk Gateway cluster. This enables:
+
+- **Fault tolerance**: If a gateway node fails, clients connected to other nodes continue to receive messages uninterrupted.
+- **Load balancing**: Messages are evenly distributed across the gateway cluster, ensuring optimal performance and resource utilization.
+- **Message persistence**: Redis Streams provides durability, allowing messages to be persisted and replayed if necessary.
+
+## Configuration Options
+
+Tyk Streams is configured at both the system level (Tyk Gateway and Dashboard) and the API definition level. System-level settings control global streaming behavior, while API-level configurations define specific stream inputs and outputs for an API.
+
+### System Level
+
+#### Gateway Configuration
+
+In the `tyk.conf` file, Streams is configured in the streaming section:
+
+{{< tabs_start >}}
+
+{{< tab_start "Config File" >}}
+
+```json
+...
+"streaming": {
+  "enabled": true,
+}
+...
+```
+
+{{< tab_end >}}
+
+{{< tab_start "Environment Variable" >}}
+
+```bash
+TYK_GW_STREAMING_ENABLED=true
+```
+
+{{< tab_end >}}
+
+{{< tabs_end >}}
+
+This enables Tyk Streams on Gateway. Refer to the [Tyk Gateway Configuration Reference]() for details.
+
+#### Dashboard Configuration
+
+In the `tyk_analytics.conf` file, Streams is configured in the streaming section:
+
+{{< tabs_start >}}
+
+{{< tab_start "Config File" >}}
+
+```json
+...
+"streaming": {
+  "enabled": true,
+}
+...
+```
+
+{{< tab_end >}}
+
+{{< tab_start "Environment Variable" >}}
+
+```bash
+TYK_DB_STREAMING_ENABLED=true
+```
+
+{{< tab_end >}}
+
+{{< tabs_end >}}
+
+This enables Tyk Streams on Dashboard. Refer to the [Tyk Dashboard Configuration Reference]() for details.
+
+### API Definition
+
+At the API definition level, Tyk Streams is configured through an OpenAPI extension `x-tyk-streaming`:
+
+```json
+"x-tyk-streaming": {
+  "streams": {
+    "stream1": {
+      "input": { ... },
+      "output": { ... }
+    }
+  }
+}
+```
+
+{{< tabs_start >}}
+
+{{< tab_start "Tyk OAS API (default)" >}}
+
+```json
+...
+"x-tyk-streaming": {
+  "streams": {
+    "test": {
+      "input": {
+        "kafka": {
+          "addresses": ["TODO"],
+          "topics": ["foo", "bar"],
+          "consumer_group": "foogroup"
+        }
+      },
+      "output": {
+        "http_server": {
+          "consumer_group": "$tyk_context.request_ip",
+          "ws_path": "/subscribe"
         }
       }
     }
   }
-  …
 }
+...
 ```
 
+To know more about the configuration option, refer to this [documentation]().
 
+{{< tab_end >}}
 
-### Configuring Async APIs via Dashboard UI
+{{< tab_start "Tyk Classic API" >}}
 
-The Tyk Dashboard provides a user-friendly interface for defining and managing async APIs. You can easily specify event
-broker details, subscribe to specific topics or channels, configure security policies, transformations and other API
-management capabilities.
+TODO: Add sample JSON
+
+To know more about the configuration option, refer to this [documentation]().
+
+{{< tab_end >}}
+
+{{< tab_start "Dashboard UI" >}}
+
+TODO: Update the Image
 
 {{< img src="/img/streams/configure-streams.png" alt="Screenshot of Tyk Dashboard configuring API Streams" width="1000px" >}}
 
+{{< tab_end >}}
 
+{{< tab_start "Tyk Operator" >}}
 
-### Comparison to Other Products
+TODO: Add sample JSON
 
-While some API management platforms offer basic support for async APIs and event-driven architectures, Tyk Streams
-stands out by providing a comprehensive and flexible solution:
+To know more about the configuration option, refer to this [documentation]().
 
-- **Extensive protocol support**: Tyk Streams supports event brokers and protocols out of the box, including Kafka, WebSockets, Server-Sent Events (SSE).
-- **Powerful mediation capabilities**: Tyk Streams allows you to transform and enrich event data, enabling protocol mediation and compatibility with diverse client requirements.
-- **Seamless integration**: Async APIs are managed alongside synchronous APIs within the Tyk platform, providing a unified developer portal, consistent security policies and centralised analytics.
-- **Flexibility and scalability**: Tyk Streams can be deployed in various architectures, from simple single-node setups to large-scale distributed deployments and can handle high-throughput event processing scenarios.
+{{< tab_end >}}
 
-By leveraging Tyk Streams, organizations can unlock the full potential of their event-driven architectures while
-benefiting from the robust API management capabilities of the Tyk platform.
+{{< tabs_end >}}
 
-
-
-To effectively use Tyk Streams for managing async APIs, it's important to first understand the terminology and [key concepts]({{< ref "api-management/event-driven-apis#key-concepts" >}})
-
-## Getting started
-
-Our first release of Tyk Streams is now available, and we'd love for you to try it out. Click the button to sign up and take it for a spin:
-
-{{< button_left href="https://survey.hsforms.com/1ItPCBg-_Tre8WFJZL4pp6Q3ifmg" color="green" content="Get started with Tyk Streams" >}}
+## /////The Content below still is not ready //////
 
 ## Use Cases
 
@@ -211,22 +531,16 @@ comprehensive set of capabilities to secure, transform, monitor and monetize you
 ### Security
 
 [Tyk Streams]({{< ref "api-management/event-driven-apis#" >}}) supports all the authentication and authorization options available for traditional synchronous APIs. This
-ensures that your async APIs are protected with the same level of security as your REST, GraphQL, and other API types.
+ensures that your async APIs are protected with the same level of security as your REST, GraphQL, and other API types. 
 
-- **Authentication**: Tyk supports multiple authentication methods for async APIs, including:
-
-    - Token-based authentication (e.g., JWT, OAuth 2.0)
-    - Basic authentication
-    - Custom authentication plugins
-
-- **Authorization**: Tyk enables fine-grained access control for async APIs based on policies and user roles. You can define granular permissions for specific topics, events or message types. 
+Refer this docs, to know more about [Authentication]({{< ref "api-management/client-authentication">}}) and [Authorization]({{< ref "api-management/policies" >}}) in Tyk.
 
 ### Transformations and Enrichment
 
 [Tyk Streams]({{< ref "api-management/event-driven-apis#" >}}) allows you to transform and enrich the messages flowing through your async APIs. You can modify message payloads, filter events, combine data from multiple sources and more.
 
-- **Transformation**: Use Tyk's powerful middleware and plugin system to transform message payloads on the fly. You can convert between different data formats (e.g., JSON to XML), filter fields, or apply custom logic.
-- **Enrichment**: Enrich your async API messages with additional data from external sources. For example, you can lookup customer information from a database and append it to the message payload.
+- **[Transformation]({{< ref "api-management/traffic-transformation" >}})**: Use Tyk's powerful middleware and plugin system to transform message payloads on the fly. You can convert between different data formats (e.g., JSON to XML), filter fields, or apply custom logic.
+- **[Enrichment]({{< ref "api-management/plugins/overview" >}})**: Enrich your async API messages with additional data from external sources. For example, you can lookup customer information from a database and append it to the message payload.
 
 ### Analytics and Monitoring
 
@@ -239,9 +553,6 @@ Tyk captures detailed analytics data for async API usage, including message rate
 
 - **Developer Portal Integration**: Async APIs can be published to the Tyk Developer Portal, allowing developers to browse, subscribe, and access documentation. Developers can manage their async API subscriptions just like traditional APIs.
 - **Webhooks**: Tyk supports exposing async APIs as webhooks, enabling developers to receive event notifications via HTTP callbacks. Developers can configure their webhook endpoints and subscribe to specific events or topics.
-
-With [Tyk Streams]({{< ref "api-management/event-driven-apis#" >}}), you can easily monetize your async APIs, provide a seamless developer experience, and manage the entire lifecycle of your event-driven architecture.
-
 
 ### Complex Event Processing
 
@@ -423,94 +734,84 @@ output:
 
 These are just a few examples of the advanced async API scenarios made possible with Tyk Streams. The platform provides a flexible and extensible framework to design, deploy and manage sophisticated event-driven architectures.
 
-## Configure Streams API using dashboard
+### Monetize APIs using Developer Portal
 
-### Overview
-
-This page provides a detailed guide for creating, configuring, and securing a **Streams API** using the Dashboard UI. Follow these steps to set up real-time streaming with authentication and access control.
-
-### Prerequisites
-
-Before you begin, make sure you have:
-
-- Access to the Dashboard.
-- Permissions to create APIs, policies, and keys.
-- A clear understanding of your streaming input, processing, and output requirements.
-
-### Create a Streams API
-
-#### Step 1: Define API Name and Type
-1. Click on **Streams & Events** from the sidebar. This will open a form for creating the Streams API.  
-   {{< img src="/img/streams/sidebar-navigation.png" alt="Sidebar Navigation" width="670px" height="500px" >}}
-   {{< img src="/img/streams/streams-and-events-wizard.png" alt="Streams & Events Wizard" width="670px" height="500px" >}}
-
-2. Enter a **unique API name**, select the **Streams** option, and click **Continue**.
-   {{< img src="/img/streams/streams-option.png" alt="Streams Option" width="670px" height="500px" >}}
-
-#### Step 2: Configure API Inputs, Processors, and Outputs
-1. On the next screen, configure your Streams API:
-   - **Input**: Select one or more data sources.  
-   - **Processor**: Choose a single processor for handling the data.  
-   - **Output**: Define one or more output destinations.     
-   - For manual configuration, enable the **Advanced** checkbox to create a custom YAML template.  
-
-   {{< img src="/img/streams/selection.png" alt="Output Selection" width="670px" height="500px" >}}
-
-2. Click **Finish** to proceed to the API Details page.
-
-#### Step 3: Review and Finalize API Details
-1. On the **API Details page**, review the auto-generated YAML configuration.  
-   {{< img src="/img/streams/api-details-page.png" alt="API Details Page" width="670px" height="500px" >}}
-
-2. Configure additional settings:
-   - **Authentication**: Choose an authentication mechanism (e.g., API Key, OAuth2).  
-   - **Gateway Status**: Set to **Active** or **Disabled**.
-   - **Access**: Select **Internal** (restricted) or **External** (public) access.
-
-3. Click **Save API**.  
-
-   - The API is now created, and a unique **API ID** is assigned.
-   - The API will appear in the **APIs listing screen**.
-
-### Access the Streams API
-
-#### Step 1: Create a Policy
-1. Navigate to **Policies** in the sidebar and click **Add Policy**.  
-
-2. Select the newly created Streams API.  
-
-3. Configure the following:
-   - **Limits**: Define **Rate Limiting**, **Throttling**, and **Usage Quota**.
-   - **Configuration**: Provide a policy name and set a key expiration interval.  
-
-   {{< img src="/img/streams/pol-details-page.png" alt="Policy Details Page" width="670px" height="500px" >}}
-   
-4. Click **Create Policy** to save.
-
-#### Step 2: Generate a Key
-1. Go to **Keys** from the sidebar and click **Add Key**.  
-
-2. On the key creation page:
-   - Select the newly created policy under the **Access Rights** tab.  
-
-   - Review the applied limits for the API.
-
-3. Click **Create Key**.  
-
-   - A popup will display the **Key Hash** and **Key ID**.  
-
-   - Use the **Key ID** to access the protected Streams API.
-
-### Summary
-
-By completing the steps outlined above, you will have:
-
-- A functional **Streams API** with real-time data delivery capabilities.
-- Policies and keys for authentication and access control.
-
-You can now use the **Key ID** to securely access the API for your applications.
+Tyk Streams seamlessly integrates with the Tyk Developer Portal, enabling developers to easily discover, subscribe to, and consume async APIs and event streams. This section covers how to publish async APIs to the developer portal, provide documentation and enable developers to subscribe to events and streams.
 
 
+
+#### Publishing Async APIs to the Developer Portal
+
+Publishing async APIs to the Tyk Developer Portal follows a similar process to publishing traditional synchronous APIs. API publishers can create API products that include async APIs and make them available to developers through the portal.
+
+To publish an async API:
+- In the Tyk Dashboard, create a new API and define the async API endpoints and configuration.
+- Associate the async API with an API product.
+- Publish the API product to the Developer Portal.
+- Copy code
+
+<!-- [Placeholder for screenshot or GIF demonstrating the process of publishing an async API to the Developer Portal] -->
+
+
+
+#### Async API Documentation
+
+Providing clear and comprehensive documentation is crucial for developers to understand and effectively use async APIs. While Tyk Streams does not currently support the AsyncAPI specification format, it allows API publishers to include detailed documentation for each async API.
+
+When publishing an async API to the Developer Portal, consider including the following information in the documentation:
+- Overview and purpose of the async API
+- Supported protocols and endpoints (e.g., WebSocket, Webhook)
+- Event types and payloads
+- Subscription and connection details
+- Example code snippets for consuming the async API
+- Error handling and troubleshooting guidelines
+
+<!-- [Placeholder for screenshot showcasing async API documentation in the Developer Portal] -->
+
+
+
+#### Enabling Developers to Subscribe to Events and Streams
+
+Tyk Streams provides a seamless way for developers to subscribe to events and streams directly from the Developer Portal. API publishers can enable webhook subscriptions for specific API products, allowing developers to receive real-time updates and notifications.
+To enable webhook subscriptions for an API product:
+1. In the Tyk Developer Portal, navigate to the API product settings.
+2. Enable the "Webhooks" option and specify the available events for subscription.
+3. Save the API product settings.
+
+{{< img src="/img/streams/enable-portal-webhooks.png" alt="Enable Portal Webhooks" width="1000" >}}
+
+<!-- [Placeholder for screenshot showing the API product settings with webhook configuration] -->
+
+Once webhook subscriptions are enabled, developers can subscribe to events and streams by following these steps:
+- In the Developer Portal, navigate to the My Apps page.
+- Select the desired app.
+- In the "Webhooks" section, click on "Subscribe".
+- Provide the necessary details:
+    - *Webhook URL*: The URL where the event notifications will be sent.
+    - *HMAC Secret*: Provide a secret key used to sign the webhook messages for authentication.
+    - *Events*: Select the specific events to subscribe to.
+- Save the subscription settings.
+- Copy code
+<!-- [Placeholder for screenshot illustrating the developer's view of subscribing to webhooks] -->
+
+{{< img src="/img/streams/subscribe-webhooks.png" alt="subscribe to webhooks from portal" width="1000" >}}
+
+To configure the async API stream for webhook subscriptions, use the following output configuration in your API definition:
+
+```yaml
+outputs:
+  - portal_webhook:
+      event_type: bar
+      portal_url: http://localhost:3001
+      secret: <portal-api-secret>
+```
+
+Replace *<portal-api-secret>* with the actual secret key used for signing the webhook messages.
+
+By enabling webhook subscriptions, developers can easily integrate real-time updates and notifications from async APIs into their applications, enhancing the overall developer experience and facilitating seamless communication between systems.
+<!-- [Placeholder for a diagram illustrating the flow of webhook subscriptions and event notifications] -->
+
+With Tyk Streams and the Developer Portal integration, API publishers can effectively manage and expose async APIs, while developers can discover, subscribe to, and consume event streams effortlessly, enabling powerful real-time functionality in their applications.
 
 
 ## Glossary
@@ -593,145 +894,11 @@ events.
 
 ## Key Concepts
 
-### Tyk Streams as middleware in Tyk API Gateway
-
-Tyk Streams operates as middleware within the Tyk API Gateway, providing the following functionalities:
-
-- **Middleware**: Tyk Streams introduces new middleware components that handle async-specific functionality such as
-protocol mediation, event transformations, and pub/sub messaging.
-- **API Definitions**: Tyk Streams is configured using the standard Tyk OAS format, including additional fields tailored
-for async protocols and event configurations.
-- **Analytics**: Async API traffic is captured and reported via *Prometheus*, *OpenTelemetry* or *StatsD*, providing
-visibility into usage, performance, and errors.
-
-### Connectors and Protocol Mediation
-
-Tyk Streams provides out-of-the-box connectors for popular event brokers and async protocols, including:
-
-- [Apache Kafka](https://kafka.apache.org/documentation/)
-- [MQTT](https://mqtt.org/) (Coming Soon)
-- [Solace](https://docs.solace.com/Get-Started/Solace-PubSub-Platform.htm) (Coming Soon)
-- [AMQP](https://www.amqp.org/) (Coming Soon)
-- [WebSocket](https://websocket.org/guides/websocket-protocol/)
-- [Server-Sent Events](https://en.wikipedia.org/wiki/Server-sent_events) (SSE)
-- [Webhooks](https://en.wikipedia.org/wiki/Webhook)
-
-In addition to the native protocol support, Tyk Streams offers powerful protocol mediation capabilities. This allows you
+<!-- In addition to the native protocol support, Tyk Streams offers powerful protocol mediation capabilities. This allows you
 to expose async APIs using different protocols than the backend event broker, making it easier to support a diverse client
 requirements.
 
 For example, you can:
 - Expose a Kafka topic as a WebSocket API
 - Convert MQTT messages to HTTP webhooks
-- Bridge between different async protocols (e.g., Kafka to MQTT)
-
-
-
-## Deployment Considerations
-
-When deploying Tyk Streams, understanding its scaling and performance capabilities, as well as its high availability features, is crucial for ensuring a robust and efficient API infrastructure.
-
-### Scaling and Performance
-
-Tyk Streams is fully embedded within the Tyk Gateway, enabling seamless scaling and high performance. As your API traffic grows, Tyk Streams scales effortlessly alongside your Tyk Gateway instances. No additional configuration or separate infrastructure is required.
-
-Key benefits of this embedded architecture include:
-
-- **Unified scaling**: Tyk Streams inherits the scaling capabilities of Tyk Gateway, ensuring optimal performance as your API workload increases.
-- **Efficient resource utilization**: By leveraging the same infrastructure as Tyk Gateway, Tyk Streams minimizes resource overhead and simplifies deployment.
-- **Seamless integration**: Tyk Streams works seamlessly with existing Tyk Gateway deployments, requiring no changes to your current architecture.
-
-### High Availability
-
-Tyk Streams ensures reliable message delivery across a cluster of Tyk Gateway instances. Whether clients connect through a load balancer or directly to individual gateway nodes, Tyk Streams guarantees that messages are delivered to each connected consumer.
-
-Under the hood, Tyk Streams utilizes [Redis Streams](https://redis.io/docs/latest/develop/data-types/streams/) for efficient and reliable message distribution within the Tyk Gateway cluster. This enables:
-
-- **Fault tolerance**: If a gateway node fails, clients connected to other nodes continue to receive messages uninterrupted.
-- **Load balancing**: Messages are evenly distributed across the gateway cluster, ensuring optimal performance and resource utilization.
-- **Message persistence**: Redis Streams provides durability, allowing messages to be persisted and replayed if necessary.
-
-By leveraging the high availability features of Tyk Gateway and Redis Streams, Tyk Streams delivers a robust and resilient solution for managing and distributing async API messages in production environments.
-
-With Tyk Streams, you can confidently deploy and scale your async APIs, knowing that messages will be reliably delivered to consumers across your Tyk Gateway cluster.
-
-
-
-## Developer Portal Integration
-
-Tyk Streams seamlessly integrates with the Tyk Developer Portal, enabling developers to easily discover, subscribe to, and consume async APIs and event streams. This section covers how to publish async APIs to the developer portal, provide documentation and enable developers to subscribe to events and streams.
-
-
-
-### Publishing Async APIs to the Developer Portal
-
-Publishing async APIs to the Tyk Developer Portal follows a similar process to publishing traditional synchronous APIs. API publishers can create API products that include async APIs and make them available to developers through the portal.
-
-To publish an async API:
-- In the Tyk Dashboard, create a new API and define the async API endpoints and configuration.
-- Associate the async API with an API product.
-- Publish the API product to the Developer Portal.
-- Copy code
-
-<!-- [Placeholder for screenshot or GIF demonstrating the process of publishing an async API to the Developer Portal] -->
-
-
-
-### Async API Documentation
-
-Providing clear and comprehensive documentation is crucial for developers to understand and effectively use async APIs. While Tyk Streams does not currently support the AsyncAPI specification format, it allows API publishers to include detailed documentation for each async API.
-
-When publishing an async API to the Developer Portal, consider including the following information in the documentation:
-- Overview and purpose of the async API
-- Supported protocols and endpoints (e.g., WebSocket, Webhook)
-- Event types and payloads
-- Subscription and connection details
-- Example code snippets for consuming the async API
-- Error handling and troubleshooting guidelines
-
-<!-- [Placeholder for screenshot showcasing async API documentation in the Developer Portal] -->
-
-
-
-### Enabling Developers to Subscribe to Events and Streams
-
-Tyk Streams provides a seamless way for developers to subscribe to events and streams directly from the Developer Portal. API publishers can enable webhook subscriptions for specific API products, allowing developers to receive real-time updates and notifications.
-To enable webhook subscriptions for an API product:
-1. In the Tyk Developer Portal, navigate to the API product settings.
-2. Enable the "Webhooks" option and specify the available events for subscription.
-3. Save the API product settings.
-
-{{< img src="/img/streams/enable-portal-webhooks.png" alt="Enable Portal Webhooks" width="1000" >}}
-
-<!-- [Placeholder for screenshot showing the API product settings with webhook configuration] -->
-
-Once webhook subscriptions are enabled, developers can subscribe to events and streams by following these steps:
-- In the Developer Portal, navigate to the My Apps page.
-- Select the desired app.
-- In the "Webhooks" section, click on "Subscribe".
-- Provide the necessary details:
-    - *Webhook URL*: The URL where the event notifications will be sent.
-    - *HMAC Secret*: Provide a secret key used to sign the webhook messages for authentication.
-    - *Events*: Select the specific events to subscribe to.
-- Save the subscription settings.
-- Copy code
-<!-- [Placeholder for screenshot illustrating the developer's view of subscribing to webhooks] -->
-
-{{< img src="/img/streams/subscribe-webhooks.png" alt="subscribe to webhooks from portal" width="1000" >}}
-
-To configure the async API stream for webhook subscriptions, use the following output configuration in your API definition:
-
-```yaml
-outputs:
-  - portal_webhook:
-      event_type: bar
-      portal_url: http://localhost:3001
-      secret: <portal-api-secret>
-```
-
-Replace *<portal-api-secret>* with the actual secret key used for signing the webhook messages.
-
-By enabling webhook subscriptions, developers can easily integrate real-time updates and notifications from async APIs into their applications, enhancing the overall developer experience and facilitating seamless communication between systems.
-<!-- [Placeholder for a diagram illustrating the flow of webhook subscriptions and event notifications] -->
-
-With Tyk Streams and the Developer Portal integration, API publishers can effectively manage and expose async APIs, while developers can discover, subscribe to, and consume event streams effortlessly, enabling powerful real-time functionality in their applications.
+- Bridge between different async protocols (e.g., Kafka to MQTT) -->
