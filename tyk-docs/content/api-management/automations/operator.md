@@ -461,6 +461,16 @@ in `tyk-operator-system` namespace.
 | resources                                   | object | `{}`                                   |
 | serviceMonitor                              | bool   | `false`                                |
 | webhookPort                                 | int    | `9443`                                 |
+| webhooks.enabled                        | bool   | `true`                                 |
+| webhooks.port                           | int    | `9443`                                 |
+| webhooks.annotations                    | object | `{}`                                   |
+| webhooks.tls.useCertManager             | bool   | `true`                                 |
+| webhooks.tls.secretName                 | string | `webhook-server-cert`                  |
+| webhooks.tls.certificatesMountPath      | string | `/tmp/k8s-webhook-server/serving-certs`|
+
+{{< note success >}} **Note**
+Starting Operator v1.2.0, `webhookPort` is deprecated in favor of webhooks.port.
+ {{< /note >}}
 
 ### Upgrading Tyk Operator
 
@@ -5066,3 +5076,27 @@ Here are the supported features:
 | Partitions                     | ✅        | v0.1           | [Partitioned policies]({{< ref "#security-policy-example" >}})       |
 | Per API limit                  | ✅        | v1.0           | [Per API Limit]({{< ref "#security-policy-example" >}})        |
 | Per-Endpoint limit             | ✅        | v1.0           | [Per Endpoint Limit]({{< ref "#security-policy-example" >}})        |
+
+##### Webhooks
+Starting from Operator v1.2.0 release, Webhooks can now be configured using the Helm chart by specifying the necessary settings in the values.yaml file of the operator.
+Since webhooks are enabled by default, there will be no impact to existing users.
+
+In addition to this, using `.Values.webhookPort` to set the operator service port has been deprecated and now replaced with `.Values.webhooks.port`. 
+We recommend that users start using the new configurations.
+
+```
+webhooks:
+  enabled: true
+  port: 9443
+  annotations: {}
+  tls:
+    useCertManager: true
+    secretName: webhook-server-cert
+    certificatesMountPath: "/tmp/k8s-webhook-server/serving-certs"
+```
+- `enabled`: Enables or disables webhooks.
+- `port`: Specifies the port for webhook communication.
+- `annotations`: Allows adding custom annotations.
+- `tls.useCertManager`: If true, Cert-Manager will handle TLS certificates.
+- `tls.secretName`: The name of the Kubernetes Secret storing the TLS certificate.
+- `tls.certificatesMountPath`: Path where the webhook server mounts its certificates.
