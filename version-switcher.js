@@ -3,7 +3,7 @@ console.log('Version hijack script loading...');
 function hijackVersionDropdown() {
     // Version mapping from docs.json
     const versionConfig = {
-        '5.7': 'https://tyk.io/docs/5.7',
+        '5.7': 'https://tyk-fake-5-7.mintlify.app',
         '5.6': 'https://tyk.io/docs/5.6', 
         '5.5': 'https://tyk.io/docs/5.5'
     };
