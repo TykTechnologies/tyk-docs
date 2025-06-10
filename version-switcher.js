@@ -138,4 +138,3 @@ setTimeout(hijackVersionDropdown, 1000);
 setTimeout(hijackVersionDropdown, 3000);
 
 console.log('Version hijack script loaded and observing!');
-
