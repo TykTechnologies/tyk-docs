@@ -1,13 +1,14 @@
 ---
-title: "List of endpoints exposed by Tyk Enterprise Developer Portal v1.13.0"
+title: "Developer Portal - Endpoints List"
 date: 2024-02-29
-tags: ["Tyk Developer Portal","Enterprise Portal","Endpoints","Firewall","Integration","Portal 1.13.0"]
+tags: ["Tyk Developer Portal", "Enterprise Portal", "Endpoints", "Firewall", "Integration", "Portal 1.13.0"]
 description: "Internal APIs exposed by Tyk Developer Portal"
 menu:
     main:
         parent: "Configuring firewall"
 aliases:
   - /product-stack/tyk-enterprise-developer-portal/api-documentation/list-of-endpoints/portal-1.9.0-list-of-endpoints
+  - /product-stack/tyk-enterprise-developer-portal/api-documentation/list-of-endpoints/portal-1.13.0-list-of-endpoints
 weight: 3
 ---
 
