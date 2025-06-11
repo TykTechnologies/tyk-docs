@@ -8,7 +8,7 @@ function hijackVersionDropdown() {
     // Version mapping from docs.json
     const versionConfig = {
         '5.8-Latest': 'https://tyk.io/docsv2',
-        '5.7': 'https://tyk.io/docsv2/5.7',
+        'Nightly': 'https://tyk.io/docsv2/nightly',
         '5.6': 'https://tyk.io/docs/5.6',
         '5.5': 'https://tyk.io/docs/5.5'
     };
