@@ -332,9 +332,9 @@ class DocsMerger:
         for asset_type, files in merged_files.items():
             if files:
                 print(f"   📂 {asset_type}: {len(files)} files")
-
+    
     def organize_content_files(self, version_configs: Dict[str, Dict],
-                               source_dir: str = ".", target_dir: str = ".") -> None:
+                            source_dir: str = ".", target_dir: str = ".") -> None:
         """Copy latest version docs to subfolder and merge assets from all versions."""
         
         latest_version = self.latest_version
@@ -434,12 +434,34 @@ class DocsMerger:
                         print(f"    📂 Copied directory: {item.name}/ → {location_desc}")
                         version_copied += 1
                     else:
-                        # Copy file
+                        # Copy file with link rewriting for content files
                         if target_item.exists():
                             print(f"    🗑️  Removing existing: {item.name}")
                             target_item.unlink()
-                        shutil.copy2(item, target_item)
-                        print(f"    📄 Copied file: {item.name} → {location_desc}")
+
+                        # Check if this is a content file that needs link rewriting
+                        if item.suffix.lower() in ['.mdx', '.md']:
+                            try:
+                                # Read, rewrite, and write content
+                                with open(item, 'r', encoding='utf-8') as f:
+                                    content = f.read()
+                                
+                                # Rewrite internal links
+                                modified_content = self.rewrite_internal_links(content, version, is_latest)
+                                
+                                # Write modified content
+                                with open(target_item, 'w', encoding='utf-8') as f:
+                                    f.write(modified_content)
+                                
+                                print(f"    📄 Processed file with link rewriting: {item.name} → {location_desc}")
+                            except Exception as e:
+                                print(f"    ⚠️ Error processing {item.name}, copying as-is: {e}")
+                                shutil.copy2(item, target_item)
+                        else:
+                            # For non-content files, just copy
+                            shutil.copy2(item, target_item)
+                            print(f"    📄 Copied file: {item.name} → {location_desc}")
+                        
                         version_copied += 1
                         
                 except Exception as e:
@@ -457,6 +479,7 @@ class DocsMerger:
             print(f"\n✅ Total documentation copy complete: {total_copied} items from {len([v for v in self.version_priority if v in version_configs])} versions")
         else:
             print(f"\n⚠️ No documentation items were successfully copied")
+
 
     def prefix_navigation_paths(self, navigation: Any, version: str, is_latest: bool = False) -> Any:
         """Recursively prefix page paths with subfolder and version."""
@@ -710,6 +733,172 @@ class DocsMerger:
                 else:
                     cleaned[key] = value
         return cleaned
+    
+    def rewrite_internal_links(self, content, version, is_latest):
+        """Rewrite internal links to include subfolder and version paths"""
+        import re
+        
+        # Calculate prefix
+        if self.subfolder:
+            if is_latest:
+                prefix = f"/{self.subfolder}"
+            else:
+                prefix = f"/{self.subfolder}/{version}"
+        else:
+            if is_latest:
+                prefix = ""  # No prefix for latest without subfolder
+            else:
+                prefix = f"/{version}"
+        
+        print(f"    🔍 Link rewriting: version={version}, is_latest={is_latest}, prefix='{prefix}'")
+        
+        # If no prefix needed, return as-is
+        if not prefix:
+            print(f"    ⚠️ No prefix needed for latest version without subfolder")
+            return content
+        
+        original_length = len(content)
+        changes_made = 0
+        
+        # 1. Smart fragment handling: Fix /#anchor patterns first
+        def replace_root_fragment_markdown(match):
+            nonlocal changes_made
+            text = match.group(1)
+            anchor_part = match.group(2)  # The part after /#
+            
+            changes_made += 1
+            return f'[{text}](#{anchor_part})'  # Convert /#anchor to #anchor
+        
+        # Handle markdown links with root fragments: [text](/#anchor)
+        content = re.sub(r'\[([^\]]+)\]\(/#([^)]*)\)', replace_root_fragment_markdown, content)
+        
+        # Handle href root fragments: href="/#anchor"
+        def replace_root_fragment_href(match):
+            nonlocal changes_made
+            anchor_part = match.group(1)  # The part after /#
+            changes_made += 1
+            return f'href="#{anchor_part}"'  # Convert /#anchor to #anchor
+        
+        content = re.sub(r'href="/#([^"]*)"', replace_root_fragment_href, content)
+        
+        # 2. Fix href="/path" patterns (most common)
+        def replace_href(match):
+            nonlocal changes_made
+            full_match = match.group(0)
+            path = match.group(1)
+            
+            # Skip external links
+            if path.startswith('http') or path.startswith('//') or path.startswith('mailto:'):
+                return full_match
+            
+            changes_made += 1
+            return f'href="{prefix}{path}"'
+        
+        content = re.sub(r'href="(/[^"]*)"', replace_href, content)
+        
+        # 2. Fix markdown links [text](/path)
+        def replace_markdown(match):
+            nonlocal changes_made
+            text = match.group(1)
+            path = match.group(2)
+            
+            # Skip external links
+            if path.startswith('http') or path.startswith('//'):
+                return match.group(0)
+            
+            changes_made += 1
+            return f'[{text}]({prefix}{path})'
+        
+        content = re.sub(r'\[([^\]]+)\]\((/[^)]*)\)', replace_markdown, content)
+        
+        # 3. Fix data paths: path: "/path" or path: 'path'
+        def replace_path(match):
+            nonlocal changes_made
+            quote = match.group(1)
+            path = match.group(2)
+            changes_made += 1
+            return f'path: {quote}{prefix}/{path.lstrip("/")}{quote}'
+        
+        content = re.sub(r'path:\s*(["\'])/?([^"\']+)\1', replace_path, content)
+        
+        # 4. Fix template string hrefs: href={`/${path}`}
+        def replace_template(match):
+            nonlocal changes_made
+            path = match.group(1)
+            changes_made += 1
+            return f'href={{`{prefix}/{path}`}}'
+        
+        content = re.sub(r'href=\{\`\/([^`]+)\`\}', replace_template, content)
+        
+        # 5. Fix relative hrefs without leading slash: href="path/to/page"
+        def replace_relative_href(match):
+            nonlocal changes_made
+            full_match = match.group(0)
+            path = match.group(1)
+            
+            # Skip external links and already processed absolute paths
+            if (path.startswith('http') or path.startswith('//') or 
+                path.startswith('mailto:') or path.startswith('/')):
+                return full_match
+            
+            changes_made += 1
+            return f'href="{prefix}/{path}"'
+        
+        content = re.sub(r'href="([^"]+)"', replace_relative_href, content)
+        
+        # 6. Fix Card/component hrefs specifically: <Card href="path">
+        def replace_card_href(match):
+            nonlocal changes_made
+            component = match.group(1)  # Card, Badge, etc.
+            before_href = match.group(2)
+            path = match.group(3)
+            after_href = match.group(4)
+            
+            # Skip external links and already processed absolute paths
+            if (path.startswith('http') or path.startswith('//') or 
+                path.startswith('mailto:') or path.startswith(prefix)):
+                return match.group(0)
+            
+            # Add prefix to path (whether it starts with / or not)
+            if path.startswith('/'):
+                new_path = f"{prefix}{path}"
+            else:
+                new_path = f"{prefix}/{path}"
+            
+            changes_made += 1
+            return f'<{component}{before_href}href="{new_path}"{after_href}'
+        
+        content = re.sub(r'<(Card|BadgeCard|Expandable)([^>]*\s+)href="([^"]+)"([^>]*>)', replace_card_href, content)
+        
+        # 7. Fix relative markdown links without leading slash: [text](path)
+        def replace_relative_markdown(match):
+            nonlocal changes_made
+            text = match.group(1)
+            path = match.group(2)
+            
+            # Skip external links and already processed absolute paths
+            if (path.startswith('http') or path.startswith('//') or 
+                path.startswith('/') or path.startswith(prefix)):
+                return match.group(0)
+            
+            changes_made += 1
+            return f'[{text}]({prefix}/{path})'
+        
+        content = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', replace_relative_markdown, content)
+        
+        print(f"    ✅ Link rewriting complete: {changes_made} changes made")
+        
+        if changes_made > 0:
+            # Show first few changes for verification
+            lines = content.split('\n')
+            shown = 0
+            for line in lines:
+                if prefix in line and shown < 2:
+                    print(f"    📝 Example: {line.strip()}")
+                    shown += 1
+        
+        return content
+
 
     def create_unified_config(self, version_configs: Dict[str, Dict]) -> Dict:
         """Create unified configuration with version-based navigation."""
