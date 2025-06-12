@@ -802,8 +802,9 @@ class DocsMerger:
             text = match.group(1)
             path = match.group(2)
             
-            # Skip external links
-            if path.startswith('http') or path.startswith('//'):
+            # Skip external links and mailto (including angle bracket wrapped)
+            if (path.startswith('http') or path.startswith('//') or 
+                path.startswith('<mailto:') or 'mailto:' in path):
                 return match.group(0)
             
             changes_made += 1
@@ -878,6 +879,7 @@ class DocsMerger:
             
             # Skip external links and already processed absolute paths
             if (path.startswith('http') or path.startswith('//') or 
+                path.startswith('mailto:') or path.startswith('<mailto:') or 
                 path.startswith('/') or path.startswith(prefix)):
                 return match.group(0)
             
