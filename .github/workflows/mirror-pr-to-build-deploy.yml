@@ -1,0 +1,113 @@
+name: Mirror PR to Build-Deploy for Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, closed]
+    branches: [main]
+
+jobs:
+  mirror-pr:
+    runs-on: ubuntu-latest
+    if: github.event.action != 'closed'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.ORG_GH_TOKEN }}
+
+      - name: Setup GitHub CLI
+        run: gh --version
+
+      - name: Create or update mirror PR to build-deploy
+        run: |
+          # Check if mirror PR already exists
+          MIRROR_PR=$(gh pr list --base build-deploy --head ${{ github.head_ref }} --json number --jq '.[0].number // empty')
+          
+          if [ -z "$MIRROR_PR" ]; then
+            # Create new mirror PR
+            echo "Creating new mirror PR..."
+            
+            # Create PR body content
+            PR_BODY="**🔗 Auto-generated mirror PR for Mintlify preview**
+
+            **Original PR:** #${{ github.event.number }}
+            **Author:** @${{ github.event.pull_request.user.login }}
+
+            ## Purpose
+            This PR provides a Mintlify preview link for reviewing documentation changes.
+
+            ## Preview Link
+            The Mintlify preview will be available once this PR is processed.
+
+            ## ⚠️ Important Notes
+            - **Do not merge this PR directly**
+            - This PR will be auto-merged when the original PR #${{ github.event.number }} is merged
+            - Make all comments and reviews on the original PR #${{ github.event.number }}
+
+            ## Changes
+            ${{ github.event.pull_request.body }}"
+            
+            gh pr create \
+              --base build-deploy \
+              --head ${{ github.head_ref }} \
+              --title "🔄 Preview: ${{ github.event.pull_request.title }}" \
+              --body "$PR_BODY" \
+              --label "mirror-pr,preview,auto-generated"
+            
+            echo "✅ Mirror PR created successfully"
+            
+            # Get the mirror PR number that was just created
+            MIRROR_PR=$(gh pr list --base build-deploy --head ${{ github.head_ref }} --json number --jq '.[0].number // empty')
+            
+            # Comment on the original PR with link to mirror PR
+            if [ -n "$MIRROR_PR" ]; then
+              COMMENT_BODY="🔗 **Preview Link Available**
+
+              This PR has an auto-generated mirror for Mintlify preview:
+              👉 **[View Preview PR #$MIRROR_PR](https://github.com/${{ github.repository }}/pull/$MIRROR_PR)**
+
+              The Mintlify preview link will appear on the mirror PR once it's processed.
+
+              ---
+              *This is an automated comment. All discussion should happen on this PR, not the mirror PR.*"
+              
+              gh pr comment ${{ github.event.number }} --body "$COMMENT_BODY"
+              echo "✅ Comment added to original PR with mirror PR link"
+            fi
+          else
+            echo "🔄 Mirror PR #$MIRROR_PR already exists and will be auto-updated"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.ORG_GH_TOKEN }}
+
+  cleanup-mirror-pr:
+    runs-on: ubuntu-latest
+    if: github.event.action == 'closed'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.ORG_GH_TOKEN }}
+
+      - name: Handle mirror PR when original is closed
+        run: |
+          # Find the mirror PR
+          MIRROR_PR=$(gh pr list --base build-deploy --head ${{ github.head_ref }} --json number --jq '.[0].number // empty')
+          
+          if [ -n "$MIRROR_PR" ]; then
+            if [ "${{ github.event.pull_request.merged }}" = "true" ]; then
+              echo "Original PR was merged, merging mirror PR #$MIRROR_PR..."
+              gh pr merge $MIRROR_PR --merge --delete-branch
+              echo "✅ Mirror PR #$MIRROR_PR merged and branch cleaned up"
+            else
+              echo "Original PR was closed without merging, closing mirror PR #$MIRROR_PR..."
+              gh pr close $MIRROR_PR --delete-branch
+              echo "✅ Mirror PR #$MIRROR_PR closed and branch cleaned up"
+            fi
+          else
+            echo "No mirror PR found for branch ${{ github.head_ref }}"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.ORG_GH_TOKEN }}
