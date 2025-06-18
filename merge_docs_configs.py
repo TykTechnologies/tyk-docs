@@ -11,16 +11,16 @@ class DocsMerger:
     def __init__(self, output_file: str = "docs.json", subfolder: str = "", additional_assets: List[str] = None):
         self.output_file = output_file
         self.subfolder = subfolder.strip("/") if subfolder else ""  # Remove leading/trailing slashes
-
+        
         # Default assets that should always go to root
         default_assets = {"style.css", "images", "img", "logo", "favicon.ico", "favicon.png", "snippets"}
-
+        
         # Add any additional assets specified by user
         if additional_assets:
             default_assets.update(additional_assets)
-
+        
         self.assets = default_assets
-
+        
         # Define fallback version priority - will be overridden by branches config
         self.version_priority = []  # Start empty, populate from branches-config.json
         self.version_labels = {}  # Maps folder -> label
@@ -45,38 +45,38 @@ class DocsMerger:
             with open(branches_config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
                 print(f"✅ Loaded branches config from {branches_config_path}")
-
+                
                 # Update version priority and labels from config
                 versions = config.get('versions', [])
                 self.version_priority = []
                 self.version_labels = {}
-
+                
                 for version_info in versions:
                     folder = version_info.get('folder', '')
                     label = version_info.get('label', folder)
                     is_latest = version_info.get('isLatest', False)
                     is_main = version_info.get('isMain', False)
-
+                    
                     if folder:
                         self.version_priority.append(folder)
                         self.version_labels[folder] = label
-
+                        
                         if is_latest:
                             self.latest_version = folder
                         if is_main:
                             self.main_version = folder
-
+                
                 print(f"📋 Version priority set to: {self.version_priority}")
                 print(f"🏷️  Version labels: {self.version_labels}")
                 print(f"⭐ Latest version: {self.latest_version}")
                 print(f"🔧 Main version: {self.main_version}")
-
+                
                 return config
         except Exception as e:
             print(f"❌ Error loading branches config: {e}")
             return {}
 
-
+    
     def collect_version_configs(self, version_configs: Dict[str, str]) -> Dict[str, Dict]:
         """
         Collect configs from provided version->path mapping.
@@ -99,29 +99,29 @@ class DocsMerger:
     def collect_from_branches_config(self, branches_config_path: str, base_dir: str = ".") -> Dict[str, Dict]:
         """
         Collect configs based on branches-config.json file.
-
+        
         Args:
             branches_config_path: Path to branches-config.json file
             base_dir: Base directory containing version folders
         """
         configs = {}
-
+        
         # Load branches config first
         branches_config = self.load_branches_config(branches_config_path)
         if not branches_config:
             return configs
-
+        
         base_path = Path(base_dir)
-
+        
         # Process each version from the config
         for version_info in branches_config.get('versions', []):
             folder = version_info.get('folder', '')
             if not folder:
                 continue
-
+                
             version_dir = base_path / folder
             config_file = version_dir / "docs.json"
-
+            
             if config_file.exists():
                 config = self.load_version_config(str(config_file), folder)
                 if config:
@@ -129,7 +129,7 @@ class DocsMerger:
             else:
                 label = self.version_labels.get(folder, folder)
                 print(f"⚠️ Config file not found: {config_file} for {label}")
-
+        
         return configs
 
     def collect_from_directory_structure(self, base_dir: str = ".") -> Dict[str, Dict]:
@@ -178,62 +178,62 @@ class DocsMerger:
 
         return configs
 
-    def merge_assets_from_all_versions(self, version_configs: Dict[str, Dict],
+    def merge_assets_from_all_versions(self, version_configs: Dict[str, Dict], 
                                        source_dir: str = ".", target_dir: str = ".") -> None:
         """Merge assets from all versions with priority system."""
-
+        
         # Build priority order: main -> latest -> others
         priority_versions = []
-
+        
         if self.main_version and self.main_version in version_configs:
             priority_versions.append(self.main_version)
-
+            
         if self.latest_version and self.latest_version in version_configs and self.latest_version != self.main_version:
             priority_versions.append(self.latest_version)
-
+            
         # Add remaining versions in config order
         for version in self.version_priority:
             if version in version_configs and version not in priority_versions:
                 priority_versions.append(version)
-
+        
         if not priority_versions:
             print("❌ No versions found for asset merging")
             return
-
+            
         print(f"🔧 Merging assets from {len(priority_versions)} versions...")
         print(f"🎯 Priority order: {' > '.join(priority_versions)}")
         print(f"🎨 Asset types: {', '.join(sorted(self.assets))}")
-
+        
         source_path = Path(source_dir)
         target_root_path = Path(target_dir)
-
+        
         # Track merged files for reporting
         merged_files = {}  # asset_type -> {filename: source_version}
         conflicts_resolved = 0
-
+        
         # Process each asset type
         for asset_type in self.assets:
             print(f"\n📂 Processing {asset_type}...")
             merged_files[asset_type] = {}
-
+            
             # Collect all files from all versions for this asset type
             all_files = {}  # filename -> [(version, filepath, size)]
-
+            
             for version in priority_versions:
                 version_dir = source_path / version
-
+                
                 # Check if asset_type is a directory or individual file
                 asset_path = version_dir / asset_type
-
+                
                 if asset_path.is_file():
                     # Handle individual files (like favicon.png, style.css)
                     file_size = asset_path.stat().st_size
                     filename = asset_type  # Use asset_type as filename for individual files
-
+                    
                     if filename not in all_files:
                         all_files[filename] = []
                     all_files[filename].append((version, asset_path, file_size))
-
+                    
                 elif asset_path.is_dir():
                     # Handle directories (like images/, logo/, snippets/)
                     # Recursively collect all files in this asset directory
@@ -242,28 +242,28 @@ class DocsMerger:
                             # Get relative path from asset root
                             rel_path = item.relative_to(asset_path)
                             rel_path_str = str(rel_path)
-
+                            
                             if rel_path_str not in all_files:
                                 all_files[rel_path_str] = []
-
+                                
                             file_size = item.stat().st_size
                             all_files[rel_path_str].append((version, item, file_size))
                 else:
                     # Asset doesn't exist in this version
                     print(f"  ⚠️ {asset_type} not found in {version}")
                     continue
-
+            
             if not all_files:
                 print(f"  ⚠️ No {asset_type} files found in any version")
                 continue
-
+            
             # Handle individual files (like favicon.png, style.css)
             is_individual_file = any((source_path / v / asset_type).is_file() for v in priority_versions)
-
+            
             if is_individual_file:
                 # Handle individual files - copy directly to target root
                 target_file = target_root_path / asset_type
-
+                
                 for filename, versions_list in all_files.items():
                     if len(versions_list) == 1:
                         # No conflict - just copy the file
@@ -274,23 +274,23 @@ class DocsMerger:
                     else:
                         # Conflict resolution - use priority order
                         chosen_version, chosen_file, chosen_size = versions_list[0]  # First = highest priority
-
+                        
                         shutil.copy2(chosen_file, target_file)
                         merged_files[asset_type][filename] = chosen_version
                         conflicts_resolved += 1
-
+                        
                         versions_str = " vs ".join([f"{v}({s}B)" for v, _, s in versions_list])
                         print(f"  🔄 {filename} ← {chosen_version} (conflict: {versions_str})")
             else:
                 # Handle directories (like images/, logo/, snippets/)
                 target_asset_dir = target_root_path / asset_type
                 target_asset_dir.mkdir(parents=True, exist_ok=True)
-
+                
                 # Process each file with conflict resolution
                 for rel_path, versions_list in all_files.items():
                     target_file = target_asset_dir / rel_path
                     target_file.parent.mkdir(parents=True, exist_ok=True)
-
+                    
                     if len(versions_list) == 1:
                         # No conflict - just copy the file
                         version, source_file, size = versions_list[0]
@@ -300,50 +300,50 @@ class DocsMerger:
                     else:
                         # Conflict resolution - use priority order
                         chosen_version, chosen_file, chosen_size = versions_list[0]  # First = highest priority
-
+                        
                         # Check if files are identical
                         identical_files = []
                         different_files = []
-
+                        
                         for version, file_path, size in versions_list:
                             if size == chosen_size:
                                 # Same size, might be identical
                                 identical_files.append((version, file_path))
                             else:
                                 different_files.append((version, file_path, size))
-
+                        
                         shutil.copy2(chosen_file, target_file)
                         merged_files[asset_type][rel_path] = chosen_version
                         conflicts_resolved += 1
-
+                        
                         if different_files:
                             versions_str = " vs ".join([f"{v}({s}B)" for v, _, s in versions_list])
                             print(f"  🔄 {rel_path} ← {chosen_version} (conflict: {versions_str})")
                         else:
                             versions_str = " = ".join([v for v, _ in identical_files])
                             print(f"  📄 {rel_path} ← {chosen_version} (identical: {versions_str})")
-
+        
         # Generate summary
         total_files = sum(len(files) for files in merged_files.values())
         print(f"\n✅ Asset merging complete:")
         print(f"   📁 Total files merged: {total_files}")
         print(f"   🔄 Conflicts resolved: {conflicts_resolved}")
-
+        
         for asset_type, files in merged_files.items():
             if files:
                 print(f"   📂 {asset_type}: {len(files)} files")
-
+    
     def organize_content_files(self, version_configs: Dict[str, Dict],
-                               source_dir: str = ".", target_dir: str = ".") -> None:
+                            source_dir: str = ".", target_dir: str = ".") -> None:
         """Copy latest version docs to subfolder and merge assets from all versions."""
-
+        
         latest_version = self.latest_version
         if not latest_version or latest_version not in version_configs:
             # Fallback to first available version
             latest_version = next(
                 (v for v in self.version_priority if v in version_configs),
                 list(version_configs.keys())[0] if version_configs else None
-            )
+            )     
 
         if not latest_version:
             print("❌ No latest version found")
@@ -363,27 +363,27 @@ class DocsMerger:
 
         # Step 2: Copy documentation content from all versions
         print(f"\n📚 Step 2: Copying documentation content from all versions...")
-
+        
         total_copied = 0
-
+        
         # Process all versions
         for version in self.version_priority:
             if version not in version_configs:
                 continue
-
+                
             version_source = source_path / version
             if not version_source.exists():
                 print(f"⚠️ Version directory {version_source} not found")
                 continue
-
+                
             is_latest = (version == latest_version)
             version_label = self.version_labels.get(version, version)
-
+            
             if is_latest:
                 print(f"\n  📂 Processing latest version ({version} - {version_label})...")
             else:
                 print(f"\n  📂 Processing older version ({version} - {version_label})...")
-
+            
             # Define system files to exclude
             exclude_items = {"docs.json", ".git", ".gitignore", ".DS_Store", "__pycache__"}
 
@@ -416,7 +416,7 @@ class DocsMerger:
                 else:
                     target_version_path = target_root_path / version
                     location_desc = f"/{version}/"
-
+            
             # Create target directory
             target_version_path.mkdir(parents=True, exist_ok=True)
 
@@ -439,12 +439,31 @@ class DocsMerger:
                             print(f"    🗑️  Removing existing: {item.name}")
                             target_item.unlink()
 
-                        # For all files, just copy without link rewriting
-                        shutil.copy2(item, target_item)
-                        print(f"    📄 Copied file: {item.name} → {location_desc}")
-
+                        # Check if this is a content file that needs link rewriting
+                        if item.suffix.lower() in ['.mdx', '.md']:
+                            try:
+                                # Read, rewrite, and write content
+                                with open(item, 'r', encoding='utf-8') as f:
+                                    content = f.read()
+                                
+                                # Rewrite internal links
+                                modified_content = self.rewrite_internal_links(content, version, is_latest)
+                                
+                                # Write modified content
+                                with open(target_item, 'w', encoding='utf-8') as f:
+                                    f.write(modified_content)
+                                
+                                print(f"    📄 Processed file with link rewriting: {item.name} → {location_desc}")
+                            except Exception as e:
+                                print(f"    ⚠️ Error processing {item.name}, copying as-is: {e}")
+                                shutil.copy2(item, target_item)
+                        else:
+                            # For non-content files, just copy
+                            shutil.copy2(item, target_item)
+                            print(f"    📄 Copied file: {item.name} → {location_desc}")
+                        
                         version_copied += 1
-
+                        
                 except Exception as e:
                     print(f"    ❌ Error copying {item.name}: {e}")
 
@@ -467,15 +486,15 @@ class DocsMerger:
         if isinstance(navigation, str):
             # Build the prefix based on subfolder and version
             prefix_parts = []
-
+            
             if self.subfolder:
                 prefix_parts.append(self.subfolder)
-
+            
             # For latest version, only add subfolder prefix (if any)
             # For older versions, add both subfolder and version prefix
             if not is_latest:
                 prefix_parts.append(version)
-
+            
             if prefix_parts:
                 return f"{'/'.join(prefix_parts)}/{navigation}"
             else:
@@ -576,7 +595,7 @@ class DocsMerger:
             latest_version = next(
                 (v for v in self.version_priority if v in version_configs),
                 list(version_configs.keys())[0] if version_configs else None
-            )
+            )       
         versions_to_process = self.version_priority if self.version_priority else list(version_configs.keys())
         # Process versions in priority order
         for version in versions_to_process:
@@ -646,7 +665,7 @@ class DocsMerger:
             if self.subfolder:
                 # Redirect /latest/* to /subfolder/:splat
                 add_redirect("/latest/*", f"/{self.subfolder}/:splat", False)
-
+                
                 # Redirect versioned latest URLs to subfolder paths
                 add_redirect(f"/{latest_version}/*", f"/{self.subfolder}/:splat", True)
             else:
@@ -662,7 +681,7 @@ class DocsMerger:
             for redirect in version_redirects:
                 source = redirect.get("source", "")
                 destination = redirect.get("destination", "")
-
+                
                 if not source or not destination:
                     continue
 
@@ -670,7 +689,7 @@ class DocsMerger:
                 prefix_parts = []
                 if self.subfolder:
                     prefix_parts.append(self.subfolder)
-
+                
                 if is_latest:
                     # For latest version, only add subfolder prefix (if any)
                     if prefix_parts:
@@ -689,7 +708,7 @@ class DocsMerger:
                     # For older versions, add both subfolder and version prefix
                     prefix_parts.append(version)
                     prefix = f"/{'/'.join(prefix_parts)}"
-
+                    
                     if not source.startswith(prefix):
                         source = f"{prefix}{source}" if source.startswith("/") else f"{prefix}/{source}"
                     if not destination.startswith(prefix):
@@ -714,6 +733,173 @@ class DocsMerger:
                 else:
                     cleaned[key] = value
         return cleaned
+    
+    def rewrite_internal_links(self, content, version, is_latest):
+        """Rewrite internal links to include subfolder and version paths"""
+        import re
+        
+        # Calculate prefix
+        if self.subfolder:
+            if is_latest:
+                prefix = f"/{self.subfolder}"
+            else:
+                prefix = f"/{self.subfolder}/{version}"
+        else:
+            if is_latest:
+                prefix = ""  # No prefix for latest without subfolder
+            else:
+                prefix = f"/{version}"
+        
+        print(f"    🔍 Link rewriting: version={version}, is_latest={is_latest}, prefix='{prefix}'")
+        
+        # If no prefix needed, return as-is
+        if not prefix:
+            print(f"    ⚠️ No prefix needed for latest version without subfolder")
+            return content
+        
+        original_length = len(content)
+        changes_made = 0
+        
+        # 1. Smart fragment handling: Fix /#anchor patterns first
+        def replace_root_fragment_markdown(match):
+            nonlocal changes_made
+            text = match.group(1)
+            anchor_part = match.group(2)  # The part after /#
+            
+            changes_made += 1
+            return f'[{text}](#{anchor_part})'  # Convert /#anchor to #anchor
+        
+        # Handle markdown links with root fragments: [text](/#anchor)
+        content = re.sub(r'\[([^\]]+)\]\(/#([^)]*)\)', replace_root_fragment_markdown, content)
+        
+        # Handle href root fragments: href="/#anchor"
+        def replace_root_fragment_href(match):
+            nonlocal changes_made
+            anchor_part = match.group(1)  # The part after /#
+            changes_made += 1
+            return f'href="#{anchor_part}"'  # Convert /#anchor to #anchor
+        
+        content = re.sub(r'href="/#([^"]*)"', replace_root_fragment_href, content)
+        
+        # 2. Fix href="/path" patterns (most common)
+        def replace_href(match):
+            nonlocal changes_made
+            full_match = match.group(0)
+            path = match.group(1)
+            
+            # Skip external links
+            if path.startswith('http') or path.startswith('//') or path.startswith('mailto:'):
+                return full_match
+            
+            changes_made += 1
+            return f'href="{prefix}{path}"'
+        
+        content = re.sub(r'href="(/[^"]*)"', replace_href, content)
+        
+        # 2. Fix markdown links [text](/path)
+        def replace_markdown(match):
+            nonlocal changes_made
+            text = match.group(1)
+            path = match.group(2)
+            
+            # Skip external links and mailto (including angle bracket wrapped)
+            if (path.startswith('http') or path.startswith('//') or 
+                path.startswith('<mailto:') or 'mailto:' in path):
+                return match.group(0)
+            
+            changes_made += 1
+            return f'[{text}]({prefix}{path})'
+        
+        content = re.sub(r'\[([^\]]+)\]\((/[^)]*)\)', replace_markdown, content)
+        
+        # 3. Fix data paths: path: "/path" or path: 'path'
+        def replace_path(match):
+            nonlocal changes_made
+            quote = match.group(1)
+            path = match.group(2)
+            changes_made += 1
+            return f'path: {quote}{prefix}/{path.lstrip("/")}{quote}'
+        
+        content = re.sub(r'path:\s*(["\'])/?([^"\']+)\1', replace_path, content)
+        
+        # 4. Fix template string hrefs: href={`/${path}`}
+        def replace_template(match):
+            nonlocal changes_made
+            path = match.group(1)
+            changes_made += 1
+            return f'href={{`{prefix}/{path}`}}'
+        
+        content = re.sub(r'href=\{\`\/([^`]+)\`\}', replace_template, content)
+        
+        # 5. Fix relative hrefs without leading slash: href="path/to/page"
+        def replace_relative_href(match):
+            nonlocal changes_made
+            full_match = match.group(0)
+            path = match.group(1)
+            
+            # Skip external links and already processed absolute paths
+            if (path.startswith('http') or path.startswith('//') or 
+                path.startswith('mailto:') or path.startswith('/')):
+                return full_match
+            
+            changes_made += 1
+            return f'href="{prefix}/{path}"'
+        
+        content = re.sub(r'href="([^"]+)"', replace_relative_href, content)
+        
+        # 6. Fix Card/component hrefs specifically: <Card href="path">
+        def replace_card_href(match):
+            nonlocal changes_made
+            component = match.group(1)  # Card, Badge, etc.
+            before_href = match.group(2)
+            path = match.group(3)
+            after_href = match.group(4)
+            
+            # Skip external links and already processed absolute paths
+            if (path.startswith('http') or path.startswith('//') or 
+                path.startswith('mailto:') or path.startswith(prefix)):
+                return match.group(0)
+            
+            # Add prefix to path (whether it starts with / or not)
+            if path.startswith('/'):
+                new_path = f"{prefix}{path}"
+            else:
+                new_path = f"{prefix}/{path}"
+            
+            changes_made += 1
+            return f'<{component}{before_href}href="{new_path}"{after_href}'
+        
+        content = re.sub(r'<(Card|BadgeCard|Expandable)([^>]*\s+)href="([^"]+)"([^>]*>)', replace_card_href, content)
+        
+        # 7. Fix relative markdown links without leading slash: [text](path)
+        def replace_relative_markdown(match):
+            nonlocal changes_made
+            text = match.group(1)
+            path = match.group(2)
+            
+            # Skip external links and already processed absolute paths
+            if (path.startswith('http') or path.startswith('//') or 
+                path.startswith('mailto:') or path.startswith('<mailto:') or 
+                path.startswith('/') or path.startswith(prefix)):
+                return match.group(0)
+            
+            changes_made += 1
+            return f'[{text}]({prefix}/{path})'
+        
+        content = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', replace_relative_markdown, content)
+        
+        print(f"    ✅ Link rewriting complete: {changes_made} changes made")
+        
+        if changes_made > 0:
+            # Show first few changes for verification
+            lines = content.split('\n')
+            shown = 0
+            for line in lines:
+                if prefix in line and shown < 2:
+                    print(f"    📝 Example: {line.strip()}")
+                    shown += 1
+        
+        return content
 
 
     def create_unified_config(self, version_configs: Dict[str, Dict]) -> Dict:
@@ -722,7 +908,7 @@ class DocsMerger:
             return {}
 
         # Use latest version as base for global settings
-
+       
         latest_version = self.latest_version
         if not latest_version:
             latest_version = next(
@@ -759,11 +945,11 @@ class DocsMerger:
 
         return unified
     def merge(self, version_configs: Dict[str, str] = None,
-              config_dir: str = None,
-              base_dir: str = None,
-              branches_config: str = None,
-              default_page: str = None,
-              copy_latest: bool = True) -> None:
+            config_dir: str = None,
+            base_dir: str = None,
+            branches_config: str = None,
+            default_page: str = None,
+            copy_latest: bool = True) -> None:
         """
         Main merge method.
 
@@ -777,7 +963,7 @@ class DocsMerger:
         print("🔄 Starting configuration merge (latest version in root directory)...")
 
         # Collect configs based on input method
-        # Collect configs based on input method
+# Collect configs based on input method
         if branches_config:
             configs = self.collect_from_branches_config(branches_config, base_dir or ".")
         elif version_configs:
@@ -862,7 +1048,7 @@ def main():
     parser.add_argument("--no-copy", action="store_true",
                         help="Don't copy latest version content to root")
     parser.add_argument("--branches-config", help="Path to branches-config.json file")
-    parser.add_argument("--subfolder",
+    parser.add_argument("--subfolder", 
                         help="Subfolder to place documentation (e.g., 'docs'). Latest version will be in /subfolder/, older versions in /subfolder/version/")
     parser.add_argument("--additional-assets", nargs="*",
                         help="Additional files/directories to copy to root (added to defaults: style.css, images, img, logo, favicon.ico, favicon.png, snippets)")
@@ -891,6 +1077,6 @@ def main():
         default_page=args.default_page,
         copy_latest=not args.no_copy
     )
-
+             
 if __name__ == "__main__":
     main()
