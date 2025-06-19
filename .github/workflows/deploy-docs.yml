@@ -1,0 +1,297 @@
+name: Deploy Documentation
+
+on:
+  workflow_dispatch:  # Manual trigger only
+    inputs:
+      subfolder:
+        description: 'Subfolder for documentation (e.g., docs3, docsv3, docs)'
+        required: false
+        default: 'docs3'
+        type: string
+
+jobs:
+  merge-docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout build-deploy branch
+        uses: actions/checkout@v4
+        with:
+          ref: build-deploy
+          token: ${{ secrets.ORG_GH_TOKEN }}
+          fetch-depth: 0  # Fetch all history for all branches
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Add any additional dependencies if needed
+
+      - name: Read branches config
+        id: config
+        run: |
+          if [ ! -f "branches-config.json" ]; then
+            echo "❌ branches-config.json not found!"
+            exit 1
+          fi
+          echo "✅ Found branches-config.json"
+          cat branches-config.json
+
+      - name: Cleanup old version folders and assets
+        run: |
+          echo "🧹 Cleaning up old version folders and assets..."
+          
+          # Get current version folders from config
+          current_folders=$(python3 -c "import json; config=json.load(open('branches-config.json')); folders=[v.get('folder','') for v in config.get('versions',[]) if v.get('folder','')]; print(' '.join(folders))")
+          
+          echo "📋 Current version folders: $current_folders"
+          
+          # Define asset types that will be regenerated
+          asset_types=(
+            "style.css"
+            "images"
+            "img" 
+            "logo"
+            "favicon.ico"
+            "favicon.png"
+            "snippets"
+          )
+          
+          # Remove old assets (they'll be regenerated from current versions)
+          echo "🎨 Cleaning up old assets..."
+          for asset in "${asset_types[@]}"; do
+            if [ -e "$asset" ]; then
+              echo "🗑️  Removing old asset: $asset"
+              rm -rf "$asset"
+            fi
+          done
+          
+          # Remove old docs.json (will be regenerated)
+          if [ -f "docs.json" ]; then
+            echo "🗑️  Removing old docs.json"
+            rm -f "docs.json"
+          fi
+          
+          # Also clean up the subfolder if it exists (using input parameter)
+          SUBFOLDER="${{ inputs.subfolder || 'docs3' }}"
+          if [ -n "$SUBFOLDER" ] && [ -d "$SUBFOLDER" ]; then
+            echo "🗑️  Removing old $SUBFOLDER subfolder"
+            rm -rf "$SUBFOLDER"
+          fi
+          
+          # Remove old version folders that aren't in the current config
+          # Look for directories that look like version folders (numeric or version-like names)
+          for dir in */; do
+            if [ -d "$dir" ]; then
+              dir_name=${dir%/}  # Remove trailing slash
+          
+              # Skip non-version directories
+              if [[ "$dir_name" =~ ^\..*$ ]] || [ "$dir_name" = ".github" ]; then
+                continue
+              fi
+          
+              # Check if this folder is in current config
+              is_current=false
+              for current in $current_folders; do
+                if [ "$dir_name" = "$current" ]; then
+                  is_current=true
+                  break
+                fi
+              done
+          
+              # If it's not in current config and looks like a version folder, remove it
+              if [ "$is_current" = false ]; then
+                # Only remove if it looks like a version folder (contains numbers/dots or common version patterns)
+                if [[ "$dir_name" =~ ^[0-9]+\.[0-9]+$ ]] || [[ "$dir_name" =~ ^v[0-9] ]] || [[ "$dir_name" =~ ^[0-9] ]]; then
+                  echo "🗑️  Removing old version folder: $dir_name"
+                  rm -rf "$dir"
+                else
+                  echo "📁 Keeping non-version directory: $dir_name"
+                fi
+              else
+                echo "📁 Keeping current version folder: $dir_name (will be refreshed)"
+              fi
+            fi
+          done
+          
+          echo "✅ Cleanup completed!"
+          echo "📁 Remaining files after cleanup:"
+          ls -la | grep -E "^[d-]" | head -10
+
+      - name: Clone and organize branches
+        run: |
+          set -e
+          
+          echo "🔄 Starting branch cloning and organization..."
+          
+          # Read the branches config and extract branch information
+          branches=$(python3 -c "import json; config=json.load(open('branches-config.json')); [print(f\"{v.get('folder','')}:{v.get('branch','main')}\") for v in config.get('versions',[]) if v.get('folder','')]")
+          
+          echo "📋 Branches to process:"
+          echo "$branches"
+          
+          # Clone each branch into its respective folder
+          for branch_info in $branches; do
+            if [ -n "$branch_info" ]; then
+              folder=$(echo $branch_info | cut -d':' -f1)
+              branch=$(echo $branch_info | cut -d':' -f2)
+          
+              echo "📂 Processing $folder from branch $branch..."
+          
+              # Remove existing folder if it exists
+              if [ -d "$folder" ]; then
+                echo "🗑️  Removing existing $folder/"
+                rm -rf "$folder"
+              fi
+          
+              # Create temporary directory for this branch
+              temp_dir="temp_$folder"
+          
+              # Clone the specific branch
+              echo "⬇️  Cloning branch $branch into $temp_dir..."
+              git clone --single-branch --branch "$branch" --depth 1 \
+                "https://github.com/${{ github.repository }}.git" "$temp_dir"
+          
+              # Move the contents (excluding .git) to the target folder
+              mkdir -p "$folder"
+              echo "📁 Moving contents from $temp_dir to $folder..."
+          
+              # Copy all files except .git directory
+              find "$temp_dir" -mindepth 1 -maxdepth 1 ! -name '.git' -exec cp -r {} "$folder/" \;
+          
+              # Clean up temp directory
+              rm -rf "$temp_dir"
+          
+              echo "✅ Successfully organized $folder from branch $branch"
+          
+              # Show what was copied
+              echo "📋 Contents of $folder:"
+              ls -la "$folder/" | head -10
+            fi
+          done
+          
+          echo "🎉 All branches cloned and organized!"
+
+      - name: Run docs merger
+        run: |
+          echo "🔄 Running documentation merger..."
+          
+          # Get subfolder from input (with fallback)
+          SUBFOLDER="${{ inputs.subfolder || 'docs3' }}"
+          echo "📁 Using subfolder: $SUBFOLDER"
+          
+          # Run the merge script with branches config
+          if [ -n "$SUBFOLDER" ]; then
+            python3 merge_docs_configs.py \
+              --branches-config branches-config.json \
+              --base-dir . \
+              --subfolder "$SUBFOLDER" \
+              --output docs.json
+          else
+            python3 merge_docs_configs.py \
+              --branches-config branches-config.json \
+              --base-dir . \
+              --output docs.json
+          fi
+          
+          echo "✅ Documentation merge completed!"
+
+      - name: Cleanup cloned version folders
+        run: |
+          echo "🧹 Cleaning up temporary cloned version folders..."
+          
+          # Get current version folders from config
+          current_folders=$(python3 -c "import json; config=json.load(open('branches-config.json')); folders=[v.get('folder','') for v in config.get('versions',[]) if v.get('folder','')]; print(' '.join(folders))")
+          
+          echo "📋 Removing cloned folders: $current_folders"
+          
+          # Remove the temporary cloned folders (they've been processed into subfolder structure)
+          for folder in $current_folders; do
+            if [ -n "$folder" ] && [ -d "$folder" ]; then
+              echo "🗑️  Removing cloned folder: $folder/"
+              rm -rf "$folder"
+            fi
+          done
+          
+          echo "✅ Cleanup of cloned folders completed!"
+
+      - name: Verify output
+        run: |
+          echo "📋 Checking generated files..."
+          
+          if [ -f "docs.json" ]; then
+            echo "✅ docs.json generated successfully"
+            echo "📄 docs.json size: $(wc -c < docs.json) bytes"
+            echo "🔍 First few lines of docs.json:"
+            head -20 docs.json
+          else
+            echo "❌ docs.json not found!"
+            exit 1
+          fi
+          
+          echo ""
+          echo "📁 Generated file structure:"
+          find . -name "*.mdx" -o -name "*.md" -o -name "*.json" -o -name "*.css" -o -name "*.png" | head -20
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.ORG_GH_TOKEN }}
+          branch: docs-merge-${{ github.run_number }}
+          base: build-deploy
+          title: "🤖 Auto-merge documentation from branches"
+          body: |
+            ## 📚 Documentation Merge Summary
+            
+            This PR contains automatically merged documentation from multiple branches.
+            
+            **Generated from:** `branches-config.json`  
+            **Timestamp:** ${{ github.event.head_commit.timestamp }}  
+            **Run ID:** ${{ github.run_id }}
+            
+            ### Changes Include:
+            - ✅ Merged documentation from multiple branches
+            - ✅ Generated unified `docs.json` configuration
+            - ✅ Updated assets and content structure
+            - ✅ Cleaned up outdated version folders
+            
+            ### Subfolder Used:
+            `${{ inputs.subfolder || 'docs3' }}`
+            
+            ---
+            
+            Please review the changes and merge when ready.
+          commit-message: |
+            🤖 Auto-merge documentation from branches
+            
+            Generated from branches-config.json at ${{ github.event.head_commit.timestamp }}
+            
+            - Merged documentation from multiple branches
+            - Generated unified docs.json
+            - Updated assets and content structure
+          delete-branch: true
+          draft: false
+          maintainer-can-modify: true
+          author: ${{ github.actor }} <${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com>
+          committer: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+
+      - name: Create deployment summary
+        run: |
+          echo "## 📚 Documentation Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ Successfully merged documentation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Generated files:**" >> $GITHUB_STEP_SUMMARY
+          echo "- \`docs.json\` - Unified configuration" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "docs.json" ]; then
+            echo "- Asset files (favicon.png, style.css, images/, etc.)" >> $GITHUB_STEP_SUMMARY
+            echo "- Version folders with documentation content" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Timestamp:** $(date)" >> $GITHUB_STEP_SUMMARY
