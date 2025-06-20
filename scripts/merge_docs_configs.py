@@ -857,13 +857,20 @@ class DocsMerger:
             text = match.group(1)
             path = match.group(2)
 
+            # Strip leading/trailing whitespace from path
+            path_stripped = path.strip()
+
             # Skip external links and mailto (including angle bracket wrapped)
-            if (path.startswith('http') or path.startswith('//') or
-                    path.startswith('<mailto:') or 'mailto:' in path):
+            if (path_stripped.startswith('http') or path_stripped.startswith('//') or
+                    path_stripped.startswith('<mailto:') or 'mailto:' in path_stripped):
+                return match.group(0)
+
+            # Only process actual internal links that start with /
+            if not path_stripped.startswith('/'):
                 return match.group(0)
 
             changes_made += 1
-            return f'[{text}]({prefix}{path})'
+            return f'[{text}]({prefix}{path_stripped})'
 
         content = re.sub(r'\[([^\]]+)\]\((/[^)]*)\)', replace_markdown, content)
 
