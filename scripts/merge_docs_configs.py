@@ -726,17 +726,7 @@ class DocsMerger:
             # Root redirect to default page (with subfolder prefix if applicable)
             add_redirect("/", destination_path, False)
 
-            # Latest alias redirects
-            if self.subfolder:
-                # Redirect /latest/* to /subfolder/:splat
-                add_redirect("/latest/*", f"/{self.subfolder}/:splat", False)
-
-                # Redirect versioned latest URLs to subfolder paths
-                add_redirect(f"/{latest_version}/*", f"/{self.subfolder}/:splat", True)
-            else:
-                # Standard redirects when no subfolder
-                add_redirect("/latest/*", "/:splat", False)
-                add_redirect(f"/{latest_version}/*", "/:splat", True)
+            # No automatic latest/version redirects - keep it simple
 
         # Collect version-specific redirects
         for version, config in version_configs.items():
