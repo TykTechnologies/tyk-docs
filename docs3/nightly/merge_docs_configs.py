@@ -448,8 +448,10 @@ class DocsMerger:
                         if target_item.exists():
                             print(f"    🗑️  Removing existing: {item.name}/")
                             shutil.rmtree(target_item)
-                        shutil.copytree(item, target_item)
-                        print(f"    📂 Copied directory: {item.name}/ → {location_desc}")
+                        
+                        # Copy directory with recursive link rewriting
+                        self.copy_directory_with_link_rewriting(item, target_item, version, is_latest)
+                        print(f"    📂 Copied directory with link rewriting: {item.name}/ → {location_desc}")
                         version_copied += 1
                     else:
                         # Copy file with link rewriting for content files
@@ -949,7 +951,9 @@ class DocsMerger:
             changes_made += 1
             return f'[{text}]({prefix}/{path})'
 
-        content = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', replace_relative_markdown, content)
+        # This regex is too broad and conflicts with the absolute path regex above
+        # It should only match relative paths (not starting with /)
+        content = re.sub(r'\[([^\]]+)\]\(([^/)][^)]*)\)', replace_relative_markdown, content)
 
         print(f"    ✅ Link rewriting complete: {changes_made} changes made")
 
@@ -964,6 +968,36 @@ class DocsMerger:
 
         return content
 
+    def copy_directory_with_link_rewriting(self, source_dir: Path, target_dir: Path, version: str, is_latest: bool) -> None:
+        """Recursively copy directory with link rewriting for content files."""
+        target_dir.mkdir(parents=True, exist_ok=True)
+        
+        for item in source_dir.iterdir():
+            target_item = target_dir / item.name
+            
+            if item.is_dir():
+                # Recursively copy subdirectories
+                self.copy_directory_with_link_rewriting(item, target_item, version, is_latest)
+            else:
+                # Copy file with link rewriting if it's a content file
+                if item.suffix.lower() in ['.mdx', '.md']:
+                    try:
+                        # Read, rewrite, and write content
+                        with open(item, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        
+                        # Rewrite internal links
+                        modified_content = self.rewrite_internal_links(content, version, is_latest)
+                        
+                        # Write modified content
+                        with open(target_item, 'w', encoding='utf-8') as f:
+                            f.write(modified_content)
+                    except Exception as e:
+                        print(f"      ⚠️ Error processing {item.relative_to(source_dir)}, copying as-is: {e}")
+                        shutil.copy2(item, target_item)
+                else:
+                    # For non-content files, just copy
+                    shutil.copy2(item, target_item)
 
     def create_unified_config(self, version_configs: Dict[str, Dict]) -> Dict:
         """Create unified configuration with version-based navigation."""
