@@ -707,9 +707,9 @@ class DocsMerger:
         if latest_version:
             # Find a good default page from latest version config
             latest_config = version_configs[latest_version]
-            default_page = "getting-started/"
+            default_page = None
 
-            # Try to find a better default from navigation
+            # Try to find a default from navigation
             nav = latest_config.get("navigation", {})
             if "tabs" in nav and nav["tabs"]:
                 first_tab = nav["tabs"][0]
@@ -720,23 +720,15 @@ class DocsMerger:
                         if isinstance(first_page, str):
                             default_page = first_page
 
-            # Build the destination path with subfolder prefix
-            destination_path = f"/{self.subfolder}/{default_page}" if self.subfolder else f"/{default_page}"
+            # Only create root redirect if we found a default page
+            if default_page:
+                # Build the destination path with subfolder prefix
+                destination_path = f"/{self.subfolder}/{default_page}" if self.subfolder else f"/{default_page}"
 
-            # Root redirect to default page (with subfolder prefix if applicable)
-            add_redirect("/", destination_path, False)
+                # Root redirect to default page (with subfolder prefix if applicable)
+                add_redirect("/", destination_path, False)
 
-            # Latest alias redirects
-            if self.subfolder:
-                # Redirect /latest/* to /subfolder/:splat
-                add_redirect("/latest/*", f"/{self.subfolder}/:splat", False)
-
-                # Redirect versioned latest URLs to subfolder paths
-                add_redirect(f"/{latest_version}/*", f"/{self.subfolder}/:splat", True)
-            else:
-                # Standard redirects when no subfolder
-                add_redirect("/latest/*", "/:splat", False)
-                add_redirect(f"/{latest_version}/*", "/:splat", True)
+            # No automatic latest/version redirects - keep it simple
 
         # Collect version-specific redirects
         for version, config in version_configs.items():
@@ -867,13 +859,20 @@ class DocsMerger:
             text = match.group(1)
             path = match.group(2)
 
+            # Strip leading/trailing whitespace from path
+            path_stripped = path.strip()
+
             # Skip external links and mailto (including angle bracket wrapped)
-            if (path.startswith('http') or path.startswith('//') or
-                    path.startswith('<mailto:') or 'mailto:' in path):
+            if (path_stripped.startswith('http') or path_stripped.startswith('//') or
+                    path_stripped.startswith('<mailto:') or 'mailto:' in path_stripped):
+                return match.group(0)
+
+            # Only process actual internal links that start with /
+            if not path_stripped.startswith('/'):
                 return match.group(0)
 
             changes_made += 1
-            return f'[{text}]({prefix}{path})'
+            return f'[{text}]({prefix}{path_stripped})'
 
         content = re.sub(r'\[([^\]]+)\]\((/[^)]*)\)', replace_markdown, content)
 
@@ -942,14 +941,17 @@ class DocsMerger:
             text = match.group(1)
             path = match.group(2)
 
+            # Strip leading/trailing whitespace from path
+            path_stripped = path.strip()
+
             # Skip external links and already processed absolute paths
-            if (path.startswith('http') or path.startswith('//') or
-                    path.startswith('mailto:') or path.startswith('<mailto:') or
-                    path.startswith('/') or path.startswith(prefix)):
+            if (path_stripped.startswith('http') or path_stripped.startswith('//') or
+                    path_stripped.startswith('mailto:') or path_stripped.startswith('<mailto:') or
+                    path_stripped.startswith('/') or path_stripped.startswith(prefix)):
                 return match.group(0)
 
             changes_made += 1
-            return f'[{text}]({prefix}/{path})'
+            return f'[{text}]({prefix}/{path_stripped})'
 
         # This regex is too broad and conflicts with the absolute path regex above
         # It should only match relative paths (not starting with /)
