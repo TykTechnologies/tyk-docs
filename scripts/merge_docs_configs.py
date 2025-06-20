@@ -12,8 +12,8 @@ class DocsMerger:
         self.output_file = output_file
         self.subfolder = subfolder.strip("/") if subfolder else ""  # Remove leading/trailing slashes
 
-        # Default assets that should always go to root
-        default_assets = {"style.css", "images", "img", "logo", "favicon.ico", "favicon.png", "snippets"}
+        # Default assets that should always go to root (snippets handled separately)
+        default_assets = {"style.css", "images", "img", "logo", "favicon.ico", "favicon.png"}
 
         # Add any additional assets specified by user
         if additional_assets:
@@ -351,6 +351,114 @@ class DocsMerger:
             if files:
                 print(f"   📂 {asset_type}: {len(files)} files")
 
+    def copy_snippets_with_version_structure(self, version_configs: Dict[str, Dict],
+                                           source_dir: str = ".", target_dir: str = ".") -> None:
+        """Copy snippets to version-specific directories with link rewriting."""
+        
+        # Build priority order: main -> latest -> others
+        priority_versions = []
+
+        if self.main_version and self.main_version in version_configs:
+            priority_versions.append(self.main_version)
+
+        if self.latest_version and self.latest_version in version_configs and self.latest_version != self.main_version:
+            priority_versions.append(self.latest_version)
+
+        # Add remaining versions in config order
+        for version in self.version_priority:
+            if version in version_configs and version not in priority_versions:
+                priority_versions.append(version)
+
+        if not priority_versions:
+            print("❌ No versions found for snippet processing")
+            return
+
+        print(f"📝 Processing snippets from {len(priority_versions)} versions...")
+        print(f"🎯 Priority order: {' > '.join(priority_versions)}")
+
+        source_path = Path(source_dir)
+        target_root_path = Path(target_dir)
+        snippets_root = target_root_path / "snippets"
+
+        # Track processed snippets for reporting
+        processed_snippets = {}  # version -> {filename: status}
+        total_processed = 0
+
+        # Process each version
+        for version in priority_versions:
+            version_source = source_path / version / "snippets"
+            
+            if not version_source.exists():
+                print(f"  ⚠️ No snippets directory found in {version}")
+                continue
+
+            is_latest = (version == self.latest_version)
+            version_label = self.version_labels.get(version, version)
+            
+            # Create version-specific snippets directory
+            version_snippets_dir = snippets_root / version
+            version_snippets_dir.mkdir(parents=True, exist_ok=True)
+
+            print(f"\n  📂 Processing snippets for {version} ({version_label})...")
+            
+            processed_snippets[version] = {}
+            version_count = 0
+
+            # Process all files in the snippets directory
+            for item in version_source.rglob("*"):
+                if item.is_file():
+                    # Get relative path from snippets root
+                    rel_path = item.relative_to(version_source)
+                    target_file = version_snippets_dir / rel_path
+                    
+                    # Create parent directories if needed
+                    target_file.parent.mkdir(parents=True, exist_ok=True)
+
+                    try:
+                        # Check if this is a content file that needs link rewriting
+                        if item.suffix.lower() in ['.mdx', '.md']:
+                            # Read, rewrite, and write content
+                            with open(item, 'r', encoding='utf-8') as f:
+                                content = f.read()
+
+                            # Rewrite internal links for this version
+                            modified_content = self.rewrite_internal_links(content, version, is_latest)
+
+                            # Write modified content
+                            with open(target_file, 'w', encoding='utf-8') as f:
+                                f.write(modified_content)
+
+                            processed_snippets[version][str(rel_path)] = "rewritten"
+                            print(f"    📝 Processed with link rewriting: {rel_path}")
+                        else:
+                            # For non-content files, just copy
+                            shutil.copy2(item, target_file)
+                            processed_snippets[version][str(rel_path)] = "copied"
+                            print(f"    📄 Copied: {rel_path}")
+
+                        version_count += 1
+                        total_processed += 1
+
+                    except Exception as e:
+                        print(f"    ❌ Error processing {rel_path}: {e}")
+                        processed_snippets[version][str(rel_path)] = f"error: {e}"
+
+            if version_count > 0:
+                print(f"    ✅ Processed {version_count} snippet files for {version}")
+            else:
+                print(f"    ⚠️ No snippet files found in {version}")
+
+        # Generate summary
+        print(f"\n✅ Snippet processing complete:")
+        print(f"   📁 Total files processed: {total_processed}")
+        print(f"   📂 Versions processed: {len([v for v in processed_snippets.keys() if processed_snippets[v]])}")
+
+        for version, files in processed_snippets.items():
+            if files:
+                rewritten_count = len([f for f in files.values() if f == "rewritten"])
+                copied_count = len([f for f in files.values() if f == "copied"])
+                print(f"   📂 {version}: {len(files)} files ({rewritten_count} rewritten, {copied_count} copied)")
+
     def organize_content_files(self, version_configs: Dict[str, Dict],
                                source_dir: str = ".", target_dir: str = ".") -> None:
         """Copy latest version docs to subfolder and merge assets from all versions."""
@@ -379,6 +487,10 @@ class DocsMerger:
         print("🎨 Step 1: Merging assets from all versions...")
         self.merge_assets_from_all_versions(version_configs, source_dir, target_dir)
 
+        # Step 1.5: Process snippets with version structure
+        print(f"\n📝 Step 1.5: Processing snippets with version structure...")
+        self.copy_snippets_with_version_structure(version_configs, source_dir, target_dir)
+
         # Step 2: Copy documentation content from all versions
         print(f"\n📚 Step 2: Copying documentation content from all versions...")
 
@@ -402,10 +514,10 @@ class DocsMerger:
             else:
                 print(f"\n  📂 Processing older version ({version} - {version_label})...")
 
-            # Define system files to exclude
-            exclude_items = {"docs.json", ".git", ".gitignore", ".DS_Store", "__pycache__"}
+            # Define system files to exclude (including snippets since they're processed separately)
+            exclude_items = {"docs.json", ".git", ".gitignore", ".DS_Store", "__pycache__", "snippets"}
 
-            # Get list of items to copy (exclude assets since they're already merged)
+            # Get list of items to copy (exclude assets and snippets since they're already processed)
             items_to_process = []
             for item in version_source.iterdir():
                 if item.name not in exclude_items and item.name not in self.assets:
@@ -956,6 +1068,28 @@ class DocsMerger:
         # This regex is too broad and conflicts with the absolute path regex above
         # It should only match relative paths (not starting with /)
         content = re.sub(r'\[([^\]]+)\]\(([^/)][^)]*)\)', replace_relative_markdown, content)
+
+        # 8. Fix snippet imports: from '/snippets/file.mdx' -> from '/snippets/{version}/file.mdx'
+        def replace_snippet_import(match):
+            nonlocal changes_made
+            quote = match.group(1)  # Quote character (' or ")
+            snippet_path = match.group(2)  # The snippet path
+
+            # Only process snippet imports that start with /snippets/
+            if not snippet_path.startswith('/snippets/'):
+                return match.group(0)
+
+            # Extract the filename part after /snippets/
+            snippet_file = snippet_path[10:]  # Remove '/snippets/' prefix
+            
+            # Build new path with version: /snippets/{version}/filename
+            new_snippet_path = f"/snippets/{version}/{snippet_file}"
+            
+            changes_made += 1
+            return f'from {quote}{new_snippet_path}{quote}'
+
+        # Match import statements: from '/snippets/...'
+        content = re.sub(r'from\s+(["\'])(/snippets/[^"\']+)\1', replace_snippet_import, content)
 
         print(f"    ✅ Link rewriting complete: {changes_made} changes made")
 
