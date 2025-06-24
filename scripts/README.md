@@ -2,7 +2,7 @@
 
 This directory contains utility scripts for documentation maintenance and validation.
 
-## check_broken_links.py
+## validate_mintlify_docs.py
 
 Comprehensive documentation validation script that checks for:
 
@@ -18,16 +18,16 @@ Comprehensive documentation validation script that checks for:
 
 ```bash
 # Full validation (recommended)
-python scripts/check_broken_links.py . --validate-redirects --verbose
+python scripts/validate_mintlify_docs.py . --validate-redirects --verbose
 
 # Check only links
-python scripts/check_broken_links.py . --links-only
+python scripts/validate_mintlify_docs.py . --links-only
 
 # Check only images
-python scripts/check_broken_links.py . --images-only
+python scripts/validate_mintlify_docs.py . --images-only
 
 # Check only redirects and navigation
-python scripts/check_broken_links.py . --validate-redirects
+python scripts/validate_mintlify_docs.py . --validate-redirects
 ```
 
 ### CI Integration
