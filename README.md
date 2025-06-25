@@ -24,16 +24,16 @@ You can run validation locally before creating a PR:
 
 ```bash
 # Full validation (recommended)
-python scripts/check_broken_links.py . --validate-redirects --verbose
+python scripts/validate_mintlify_docs.py . --validate-redirects --verbose
 
 # Check only links
-python scripts/check_broken_links.py . --links-only
+python scripts/validate_mintlify_docs.py . --links-only
 
 # Check only images
-python scripts/check_broken_links.py . --images-only
+python scripts/validate_mintlify_docs.py . --images-only
 
 # Check only redirects and navigation
-python scripts/check_broken_links.py . --validate-redirects
+python scripts/validate_mintlify_docs.py . --validate-redirects
 ```
 
 ## Setting Up Branch Protection
@@ -48,7 +48,7 @@ To make validation required:
 
 ## Validation Script
 
-The `scripts/check_broken_links.py` script provides comprehensive documentation validation:
+The `scripts/validate_mintlify_docs.py` script provides comprehensive documentation validation:
 
 - **No external dependencies** - Uses only Python standard library
 - **Fast execution** - Typically completes in under 1 minute

@@ -24,7 +24,7 @@ WHAT THIS SCRIPT VALIDATES:
    - Handles anchor fragments and query parameters correctly
 
 USAGE:
-   python check_broken_links.py [directory] [options]
+   python validate_mintlify_docs.py [directory] [options]
    make check-redirects    # Validate redirects and navigation only
    make validate-all       # Full validation with verbose output
 """
