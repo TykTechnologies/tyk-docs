@@ -988,15 +988,10 @@ class DocsMerger:
 
         content = re.sub(r'\[([^\]]+)\]\((/[^)]*)\)', replace_markdown, content)
 
-        # 3. Fix data paths: path: "/path" or path: 'path'
-        def replace_path(match):
-            nonlocal changes_made
-            quote = match.group(1)
-            path = match.group(2)
-            changes_made += 1
-            return f'path: {quote}{prefix}/{path.lstrip("/")}{quote}'
-
-        content = re.sub(r'path:\s*(["\'])/?([^"\']+)\1', replace_path, content)
+        # 3. Skip data paths - keep them clean, let JSX handle prefixing
+        # This prevents double prefixing by not modifying path: "..." declarations
+        # The JSX template literals will add the prefix instead
+        print(f"    ⚠️ Skipping data path prefixing to prevent double prefixes")
 
         # 4. Fix template string hrefs: href={`/${path}`}
         def replace_template(match):
