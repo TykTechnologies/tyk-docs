@@ -123,8 +123,11 @@ def find_image_references(mdx_content: str) -> Set[str]:
     # Pattern for JSX img elements: <img src={"/path"} or <img src="/path"
     jsx_pattern = r'<img[^>]+src=\{?["\']([^"\']+)["\']'
     
+    # Pattern for Card components: <Card img="path" ...>
+    card_pattern = r'<Card[^>]+img=["\']([^"\']+)["\']'
+    
     # Find all matches
-    for pattern in [markdown_pattern, html_pattern, jsx_pattern]:
+    for pattern in [markdown_pattern, html_pattern, jsx_pattern, card_pattern]:
         matches = re.findall(pattern, clean_content, re.IGNORECASE)
         for match in matches:
             # Skip external URLs
