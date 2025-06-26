@@ -2,6 +2,7 @@
 """
 Script to check for broken links in converted Mintlify documentation.
 
+
 WHAT THIS SCRIPT VALIDATES:
 
 1. BROKEN LINKS & IMAGES:
@@ -27,6 +28,7 @@ USAGE:
    python validate_mintlify_docs.py [directory] [options]
    make check-redirects    # Validate redirects and navigation only
    make validate-all       # Full validation with verbose output
+   python scripts/validate_mintlify_docs.py . --external-links --external-timeout 5 --external-delay 0.5
 """
 
 import os
@@ -35,6 +37,8 @@ import glob
 import json
 import argparse
 import urllib.parse
+import requests
+import time
 from pathlib import Path
 from typing import Set, List, Tuple, Dict, Any
 
@@ -71,11 +75,14 @@ def find_internal_links(mdx_content: str) -> Set[str]:
     # Pattern for HTML anchor tags: <a href="path">
     html_pattern = r'<a[^>]+href=["\']([^"\']+)["\']'
     
+    # Pattern for Card components: <Card href="path" ...>
+    card_pattern = r'<Card[^>]+href=["\']([^"\']+)["\']'
+    
     # Find all matches
-    for pattern in [markdown_pattern, html_pattern]:
+    for pattern in [markdown_pattern, html_pattern, card_pattern]:
         matches = re.findall(pattern, clean_content, re.IGNORECASE)
         for match in matches:
-            # For markdown pattern, match[1] is the URL, for HTML pattern, match is the URL
+            # For markdown pattern, match[1] is the URL, for HTML/Card patterns, match is the URL
             url = match[1] if isinstance(match, tuple) and len(match) > 1 else match
             
             # Skip external URLs, anchors, and special protocols (including malformed mailto)
@@ -141,10 +148,41 @@ def find_image_references(mdx_content: str) -> Set[str]:
     
     return image_refs
 
-def scan_mdx_files(directory: str) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
-    """Scan all MDX files and return links and images by file."""
+def find_external_links(mdx_content: str) -> Set[str]:
+    """Extract all external HTTP/HTTPS links from MDX content, excluding links in comments and code blocks."""
+    # Remove comments and code blocks first to avoid parsing commented-out or code example links
+    clean_content = remove_comments_and_code(mdx_content)
+    
+    external_links = set()
+    
+    # Pattern for markdown links: [text](https://...)
+    markdown_pattern = r'\[([^\]]*)\]\((https?://[^)]+)\)'
+    
+    # Pattern for HTML anchor tags: <a href="https://...">
+    html_pattern = r'<a[^>]+href=["\']?(https?://[^"\'>\s]+)["\']?'
+    
+    # Pattern for Card components: <Card href="https://..." ...>
+    card_pattern = r'<Card[^>]+href=["\']?(https?://[^"\'>\s]+)["\']?'
+    
+    # Find all matches
+    for pattern in [markdown_pattern, html_pattern, card_pattern]:
+        matches = re.findall(pattern, clean_content, re.IGNORECASE)
+        for match in matches:
+            # For markdown pattern, match[1] is the URL, for HTML/Card patterns, match is the URL
+            url = match[1] if isinstance(match, tuple) and len(match) > 1 else match
+            
+            # Clean up the URL
+            clean_url = url.strip().strip('"\'')
+            if clean_url:
+                external_links.add(clean_url)
+    
+    return external_links
+
+def scan_mdx_files(directory: str, check_external: bool = False) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]], Dict[str, Set[str]]]:
+    """Scan all MDX files and return links, images, and external links by file."""
     file_links = {}
     file_images = {}
+    file_external_links = {}
     mdx_files = glob.glob(os.path.join(directory, '**/*.mdx'), recursive=True)
     
     print(f"Scanning {len(mdx_files)} MDX files for links and images...")
@@ -165,11 +203,17 @@ def scan_mdx_files(directory: str) -> Tuple[Dict[str, Set[str]], Dict[str, Set[s
                     file_links[rel_path] = links
                 if images:
                     file_images[rel_path] = images
+                
+                # Find external links if requested
+                if check_external:
+                    external_links = find_external_links(content)
+                    if external_links:
+                        file_external_links[rel_path] = external_links
                     
         except Exception as e:
             print(f"Error reading {mdx_file}: {e}")
     
-    return file_links, file_images
+    return file_links, file_images, file_external_links
 
 def load_redirects(directory: str) -> Dict[str, str]:
     """Load redirects from docs.json or mint.json configuration files."""
@@ -249,15 +293,106 @@ def check_link_exists(link: str, existing_files: Set[str], redirects: Dict[str, 
     
     return False
 
-def check_broken_links(base_dir: str) -> Tuple[Dict[str, List[str]], Dict[str, List[str]], Dict[str, str]]:
-    """Check for broken internal links and missing images."""
+def check_external_link(url: str, timeout: int = 10) -> Dict[str, Any]:
+    """Check if an external URL is accessible."""
+    try:
+        # Use HEAD request for faster checking
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (compatible; Mintlify-Link-Checker/1.0)'
+        }
+        response = requests.head(url, timeout=timeout, allow_redirects=True, headers=headers)
+        
+        return {
+            'url': url,
+            'status_code': response.status_code,
+            'accessible': response.status_code < 400,
+            'final_url': response.url if response.url != url else None,
+            'error': None,
+            'response_time': None
+        }
+    except requests.exceptions.Timeout:
+        return {
+            'url': url,
+            'status_code': None,
+            'accessible': False,
+            'final_url': None,
+            'error': f'Timeout after {timeout}s',
+            'response_time': None
+        }
+    except requests.exceptions.ConnectionError:
+        return {
+            'url': url,
+            'status_code': None,
+            'accessible': False,
+            'final_url': None,
+            'error': 'Connection refused',
+            'response_time': None
+        }
+    except Exception as e:
+        return {
+            'url': url,
+            'status_code': None,
+            'accessible': False,
+            'final_url': None,
+            'error': str(e),
+            'response_time': None
+        }
+
+def check_external_links(file_external_links: Dict[str, Set[str]], timeout: int = 10, delay: float = 1.0) -> Dict[str, List[Dict[str, Any]]]:
+    """Check all external links and return results by file."""
+    # Collect all unique URLs to avoid duplicate checking
+    all_urls = set()
+    for urls in file_external_links.values():
+        all_urls.update(urls)
+    
+    if not all_urls:
+        return {}
+    
+    print(f"\n🔍 Checking {len(all_urls)} unique external URLs...")
+    
+    # Check each unique URL
+    url_results = {}
+    for i, url in enumerate(sorted(all_urls), 1):
+        print(f"  [{i}/{len(all_urls)}] {url[:60]}{'...' if len(url) > 60 else ''}", end=' ')
+        
+        start_time = time.time()
+        result = check_external_link(url, timeout)
+        result['response_time'] = time.time() - start_time
+        
+        # Print status
+        if result['accessible']:
+            if result['final_url']:
+                print(f"🔄 {result['status_code']} → {result['final_url'][:40]}{'...' if len(result['final_url']) > 40 else ''}")
+            else:
+                print(f"✅ {result['status_code']}")
+        else:
+            if result['error']:
+                print(f"❌ {result['error']}")
+            else:
+                print(f"❌ {result['status_code']}")
+        
+        url_results[url] = result
+        
+        # Rate limiting
+        if i < len(all_urls):
+            time.sleep(delay)
+    
+    # Map results back to files
+    file_results = {}
+    for file_path, urls in file_external_links.items():
+        file_results[file_path] = [url_results[url] for url in urls]
+    
+    return file_results
+
+def check_broken_links(base_dir: str, check_external: bool = False, external_timeout: int = 10, external_delay: float = 1.0) -> Tuple[Dict[str, List[str]], Dict[str, List[str]], Dict[str, str], Dict[str, List[Dict[str, Any]]]]:
+    """Check for broken internal links, missing images, and optionally external links."""
     print(f"Checking for broken links in: {base_dir}")
     
     # Load redirects from configuration
     redirects = load_redirects(base_dir)
     
     # Scan all MDX files
-    file_links, file_images = scan_mdx_files(base_dir)
+    file_links, file_images, file_external_links = scan_mdx_files(base_dir, check_external)
     
     # Find all existing files
     existing_files = find_existing_files(base_dir)
@@ -286,7 +421,12 @@ def check_broken_links(base_dir: str) -> Tuple[Dict[str, List[str]], Dict[str, L
         if file_broken_images:
             broken_images[file_path] = file_broken_images
     
-    return broken_links, broken_images, redirects
+    # Check external links if requested
+    external_results = {}
+    if check_external and file_external_links:
+        external_results = check_external_links(file_external_links, external_timeout, external_delay)
+    
+    return broken_links, broken_images, redirects, external_results
 
 
 def extract_navigation_links(navigation: Dict[str, Any]) -> Set[str]:
@@ -477,6 +617,11 @@ def main():
     parser.add_argument('--images-only', action='store_true', help='Only check for broken images')
     parser.add_argument('--links-only', action='store_true', help='Only check for broken links')
     parser.add_argument('--validate-redirects', action='store_true', help='Validate docs.json for problematic redirects')
+    parser.add_argument('--external-links', action='store_true', help='Check external HTTP/HTTPS links')
+    parser.add_argument('--external-timeout', type=int, default=10, help='Timeout for external link requests (default: 10s)')
+    parser.add_argument('--external-delay', type=float, default=1.0, help='Delay between external link requests (default: 1.0s)')
+    parser.add_argument('--external-only', action='store_true', help='Only check external links')
+    parser.add_argument('--external-errors-only', action='store_true', help='Only show failed external links')
     
     args = parser.parse_args()
     
@@ -485,7 +630,12 @@ def main():
         return 1
     
     # Check for broken links and images
-    broken_links, broken_images, redirects = check_broken_links(args.directory)
+    broken_links, broken_images, redirects, external_results = check_broken_links(
+        args.directory, 
+        check_external=args.external_links or args.external_only,
+        external_timeout=args.external_timeout,
+        external_delay=args.external_delay
+    )
     
     # Validate docs.json if requested
     validation_results = None
@@ -500,19 +650,62 @@ def main():
     total_broken_links = sum(len(links) for links in broken_links.values())
     total_broken_images = sum(len(images) for images in broken_images.values())
     
-    if not args.images_only and broken_links:
+    if not args.images_only and not args.external_only and broken_links:
         print(f"\n🔗 BROKEN INTERNAL LINKS ({total_broken_links} total):")
         for file_path, links in sorted(broken_links.items()):
             print(f"\n  📄 {file_path}:")
             for link in sorted(links):
                 print(f"    ❌ {link}")
     
-    if not args.links_only and broken_images:
+    if not args.links_only and not args.external_only and broken_images:
         print(f"\n🖼️  BROKEN IMAGE REFERENCES ({total_broken_images} total):")
         for file_path, images in sorted(broken_images.items()):
             print(f"\n  📄 {file_path}:")
             for image in sorted(images):
                 print(f"    ❌ {image}")
+    
+    # Report external link results
+    if external_results:
+        # Count results
+        total_external = sum(len(results) for results in external_results.values())
+        successful_external = sum(1 for results in external_results.values() for result in results if result['accessible'])
+        failed_external = total_external - successful_external
+        redirected_external = sum(1 for results in external_results.values() for result in results if result['final_url'])
+        
+        if args.external_errors_only:
+            # Show only failed external links
+            print(f"\n🌐 FAILED EXTERNAL LINKS ({failed_external} total):")
+            for file_path, results in sorted(external_results.items()):
+                failed_results = [r for r in results if not r['accessible']]
+                if failed_results:
+                    print(f"\n  📄 {file_path}:")
+                    for result in failed_results:
+                        if result['error']:
+                            print(f"    ❌ {result['url']} ({result['error']})")
+                        else:
+                            print(f"    ❌ {result['url']} ({result['status_code']})")
+        else:
+            # Show all external link results
+            print(f"\n🌐 EXTERNAL LINK VALIDATION RESULTS ({total_external} total):")
+            for file_path, results in sorted(external_results.items()):
+                print(f"\n  📄 {file_path}:")
+                for result in results:
+                    if result['accessible']:
+                        if result['final_url']:
+                            print(f"    🔄 {result['url']} ({result['status_code']} → {result['final_url']})")
+                        else:
+                            print(f"    ✅ {result['url']} ({result['status_code']})")
+                    else:
+                        if result['error']:
+                            print(f"    ❌ {result['url']} ({result['error']})")
+                        else:
+                            print(f"    ❌ {result['url']} ({result['status_code']})")
+        
+        # Show external link summary
+        print(f"\n📊 EXTERNAL LINK SUMMARY:")
+        print(f"   ✅ Successful (2xx): {successful_external} links")
+        print(f"   🔄 Redirects (3xx): {redirected_external} links")
+        print(f"   ❌ Failed: {failed_external} links")
     
     # Report validation results
     if validation_results:
