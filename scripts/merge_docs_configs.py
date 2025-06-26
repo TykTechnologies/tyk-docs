@@ -352,9 +352,9 @@ class DocsMerger:
                 print(f"   📂 {asset_type}: {len(files)} files")
 
     def copy_snippets_with_version_structure(self, version_configs: Dict[str, Dict],
-                                           source_dir: str = ".", target_dir: str = ".") -> None:
+                                             source_dir: str = ".", target_dir: str = ".") -> None:
         """Copy snippets to version-specific directories with link rewriting."""
-        
+
         # Build priority order: main -> latest -> others
         priority_versions = []
 
@@ -387,20 +387,20 @@ class DocsMerger:
         # Process each version
         for version in priority_versions:
             version_source = source_path / version / "snippets"
-            
+
             if not version_source.exists():
                 print(f"  ⚠️ No snippets directory found in {version}")
                 continue
 
             is_latest = (version == self.latest_version)
             version_label = self.version_labels.get(version, version)
-            
+
             # Create version-specific snippets directory
             version_snippets_dir = snippets_root / version
             version_snippets_dir.mkdir(parents=True, exist_ok=True)
 
             print(f"\n  📂 Processing snippets for {version} ({version_label})...")
-            
+
             processed_snippets[version] = {}
             version_count = 0
 
@@ -410,7 +410,7 @@ class DocsMerger:
                     # Get relative path from snippets root
                     rel_path = item.relative_to(version_source)
                     target_file = version_snippets_dir / rel_path
-                    
+
                     # Create parent directories if needed
                     target_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -560,7 +560,7 @@ class DocsMerger:
                         if target_item.exists():
                             print(f"    🗑️  Removing existing: {item.name}/")
                             shutil.rmtree(target_item)
-                        
+
                         # Copy directory with recursive link rewriting
                         self.copy_directory_with_link_rewriting(item, target_item, version, is_latest)
                         print(f"    📂 Copied directory with link rewriting: {item.name}/ → {location_desc}")
@@ -1076,10 +1076,10 @@ class DocsMerger:
 
             # Extract the filename part after /snippets/
             snippet_file = snippet_path[10:]  # Remove '/snippets/' prefix
-            
+
             # Build new path with version: /snippets/{version}/filename
             new_snippet_path = f"/snippets/{version}/{snippet_file}"
-            
+
             changes_made += 1
             return f'from {quote}{new_snippet_path}{quote}'
 
@@ -1102,10 +1102,10 @@ class DocsMerger:
     def copy_directory_with_link_rewriting(self, source_dir: Path, target_dir: Path, version: str, is_latest: bool) -> None:
         """Recursively copy directory with link rewriting for content files."""
         target_dir.mkdir(parents=True, exist_ok=True)
-        
+
         for item in source_dir.iterdir():
             target_item = target_dir / item.name
-            
+
             if item.is_dir():
                 # Recursively copy subdirectories
                 self.copy_directory_with_link_rewriting(item, target_item, version, is_latest)
@@ -1116,10 +1116,10 @@ class DocsMerger:
                         # Read, rewrite, and write content
                         with open(item, 'r', encoding='utf-8') as f:
                             content = f.read()
-                        
+
                         # Rewrite internal links
                         modified_content = self.rewrite_internal_links(content, version, is_latest)
-                        
+
                         # Write modified content
                         with open(target_item, 'w', encoding='utf-8') as f:
                             f.write(modified_content)
