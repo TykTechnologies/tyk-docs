@@ -25,6 +25,39 @@ jobs:
             core.setOutput('release_branch', releaseBranch);
             core.setOutput('pr_number', issue.number);
 
+      - name: Check admin permissions
+        if: steps.check_command.outputs.release_valid == 'true'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const username = context.payload.comment.user.login;
+            const authorAssociation = context.payload.comment.author_association;
+            
+            // Quick check: Repository owner always allowed
+            if (authorAssociation === 'OWNER') {
+              console.log(`✅ User ${username} is repository owner`);
+              return;
+            }
+            
+            // Check for admin permission
+            try {
+              const { data: permission } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: username
+              });
+              
+              if (permission.permission !== 'admin') {
+                core.setFailed(`❌ Only repository admins can use /release command. User ${username} has: ${permission.permission}`);
+                return;
+              }
+              
+              console.log(`✅ User ${username} has admin permissions`);
+            } catch (error) {
+              core.setFailed(`❌ Permission check failed: ${error.message}`);
+            }
+
       - name: Install GitHub CLI (for act/local testing)
         if: steps.check_command.outputs.release_valid == 'true'
         run: |
@@ -74,7 +107,7 @@ jobs:
         id: cherry_pick
         if: steps.check_command.outputs.release_valid == 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.ORG_GH_TOKEN }}
           GITHUB_REPO: ${{ github.repository }}
           GITHUB_BRANCH: ${{ steps.check_command.outputs.release_branch }}
         run: |
