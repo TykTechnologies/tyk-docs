@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       subfolder:
-        description: 'Subfolder for documentation (e.g., docs3, docsv3, docs)'
+        description: 'Subfolder for documentation (e.g., docs3, docsv3, docs). Leave empty for root deployment.'
         required: false
-        default: 'docs3'
+        default: ''
         type: string
 
 # Ensure only latest deployment runs
@@ -46,86 +46,56 @@ jobs:
           echo "✅ Found branches-config.json"
           cat branches-config.json
 
-      - name: Cleanup old version folders and assets
+      - name: Cleanup everything except preserved files
         run: |
-          echo "🧹 Cleaning up old version folders and assets..."
+          echo "🧹 Cleaning up everything except preserved files..."
           
-          # Get current version folders from config
-          current_folders=$(python3 -c "import json; config=json.load(open('branches-config.json')); folders=[v.get('folder','') for v in config.get('versions',[]) if v.get('folder','')]; print(' '.join(folders))")
-          
-          echo "📋 Current version folders: $current_folders"
-          
-          # Define asset types that will be regenerated
-          asset_types=(
-            "style.css"
-            "images"
-            "img" 
-            "logo"
-            "favicon.ico"
-            "favicon.png"
-            "snippets"
+          # Define files/folders to preserve during cleanup
+          preserve_items=(
+            ".gitignore"
+            ".vale.ini"
+            "branches-config.json"
+            "README.md"
+            ".github"
+            ".devcontainer"
+            ".vale"
+            "scripts"
+            ".git"
           )
           
-          # Remove old assets (they'll be regenerated from current versions)
-          echo "🎨 Cleaning up old assets..."
-          for asset in "${asset_types[@]}"; do
-            if [ -e "$asset" ]; then
-              echo "🗑️  Removing old asset: $asset"
-              rm -rf "$asset"
+          echo "📋 Files/folders to preserve:"
+          printf '%s\n' "${preserve_items[@]}"
+          
+          # Create temporary backup of preserved items
+          echo "💾 Creating temporary backup of preserved items..."
+          mkdir -p .temp_backup
+          for item in "${preserve_items[@]}"; do
+            if [ -e "$item" ]; then
+              echo "  📦 Backing up: $item"
+              cp -r "$item" .temp_backup/
             fi
           done
           
-          # Remove old docs.json (will be regenerated)
-          if [ -f "docs.json" ]; then
-            echo "🗑️  Removing old docs.json"
-            rm -f "docs.json"
-          fi
+          # Clean everything (files and directories)
+          echo "🗑️  Removing all content except preserved items..."
+          find . -mindepth 1 -maxdepth 1 ! -name '.temp_backup' -exec rm -rf {} +
           
-          # Also clean up the subfolder if it exists (using input parameter)
-          SUBFOLDER="${{ inputs.subfolder || 'docs3' }}"
-          if [ -n "$SUBFOLDER" ] && [ -d "$SUBFOLDER" ]; then
-            echo "🗑️  Removing old $SUBFOLDER subfolder"
-            rm -rf "$SUBFOLDER"
-          fi
-          
-          # Remove old version folders that aren't in the current config
-          # Look for directories that look like version folders (numeric or version-like names)
-          for dir in */; do
-            if [ -d "$dir" ]; then
-              dir_name=${dir%/}  # Remove trailing slash
-          
-              # Skip non-version directories
-              if [[ "$dir_name" =~ ^\..*$ ]] || [ "$dir_name" = ".github" ]; then
-                continue
+          # Restore preserved items
+          echo "♻️  Restoring preserved items..."
+          if [ -d ".temp_backup" ]; then
+            for item in .temp_backup/*; do
+              if [ -e "$item" ]; then
+                item_name=$(basename "$item")
+                echo "  📦 Restoring: $item_name"
+                cp -r "$item" .
               fi
-          
-              # Check if this folder is in current config
-              is_current=false
-              for current in $current_folders; do
-                if [ "$dir_name" = "$current" ]; then
-                  is_current=true
-                  break
-                fi
-              done
-          
-              # If it's not in current config and looks like a version folder, remove it
-              if [ "$is_current" = false ]; then
-                # Only remove if it looks like a version folder (contains numbers/dots or common version patterns)
-                if [[ "$dir_name" =~ ^[0-9]+\.[0-9]+$ ]] || [[ "$dir_name" =~ ^v[0-9] ]] || [[ "$dir_name" =~ ^[0-9] ]]; then
-                  echo "🗑️  Removing old version folder: $dir_name"
-                  rm -rf "$dir"
-                else
-                  echo "📁 Keeping non-version directory: $dir_name"
-                fi
-              else
-                echo "📁 Keeping current version folder: $dir_name (will be refreshed)"
-              fi
-            fi
-          done
+            done
+            rm -rf .temp_backup
+          fi
           
           echo "✅ Cleanup completed!"
           echo "📁 Remaining files after cleanup:"
-          ls -la | grep -E "^[d-]" | head -10
+          ls -la | head -10
 
       - name: Clone and organize branches
         run: |
@@ -194,18 +164,33 @@ jobs:
         run: |
           echo "🔄 Running documentation merger..."
           
-          # Get subfolder from input (with fallback)
-          SUBFOLDER="${{ inputs.subfolder || 'docs3' }}"
-          echo "📁 Using subfolder: $SUBFOLDER"
+          # Handle subfolder parameter properly
+          # Distinguish between: no parameter, empty string, and specific value
+          if [ -z "${{ github.event.inputs.subfolder }}" ]; then
+            # No parameter provided - merge to root (no subfolder)
+            USE_SUBFOLDER=false
+            echo "📁 No subfolder parameter provided - merging to root"
+          elif [ "${{ github.event.inputs.subfolder }}" = "" ]; then
+            # Empty string provided - merge to root (no subfolder)  
+            USE_SUBFOLDER=false
+            echo "📁 Empty subfolder parameter provided - merging to root"
+          else
+            # Specific folder provided - use it
+            SUBFOLDER="${{ github.event.inputs.subfolder }}"
+            USE_SUBFOLDER=true
+            echo "📁 Using subfolder: $SUBFOLDER"
+          fi
           
-          # Run the merge script with branches config
-          if [ -n "$SUBFOLDER" ]; then
+          # Run the merge script with or without subfolder parameter
+          if [ "$USE_SUBFOLDER" = true ]; then
+            echo "🔧 Running merge with subfolder: $SUBFOLDER"
             python3 scripts/merge_docs_configs.py \
               --branches-config branches-config.json \
               --base-dir . \
               --subfolder "$SUBFOLDER" \
               --output docs.json
           else
+            echo "🔧 Running merge to root (no subfolder parameter passed)"
             python3 scripts/merge_docs_configs.py \
               --branches-config branches-config.json \
               --base-dir . \
@@ -275,7 +260,7 @@ jobs:
             - ✅ Cleaned up outdated version folders
             
             ### Subfolder Used:
-            `${{ inputs.subfolder || 'docs3' }}`
+            `${{ github.event.inputs.subfolder || 'root (no subfolder)' }}`
             
             ---
             
