@@ -993,31 +993,14 @@ class DocsMerger:
         # The JSX template literals will add the prefix instead
         print(f"    ⚠️ Skipping data path prefixing to prevent double prefixes")
 
-        # 4. Fix template string hrefs: href={`/${path}`} and href={`/${component.property}`}
+        # 4. Fix template string hrefs: href={`/${path}`}
         def replace_template(match):
             nonlocal changes_made
             path = match.group(1)
             changes_made += 1
-            
-            # Handle variable interpolation patterns like ${component.home}
-            if path.startswith('${') and path.endswith('}'):
-                # For JSX variable interpolation, we need to modify the template literal
-                return f'href={{`{prefix}/${{path}}`}}'
-            else:
-                # For simple paths
-                return f'href={{`{prefix}/{path}`}}'
+            return f'href={{`{prefix}/{path}`}}'
 
         content = re.sub(r'href=\{\`\/([^`]+)\`\}', replace_template, content)
-        
-        # 4b. Fix JSX template literals with variable interpolation specifically
-        def replace_jsx_template_vars(match):
-            nonlocal changes_made
-            var_expression = match.group(1)  # The ${...} part
-            changes_made += 1
-            return f'href={{`{prefix}/${{{var_expression}}}`}}'
-        
-        # Match patterns like href={`/${component.home}`} or href={`/${component.releaseNotesPath}`}
-        content = re.sub(r'href=\{\`\/\$\{([^}]+)\}\`\}', replace_jsx_template_vars, content)
 
         # 5. Fix relative hrefs without leading slash: href="path/to/page"
         def replace_relative_href(match):
