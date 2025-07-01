@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       subfolder:
-        description: 'Subfolder for documentation (e.g., docs3, docsv3, docs)'
+        description: 'Subfolder for documentation (leave empty for root deployment)'
         required: false
-        default: 'docs3'
+        default: ''
         type: string
 
 # Ensure only latest deployment runs
@@ -48,77 +48,68 @@ jobs:
 
       - name: Cleanup old version folders and assets
         run: |
-          echo "🧹 Cleaning up old version folders and assets..."
+          echo "🧹 Cleaning up all content except essential files..."
           
-          # Get current version folders from config
-          current_folders=$(python3 -c "import json; config=json.load(open('branches-config.json')); folders=[v.get('folder','') for v in config.get('versions',[]) if v.get('folder','')]; print(' '.join(folders))")
-          
-          echo "📋 Current version folders: $current_folders"
-          
-          # Define asset types that will be regenerated
-          asset_types=(
-            "style.css"
-            "images"
-            "img" 
-            "logo"
-            "favicon.ico"
-            "favicon.png"
-            "snippets"
+          # Define folders to keep (whitelist)
+          keep_folders=(
+            ".github"
+            ".git" 
+            ".devcontainer"
+            "scripts"
+            ".vale"
           )
           
-          # Remove old assets (they'll be regenerated from current versions)
-          echo "🎨 Cleaning up old assets..."
-          for asset in "${asset_types[@]}"; do
-            if [ -e "$asset" ]; then
-              echo "🗑️  Removing old asset: $asset"
-              rm -rf "$asset"
-            fi
-          done
+          # Define files to keep (whitelist)
+          keep_files=(
+            "branches-config.json"
+            ".gitignore" 
+            "README.md"
+            ".vale.ini"
+          )
           
-          # Remove old docs.json (will be regenerated)
-          if [ -f "docs.json" ]; then
-            echo "🗑️  Removing old docs.json"
-            rm -f "docs.json"
-          fi
+          echo "📋 Folders to keep: ${keep_folders[*]}"
+          echo "📋 Files to keep: ${keep_files[*]}"
           
-          # Also clean up the subfolder if it exists (using input parameter)
-          SUBFOLDER="${{ inputs.subfolder || 'docs3' }}"
-          if [ -n "$SUBFOLDER" ] && [ -d "$SUBFOLDER" ]; then
-            echo "🗑️  Removing old $SUBFOLDER subfolder"
-            rm -rf "$SUBFOLDER"
-          fi
-          
-          # Remove old version folders that aren't in the current config
-          # Look for directories that look like version folders (numeric or version-like names)
+          # Remove all directories except the ones we want to keep
+          echo "🗑️  Removing old directories..."
           for dir in */; do
             if [ -d "$dir" ]; then
               dir_name=${dir%/}  # Remove trailing slash
-          
-              # Skip non-version directories
-              if [[ "$dir_name" =~ ^\..*$ ]] || [ "$dir_name" = ".github" ]; then
-                continue
-              fi
-          
-              # Check if this folder is in current config
-              is_current=false
-              for current in $current_folders; do
-                if [ "$dir_name" = "$current" ]; then
-                  is_current=true
+              
+              should_keep=false
+              for keep_folder in "${keep_folders[@]}"; do
+                if [ "$dir_name" = "$keep_folder" ]; then
+                  should_keep=true
                   break
                 fi
               done
-          
-              # If it's not in current config and looks like a version folder, remove it
-              if [ "$is_current" = false ]; then
-                # Only remove if it looks like a version folder (contains numbers/dots or common version patterns)
-                if [[ "$dir_name" =~ ^[0-9]+\.[0-9]+$ ]] || [[ "$dir_name" =~ ^v[0-9] ]] || [[ "$dir_name" =~ ^[0-9] ]]; then
-                  echo "🗑️  Removing old version folder: $dir_name"
-                  rm -rf "$dir"
-                else
-                  echo "📁 Keeping non-version directory: $dir_name"
-                fi
+              
+              if [ "$should_keep" = false ]; then
+                echo "🗑️  Removing directory: $dir_name/"
+                rm -rf "$dir"
               else
-                echo "📁 Keeping current version folder: $dir_name (will be refreshed)"
+                echo "📁 Keeping essential directory: $dir_name/"
+              fi
+            fi
+          done
+          
+          # Remove all files except the ones we want to keep
+          echo "🗑️  Removing old files..."
+          for file in *; do
+            if [ -f "$file" ]; then
+              should_keep=false
+              for keep_file in "${keep_files[@]}"; do
+                if [ "$file" = "$keep_file" ]; then
+                  should_keep=true
+                  break
+                fi
+              done
+              
+              if [ "$should_keep" = false ]; then
+                echo "🗑️  Removing file: $file"
+                rm -f "$file"
+              else
+                echo "📄 Keeping essential file: $file"
               fi
             fi
           done
@@ -134,7 +125,7 @@ jobs:
           echo "🔄 Starting branch cloning and organization..."
           
           # Read the branches config and extract branch information
-          branches=$(python3 -c "import json; config=json.load(open('branches-config.json')); [print(f\"{v.get('folder','')}:{v.get('branch','main')}\") for v in config.get('versions',[]) if v.get('folder','')]")
+          branches=$(python3 -c "import json; config=json.load(open('branches-config.json')); [print(f\"{v.get('sourceFolder','')}:{v.get('branch','main')}\") for v in config.get('versions',[]) if v.get('sourceFolder','')]")
           
           echo "📋 Branches to process:"
           echo "$branches"
@@ -194,18 +185,20 @@ jobs:
         run: |
           echo "🔄 Running documentation merger..."
           
-          # Get subfolder from input (with fallback)
-          SUBFOLDER="${{ inputs.subfolder || 'docs3' }}"
-          echo "📁 Using subfolder: $SUBFOLDER"
+          # Get subfolder from input (no fallback - empty means root deployment)
+          SUBFOLDER="${{ inputs.subfolder }}"
+          echo "📁 Using subfolder: '$SUBFOLDER'"
           
           # Run the merge script with branches config
           if [ -n "$SUBFOLDER" ]; then
+            echo "📁 Deploying to subfolder: $SUBFOLDER"
             python3 scripts/merge_docs_configs.py \
               --branches-config branches-config.json \
               --base-dir . \
               --subfolder "$SUBFOLDER" \
               --output docs.json
           else
+            echo "📁 Deploying to root (no subfolder)"
             python3 scripts/merge_docs_configs.py \
               --branches-config branches-config.json \
               --base-dir . \
@@ -219,7 +212,7 @@ jobs:
           echo "🧹 Cleaning up temporary cloned version folders..."
           
           # Get current version folders from config
-          current_folders=$(python3 -c "import json; config=json.load(open('branches-config.json')); folders=[v.get('folder','') for v in config.get('versions',[]) if v.get('folder','')]; print(' '.join(folders))")
+          current_folders=$(python3 -c "import json; config=json.load(open('branches-config.json')); folders=[v.get('sourceFolder','') for v in config.get('versions',[]) if v.get('sourceFolder','')]; print(' '.join(folders))")
           
           echo "📋 Removing cloned folders: $current_folders"
           
@@ -275,7 +268,7 @@ jobs:
             - ✅ Cleaned up outdated version folders
             
             ### Subfolder Used:
-            `${{ inputs.subfolder || 'docs3' }}`
+            `${{ inputs.subfolder || '(root deployment)' }}`
             
             ---
             
