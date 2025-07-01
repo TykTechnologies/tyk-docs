@@ -23,8 +23,10 @@ class DocsMerger:
 
         # Define fallback version priority - will be overridden by branches config
         self.version_priority = []  # Start empty, populate from branches-config.json
-        self.version_labels = {}  # Maps folder -> label
+        self.version_labels = {}  # Maps target_folder -> label
         self.external_versions = {}  # Store external version info
+        self.source_folders = {}  # Maps target_folder -> source_folder
+        self.target_folders = {}  # Maps source_folder -> target_folder
         self.latest_version = None
         self.main_version = None  # Track main branch with most current assets
 
@@ -52,6 +54,8 @@ class DocsMerger:
                 self.version_priority = []
                 self.version_labels = {}
                 self.external_versions = {}  # Store external version info
+                self.source_folders = {}  # Maps target_folder -> source_folder
+                self.target_folders = {}  # Maps source_folder -> target_folder
 
                 for version_info in versions:
                     is_external = version_info.get('isExternal', False)
@@ -68,20 +72,41 @@ class DocsMerger:
                             }
                             print(f"🔗 External version: {label} → {external_url}")
                     else:
-                        # Handle local versions
-                        folder = version_info.get('folder', '')
-                        label = version_info.get('label', folder)
+                        # Handle local versions with support for separate source/target folders
+                        source_folder = version_info.get('sourceFolder', version_info.get('folder', ''))
+                        target_folder = version_info.get('targetFolder', version_info.get('folder', ''))
+
+                        # Fallback to 'folder' if neither sourceFolder nor targetFolder specified
+                        if not source_folder and not target_folder:
+                            folder = version_info.get('folder', '')
+                            source_folder = target_folder = folder
+                        elif not source_folder:
+                            source_folder = target_folder
+                        elif not target_folder:
+                            target_folder = source_folder
+
+                        label = version_info.get('label', target_folder)
                         is_latest = version_info.get('isLatest', False)
                         is_main = version_info.get('isMain', False)
 
-                        if folder:
-                            self.version_priority.append(folder)
-                            self.version_labels[folder] = label
+                        if source_folder and target_folder:
+                            # Use target_folder for priority and labels (what appears in navigation)
+                            self.version_priority.append(target_folder)
+                            self.version_labels[target_folder] = label
+
+                            # Store folder mappings
+                            self.source_folders[target_folder] = source_folder
+                            self.target_folders[source_folder] = target_folder
 
                             if is_latest:
-                                self.latest_version = folder
+                                self.latest_version = target_folder
                             if is_main:
-                                self.main_version = folder
+                                self.main_version = target_folder
+
+                            if source_folder != target_folder:
+                                print(f"📁 Version {target_folder}: source='{source_folder}' → target='{target_folder}'")
+                            else:
+                                print(f"📁 Version {target_folder}: unified folder='{source_folder}'")
 
                 print(f"📋 Local version priority: {self.version_priority}")
                 print(f"🏷️  Local version labels: {self.version_labels}")
@@ -131,22 +156,21 @@ class DocsMerger:
 
         base_path = Path(base_dir)
 
-        # Process each version from the config
-        for version_info in branches_config.get('versions', []):
-            folder = version_info.get('folder', '')
-            if not folder:
-                continue
+        # Process each target version (what appears in navigation)
+        for target_version in self.version_priority:
+            # Get the source folder for this target version
+            source_folder = self.source_folders.get(target_version, target_version)
 
-            version_dir = base_path / folder
+            version_dir = base_path / source_folder
             config_file = version_dir / "docs.json"
 
             if config_file.exists():
-                config = self.load_version_config(str(config_file), folder)
+                config = self.load_version_config(str(config_file), target_version)
                 if config:
-                    configs[folder] = config
+                    configs[target_version] = config
             else:
-                label = self.version_labels.get(folder, folder)
-                print(f"⚠️ Config file not found: {config_file} for {label}")
+                label = self.version_labels.get(target_version, target_version)
+                print(f"⚠️ Config file not found: {config_file} for {label} (source: {source_folder})")
 
         return configs
 
@@ -238,7 +262,9 @@ class DocsMerger:
             all_files = {}  # filename -> [(version, filepath, size)]
 
             for version in priority_versions:
-                version_dir = source_path / version
+                # Get the source folder for this target version
+                source_folder = self.source_folders.get(version, version)
+                version_dir = source_path / source_folder
 
                 # Check if asset_type is a directory or individual file
                 asset_path = version_dir / asset_type
@@ -276,7 +302,7 @@ class DocsMerger:
                 continue
 
             # Handle individual files (like favicon.png, style.css)
-            is_individual_file = any((source_path / v / asset_type).is_file() for v in priority_versions)
+            is_individual_file = any((source_path / self.source_folders.get(v, v) / asset_type).is_file() for v in priority_versions)
 
             if is_individual_file:
                 # Handle individual files - copy directly to target root
@@ -352,9 +378,9 @@ class DocsMerger:
                 print(f"   📂 {asset_type}: {len(files)} files")
 
     def copy_snippets_with_version_structure(self, version_configs: Dict[str, Dict],
-                                           source_dir: str = ".", target_dir: str = ".") -> None:
+                                             source_dir: str = ".", target_dir: str = ".") -> None:
         """Copy snippets to version-specific directories with link rewriting."""
-        
+
         # Build priority order: main -> latest -> others
         priority_versions = []
 
@@ -386,21 +412,23 @@ class DocsMerger:
 
         # Process each version
         for version in priority_versions:
-            version_source = source_path / version / "snippets"
-            
+            # Get the source folder for this target version
+            source_folder = self.source_folders.get(version, version)
+            version_source = source_path / source_folder / "snippets"
+
             if not version_source.exists():
-                print(f"  ⚠️ No snippets directory found in {version}")
+                print(f"  ⚠️ No snippets directory found in {source_folder} (target: {version})")
                 continue
 
             is_latest = (version == self.latest_version)
             version_label = self.version_labels.get(version, version)
-            
+
             # Create version-specific snippets directory
             version_snippets_dir = snippets_root / version
             version_snippets_dir.mkdir(parents=True, exist_ok=True)
 
             print(f"\n  📂 Processing snippets for {version} ({version_label})...")
-            
+
             processed_snippets[version] = {}
             version_count = 0
 
@@ -410,7 +438,7 @@ class DocsMerger:
                     # Get relative path from snippets root
                     rel_path = item.relative_to(version_source)
                     target_file = version_snippets_dir / rel_path
-                    
+
                     # Create parent directories if needed
                     target_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -477,10 +505,13 @@ class DocsMerger:
 
         source_path = Path(source_dir)
         target_root_path = Path(target_dir)
-        latest_source = source_path / latest_version
+        
+        # Get the source folder for the latest version
+        latest_source_folder = self.source_folders.get(latest_version, latest_version)
+        latest_source = source_path / latest_source_folder
 
         if not latest_source.exists():
-            print(f"❌ Latest version directory {latest_source} not found")
+            print(f"❌ Latest version directory {latest_source} not found (target: {latest_version}, source: {latest_source_folder})")
             return
 
         # Step 1: Merge assets from all versions
@@ -501,9 +532,12 @@ class DocsMerger:
             if version not in version_configs:
                 continue
 
-            version_source = source_path / version
+            # Get the source folder for this target version
+            source_folder = self.source_folders.get(version, version)
+            version_source = source_path / source_folder
+
             if not version_source.exists():
-                print(f"⚠️ Version directory {version_source} not found")
+                print(f"⚠️ Version directory {version_source} not found (target: {version}, source: {source_folder})")
                 continue
 
             is_latest = (version == latest_version)
@@ -560,7 +594,7 @@ class DocsMerger:
                         if target_item.exists():
                             print(f"    🗑️  Removing existing: {item.name}/")
                             shutil.rmtree(target_item)
-                        
+
                         # Copy directory with recursive link rewriting
                         self.copy_directory_with_link_rewriting(item, target_item, version, is_latest)
                         print(f"    📂 Copied directory with link rewriting: {item.name}/ → {location_desc}")
@@ -1076,10 +1110,10 @@ class DocsMerger:
 
             # Extract the filename part after /snippets/
             snippet_file = snippet_path[10:]  # Remove '/snippets/' prefix
-            
+
             # Build new path with version: /snippets/{version}/filename
             new_snippet_path = f"/snippets/{version}/{snippet_file}"
-            
+
             changes_made += 1
             return f'from {quote}{new_snippet_path}{quote}'
 
@@ -1102,10 +1136,10 @@ class DocsMerger:
     def copy_directory_with_link_rewriting(self, source_dir: Path, target_dir: Path, version: str, is_latest: bool) -> None:
         """Recursively copy directory with link rewriting for content files."""
         target_dir.mkdir(parents=True, exist_ok=True)
-        
+
         for item in source_dir.iterdir():
             target_item = target_dir / item.name
-            
+
             if item.is_dir():
                 # Recursively copy subdirectories
                 self.copy_directory_with_link_rewriting(item, target_item, version, is_latest)
@@ -1116,10 +1150,10 @@ class DocsMerger:
                         # Read, rewrite, and write content
                         with open(item, 'r', encoding='utf-8') as f:
                             content = f.read()
-                        
+
                         # Rewrite internal links
                         modified_content = self.rewrite_internal_links(content, version, is_latest)
-                        
+
                         # Write modified content
                         with open(target_item, 'w', encoding='utf-8') as f:
                             f.write(modified_content)
