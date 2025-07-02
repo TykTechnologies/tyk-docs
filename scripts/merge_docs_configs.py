@@ -612,8 +612,11 @@ class DocsMerger:
                                 with open(item, 'r', encoding='utf-8') as f:
                                     content = f.read()
 
-                                # Rewrite internal links
-                                modified_content = self.rewrite_internal_links(content, version, is_latest)
+                                # First: Rewrite snippet imports (always uses version)
+                                modified_content = self.rewrite_snippet_imports(content, version)
+                                
+                                # Then: Rewrite internal links (uses subfolder logic)
+                                modified_content = self.rewrite_internal_links(modified_content, version, is_latest)
 
                                 # Write modified content
                                 with open(target_item, 'w', encoding='utf-8') as f:
@@ -937,6 +940,56 @@ class DocsMerger:
                     cleaned[key] = value
         return cleaned
 
+    def rewrite_snippet_imports(self, content, version):
+        """Dedicated function for snippet import rewriting - always uses version"""
+        import re
+        
+        print(f"    📝 Processing snippet imports for version: {version}")
+        changes_made = 0
+        
+        def replace_snippet_import(match):
+            nonlocal changes_made
+            # Extract the import parts
+            import_part = match.group(1)  # "import Something" or "import { Something }"
+            quote = match.group(2)        # Quote character (' or ")
+            snippet_path = match.group(3) # The snippet path
+            
+            print(f"      🔍 Found snippet import: {snippet_path}")
+            
+            # Only process snippet imports that start with /snippets/
+            if not snippet_path.startswith('/snippets/'):
+                print(f"      ⚠️ Skipping non-snippet import: {snippet_path}")
+                return match.group(0)
+            
+            # Check if already has version by looking for known version patterns
+            path_parts = snippet_path.split('/')
+            print(f"      🔍 Path parts: {path_parts} (length: {len(path_parts)})")
+            
+            # Check if the third part (index 2) looks like a version
+            if len(path_parts) >= 4:  # ['', 'snippets', 'potential_version', 'file.mdx']
+                potential_version = path_parts[2]
+                # Check if it looks like a version (contains digits or is 'nightly')
+                if potential_version == 'nightly' or any(char.isdigit() for char in potential_version):
+                    print(f"      ✅ Already has version '{potential_version}', skipping: {snippet_path}")
+                    return match.group(0)  # Already versioned
+            
+            # Extract filename after /snippets/
+            snippet_file = snippet_path[10:]  # Remove '/snippets/' prefix
+            new_snippet_path = f"/snippets/{version}/{snippet_file}"
+            
+            changes_made += 1
+            print(f"      📝 Snippet import: {snippet_path} → {new_snippet_path}")
+            return f'{import_part} from {quote}{new_snippet_path}{quote}'
+        
+        # Match both import patterns:
+        # import Something from '/snippets/...'
+        # import { Something } from '/snippets/...'
+        pattern = r'(import\s+(?:\{[^}]+\}|\w+))\s+from\s+(["\'])(/snippets/[^"\']+)\2'
+        content = re.sub(pattern, replace_snippet_import, content)
+        
+        print(f"    📝 Snippet imports: {changes_made} changes made")
+        return content
+
     def rewrite_internal_links(self, content, version, is_latest):
         """Rewrite internal links to include subfolder and version paths"""
         import re
@@ -1098,27 +1151,7 @@ class DocsMerger:
         # It should only match relative paths (not starting with /)
         content = re.sub(r'\[([^\]]+)\]\(([^/)][^)]*)\)', replace_relative_markdown, content)
 
-        # 8. Fix snippet imports: from '/snippets/file.mdx' -> from '/snippets/{version}/file.mdx'
-        def replace_snippet_import(match):
-            nonlocal changes_made
-            quote = match.group(1)  # Quote character (' or ")
-            snippet_path = match.group(2)  # The snippet path
-
-            # Only process snippet imports that start with /snippets/
-            if not snippet_path.startswith('/snippets/'):
-                return match.group(0)
-
-            # Extract the filename part after /snippets/
-            snippet_file = snippet_path[10:]  # Remove '/snippets/' prefix
-
-            # Build new path with version: /snippets/{version}/filename
-            new_snippet_path = f"/snippets/{version}/{snippet_file}"
-
-            changes_made += 1
-            return f'from {quote}{new_snippet_path}{quote}'
-
-        # Match import statements: from '/snippets/...'
-        content = re.sub(r'from\s+(["\'])(/snippets/[^"\']+)\1', replace_snippet_import, content)
+        # Note: Snippet imports are now handled by the dedicated rewrite_snippet_imports function
 
         print(f"    ✅ Link rewriting complete: {changes_made} changes made")
 
@@ -1151,8 +1184,11 @@ class DocsMerger:
                         with open(item, 'r', encoding='utf-8') as f:
                             content = f.read()
 
-                        # Rewrite internal links
-                        modified_content = self.rewrite_internal_links(content, version, is_latest)
+                        # First: Rewrite snippet imports (always uses version)
+                        modified_content = self.rewrite_snippet_imports(content, version)
+                        
+                        # Then: Rewrite internal links (uses subfolder logic)
+                        modified_content = self.rewrite_internal_links(modified_content, version, is_latest)
 
                         # Write modified content
                         with open(target_item, 'w', encoding='utf-8') as f:
