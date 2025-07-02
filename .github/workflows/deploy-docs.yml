@@ -244,6 +244,36 @@ jobs:
           echo "📁 Generated file structure:"
           find . -name "*.mdx" -o -name "*.md" -o -name "*.json" -o -name "*.css" -o -name "*.png" | head -20
 
+      - name: Close previous deployment PRs
+        run: |
+          echo "🔍 Finding and closing previous deployment PRs..."
+          
+          # Find PRs that match BOTH criteria:
+          # 1. Have the "auto-deployment" label
+          # 2. Branch starts with "docs-merge-"
+          DEPLOYMENT_PRS=$(gh pr list \
+            --state open \
+            --label "auto-deployment" \
+            --json number,headRefName,labels \
+            --jq '.[] | select(.headRefName | startswith("docs-merge-")) | .number')
+          
+          if [ -n "$DEPLOYMENT_PRS" ]; then
+            echo "📋 Found deployment PRs to close: $DEPLOYMENT_PRS"
+            
+            for pr_number in $DEPLOYMENT_PRS; do
+              echo "❌ Closing deployment PR #$pr_number"
+              gh pr close "$pr_number" \
+                --comment "🤖 Superseded by newer deployment (Run #${{ github.run_number }})" \
+                || echo "⚠️ Failed to close PR #$pr_number (may already be closed)"
+            done
+            
+            echo "✅ Closed all previous deployment PRs"
+          else
+            echo "✅ No deployment PRs found to close"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.ORG_GH_TOKEN }}
+
       - name: Create Pull Request
         id: create-pr
         uses: peter-evans/create-pull-request@v7
@@ -260,6 +290,7 @@ jobs:
             **Generated from:** `branches-config.json`  
             **Timestamp:** ${{ github.event.head_commit.timestamp }}  
             **Run ID:** ${{ github.run_id }}
+            **Subfolder:** `${{ inputs.subfolder || '(root deployment)' }}`
             
             ### Changes Include:
             - ✅ Merged documentation from multiple branches
@@ -267,12 +298,15 @@ jobs:
             - ✅ Updated assets and content structure
             - ✅ Cleaned up outdated version folders
             
-            ### Subfolder Used:
-            `${{ inputs.subfolder || '(root deployment)' }}`
-            
             ---
             
-            Please review the changes and merge when ready.
+            🚦 **This PR will be processed by merge queue to ensure proper validation and ordering.**
+            
+            Previous deployment PRs have been automatically closed to prevent conflicts.
+          labels: |
+            documentation
+            auto-deployment
+            automated
           commit-message: |
             🤖 Auto-merge documentation from branches
             
@@ -291,7 +325,7 @@ jobs:
         if: steps.create-pr.outputs.pull-request-number
         run: |
           PR_NUMBER="${{ steps.create-pr.outputs.pull-request-number }}"
-          echo "🔄 Enabling auto-merge on deployment PR #$PR_NUMBER..."
+          echo "� Enabling auto-merge on deployment PR #$PR_NUMBER..."
           
           gh pr merge --squash --auto "$PR_NUMBER"
           
