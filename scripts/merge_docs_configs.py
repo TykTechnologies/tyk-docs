@@ -1233,7 +1233,8 @@ class DocsMerger:
         optional_fields = [
             "theme", "logo", "favicon", "colors", "description",
             "api", "integrations", "styling", "search", "seo",
-            "background", "fonts", "appearance", "footer", "banner", "navbar", "contextual"
+            "background", "fonts", "appearance", "footer", "banner", "navbar", "contextual","thumbnails","icons",
+            "errors"
         ]
 
         for field in optional_fields:
