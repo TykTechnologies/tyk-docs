@@ -36,6 +36,116 @@ Our minor releases are supported until our next minor comes out.
 
 ---
 
+## 1.14 Release Notes
+
+### 1.14.0 Release Notes
+
+#### Release Date XXX
+
+#### Release Highlights
+
+Add release highlights 
+
+For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-v1.14.0) below.
+
+#### Breaking Changes {#breaking-changes-v1.14.0}
+
+Add breaking changes
+
+For the complete API specification, see [Tyk EDP API documentation]({{< ref "product-stack/tyk-enterprise-developer-portal/api-documentation/tyk-edp-api" >}}).
+
+#### Deprecations
+
+There are no deprecations in this release.
+
+#### Upgrade instructions
+
+If you are on 1.13.0 or an older version, we advise you to upgrade ASAP to this release.
+
+While upgrading to 1.14.0, 
+1. Portal will automatically migrate the new Custom IDs to most of the existing resources. For more information, please refer to the [changelog](#Changelog-v1.14.0).
+2. Users are advised to take appropriate actions in their system regarding the `Plans` API object changes as described in the [breaking changes section]({{< ref "#breaking-changes-v1.14.0" >}}).
+
+To upgrade the portal's theme, please follow the [upgrade instructions]({{< ref "portal/customization/themes#upgrading-themes" >}}) for the portal's themes.
+
+#### Download
+- [Docker image v1.13.0](https://hub.docker.com/r/tykio/portal/tags?page=&page_size=&ordering=&name=v1.14.0)
+  - ```bash
+    docker pull tykio/portal:v1.14.0
+    ```
+- [The default theme package](https://github.com/TykTechnologies/portal-default-theme/releases/tag/1.14.0)
+
+#### Changelog {#Changelog-v1.14.0}
+
+##### Added
+<ul>
+<li>
+<details>
+<summary>Enhanced Application Visibility Controls</summary>
+
+Added support for more precise application visibility in the Developer Portal to prevent users from seeing apps and credentials created by other teams in the same organization. Each app can now be set to personal, team, or organisation visibility, defining who can access it. Users will only see their own apps, apps shared within their teams (excluding the default “all users” team), and apps marked as visible to the whole organization. To avoid breaking existing setups, all current apps are defaulted to organisation visibility.
+</details>
+</li>
+<li>
+<details>
+<summary>API Product Tag Access in Theme Templates</summary>
+
+Portal theme templates now have access to API product tags, enabling dynamic display or categorization of API products based on tags.
+</details>
+</li>
+<li>
+<details>
+<summary>Configurable Robots.txt Support</summary>
+
+Added native support for serving a configurable robots.txt file via a new /robots.txt endpoint. Portal admins can now define and manage crawler directives directly from the Portal Admin UI.
+</details>
+</li>
+<li>
+<details>
+<summary>Updated to Latest Kin-OpenAPI</summary>
+
+The Enterprise Developer Portal now uses v0.132.0, replacing the legacy import to ensure compatibility with the latest OpenAPI tooling.
+</details>
+</li>
+<li>
+<details>
+<summary>Improved Team and User Management</summary>
+
+We have enhanced team and user access controls by restricting team members from viewing other users' details, limiting Admin Users to adding users only to teams they belong to, automatically assigning users to the default organization team if no team is selected during invitation, and allowing Admin Users to assign users to multiple teams.
+</details>
+</li>
+</ul>
+
+##### Changed 
+
+<ul>
+<li>
+<details>
+<summary>Upgrade to Go 1.23 for Tyk Enterprise Developer Portal</summary>
+
+Tyk Enterprise Developer Portal has been upgraded from Golang 1.22 to Golang 1.23, bringing enhanced performance, strengthened security, and access to the latest features available in the new Golang release.
+
+##### Fixed
+
+<ul>
+<li>
+<details>
+<summary>Policy Preservation in Product Updates</summary>
+
+Implement policy preservation in product updates by checking if a policy exists before updating a product
+</details>
+</li>
+<li>
+<details>
+<summary>API Product Synchronization Fixes</summary>
+
+Fixed issues with API product synchronization where applied APIs were being lost during manual or repeated Dashboard syncs. API synchronization has been enhanced to ensure all associated APIs and product details including custom fields are consistently preserved.
+</details>
+</li>
+</ul>
+
+---
+
 ## 1.13 Release Notes
 
 ### 1.13.2 Release Notes
@@ -149,6 +259,7 @@ Resolved a regression introduced in v1.13.0 that removed the ability to view or 
 </li>
 </ul>
 
+---
 
 ### 1.13.0 Release Notes
 
