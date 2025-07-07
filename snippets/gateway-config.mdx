@@ -26,7 +26,7 @@ Custom hostname for the Control API
 ENV: <b>TYK_GW_CONTROLAPIPORT</b><br />
 Type: `int`<br />
 
-Set this to expose the Tyk Gateway API on a separate port. You can protect it behind a firewall if needed. Please make sure you follow this guide when setting the control port https://tyk.io/docs/tyk-self-managed/#change-your-control-port.
+Set to run your Gateway Control API on a separate port, and protect it behind a firewall if needed. Please make sure you follow this guide when setting the control port https://tyk.io/docs/planning-for-production/#change-your-control-port.
 
 ### secret
 ENV: <b>TYK_GW_SECRET</b><br />
@@ -91,10 +91,7 @@ Specify public keys used for Certificate Pinning on global level.
 ENV: <b>TYK_GW_SECURITY_CERTIFICATES_UPSTREAM</b><br />
 Type: `map[string]string`<br />
 
-Upstream is used to specify the certificates to be used in mutual TLS connections to upstream services. These are set at gateway level as a map of domain -> certificate id or path.
-For example if you want Tyk to use the certificate `ab23ef123` for requests to the `example.com` upstream and `/certs/default.pem` for all other upstreams then:
-In `tyk.conf` you would configure `"security": {"certificates": {"upstream": {"*": "/certs/default.pem", "example.com": "ab23ef123"}}}`
-And if using environment variables you would set this to `*:/certs/default.pem,example.com:ab23ef123`.
+Specify upstream mutual TLS certificates at a global level in the following format: `{ "<host>": "<cert>" }``
 
 ### security.certificates.control_api
 ENV: <b>TYK_GW_SECURITY_CERTIFICATES_CONTROLAPI</b><br />
@@ -156,46 +153,50 @@ Regular expressions and parameterized routes will be left alone regardless of th
 ENV: <b>TYK_GW_HTTPSERVEROPTIONS_ENABLEPATHPREFIXMATCHING</b><br />
 Type: `bool`<br />
 
-EnablePathPrefixMatching changes how the gateway matches incoming URL paths against routes (patterns) defined in the API definition.
-By default, the gateway uses wildcard matching. When EnablePathPrefixMatching is enabled, it switches to prefix matching. For example, a defined path such as `/json` will only match request URLs that begin with `/json`, rather than matching any URL containing `/json`.
+EnablePathPrefixMatching changes the URL matching from wildcard mode to prefix mode.
+For example, `/json` matches `*/json*` by current default behaviour.
+If prefix matching is enabled, the match will be performed as a prefix match (`/json*`).
 
-The gateway checks the request URL against several variations depending on whether path versioning is enabled:
-- Full path (listen path + version + endpoint): `/listen-path/v4/json`
-- Non-versioned full path (listen path + endpoint): `/listen-path/json`
-- Path without version (endpoint only): `/json`
+The `/json` url would be matched as `^/json` against the following paths:
 
-For patterns that start with `/`, the gateway prepends `^` before performing the check, ensuring a true prefix match.
-For patterns that start with `^`, the gateway will already perform prefix matching so EnablePathPrefixMatching will have no impact.
-This option allows for more specific and controlled routing of API requests, potentially reducing unintended matches. Note that you may need to adjust existing route definitions when enabling this option.
+- Full listen path and versioning URL (`/listen-path/v4/json`)
+- Stripped listen path URL (`/v4/json`)
+- Stripped version information (`/json`) - match.
 
-Example:
+If versioning is disabled then the following URLs are considered:
 
-With wildcard matching, `/json` might match `/api/v1/data/json`.
-With prefix matching, `/json` would not match `/api/v1/data/json`, but would match `/json/data`.
+- Full listen path and endpoint (`/listen-path/json`)
+- Stripped listen path (`/json`) - match.
 
-Combining EnablePathPrefixMatching with EnablePathSuffixMatching will result in exact URL matching, with `/json` being evaluated as `^/json$`.
+For inputs that start with `/`, a prefix match is ensured by
+prepending the start of string `^` caret.
+
+For all other cases, the pattern remains unmodified.
+
+Combine this option with `enable_path_suffix_matching` to achieve
+exact url matching with `/json` being evaluated as `^/json$`.
 
 ### http_server_options.enable_path_suffix_matching
 ENV: <b>TYK_GW_HTTPSERVEROPTIONS_ENABLEPATHSUFFIXMATCHING</b><br />
 Type: `bool`<br />
 
-EnablePathSuffixMatching changes how the gateway matches incoming URL paths against routes (patterns) defined in the API definition.
-By default, the gateway uses wildcard matching. When EnablePathSuffixMatching is enabled, it switches to suffix matching. For example, a defined path such as `/json` will only match request URLs that end with `/json`, rather than matching any URL containing `/json`.
+EnablePathSuffixMatching changes the URL matching to match as a suffix.
+For example: `/json` is matched as `/json$` against the following paths:
 
-The gateway checks the request URL against several variations depending on whether path versioning is enabled:
-- Full path (listen path + version + endpoint): `/listen-path/v4/json`
-- Non-versioned full path (listen path + endpoint): `/listen-path/json`
-- Path without version (endpoint only): `/json`
+- Full listen path and versioning URL (`/listen-path/v4/json`)
+- Stripped listen path URL (`/v4/json`)
+- Stripped version information (`/json`) - match.
 
-For patterns that already end with `$`, the gateway will already perform suffix matching so EnablePathSuffixMatching will have no impact. For all other patterns, the gateway appends `$` before performing the check, ensuring a true suffix match.
-This option allows for more specific and controlled routing of API requests, potentially reducing unintended matches. Note that you may need to adjust existing route definitions when enabling this option.
+If versioning is disabled then the following URLs are considered:
 
-Example:
+- Full listen path and endpoint (`/listen-path/json`)
+- Stripped listen path (`/json`) - match.
 
-With wildcard matching, `/json` might match `/api/v1/json/data`.
-With suffix matching, `/json` would not match `/api/v1/json/data`, but would match `/api/v1/json`.
+If the input pattern already ends with a `$` (`/json$`)
+then the pattern remains unmodified.
 
-Combining EnablePathSuffixMatching with EnablePathPrefixMatching will result in exact URL matching, with `/json` being evaluated as `^/json$`.
+Combine this option with `enable_path_prefix_matching` to achieve
+exact url matching with `/json` being evaluated as `^/json$`.
 
 ### http_server_options.ssl_insecure_skip_verify
 ENV: <b>TYK_GW_HTTPSERVEROPTIONS_SSLINSECURESKIPVERIFY</b><br />
@@ -213,16 +214,13 @@ Enabled WebSockets and server side events support
 ENV: <b>TYK_GW_HTTPSERVEROPTIONS_CERTIFICATES</b><br />
 Type: `CertsData`<br />
 
-Deprecated: Use `ssl_certificates`instead.
+Deprecated. SSL certificates used by Gateway server.
 
 ### http_server_options.ssl_certificates
 ENV: <b>TYK_GW_HTTPSERVEROPTIONS_SSLCERTIFICATES</b><br />
 Type: `[]string`<br />
 
-Index of certificates available to the Gateway for use in client and upstream communication.
-The string value in the array can be two of the following options:
-1. The ID assigned to and used to identify a certificate in the Tyk Certificate Store
-2. The path to a file accessible to the Gateway. This PEM file must contain the private key and public certificate pair concatenated together.
+SSL certificates used by your Gateway server. A list of certificate IDs or path to files.
 
 ### http_server_options.server_name
 ENV: <b>TYK_GW_HTTPSERVEROPTIONS_SERVERNAME</b><br />
@@ -234,7 +232,7 @@ Start your Gateway HTTP server on specific server name
 ENV: <b>TYK_GW_HTTPSERVEROPTIONS_MINVERSION</b><br />
 Type: `uint16`<br />
 
-Minimum TLS version. Possible values: https://tyk.io/docs/api-management/certificates#supported-tls-versions
+Minimum TLS version. Possible values: https://tyk.io/docs/basic-config-and-security/security/tls-and-ssl/#values-for-tls-versions
 
 ### http_server_options.max_version
 ENV: <b>TYK_GW_HTTPSERVEROPTIONS_MAXVERSION</b><br />
@@ -274,7 +272,7 @@ Disable automatic character escaping, allowing to path original URL data to the 
 ENV: <b>TYK_GW_HTTPSERVEROPTIONS_CIPHERS</b><br />
 Type: `[]string`<br />
 
-Custom SSL ciphers applicable when using TLS version 1.2. See the list of ciphers here https://tyk.io/docs/api-management/certificates#supported-tls-cipher-suites
+Custom SSL ciphers. See list of ciphers here https://tyk.io/docs/basic-config-and-security/security/tls-and-ssl/#specify-tls-cipher-suites-for-tyk-gateway--tyk-dashboard
 
 ### http_server_options.max_request_body_size
 ENV: <b>TYK_GW_HTTPSERVEROPTIONS_MAXREQUESTBODYSIZE</b><br />
@@ -291,7 +289,7 @@ Two methods are used to perform the comparison:
 A value of zero (default) means that no maximum is set and API requests will not be tested.
 
 See more information about setting request size limits here:
-https://tyk.io/docs/api-management/traffic-transformation/#request-size-limits
+https://tyk.io/docs/basic-config-and-security/control-limit-traffic/request-size-limits/#maximum-request-sizes
 
 ### version_header
 ENV: <b>TYK_GW_VERSIONHEADER</b><br />
@@ -415,7 +413,7 @@ ENV: <b>TYK_GW_PORTWHITELIST</b><br />
 Type: `PortsWhiteList`<br />
 
 Defines the ports that will be available for the API services to bind to in the format
-documented here https://tyk.io/docs/api-management/non-http-protocols/#allowing-specific-ports.
+documented here https://tyk.io/docs/key-concepts/tcp-proxy/#allowing-specific-ports.
 Ports can be configured per protocol, e.g. https, tls etc.
 If configuring via environment variable `TYK_GW_PORTWHITELIST` then remember to escape
 JSON strings.
@@ -603,7 +601,7 @@ Type: `bool`<br />
 
 Disable the capability of the Gateway to `autodiscover` the Dashboard through heartbeat messages via Redis.
 The goal of zeroconf is auto-discovery, so you do not have to specify the Tyk Dashboard address in your Gateway`tyk.conf` file.
-In some specific cases, for example, when the Dashboard is bound to a public domain, not accessible inside an internal network, or similar, `disable_dashboard_zeroconf` can be set to `true`, in favor of directly specifying a Tyk Dashboard address.
+In some specific cases, for example, when the Dashboard is bound to a public domain, not accessible inside an internal network, or similar, `disable_dashboard_zeroconf` can be set to `true`, in favour of directly specifying a Tyk Dashboard address.
 
 ### slave_options
 The `slave_options` allow you to configure the RPC slave connection required for MDCB installations.
@@ -638,7 +636,7 @@ Use this setting to add the URL for your MDCB or load balancer host.
 ENV: <b>TYK_GW_SLAVEOPTIONS_RPCKEY</b><br />
 Type: `string`<br />
 
-Your organization ID to connect to the MDCB installation.
+Your organisation ID to connect to the MDCB installation.
 
 ### slave_options.api_key
 ENV: <b>TYK_GW_SLAVEOPTIONS_APIKEY</b><br />
@@ -670,8 +668,8 @@ Set this option to `true` if you don’t want to monitor changes in the keys fro
 ENV: <b>TYK_GW_SLAVEOPTIONS_GROUPID</b><br />
 Type: `string`<br />
 
-This is the `zone` that this instance inhabits, e.g. the cluster/data-center the Gateway lives in.
-The group ID must be the same across all the Gateways of a data-center/cluster which are also sharing the same Redis instance.
+This is the `zone` that this instance inhabits, e.g. the cluster/data-centre the Gateway lives in.
+The group ID must be the same across all the Gateways of a data-centre/cluster which are also sharing the same Redis instance.
 This ID should also be unique per cluster (otherwise another Gateway cluster can pick up your keyspace events and your cluster will get zero updates).
 
 ### slave_options.call_timeout
@@ -727,9 +725,6 @@ If set to `true`, distributed rate limiter will be disabled for this node, and i
 If you set `db_app_conf_options.node_is_segmented` to `true` for multiple Gateway nodes, you should ensure that `management_node` is set to `false`.
 This is to ensure visibility for the management node across all APIs.
 </Note>
-
-For pro installations, `management_node` is not a valid configuration option.
-Always set `management_node` to `false` in pro environments.
 
 
 ### auth_override
@@ -794,26 +789,26 @@ Controls which algorthm to use as a fallback when your distributed rate limiter 
 ENV: <b>TYK_GW_ENFORCEORGDATAAGE</b><br />
 Type: `bool`<br />
 
-Allows you to dynamically configure analytics expiration on a per organization level
+Allows you to dynamically configure analytics expiration on a per organisation level
 
 ### enforce_org_data_detail_logging
 ENV: <b>TYK_GW_ENFORCEORGDATADETAILLOGGING</b><br />
 Type: `bool`<br />
 
-Allows you to dynamically configure detailed logging on a per organization level
+Allows you to dynamically configure detailed logging on a per organisation level
 
 ### enforce_org_quotas
 ENV: <b>TYK_GW_ENFORCEORGQUOTAS</b><br />
 Type: `bool`<br />
 
-Allows you to dynamically configure organization quotas on a per organization level
+Allows you to dynamically configure organisation quotas on a per organisation level
 
 ### monitor
-The monitor section is useful if you wish to enforce a global trigger limit on organization and user quotas.
+The monitor section is useful if you wish to enforce a global trigger limit on organisation and user quotas.
 This feature will trigger a webhook event to fire when specific triggers are reached.
-Triggers can be global (set in the node), by organization (set in the organization session object) or by key (set in the key session object)
+Triggers can be global (set in the node), by organisation (set in the organisation session object) or by key (set in the key session object)
 
-While Organization-level and Key-level triggers can be tiered (e.g. trigger at 10%, trigger at 20%, trigger at 80%), in the node-level configuration only a global value can be set.
+While Organisation-level and Key-level triggers can be tiered (e.g. trigger at 10%, trigger at 20%, trigger at 80%), in the node-level configuration only a global value can be set.
 If a global value and specific trigger level are the same the trigger will only fire once:
 
 ```
@@ -886,7 +881,7 @@ Apply the monitoring subsystem to user keys.
 ENV: <b>TYK_GW_MONITOR_MONITORORGKEYS</b><br />
 Type: `bool`<br />
 
-Apply the monitoring subsystem to organization keys.
+Apply the monitoring subsystem to organisation keys.
 
 ### max_idle_connections
 ENV: <b>TYK_GW_MAXIDLECONNS</b><br />
@@ -924,7 +919,7 @@ Type: `bool`<br />
 
 If AllowMasterKeys is set to true, session objects (key definitions) that do not have explicit access rights set
 will be allowed by Tyk. This means that keys that are created have access to ALL APIs, which in many cases is
-unwanted behavior unless you are sure about what you are doing.
+unwanted behaviour unless you are sure about what you are doing.
 
 ### service_discovery.default_cache_timeout
 ENV: <b>TYK_GW_SERVICEDISCOVERY_DEFAULTCACHETIMEOUT</b><br />
@@ -1123,7 +1118,7 @@ Type: `bool`<br />
 
 Set this value to `true` to have Tyk store the inbound request and outbound response data in HTTP Wire format as part of the Analytics data.
 Please note, this will greatly increase your analytics DB size and can cause performance degradation on analytics processing by the Dashboard.
-This setting can be overridden with an organization flag, enabed at an API level, or on individual Key level.
+This setting can be overridden with an organisation flag, enabed at an API level, or on individual Key level.
 
 ### analytics_config.enable_geo_ip
 ENV: <b>TYK_GW_ANALYTICSCONFIG_ENABLEGEOIP</b><br />
@@ -1169,7 +1164,7 @@ Set this to true to have Tyk automatically match for numeric IDs, it will match 
 ENV: <b>TYK_GW_ANALYTICSCONFIG_NORMALISEURLS_CUSTOM</b><br />
 Type: `[]string`<br />
 
-This is a list of custom patterns you can add. These must be valid regex strings. Tyk will replace these values with a `{var}` placeholder.
+This is a list of custom patterns you can add. These must be valid regex strings. Tyk will replace these values with a {var} placeholder.
 
 ### analytics_config.pool_size
 ENV: <b>TYK_GW_ANALYTICSCONFIG_POOLSIZE</b><br />
@@ -1662,47 +1657,6 @@ Type: `string`<br />
 You can now set a logging level (log_level). The following levels can be set: debug, info, warn, error.
 If not set or left empty, it will default to `info`.
 
-### log_format
-ENV: <b>TYK_GW_LOGFORMAT</b><br />
-Type: `string`<br />
-
-You can now configure the log format to be either the standard or json format
-If not set or left empty, it will default to `standard`.
-
-### access_logs
-AccessLogs configures the output for access logs.
-If not configured, the access log is disabled.
-
-### access_logs.enabled
-ENV: <b>TYK_GW_ACCESSLOGS_ENABLED</b><br />
-Type: `bool`<br />
-
-Enabled controls the generation of access logs by the Gateway. Default: false.
-
-### access_logs.template
-ENV: <b>TYK_GW_ACCESSLOGS_TEMPLATE</b><br />
-Type: `[]string`<br />
-
-Template configures which fields to include in the access log.
-If no template is configured, all available fields will be logged.
-
-Example: ["client_ip", "path"].
-
-Template Options:
-
-- `api_key` will include they obfuscated or hashed key.
-- `client_ip` will include the ip of the request.
-- `host` will include the host of the request.
-- `method` will include the request method.
-- `path` will include the path of the request.
-- `protocol` will include the protocol of the request.
-- `remote_addr` will include the remote address of the request.
-- `upstream_addr` will include the upstream address (scheme, host and path)
-- `upstream_latency` will include the upstream latency of the request.
-- `latency_total` will include the total latency of the request.
-- `user_agent` will include the user agent of the request.
-- `status` will include the response status code.
-
 ### tracing
 Section for configuring OpenTracing support
 Deprecated: use OpenTelemetry instead.
@@ -1891,7 +1845,7 @@ Enable distributed tracing
 ENV: <b>TYK_GW_HTTPPROFILE</b><br />
 Type: `bool`<br />
 
-Enable debugging of your Tyk Gateway by exposing profiling information through https://tyk.io/docs/api-management/troubleshooting-debugging
+Enable debugging of your Tyk Gateway by exposing profiling information through https://tyk.io/docs/troubleshooting/tyk-gateway/profiling/
 
 ### use_redis_log
 ENV: <b>TYK_GW_USEREDISLOG</b><br />
@@ -2017,7 +1971,7 @@ global session lifetime, in seconds.
 ENV: <b>TYK_GW_KV_KV</b><br />
 Type: `struct`<br />
 
-See more details https://tyk.io/docs/tyk-self-managed/#store-configuration-with-key-value-store
+See more details https://tyk.io/docs/tyk-configuration-reference/kv-store/
 
 ### kv.consul.address
 ENV: <b>TYK_GW_KV_CONSUL_ADDRESS</b><br />
@@ -2101,17 +2055,7 @@ KVVersion is the version number of Vault. Usually defaults to 2
 ENV: <b>TYK_GW_SECRETS</b><br />
 Type: `map[string]string`<br />
 
-Secrets configures a list of key/value pairs for the gateway.
-When configuring it via environment variable, the expected value
-is a comma separated list of key-value pairs delimited with a colon.
-
-Example: `TYK_GW_SECRETS=key1:value1,key2:/value2`
-Produces: `{"key1": "value1", "key2": "/value2"}`
-
-The secret value may be used as `secrets://key1` from the API definition.
-In versions before gateway 5.3, only `listen_path` and `target_url` fields
-have had the secrets replaced.
-See more details https://tyk.io/docs/tyk-self-managed/#how-to-access-the-externally-stored-data
+Secrets are key-value pairs that can be accessed in the dashboard via "secrets://"
 
 ### override_messages
 Override the default error code and or message returned by middleware.
@@ -2141,7 +2085,7 @@ Sample Override Message Setting
 ENV: <b>TYK_GW_CLOUD</b><br />
 Type: `bool`<br />
 
-Cloud flag shows the Gateway runs in Tyk Cloud.
+Cloud flag shows the Gateway runs in Tyk-cloud.
 
 ### jwt_ssl_insecure_skip_verify
 ENV: <b>TYK_GW_JWTSSLINSECURESKIPVERIFY</b><br />
@@ -2180,22 +2124,4 @@ ENV: <b>TYK_GW_OAS_VALIDATESCHEMADEFAULTS</b><br />
 Type: `bool`<br />
 
 ValidateSchemaDefaults enables validation of values provided in `default` fields against the declared schemas in the OpenAPI Document. Defaults to false.
-
-### streaming
-Streaming holds the configuration for Tyk Streaming functionalities
-
-### streaming.enabled
-ENV: <b>TYK_GW_STREAMING_ENABLED</b><br />
-Type: `bool`<br />
-
-This flag enables the Tyk Streaming feature.
-
-### streaming.allow_unsafe
-ENV: <b>TYK_GW_STREAMING_ALLOWUNSAFE</b><br />
-Type: `[]string`<br />
-
-AllowUnsafe specifies a list of potentially unsafe streaming components that should be allowed in the configuration.
-By default, components that could pose security risks (like file access, subprocess execution, socket operations, etc.)
-are filtered out. This field allows administrators to explicitly permit specific unsafe components when needed.
-Use with caution as enabling unsafe components may introduce security vulnerabilities.
 
