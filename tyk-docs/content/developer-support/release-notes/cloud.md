@@ -2,9 +2,43 @@
 title: Tyk Cloud Release Notes
 date: 2025-02-10
 description: "Release notes documenting updates, enhancements, and changes for Tyk Cloud"
-tags: ["Tyk Cloud", "Release notes", "v1.23", "1.23.0", "v1.24", "1.24.0", "v1.25", "1.25.0", "v1.26", "1.26.0", "1.27.0", "1.28.0", "1.28.1", "changelog"]
+tags: ["Tyk Cloud", "Release notes", "v1.23", "1.23.0", "v1.24", "1.24.0", "v1.25", "1.25.0", "v1.26", "1.26.0", "1.27.0", "1.28.0", "1.28.1", "1.29.0", "changelog"]
 
 ---
+## 1.29.0 Release Notes
+
+### Release Date 14 July 2025
+
+### Release Highlights
+
+For a full list of changes, see the detailed [changelog]({{< ref "#Changelog-v1.29.0" >}}) below.
+
+### Breaking Changes
+
+There are no breaking changes in this release.
+
+### Downloads
+- [latest version of Mserv](https://github.com/TykTechnologies/mserv/releases/latest)
+
+### Deprecations
+
+There are no deprecations in this release.
+
+### Changelog {#Changelog-v1.29.0}
+
+#### Added
+
+<ul>
+<li>
+<details>
+<summary>New Role to Restrict Local Login for SSO Users</summary>
+
+Introduced a new “View Only” role to enhance access control for organizations using SSO. This role prevents SSO-provisioned users from logging in via email/password, ensuring all activity is captured through the configured identity provider. This improves auditability and reduces the risk of unauthorized actions when SSO is the preferred authentication method.
+
+</details>
+</li> 
+</ul>
+
 ## 1.28.1 Release Notes
 
 ### Release Date 03 June 2025
