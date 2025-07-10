@@ -10,108 +10,48 @@ jobs:
   trigger-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Find the actual merged PR
+      - name: Extract PR information from commit
         id: get-pr
         run: |
-          COMMIT_SHA="${{ github.sha }}"
           COMMIT_MESSAGE="${{ github.event.head_commit.message }}"
-          echo "Looking for PR that was merged with commit: $COMMIT_SHA"
           echo "Commit message: $COMMIT_MESSAGE"
           
-          # Search for PRs that were merged with this exact commit SHA
-          PR_INFO=$(curl -s \
-            -H "Authorization: token ${{ secrets.ORG_GH_TOKEN }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${{ github.repository }}/pulls?state=closed&sort=updated&direction=desc&per_page=50" \
-            | jq -r --arg commit "$COMMIT_SHA" '.[] | select(.merge_commit_sha == $commit) | "\(.number)|\(.title)|\(.user.login)"' \
-            | head -1)
+          # Try to extract PR number from commit message
+          PR_NUMBER=$(echo "$COMMIT_MESSAGE" | grep -oE '#[0-9]+' | head -1 | sed 's/#//')
           
-          if [ -n "$PR_INFO" ]; then
-            # Found the actual merged PR
-            ACTUAL_PR_NUMBER=$(echo "$PR_INFO" | cut -d'|' -f1)
-            ACTUAL_PR_TITLE=$(echo "$PR_INFO" | cut -d'|' -f2)
-            PR_AUTHOR=$(echo "$PR_INFO" | cut -d'|' -f3)
-            
-            echo "Found actual merged PR: #$ACTUAL_PR_NUMBER - $ACTUAL_PR_TITLE by $PR_AUTHOR"
-            echo "pr_number=$ACTUAL_PR_NUMBER" >> $GITHUB_OUTPUT
-            echo "pr_title=$ACTUAL_PR_TITLE" >> $GITHUB_OUTPUT
-            echo "pr_author=$PR_AUTHOR" >> $GITHUB_OUTPUT
+          if [ -n "$PR_NUMBER" ]; then
+            echo "Found PR number: #$PR_NUMBER"
+            echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
             echo "has_pr=true" >> $GITHUB_OUTPUT
             
-            # Also try to extract original PR from commit message for context
-            ORIGINAL_PR=$(echo "$COMMIT_MESSAGE" | grep -oE '#[0-9]+' | head -1 | sed 's/#//')
-            if [ -n "$ORIGINAL_PR" ] && [ "$ORIGINAL_PR" != "$ACTUAL_PR_NUMBER" ]; then
-              echo "Found original PR reference in commit: #$ORIGINAL_PR"
-              echo "original_pr_number=$ORIGINAL_PR" >> $GITHUB_OUTPUT
-              echo "has_original_pr=true" >> $GITHUB_OUTPUT
-            else
-              echo "has_original_pr=false" >> $GITHUB_OUTPUT
-            fi
+            # Extract PR title (everything before the PR number reference)
+            PR_TITLE=$(echo "$COMMIT_MESSAGE" | sed 's/ (#[0-9]\+).*//' | head -1)
+            echo "pr_title=$PR_TITLE" >> $GITHUB_OUTPUT
           else
-            echo "No merged PR found via API, falling back to commit message parsing..."
-            
-            # Fallback to original method
-            PR_NUMBER=$(echo "$COMMIT_MESSAGE" | grep -oE '#[0-9]+' | head -1 | sed 's/#//')
-            
-            if [ -n "$PR_NUMBER" ]; then
-              echo "Found PR number in commit message: #$PR_NUMBER"
-              echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
-              echo "has_pr=true" >> $GITHUB_OUTPUT
-              
-              # Extract PR title (everything before the PR number reference)
-              PR_TITLE=$(echo "$COMMIT_MESSAGE" | sed 's/ (#[0-9]\+).*//' | head -1)
-              echo "pr_title=$PR_TITLE" >> $GITHUB_OUTPUT
-              echo "has_original_pr=false" >> $GITHUB_OUTPUT
-            else
-              echo "No PR number found in commit message (direct push)"
-              echo "has_pr=false" >> $GITHUB_OUTPUT
-              echo "has_original_pr=false" >> $GITHUB_OUTPUT
-            fi
+            echo "No PR number found in commit message (direct push)"
+            echo "has_pr=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Trigger production deployment
         run: |
           # Prepare the dispatch payload
           if [ "${{ steps.get-pr.outputs.has_pr }}" = "true" ]; then
-            if [ "${{ steps.get-pr.outputs.has_original_pr }}" = "true" ]; then
-              # Include both actual PR and original PR
-              PAYLOAD=$(jq -n \
-                --arg ref "production" \
-                --arg pr_number "${{ steps.get-pr.outputs.pr_number }}" \
-                --arg pr_title "${{ steps.get-pr.outputs.pr_title }}" \
-                --arg original_pr_number "${{ steps.get-pr.outputs.original_pr_number }}" \
-                --arg commit_sha "${{ github.sha }}" \
-                --arg branch "${{ github.ref_name }}" \
-                '{
-                  ref: $ref,
-                  inputs: {
-                    triggering_pr_number: $pr_number,
-                    triggering_pr_title: $pr_title,
-                    original_pr_number: $original_pr_number,
-                    triggering_commit_sha: $commit_sha,
-                    triggering_branch: $branch
-                  }
-                }')
-              echo "Triggering deployment with PR #${{ steps.get-pr.outputs.pr_number }} (original: #${{ steps.get-pr.outputs.original_pr_number }})"
-            else
-              # Only actual PR
-              PAYLOAD=$(jq -n \
-                --arg ref "production" \
-                --arg pr_number "${{ steps.get-pr.outputs.pr_number }}" \
-                --arg pr_title "${{ steps.get-pr.outputs.pr_title }}" \
-                --arg commit_sha "${{ github.sha }}" \
-                --arg branch "${{ github.ref_name }}" \
-                '{
-                  ref: $ref,
-                  inputs: {
-                    triggering_pr_number: $pr_number,
-                    triggering_pr_title: $pr_title,
-                    triggering_commit_sha: $commit_sha,
-                    triggering_branch: $branch
-                  }
-                }')
-              echo "Triggering deployment with PR #${{ steps.get-pr.outputs.pr_number }}"
-            fi
+            PAYLOAD=$(jq -n \
+              --arg ref "production" \
+              --arg pr_number "${{ steps.get-pr.outputs.pr_number }}" \
+              --arg pr_title "${{ steps.get-pr.outputs.pr_title }}" \
+              --arg commit_sha "${{ github.sha }}" \
+              --arg branch "${{ github.ref_name }}" \
+              '{
+                ref: $ref,
+                inputs: {
+                  triggering_pr_number: $pr_number,
+                  triggering_pr_title: $pr_title,
+                  triggering_commit_sha: $commit_sha,
+                  triggering_branch: $branch
+                }
+              }')
+            echo "Triggering deployment with PR #${{ steps.get-pr.outputs.pr_number }}"
           else
             PAYLOAD=$(jq -n \
               --arg ref "production" \
