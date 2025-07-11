@@ -36,6 +36,130 @@ Our minor releases are supported until our next minor comes out.
 
 ---
 
+## 1.14 Release Notes
+
+### 1.14.0 Release Notes
+
+#### Release Date XXX
+
+#### Release Highlights
+
+##### Tyk Streams APIs Come To Developer Portal
+
+<<TBA>>
+
+##### New Developer App Visibility Controls
+
+We have added more flexible Developer App visibility controls, giving team members the facility to limit the visibility of their apps to themselves (Personal), to their Team or to their Organisation (org). This means that, when logged into the Developer Portal, team members will only see their own apps, apps shared within their teams, and apps marked as visible to the whole org. Org Admin users will continue to have visibility of all developer apps created in their Organisation. The exceptions to this rule are for the Default Team, where team-level visibility is not implemented, and Default Org, where all apps are treated as personal (private).
+
+##### Enhanced Team Management
+
+We have also improved the experience with user and team management. Now, users can be removed from the default team (which should only be used for inactive users). This allows platform teams to ensure that users can only see the other members of their team, rather than all users in their Organisation. We've also fixed a bug where Org Admins could add users to other Organisations deployed on the Portal.
+
+##### Prevent Webcrawlers From Indexing Your Portal
+
+We have added a `/robots.txt` endpoint, allowing administrators to define crawler directives in a plain text entry form in the Portal Admin UI.
+
+For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-v1.14.0) below.
+
+#### Breaking Changes {#breaking-changes-v1.14.0}
+
+Add breaking changes
+
+For the complete API specification, see [Tyk EDP API documentation]({{< ref "product-stack/tyk-enterprise-developer-portal/api-documentation/tyk-edp-api" >}}).
+
+#### Deprecations
+
+SQLite has reached its End of Life in this release, coming into alignment with the Tyk Dashboard. Sqlite was previously recommended only to be used in basic proofs of concept. Now, for such scenarios and for production, we recommend using PostgreSQL or MySQL for better scalability and support.
+
+#### Upgrade instructions
+
+If you are on 1.13.0 or an older version, we advise you to upgrade ASAP to this release.
+
+While upgrading to 1.14.0, 
+1. Portal will automatically migrate the new Custom IDs to most of the existing resources. For more information, please refer to the [changelog](#Changelog-v1.14.0).
+2. Users are advised to take appropriate actions in their system regarding the `Plans` API object changes as described in the [breaking changes section]({{< ref "#breaking-changes-v1.14.0" >}}).
+
+To upgrade the portal's theme, please follow the [upgrade instructions]({{< ref "portal/customization/themes#upgrading-themes" >}}) for the portal's themes.
+
+#### Download
+- [Docker image v1.13.0](https://hub.docker.com/r/tykio/portal/tags?page=&page_size=&ordering=&name=v1.14.0)
+  - ```bash
+    docker pull tykio/portal:v1.14.0
+    ```
+- [The default theme package](https://github.com/TykTechnologies/portal-default-theme/releases/tag/1.14.0)
+
+#### Changelog {#Changelog-v1.14.0}
+
+##### Added
+<ul>
+<li>
+<details>
+<summary>New Application Visibility Controls</summary>
+
+Added the facility to limit the visibility of developer apps to the user, team or Organisation (org). Org Admin users will continue to have visibility of all developer apps created in their Organisation. To minimise risk of unintentional visibility when users are members of the default teams and/or org, team-level visibility is not implemented in the Default Team for each org and all apps are treated as personal (private) in the Default Org. To avoid breaking existing setups, all current apps wii default to organisation visibility.
+</details>
+</li>
+<li>
+<details>
+<summary>Added Support for Asynchronous APIs</summary>
+
+The Developer Portal now supports Tyk Streams, enabling developers to request access to event-driven APIs. Developers can authenticate with portal tokens and receive real-time webhook notifications.  
+</details>
+</li>
+<li>
+<details>
+<summary>API Product Tag Access in Theme Templates</summary>
+
+Portal theme templates now have access to API product tags, enabling dynamic display or categorization of API products based on tags.
+</details>
+</li>
+<li>
+<details>
+<summary>Configurable Robots.txt Support</summary>
+
+Added native support for serving a configurable robots.txt file via a new /robots.txt endpoint. Portal admins can now define and manage crawler directives directly from the Portal Admin UI.
+</details>
+</li>
+<li>
+<details>
+<summary>Improved Team and User Management</summary>
+
+We have enhanced team and user access controls by restricting team members from viewing other users' details, limiting Admin Users to adding users only to teams they belong to, automatically assigning users to the default organization team if no team is selected during invitation, and allowing Admin Users to assign users to multiple teams.
+</details>
+</li>
+</ul>
+
+##### Changed 
+
+<ul>
+<li>
+<details>
+<summary>Upgrade to Go 1.23</summary>
+
+The Developer Portal has been upgraded from Golang 1.22 to Golang 1.23, bringing enhanced performance, strengthened security, and access to the latest features available in the new Golang release.
+
+##### Fixed
+
+<ul>
+<li>
+<details>
+<summary>API product metadata loss when updating the Developer Portal catalog</summary>
+
+Fixed an issue where API Product metadata could be lost when modifying the product in the Developer Portal. This was due to incorrect manipulation of the underlying Tyk policy object.
+</details>
+</li>
+<li>
+<details>
+<summary>API Product Synchronization Fixes</summary>
+
+Fixed issues with API product synchronization where applied APIs were being lost during manual or automatic sync with Tyk Dashboard. The synchronization logic has been improved to ensure that all associated APIs and product details including custom fields are consistently preserved.
+</details>
+</li>
+</ul>
+
+---
+
 ## 1.13 Release Notes
 
 ### 1.13.2 Release Notes
@@ -149,6 +273,7 @@ Resolved a regression introduced in v1.13.0 that removed the ability to view or 
 </li>
 </ul>
 
+---
 
 ### 1.13.0 Release Notes
 
