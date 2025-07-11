@@ -5,24 +5,81 @@ tags: [ "Inclusive Naming Initiative", "Inclusivity", "Inclusive" ]
 description: "Explains the inclusive naming initiative concerning Tyk docs"
 aliases:
    - /contribute
-   
+   - /ui-examples/feature-cards 
+   - /ui-examples/test-pill-label 
+   - /ui-examples/youtube-video-embed
 ---
 
-## How to Contribute to our Docs
+This document is intended for Tyk users, contributors, and anyone interested in our commitment to [inclusive language](#inclusive-naming-project) within Tyk's documentation and product interfaces.
+
+## How to Contribute to Tyk Docs
 
 We appriciate any form of engagement and contribution to our documentation. You can do it in a few ways:
 - [Report an error](https://github.com/TykTechnologies/tyk-docs/issues) in our Github repo.
 - [Suggest/request an improvement](https://github.com/TykTechnologies/tyk-docs/issues) in our Github repo.
+- Post a message in our [community forum](https://community.tyk.io/)
 - Update the code yourself:
   1. If you want to be even more involved, you are welcomed to [submit PR](https://github.com/TykTechnologies/tyk-docs/pulls) directly in our [docs repo](https://github.com/TykTechnologies/tyk-docs/).
   2. In order for you need to find the page that needs editing in the actual [GH docs repo](https://github.com/TykTechnologies/tyk-docs/), the best way would be to copy a sentence from that HTML page on the [docs website](https://tyk.io/docs) and look it up it using the Github search box, on the top left corner. (Since the structure of our docs is not the same as the structure in the rendered docs website, we can't easily link you to this page).
-- Post a message in our [community forum](https://community.tyk.io/)
 
-Our docs are compiled using the [Hugo static site generator](https://gohugo.io/).
+There are two ways to update the docs:
 
-The [Readme](https://github.com/TykTechnologies/tyk-docs#readme) has details of how to construct docs pages.
+- **GitHub GUI Browser**: This is the easiest way to make simple edits and contributions to the docs. It allows you to edit files directly in the browser, commit changes, and create pull requests (PRs) without needing to set up a local development environment.
 
-This document is intended for Tyk users, contributors, and anyone interested in our commitment to inclusive language within Tyk's documentation and product interfaces.
+- **Local Development Environment**: This is the recommended way to contribute to the docs when you need to make more complex changes, test your changes in real-time, or work on multiple files. It involves cloning the Tyk docs repository to your local machine, setting up a development environment, and running the Mintlify CLI to preview your changes before committing them.
+
+### GitHub GUI Browser
+Contributing to the docs via the browser is fast and easy. 
+GH provides great DX for making updates, committing and creating PRs via the browser. The DX for reviewing PRs is also pretty powerful.
+
+#### When To Use it?
+Use GitHub GUI browser when you:
+- Have simple and only a few edits of the markdown files. 
+- Already know the syntax for adding internal links and adding images. 
+- Already know what you are going to write and you **don't** need many iterative commits to see if the result looks okay. In this case, using a local environment will be much faster as explained in the next section.
+
+#### How To Use It?
+I'll briefly explain the process as it is quite straightforward:
+1. Via the GUI you can simply click the pencil icon to start editing, then check the differences, click commit to commit the changes to a new branch, and eventually create a PR. 
+2. Check that the CI jobs started running. These jobs run tests on the website including your changes. Running CI jobs are displayed in yellow. 
+3. Once the CI job finishes it will turn green. Upon completion, you will see a preview link that you should use to check your changes on a real deployment of the Tyk docs website.
+
+
+### Local Development Environment
+Local environment means checking out the tyk-docs repo and updating the files using an editor or an IDE. This allows you to test your changes by running Mintlify locally and check for errors both in the Mintlify process and in the website that Mintlify generates.
+
+#### When To Use It?
+Using the browser is not always enough and you sometimes need to check out the repo and work locally.
+You normally favor using a local environment when you need to:
+- Test your changes in real-time before pushing them
+- Repeatedly make changes and test the website
+
+Doing so by **running Mintlify locally will save you a lot of time** since it takes the CI a few minutes to update the deployment with the latest changes and complete its tests before showing a green success status.
+
+#### Use Cases For Local Development Environment
+When you need to:
+- Preview changes and verify their appearance locally
+- Check that the images you added work correctly
+- See how images are rendered on the page
+- Check that the internal links you added work
+- When you are not sure about the syntax of links or images when working on many pages
+- When adding new files, it's easier to run Mintlify locally because you need to validate the format of internal links and references to other content pages and sections
+
+#### How To Use It?
+
+For internal Tyklings the recommended way to contribute is from a pull request branch in the [tyk-docs](https://github.com/TykTechnologies/tyk-docs) repository.
+
+For external contributions, we recommend contributing to Tyk in the following way:
+
+- Fork this repository
+- Clone the forked repository on your machine
+- Create a remote branch, e.g `git remote add upstream https://github.com/TykTechnologies/tyk-docs.git`
+- Fetch from the remote branch `git fetch upstream`
+- Rebase your branch with the latest remote branch content `git rebase upstream/master`
+
+## License
+
+Tyk is released under the MPL v2.0 please see the [license file](https://github.com/TykTechnologies/tyk-docs/blob/master/LICENSE.md) for a full version of the license.
 
 ## Inclusive Naming project
 We are excited to announce the launch of our *Inclusive Naming* project, in June 2024, dedicated to updating our documentation and aligning with the [Inclusive Naming Initiative (INI)](https://inclusivenaming.org). This initiative reflects our commitment to fostering an inclusive and respectful environment for our users and within our company.
@@ -130,3 +187,4 @@ Content contains *INI Tier 1 word* occurrences due to the following external dep
 - Tyk Gateway and Tyk Pump content use Redis terminology for `master` in relation to key storage and analytics. 
 - Tyk Classic Developer Portal provides [documentation]({{< ref "tyk-developer-portal/tyk-portal-classic/keycloak-dcr" >}}) that explains how to integrate Tyk with Keycloak using the [OpenID Connect Dynamic Client Registration](https://tools.ietf.org/html/rfc7591) protocol. The example in the guide uses the Keycloak default `master` realm.
 - Tyk Bitnami Helm charts use a service with a DNS name of *tyk-redis-master.tyk.svc*.
+
