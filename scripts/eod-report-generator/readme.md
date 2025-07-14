@@ -1,1 +1,0 @@
-This script generates a PR review report.
