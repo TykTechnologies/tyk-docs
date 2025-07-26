@@ -1,6 +1,6 @@
 ---
 title: "Dynamic Client Registration"
-date: 2025-02-10
+date: 2025-07-26
 tags: ["Developer Portal", "Tyk", "Dynamic Client Registration"]
 keywords: ["Developer Portal", "Tyk", "Dynamic Client Registration"]
 description: "How to configure Dynamic Client Registration in Tyk developer portal"
@@ -32,7 +32,7 @@ Before getting starting with configuring the portal, it's required to configure 
 
 #### Create an initial access token
 Before setting up Tyk Enterprise Developer Portal to work with DCR, you need to configure the identity provider. Please refer to the guides for popular providers to create the initial access token for DCR:
-* [Gluu](https://gluu.org/docs/gluu-server/4.0/admin-guide/openid-connect/#dynamic-client-registration)
+* [Gluu](https://gluu.org/docs/gluu-server/4.0/admin-guide/openid-connect#dynamic-client-registration)
 * [Curity](https://curity.io/docs/idsvr/latest/token-service-admin-guide/dcr.html)
 * [Keycloak](https://github.com/keycloak/keycloak/blob/25.0.6/docs/documentation/securing_apps/topics/client-registration.adoc)
 * [Okta](https://developer.okta.com/docs/reference/api/oauth-clients/)
@@ -347,6 +347,12 @@ To request access to the DCR enabled API Product:
 #### Approve the access request
 To approve the access request, navigate to the `Access requests` menu in the portal, select the access request and approve it by clicking on the `Approve` button.
 {{< img src="/img/dashboard/portal-management/enterprise-portal/approve-dcr-access-request.png" alt="Approve DCR access request" >}}
+
+{{< note success >}}
+**Note**  
+
+When approving an access request, if the Plan scope is not already present in the API Product's scope mappings the Portal will append it in the scope-to-policy mapping declared in the API definition, mapping it to the Id of the Tyk Dashboard consumption policy that relates to the Plan. This will ensure that when the JWT is presented to Tyk, the Plan will be applied to the session.
+{{< /note >}}
 
 #### Obtain an access token
 Once the access request is approved, the developer should receive an email informing them of the approval. Please refer to [the email customization section]({{< ref "portal/customization/email-notifications" >}}) if you wish to change the email template.
