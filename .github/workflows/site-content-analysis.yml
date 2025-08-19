@@ -1,0 +1,162 @@
+name: Site Content Analysis
+
+on:
+  workflow_dispatch:
+    inputs:
+      wait_time:
+        description: 'Wait time per page (seconds)'
+        required: false
+        default: '3'
+        type: string
+      timeout:
+        description: 'Timeout per page (seconds)'
+        required: false
+        default: '30'
+        type: string
+
+jobs:
+  analyze-site-content:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        ref: production
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        # Install essential packages for headless Chrome
+        sudo apt-get install -y \
+          ca-certificates \
+          fonts-liberation \
+          libnss3 \
+          lsb-release \
+          xdg-utils \
+          wget \
+          gnupg
+        
+        # Install Chrome dependencies (with fallbacks for different Ubuntu versions)
+        sudo apt-get install -y \
+          libatk1.0-0 \
+          libatk-bridge2.0-0 \
+          libcups2 \
+          libdrm2 \
+          libgtk-3-0 \
+          libgtk-4-1 \
+          libxcomposite1 \
+          libxdamage1 \
+          libxrandr2 \
+          libgbm1 \
+          libxss1 \
+          libasound2 || \
+        sudo apt-get install -y \
+          libatk1.0-0 \
+          libatk-bridge2.0-0 \
+          libcups2 \
+          libdrm2 \
+          libgtk-3-0 \
+          libxcomposite1 \
+          libxdamage1 \
+          libxrandr2 \
+          libgbm1 \
+          libxss1 \
+          libasound2t64
+    
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyppeteer beautifulsoup4
+    
+    - name: Download Chromium for Pyppeteer
+      run: |
+        python -c "import asyncio; from pyppeteer import launch; asyncio.get_event_loop().run_until_complete(launch())"
+    
+    - name: Run site content analysis
+      run: |
+        python scripts/browser_site_analyzer.py \
+          --base-url https://tyk.mintlify.app \
+          --docs-json docs.json \
+          --output-dir site_analysis_output \
+          --report-file site_analysis_report.json \
+          --wait-time ${{ github.event.inputs.wait_time || '3' }} \
+          --timeout ${{ github.event.inputs.timeout || '30' }}
+    
+    - name: Create summary comment
+      if: always()
+      run: |
+        echo "## 🔍 Site Content Analysis Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Analysis completed for:** https://tyk.mintlify.app" >> $GITHUB_STEP_SUMMARY
+        echo "**Wait time:** ${{ github.event.inputs.wait_time || '3' }} seconds" >> $GITHUB_STEP_SUMMARY
+        echo "**Timeout:** ${{ github.event.inputs.timeout || '30' }} seconds" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -f site_analysis_report.json ]; then
+          echo "### Summary Statistics" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          python -c "
+        import json
+        with open('site_analysis_report.json', 'r') as f:
+            data = json.load(f)
+            summary = data['summary']
+            print(f'Total pages analyzed: {summary[\"total_pages_analyzed\"]}')
+            print(f'Pages with sufficient content: {summary[\"pages_with_sufficient_content\"]}')
+            print(f'Pages with empty/insufficient content: {summary[\"pages_with_empty_content\"]}')
+            print(f'Browser failures: {summary[\"browser_failures\"]}')
+        " >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Show problematic pages if any
+          python -c "
+        import json
+        with open('site_analysis_report.json', 'r') as f:
+            data = json.load(f)
+            if data['empty_pages']:
+                print('### ❌ Pages with Content Issues')
+                for page in data['empty_pages'][:10]:  # Show first 10
+                    print(f'- **{page[\"url\"]}**: {page[\"issues\"][0] if page[\"issues\"] else \"Unknown issue\"}')
+                if len(data['empty_pages']) > 10:
+                    print(f'- ... and {len(data[\"empty_pages\"]) - 10} more pages')
+        " >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Analysis failed - no report generated" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "📄 **All analysis results are displayed above**" >> $GITHUB_STEP_SUMMARY
+
+    - name: Fail job if critical issues found
+      if: always()
+      run: |
+        if [ -f site_analysis_report.json ]; then
+          python -c "
+        import json, sys
+        with open('site_analysis_report.json', 'r') as f:
+            data = json.load(f)
+            summary = data['summary']
+            total = summary['total_pages_analyzed']
+            empty = summary['pages_with_empty_content']
+            
+            if total > 0:
+                empty_percentage = (empty / total) * 100
+                print(f'Empty content percentage: {empty_percentage:.1f}%')
+                
+                # Fail if more than 20% of pages have empty content
+                if empty_percentage > 20:
+                    print(f'❌ CRITICAL: {empty_percentage:.1f}% of pages have empty content (threshold: 20%)')
+                    sys.exit(1)
+                else:
+                    print(f'✅ Content quality acceptable: {empty_percentage:.1f}% empty pages')
+            else:
+                print('❌ CRITICAL: No pages were analyzed')
+                sys.exit(1)
+        "
+        fi
