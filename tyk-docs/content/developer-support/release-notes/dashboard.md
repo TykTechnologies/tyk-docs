@@ -67,7 +67,7 @@ There are no breaking changes in this release.
 
 | Third Party Dependency | Tested Versions | Compatible Versions | Comments | 
 | ---------------------- | --------------- | ------------------- | -------- | 
-| [GoLang](https://go.dev/dl/)          | 1.23 | 1.23 | [Go plugins]({{< ref "api-management/plugins/golang" >}}) must be built using Go 1.23 | 
+| [GoLang](https://go.dev/dl/)          | 1.24 | 1.24 | [Go plugins]({{< ref "api-management/plugins/golang" >}}) must be built using Go 1.24 | 
 | [Redis](https://redis.io/download/)   | 5.x, 6.x, 7.x    |  5.x, 6.x, 7.x    | | 
 | [Valkey](https://valkey.io/download/) | 8.0.x, 8.1.x    | 7.2.x, 8.0.x, 8.1.x    | | 
 | [MongoDB](https://www.mongodb.com/try/download/community)  | 6, 7, 8  | 5, 6, 7, 8  | | 
@@ -320,6 +320,226 @@ Fixed an issue where the `/apis/streams/{apiID}` endpoint was expecting a `Conte
 ---
 
 ## 5.8 Release Notes
+
+### 5.8.6 Release Notes
+
+#### Release Date  2025
+
+#### Release Highlights
+
+This patch release contains various bug fixes. For a comprehensive list of changes, please refer to the detailed [changelog]({{< ref "#Changelog-v5.8.6" >}}).
+
+#### Breaking Changes
+
+There are no breaking changes in this release.
+
+#### Dependencies {#dependencies-5.8.6}
+
+##### Compatibility Matrix For Tyk Components
+
+| Gateway Version | Recommended Releases | Backwards Compatibility |
+|----    |---- |---- |
+| 5.8.6 | MDCB v2.8.4     | MDCB v2.8.4 |
+|         | Operator v1.2.0  | Operator v0.17 |
+|         | Sync v2.1.3    | Sync v2.1.1 |
+|         | Helm Chart v3.0  | Helm all versions |
+| | EDP v1.14.1 | EDP all versions |
+| | Pump v1.12.1 | Pump all versions |
+| | TIB (if using standalone) v1.7.0 | TIB all versions |
+
+##### 3rd Party Dependencies & Tools
+
+| Third Party Dependency                                       | Tested Versions        | Compatible Versions    | Comments | 
+| ------------------------------------------------------------ | ---------------------- | ---------------------- | -------- | 
+| [Go](https://go.dev/dl/)                                     | 1.23  |  1.23  | [Go plugins]({{< ref "api-management/plugins/golang" >}}) must be built using Go 1.23 | 
+| [Redis](https://redis.io/download/)  | 6.2.x, 7.x  | 6.2.x, 7.x  | | 
+| [MongoDB](https://www.mongodb.com/try/download/community)  | 5.0.x, 6.0.x, 7.0.x  | 5.0.x, 6.0.x, 7.0.x  | | 
+| [DocumentDB](https://aws.amazon.com/documentdb/)  | 4, 5  | 4, 5  | | 
+| [PostgreSQL](https://www.postgresql.org/download/)         | 13.x - 17.x        | 13.x - 17.x            | | 
+| [OpenAPI Specification](https://spec.openapis.org/oas/v3.0.3)| v3.0.x                 | v3.0.x                 | Supported by [Tyk OAS]({{< ref "api-management/gateway-config-tyk-oas" >}}) |
+
+Given the potential time difference between your upgrade and the release of this version, we recommend users verify the ongoing support of third-party dependencies they install, as their status may have changed since the release.
+
+#### Deprecations
+
+There are no deprecations in this release.
+
+#### Upgrade instructions {#upgrade-5.8.6}
+
+If you are upgrading to 5.8.6, please follow the detailed [upgrade instructions](#upgrading-tyk). 
+
+#### Downloads
+
+- [Docker image to pull](https://hub.docker.com/r/tykio/tyk-gateway/tags?page=&page_size=&ordering=&name=v5.8.6)
+  - ```bash
+    docker pull tykio/tyk-gateway:v5.8.6
+    ``` 
+- Helm charts
+  - [tyk-charts v3.0.0]({{<ref "developer-support/release-notes/helm-chart#300-release-notes" >}})
+
+- [Source code tarball of Tyk Gateway v5.8.6](https://github.com/TykTechnologies/tyk/releases/tag/v5.8.6)
+
+#### Changelog {#Changelog-v5.8.6}
+
+##### Added
+
+<ul>
+<li>
+<details>
+<summary>Improved Policy and Key Management for Versioned APIs</summary>
+
+We have refined the Dashboard UI to make creating and editing policies and keys more intuitive. The API Versions field is now shown only when relevant, specifically for versioned Tyk Classic APIs. It will no longer appear for Tyk OAS APIs or non-versioned Tyk Classic APIs, preventing confusion and ensuring policies and keys can be saved without unnecessary validation errors.
+</details>
+</li>
+
+</ul>
+
+##### Changed
+
+<ul>
+<li>
+<details>
+<summary>Go 1.24 Upgrade for Tyk Dashboard</summary>
+
+The Tyk Dashboard has been updated to Go 1.24, improving security by staying up-to-date with Go versions.
+</details>
+</li>
+
+</ul>
+
+##### Fixed
+
+<ul>
+<li>
+<details>
+<summary>Response Middleware Visibility in OAS API Debugger Restored</summary>
+
+Fixed an issue where the Test Your API panel in the Tyk OAS API Designer did not display response middleware execution. The debugger now shows both request and response middleware, providing a complete view of the request–response cycle.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Improved Support for Custom Domains with Regex Variables</summary>
+
+Fixed an issue where custom domains containing regular expressions were not properly represented in the OpenAPI servers section. The Dashboard now parses these domains into valid server entries with variables, ensuring accurate API documentation and preventing errors during editing. Additional syntax and regex validation have been added, along with fixes for capture group handling that previously could cause Gateway crashes.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Corrected Error Reporting in API Debugger for Response Middleware</summary>
+
+Fixed an issue where the Tyk OAS API Debugger incorrectly reported errors on endpoints using the Response Body Transform middleware, even when API calls succeeded. The debugger now accurately reflects successful responses without displaying false error logs.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Correct Default Version Handling in OAS API Versioning</summary>
+
+Fixed an issue where the default version of a Tyk OAS API was incorrectly reset to the base API when creating new versions. The default version now remains unchanged unless explicitly updated, ensuring consistent version routing.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Dashboard API now rejects PATCH requests with Tyk Vendor Extensions for OAS APIs</summary>
+
+Resolved an inconsistency where the Dashboard API's PATCH `/api/apis/oas/{apiId}` endpoint incorrectly accepted full Tyk OAS API definitions, including Tyk Vendor Extensions. The API now correctly validates and rejects these requests with a 400 Bad Request, aligning its behavior with the UI and ensuring only standard OpenAPI descriptions can be updated via this endpoint.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed Dashboard API panic on missing timestamp parameters with PostgreSQL</summary>
+
+Addressed an issue in the Tyk Dashboard API where accessing the `/api/logs` endpoint without `start` and `end` timestamp parameters caused a panic and 500 error in PostgreSQL environments with table sharding. The API now returns a 400 Bad Request with a clear error message in such cases.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed visibility of orphaned OAS API versions in Dashboard for PostgreSQL</summary>
+
+Resolved an issue where orphaned child APIs of a versioned OAS API would disappear from the Dashboard UI after their base API was deleted, specifically when using PostgreSQL as the datastore. Orphaned APIs now remain visible, consistent across all datastores.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed Inconsistent Null Handling for API Versions in Policies and Keys</summary>
+
+Resolved inconsistencies in how null or empty array values for the `versions` field within `access_rights` are handled for policies and keys. This update standardizes validation and data representation across API and UI workflows, improving reliability and preventing errors when managing API versions.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Mandatory `negate` Field for OAS URL Rewrite Middleware</summary>
+
+Addressed a schema inconsistency where the `negate` field (used to define match logic) was optional in Tyk OAS API definitions. It is now required to explicitly declare whether a URL rewrite rule should match or not match the configured pattern, ensuring consistent behavior between the Dashboard UI and backend validation.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Corrected `/versions` Endpoint Behavior for Tyk OAS APIs</summary>
+
+Fixed an issue where the `/api/apis/oas/{apiId}/versions` endpoint returned version data for APIs without versioning, including non-OAS and Classic APIs. The endpoint now strictly validates requests, returning `HTTP 422 Unprocessable Entity` unless the query targets a valid Tyk OAS base API, ensuring accurate and consistent results.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fix: Default API version not retaining selection when creating new versions</summary>
+
+Resolved an issue where creating a new version of a Tyk OAS API would incorrectly reset the default API version to the base API, even when `set_default=true` was not specified.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Validation Added for `base_api_id` When Creating Versioned APIs</summary>
+
+Fixed an issue where providing a non-existent `base_api_id` when creating a new version of a Tyk OAS API via the Dashboard API would still create the API but leave it invisible in the Dashboard. The system now validates this parameter and returns a `400 Bad Request` error if the base API does not exist, ensuring data consistency and preventing orphaned APIs.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Dashboard default page_size behavior fixed</summary>
+
+Fixed an issue where Tyk did not correctly apply a default `page_size`, which could cause unexpected behaviour if none was set in the Dashboard configuration. It now defaults to 10 as described in the documentation.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Changes to global webhooks were not immediately applied in event handling</summary>
+
+Fixed an issue where updating a [global webhook]({{< ref "api-management/gateway-events#local-and-global-webhooks" >}}) did not trigger a Gateway reload for Tyk OAS APIs using that webhook. The impact of this was that the old settings would be used when the associated event was triggered. Now, making a change to the webhook configuration will trigger a Gateway reload for all impacted APIs so that the new settings will be used.
+</details>
+</li>
+
+<li>
+<details>
+<summary>GraphQL API Creation via Upstream Introspection Fixed</summary>
+
+Resolved an issue where creating GraphQL APIs using Upstream Introspection in the Dashboard could fail with `502 Bad Gateway` errors. This occurred when OPA rules modified the request body without updating the `ContentLength`. The Dashboard now recalculates the content length correctly, ensuring stable and error-free introspection requests.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Stricter Validation for OAS API Version Names</summary>
+
+Fixed an issue where users could create child Tyk OAS API versions without specifying a valid version name `(new_version_name)`. The Gateway and Dashboard APIs will now reject such requests with an HTTP 422 error, ensuring all versions have meaningful identifiers and preventing unusable or empty version entries.
+</details>
+</li>
+
+
+</ul>
 
 ### 5.8.5 Release Notes
 
