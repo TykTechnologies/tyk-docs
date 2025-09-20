@@ -41,6 +41,282 @@ aliases:
 Our minor releases are supported until our next minor comes out.
 
 ---
+## 5.10 Release Notes 
+
+### 5.10.0 Release Notes 
+
+#### Release Date  2025
+
+#### Release Highlights
+
+This release builds on the recent release of [Tyk 5.8.6]({{< ref "developer-support/release-notes/dashboard#586-release-notes" >}}), adding a collection of new capabilities. For a comprehensive list of changes, please refer to the detailed [changelog]({{< ref "#Changelog-v5.10.0" >}}).
+
+#### Breaking Changes
+
+There are no breaking changes in this release.
+
+#### Dependencies {#dependencies-5.10.0}
+
+##### Compatibility Matrix For Tyk Components
+
+| Gateway Version | Recommended Releases | Backwards Compatibility |
+|--------|-------------------|---- |
+| 5.10.0  | MDCB v2.8.4       | MDCB v2.8.4 |
+|        | Operator v1.2.0   | Operator v0.17 |
+|        | Sync v2.1.3       | Sync v2.1.0 |
+|        | Helm Chart v3.1.0 | Helm all versions |
+|        | Pump v1.12.1      | Pump all versions |
+
+##### 3rd Party Dependencies & Tools
+
+| Third Party Dependency | Tested Versions | Compatible Versions | Comments | 
+| ---------------------- | --------------- | ------------------- | -------- | 
+| [Go](https://go.dev/dl/)               | 1.24                   |  1.24  | [Go plugins]({{< ref "api-management/plugins/golang" >}}) must be built using Go 1.24 | 
+| [Redis](https://redis.io/download/)    | 6.2.x, 7.x, 7.4.x      | 6.2.x, 7.x, 7.4.x      | | 
+| [Valkey](https://valkey.io/download/)  | 7.2.x, 8.0.x, 8.1.x    | 7.2.x, 8.0.x, 8.1.x    | | 
+| [OpenAPI Specification](https://spec.openapis.org/oas/v3.0.3)| v3.0.x  | v3.0.x | Supported by [Tyk OAS]({{< ref "api-management/gateway-config-tyk-oas" >}}) |
+
+Given the potential time difference between your upgrade and the release of this version, we recommend users verify the ongoing support of third-party dependencies they install, as their status may have changed since the release.
+
+#### Deprecations
+
+There are no deprecations in this release.
+
+#### Upgrade instructions {#upgrade-5.10.0}
+
+If you are upgrading to 5.10.0, please follow the detailed [upgrade instructions](#upgrading-tyk).
+
+#### Downloads
+
+- [Docker image to pull](https://hub.docker.com/r/tykio/tyk-gateway/tags?page=&page_size=&ordering=&name=v5.10.0)
+  - ```bash
+    docker pull tykio/tyk-gateway:v5.10.0
+    ``` 
+- Helm charts
+  - [tyk-charts v3.0.0]({{<ref "developer-support/release-notes/helm-chart#300-release-notes" >}})
+Please note that the Tyk Helm Charts are configured to install the LTS version of Tyk Gateway. You will need to modify them to install v5.10.0.
+
+- [Source code tarball of Tyk Gateway v5.10.0](https://github.com/TykTechnologies/tyk/releases/tag/v5.10.0)
+
+#### Changelog {#Changelog-v5.10.0}
+
+##### Added
+
+<ul>
+  
+<li>
+<details>
+<summary>Pre-Configure API Versioning Metadata for Tyk OAS APIs</summary>
+
+You can now define versioning metadata (version key, location, and default settings) on Tyk OAS APIs before creating additional versions. This allows you to prepare your versioning configuration without validation errors. Versioning automatically activates when you add the first child version and deactivates when you remove all versions, while preserving your metadata settings.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Enhanced JWT Validation with Core Registered Claims</summary>
+
+The Dashboard now supports validating JWT registered claims (subject, issuer, audience) and can enforce JWT ID claim existence. You can also configure different claim names for subject, base policy, and scope-to-policy mapping to support multiple identity providers within the same setup. This configuration is currently available only for Tyk OAS APIs and must be set directly in the API definition (not via the API Designer).
+</details>
+</li>
+
+<li>
+<details>
+<summary>Advanced Custom JWT Claims Validation</summary>
+
+Tyk OAS APIs now support validating custom JWT claims with flexible rules including required claims, exact matches, and value containment. You can handle nested claims, different data types, and set rules as blocking or non-blocking for advanced access control scenarios.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Gateway Certificate Expiry Notification Events</summary>
+
+Introduced a proactive event system to warn administrators when mTLS certificates are approaching expiration. A new 'CertificateExpiringSoon' event is fired when a certificate is within a configurable threshold (e.g., 30 days) of expiry, helping teams renew certificates before they cause outages. Additionally, a new 'CertificateExpired' event is fired whenever an expired certificate is detected, giving administrators clear visibility into failed requests caused by outdated certificates.  
+</details>
+</li>
+
+<li>
+<details>
+<summary>Enhanced JWKS Caching</summary>
+
+Improved JWT validation performance and reliability by adding configurable JWKS cache timeouts, the ability to invalidate caches on demand, and pre-fetching of keys when APIs are loaded. These changes reduce latency and ensure smoother key rotation handling.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Configurable Security Processing Modes</summary>
+
+Tyk OAS APIs now support a new `securityProcessingMode` setting that lets you choose between legacy authentication behavior and OpenAPI-compliant mode. The compliant mode supports OR logic across authentication methods and allows combining proprietary auth (HMAC, mTLS, custom) with standard OpenAPI schemes. This ensures more flexible, standards-compliant authentication while maintaining backward compatibility.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Enhanced External Service Integration with Proxy and mTLS Support</summary>
+
+All key external service integrations now support proxy and mTLS connectivity, including OAuth/JWT token operations, analytics transmission, webhook delivery, and health checks. This ensures Tyk works seamlessly in enterprise environments with strict network requirements while maintaining full backward compatibility.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Support for OR Logic in Multi-Authentication for Tyk OAS APIs</summary>
+
+Tyk OAS APIs now support OpenAPI-compliant authentication logic, allowing multiple authentication methods to be evaluated as alternatives (OR conditions) rather than requiring all methods to succeed (AND logic).
+</details>
+</li>
+
+
+</ul>
+
+##### Changed
+
+<ul>
+<li>
+<details>
+<summary>Go 1.24 Upgrade for Tyk Gateway</summary>
+
+The Tyk Gateway has been updated to [Golang 1.24](https://tip.golang.org/doc/go1.24), improving security by staying up-to-date with Go versions.
+</details>
+</li>
+
+</ul>
+
+
+##### Fixed
+
+<ul>
+<li>
+<details>
+<summary>Fixed duplication of version identifier configuration when importing OpenAPI description</summary>
+
+Fixed an issue where importing an OpenAPI description with an `apiKey` security scheme, while using the `authentication` query parameter, resulted in the unnecessary generation of a `header` object within the Tyk Vendor Extension (`x-tyk-api-gateway`) duplicating information already present in the declared OpenAPI security scheme.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed `/versions` endpoint to only accept valid Tyk OAS base APIs</summary>
+
+Fixed an issue where the `/api/apis/oas/{apiId}/versions` endpoint incorrectly returned version data for Tyk Classic APIs and non-versioned Tyk OAS APIs. The endpoint now properly validates requests and returns `HTTP 422 Unprocessable Entity` when the target API is not a valid Tyk OAS base API, ensuring the endpoint only returns meaningful version information.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed API migration error for Swagger 2.0 APIs without explicit versions</summary>
+
+Resolved an issue where migrating Swagger 2.0 APIs without explicit versioning to Tyk OAS failed because the `versions` field was incorrectly set to `null` instead of an empty array, causing validation errors. The fix ensures `versions` is always an array, allowing successful migration.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed mock responses not working with internal API proxying</summary>
+
+Fixed an issue where Tyk OAS mock response middleware failed to execute when internal API proxying was enabled. Mock responses configured in the target API are now correctly returned when a request is redirected to another API on the same Tyk Gateway instance via [internal looping]({{< ref "advanced-configuration/transform-traffic/looping" >}}).
+</details>
+</li>
+
+<li>
+<details>
+<summary>Base API CORS settings incorrectly applied to child API versions</summary>
+
+Fixed an issue where CORS settings from the base API were incorrectly applied to all versions of a Tyk OAS API, preventing child API versions from using their own CORS configuration. This occurred because the CORS check was performed before the request was routed to the correct API version. The processing order has been corrected so that requests are first routed to the appropriate version (base or child), then the correct CORS settings are applied, allowing each API version to have its own CORS configuration.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Mandatory 'negate' Field for OAS URL Rewrite Middleware</summary>
+
+The 'negate' field is now mandatory for Tyk OAS URL Rewrite middleware, resolving a schema inconsistency. URL rewrite rules must now explicitly declare whether they should match or not match the configured pattern, ensuring consistent behavior between the Dashboard and backend validation.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed Request Body Transform middleware not being applied with regex in URL rewrite</summary>
+
+Fixed an issue where Response Body Transformation middleware failed to apply to endpoints that used URL rewrite with regex patterns. When the endpoint path contained regex metacharacters (e.g., $, ^, (), []), these characters interfered with the body transformation's internal pattern-matching process, preventing the middleware from executing.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed false error reporting for Response Body Transform middleware in API Debugger</summary>
+
+Fixed an issue where the Tyk OAS API Debugger (Test Your API panel) incorrectly reported errors for endpoints using Response Body Transform middleware, even when API calls completed successfully. The debugger now accurately displays the execution status and eliminates false error messages that could mislead developers during API testing and troubleshooting.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed cross-interface compatibility for keys and policies with Tyk OAS and non-versioned Tyk Classic APIs</summary>
+
+Fixed an issue where keys and policies created or updated via the Dashboard API were sometimes rejected by the Dashboard UI, and vice versa, due to inconsistent handling of the `versions` field for non-versioned Tyk Classic APIs. The issue occurred because the API and UI used different formats when populating the versions list in access rights. Both interfaces now consistently accept either `null` or `[]` (empty array) values in the `versions` field of the access control list, ensuring seamless interoperability between API and UI workflows for policy and key management. Tyk OAS APIs use a [different approach]({{< ref "api-management/api-versioning#how-api-versioning-works-with-tyk" >}}) to versioning, with each (base or child) version having a unique API ID that is added to the access list.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed duration format validation errors in Tyk OAS API definitions</summary>
+
+Resolved an issue where the Gateway automatically converted Readable Duration values (such as uptime test timeouts) in Tyk OAS API definitions from integer-based formats to decimal formats, which triggered schema validation warnings. The effect of this was seen in the Tyk OAS API editor in the Dashboard UI where, for example, a duration of '4s500ms' would be converted to '4.5s' when reopening an API definition. Duration values are now consistently serialized and maintained in their original integer-based format to prevent these validation errors.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed TLS configuration not being applied for Redis rate limiting</summary>
+
+Fixed an issue where Tyk Gateway did not properly apply the configured TLS settings when connecting to Redis for rate-limiting operations. This could result in connection failures and incorrect `HTTP 429 Too Many Requests` responses being returned to clients. The rate limiter now correctly establishes TLS connections to Redis.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed Gateway crash when deleting APIs with Uptime Test enabled</summary>
+
+Fixed a bug where deleting an API with the Uptime Test feature enabled could cause the Gateway to crash due to a nil pointer dereference during cleanup operations. The Gateway now properly handles memory cleanup when removing APIs with active uptime tests, preventing crashes and ensuring stable API lifecycle management.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed Gateway re-registration failures after restart</summary>
+
+Fixed an issue where Gateways could fail to re-register with the Dashboard after restart, particularly during upgrades or in large-scale deployments. This resulted in `Authorization failed (Nonce empty)` errors and Gateway crash loops that prevented successful registration. The fix includes an updated license handler with hardened registration logic, enhanced Dashboard authentication retry mechanisms, and support for new "Unlimited Gateway" licenses, ensuring Gateways register reliably without entering failure loops even during heavy churn or rolling upgrades.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed body decompression errors with GraphQL APIs when analytics enabled</summary>
+
+Fixed an issue that caused repeated `Body decompression error: EOF` log messages when analytics were enabled for GraphQL APIs. The problem occurred because the Gateway attempted to decompress the response body after it had already been consumed for analytics processing, resulting in EOF (End of File) errors. The Gateway now properly handles response body consumption for GraphQL APIs with analytics, eliminating the spurious error logs.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Stricter validation for version name parameter when creating a new child API version</summary>
+
+Fixed an issue where users could create child Tyk OAS API versions using the `/tyk/apis/oas` endpoint without specifying a valid version name (`new_version_name`). The Gateway API now rejects such requests with an `HTTP 422 Unprocessable Entity` error, ensuring all versions have meaningful identifiers and preventing the creation of unusable or empty version entries.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed inconsistent middleware updates for Tyk OAS API `PATCH` requests</summary>
+
+Fixed an issue where updating a Tyk OAS API via `PATCH /tyk/apis/oas/{apiId}` did not properly update the Tyk Vendor Extension (`x-tyk-api-gateway`). When endpoints were removed or modified in the OpenAPI description, their corresponding middleware definitions could persist incorrectly in the vendor extension, leaving the API definition in an inconsistent state. The vendor extension is now correctly rebuilt to reflect all changes made to the OpenAPI description.
+</details>
+</li>
+
+</ul>
 
 ## 5.9 Release Notes 
 
