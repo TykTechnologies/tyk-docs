@@ -29,7 +29,7 @@ When using Python plugins, the middleware function names are set globally. So, i
 
 ## How do rich plugins work ?
 
-<h3 id="id-extractor-auth-plugin">ID Extractor & Auth Plugins</h3>
+<h3 className="id-extractor-auth-plugin">ID Extractor & Auth Plugins</h3>
 The ID Extractor is a caching mechanism that's used in combination with Tyk Plugins. It can be used specifically with plugins that implement custom authentication mechanisms. The ID Extractor works for all rich plugins: gRPC-based plugins, Python and Lua.
 
 See [ID Extractor](/api-management/plugins/plugin-types#plugin-caching-mechanism) for more details.
@@ -377,7 +377,7 @@ This field serves as an alias for `response_erro`r and holds the HTTP response b
 
 ---
 
-<h3 id="session-state">SessionState</h3>
+<h3 className="session-state">SessionState</h3>
 A `SessionState` data structure is created for every authenticated request and stored in Redis. It's used to track the activity of a given key in different ways, mainly by the built-in Tyk middleware like the quota middleware or the rate limiter.
 A rich plugin can create a `SessionState` object and store it in the same way built-in authentication mechanisms do. This is what a custom authentication middleware does. This is also part of a `Coprocess.Object`.
 Returning a null session object from a custom authentication middleware is considered a failed authentication and the appropriate HTTP 403 error is returned by the gateway (this is the default behavior) and can be overridden by using `ReturnOverrides`.
@@ -477,7 +477,7 @@ This is the unique identifier for the access token used to authenticate the requ
 
 ---
 
-<h3 id="access-definition">AccessDefinition</h3>
+<h3 className="access-definition">AccessDefinition</h3>
 ```protobuf
 message AccessDefinition {
   string api_name = 1;
@@ -504,7 +504,7 @@ List of allowed API versions, e.g.  `"versions": [ "Default" ]`.
 
 ---
 
-<h3 id="access-spec">AccessSpec</h3>
+<h3 className="access-spec">AccessSpec</h3>
 Defines an API's URL (endpoint) and associated list of allowed methods
 
 ```protobuf
@@ -562,7 +562,7 @@ The shared secret.
 
 ---
 
-<h3 id="monitor">Monitor</h3>
+<h3 className="monitor">Monitor</h3>
 Added to a [session](#session-state) when [monitor quota thresholds](/api-management/gateway-events#monitoring-quota-consumption) are defined within the Tyk key. This message contains the quota percentage threshold limits, defined in descending order, that trigger webhook notification.
 
 ```yaml
@@ -1989,266 +1989,6 @@ The sample code that we'll use implements a request transformation plugin using 
 #### Requirements
 
 - Tyk Gateway: This can be installed using standard package management tools like Yum or APT, or from source code. See [here][1] for more installation options.
-- The Tyk CLI utility, which is bundled with our RPM and DEB packages, and can be installed separately from [https://github.com/TykTechnologies/tyk-cli][2].
-- In Tyk 2.8 the Tyk CLI is part of the gateway binary, you can find more information by running "tyk help bundle".
-- Gradle Build Tool: https://gradle.org/install/.
-- gRPC tools: https://grpc.io/docs/quickstart/csharp.html#generate-grpc-code
-- Java JDK 7 or higher.
-
-#### Create the Plugin
-
-##### Setting up the Java Project
-
-We will use the Gradle build tool to generate the initial files for our project:
-
-```bash
-cd ~
-mkdir tyk-plugin
-cd tyk-plugin
-gradle init
-```
-
-We now have a `tyk-plugin` directory containing the basic skeleton of our application.
-
-Add the following to `build.gradle`
-
-```{.copyWrapper}
-buildscript {
-  repositories {
-    jcenter()
-  }
-  dependencies {
-    classpath 'com.google.protobuf:protobuf-gradle-plugin:0.8.1'
-  }
-}
-
-plugins {
-  id "com.google.protobuf" version "0.8.1"
-  id "java"
-  id "application"
-  id "idea"
-}
-
-protobuf {
-  protoc {
-    artifact = "com.google.protobuf:protoc:3.3.0"
-  }
-  plugins {
-    grpc {
-      artifact = 'io.grpc:protoc-gen-grpc-java:1.5.0'
-    }
-  }
-  generateProtoTasks {
-    all()*.plugins {
-      grpc {}
-    }
-  }
-  generatedFilesBaseDir = "$projectDir/src/generated"
-}
-
-sourceCompatibility = 1.8
-targetCompatibility = 1.8
-
-mainClassName = "com.testorg.testplugin.PluginServer"
-
-repositories {
-  mavenCentral()
-}
-
-dependencies {
-  compile 'io.grpc:grpc-all:1.5.0'
-}
-
-idea {
-  module {
-    sourceDirs += file("${projectDir}/src/generated/main/java");
-    sourceDirs += file("${projectDir}/src/generated/main/grpc");
-  }
-}
-```
-
-##### Create the Directory for the Server Class
-
-```bash
-cd ~/tyk-plugin
-mkdir -p src/main/java/com/testorg/testplugin
-```
-
-##### Install the gRPC Tools
-
-We need to download the Tyk Protocol Buffers definition files, these files contains the data structures used by Tyk. See [Data Structures](/api-management/plugins/rich-plugins#rich-plugins-data-structures) for more information:
-
-```bash
-cd ~/tyk-plugin
-git clone https://github.com/TykTechnologies/tyk
-mv tyk/coprocess/proto src/main/proto
-```
-
-##### Generate the Bindings
-
-To generate the Protocol Buffers bindings we use the Gradle build task:
-
-```bash
-gradle build
-```
-
-If you need to customize any setting related to the bindings generation step, check the `build.gradle` file.
-
-##### Implement Server
-
-We need to implement two classes: one class will contain the request dispatcher logic and the actual middleware implementation. The other one will implement the gRPC server using our own dispatcher.
-
-From the `~/tyk-plugin/src/main/java/com/testorg/testplugin` directory, create a file named `PluginDispatcher.java` with the following code:
-
-```java
-package com.testorg.testplugin;
-
-import coprocess.DispatcherGrpc;
-import coprocess.CoprocessObject;
-
-public class PluginDispatcher extends DispatcherGrpc.DispatcherImplBase {
-
-  @Override
-  public void dispatch(CoprocessObject.Object request,
-        io.grpc.stub.StreamObserver<CoprocessObject.Object> responseObserver) {
-    CoprocessObject.Object modifiedRequest = null;
-
-    switch (request.getHookName()) {
-      case "MyPreMiddleware":
-        modifiedRequest = MyPreHook(request);
-      default:
-      // Do nothing, the hook name isn't implemented!
-    }
-
-    // Return the modified request (if the transformation was done):
-    if (modifiedRequest != null) {
-      responseObserver.onNext(modifiedRequest);
-    };
-
-    responseObserver.onCompleted();
-  }
-
-  CoprocessObject.Object MyPreHook(CoprocessObject.Object request) {
-    CoprocessObject.Object.Builder builder = request.toBuilder();
-    builder.getRequestBuilder().putSetHeaders("customheader", "customvalue");
-    return builder.build();
-  }
-}
-```
-
-In the same directory, create a file named `PluginServer.java` with the following code. This is the server implementation:
-
-```java
-package com.testorg.testplugin;
-
-import coprocess.DispatcherGrpc;
-
-import io.grpc.Server;
-import io.grpc.ServerBuilder;
-import io.grpc.stub.StreamObserver;
-import java.io.IOException;
-import java.util.logging.Level;
-import java.util.logging.Logger;
-
-public class PluginServer {
-
-  private static final Logger logger = Logger.getLogger(PluginServer.class.getName());
-  static Server server;
-  static int port = 5555;
-
-  public static void main(String[] args) throws IOException, InterruptedException {
-    System.out.println("Initializing gRPC server.");
-
-    // Our dispatcher is instantiated and attached to the server:
-    server = ServerBuilder.forPort(port)
-            .addService(new PluginDispatcher())
-            .build()
-            .start();
-
-    blockUntilShutdown();
-
-  }
-
-  static void blockUntilShutdown() throws InterruptedException {
-      if (server != null) {
-          server.awaitTermination();
-      }
-  }
-}
-```
-
-To run the gRPC server we can use the following command:
-
-```bash
-cd ~/tyk-plugin
-gradle runServer
-```
-
-The gRPC server will listen on port 5555 (as defined in `Server.java`). In the next steps we'll setup the plugin bundle and modify Tyk to connect to our gRPC server.
-
-
-#### Bundle the Plugin
-
-We need to create a manifest file within the `tyk-plugin` directory. This file contains information about our plugin and how we expect it to interact with the API that will load it. This file should be named `manifest.json` and needs to contain the following:
-
-```json
-{
-  "custom_middleware": {
-    "driver": "grpc",
-    "pre": [{
-        "name": "MyPreMiddleware"
-    }]
-  }
-}
-```
-
-- The `custom_middleware` block contains the middleware settings like the plugin driver we want to use (`driver`) and the hooks that our plugin will expose. We use the `pre` hook for this tutorial. For other hooks see [here](/api-management/plugins/rich-plugins#coprocess-dispatcher---hooks).
-- The `name` field references the name of the function that we implemented in our plugin code - `MyPreMiddleware`. This will be handled by our dispatcher gRPC method in `PluginServer.java`.
-
-To bundle our plugin run the following command in the `tyk-plugin` directory. Check your tyk-cli install path first:
-
-```bash
-/opt/tyk-gateway/utils/tyk-cli bundle build -y
-```
-
-For Tyk 2.8 use:
-```bash
-/opt/tyk-gateway/bin/tyk bundle build -y
-```
-
-A plugin bundle is a packaged version of the plugin. It may also contain a cryptographic signature of its contents. The `-y` flag tells the Tyk CLI tool to skip the signing process in order to simplify the flow of this tutorial. 
-
-For more information on the Tyk CLI tool, see [here](/api-management/plugins/overview#plugin-bundles).
-
-You should now have a `bundle.zip` file in the `tyk-plugin` directory.
-
-#### Publish the Plugin
-
-To publish the plugin, copy or upload `bundle.zip` to a local web server like Nginx, or Apache or storage like Amazon S3. For this tutorial we'll assume you have a web server listening on `localhost` and accessible through `http://localhost`.
-
-<GrpcInclude/>
-
-#### What's Next? {what-is-next}
-
-In this tutorial we learned how Tyk gRPC plugins work. For a production-level setup we suggest the following:
-
-- Configure an appropriate web server and path to serve your plugin bundles.
-
-[1]: /tyk-self-managed/install
-[2]: https://github.com/TykTechnologies/tyk-cli
-[3]: /img/dashboard/system-management/api_settings.png
-[4]: /img/dashboard/system-management/plugin_options.png
-
-<h3 id="create-custom-auth-plugin-with-dotnet">Create Custom Authentication Plugin with .NET</h3>
-This tutorial will guide you through the creation of a custom authentication plugin for Tyk with a gRPC based plugin with .NET and C#. For additional information check the official gRPC [documentation](https://grpc.io/docs/guides/index.html).
-
-The sample code that we’ll use implements a very simple authentication layer using .NET and the proper gRPC bindings generated from our Protocol Buffers definition files.
-
-<img src="/img/diagrams/diagram_docs_gRPC-plugins_why-use-it-for-plugins@2x.png" alt="Using gRPC for plugins" />
-
-#### Requirements
-
-- Tyk Gateway: This can be installed using standard package management tools like Yum or APT, or from source code. See [here][1] for more installation options.
 - The Tyk CLI utility, which is bundled with our RPM and DEB packages, and can be installed separately from [https://github.com/TykTechnologies/tyk-cli][2]
 - In Tyk 2.8 the Tyk CLI is part of the gateway binary, you can find more information by running "tyk help bundle".
 - .NET Core for your OS: https://www.microsoft.com/net/core
@@ -2256,7 +1996,7 @@ The sample code that we’ll use implements a very simple authentication layer u
 
 #### Create the Plugin
 
-<h5 id="create-dotnet-project">Create .NET Project</h5>
+<h5 className="create-dotnet-project">Create .NET Project</h5>
 We use the .NET CLI tool to generate the initial files for our project:
 
 ```bash
@@ -2278,7 +2018,7 @@ dotnet add package Google.Protobuf --version 3.4.0
 - The `ThreadPool` package is used by `Grpc`.
 - The `Protobuf` package will be used by our gRPC bindings.
 
-<h5 id="install-grpc-tools">Install the gRPC Tools</h5>
+<h5 className="install-grpc-tools">Install the gRPC Tools</h5>
 We need to install the gRPC tools to generate the bindings. We recommended you follow the official guide here: https://grpc.io/docs/quickstart/csharp.html#generate-grpc-code.
 
 Run the following Commands (both MacOS and Linux):
@@ -3411,110 +3151,3 @@ gRPC plugins may use different transports, we've tested TCP and Unix Sockets.
 <img src="/img/diagrams/unixHitRate.png" alt="Unix Socket Hit Rate" />
 
 ---
-
-## Using Lua
-
-### Overview
-
-#### Requirements
-
-Tyk uses [LuaJIT](http://luajit.org/). The main requirement is the LuaJIT shared library, you may find this as `libluajit-x` in most distros.
-
-For Ubuntu 14.04 you may use:
-
-`$ apt-get install libluajit-5.1-2
-$ apt-get install luarocks`
-
-The LuaJIT required modules are as follows:
-
-*   [lua-cjson](https://github.com/mpx/lua-cjson): in case you have `luarocks`, run: `$ luarocks install lua-cjson`
-
-#### How to write LuaJIT Plugins
-
-We have a demo plugin hosted in the repo [tyk-plugin-demo-lua](https://github.com/TykTechnologies/tyk-plugin-demo-lua). The project implements a simple middleware for header injection, using a Pre hook (see [Tyk custom middleware hooks](/api-management/plugins/javascript#using-javascript-with-tyk)) and [mymiddleware.lua](https://github.com/TykTechnologies/tyk-plugin-demo-lua/blob/master/mymiddleware.lua).
-#### Lua Performance
-Lua support is currently in beta stage. We are planning performance optimizations for future releases.
-#### Tyk Lua API Methods
-Tyk Lua API methods aren’t currently supported.
-
-### Lua Plugin Tutorial
-
-#### Settings in the API Definition
-
-To add a Lua plugin to your API, you must specify the bundle name using the `custom_middleware_bundle` field:
-
-```json
-{
-  "name": "Tyk Test API",
-  "api_id": "1",
-  "org_id": "default",
-  "definition": {
-    "location": "header",
-    "key": "version"
-  },
-  "auth": {
-    "auth_header_name": "authorization"
-  },
-  "use_keyless": true,
-  "version_data": {
-    "not_versioned": true,
-    "versions": {
-      "Default": {
-        "name": "Default",
-        "expires": "3000-01-02 15:04",
-        "use_extended_paths": true,
-        "extended_paths": {
-          "ignored": [],
-          "white_list": [],
-          "black_list": []
-        }
-      }
-    }
-  },
-  "proxy": {
-    "listen_path": "/quickstart/",
-    "target_url": "http://httpbin.org",
-    "strip_listen_path": true
-  },
-  "custom_middleware_bundle": "test-bundle",
-}
-```
-
-#### Global settings
-
-To enable Lua plugins you need to add the following block to `tyk.conf`:
-
-```json
-"coprocess_options": {
-  "enable_coprocess": true,
-},
-"enable_bundle_downloader": true,
-"bundle_base_url": "http://my-bundle-server.com/bundles/",
-"public_key_path": "/path/to/my/pubkey",
-```
-
-`enable_coprocess` enables the rich plugins feature.
-
-`enable_bundle_downloader` enables the bundle downloader.
-
-`bundle_base_url` is a base URL that will be used to download the bundle, in this example we have "test-bundle" specified in the API settings, Tyk will fetch the following URL: `http://my-bundle-server.com/bundles/test-bundle`.
-
-`public_key_path` sets a public key, this is used for verifying signed bundles, you may omit this if unsigned bundles are used.
-
-#### Running the Tyk Lua build
-
-To use Tyk with Lua support you will need to use an alternative binary, it is provided in the standard Tyk package but it has a different service name.
-
-Firstly stop the standard Tyk version:
-
-```console
-service tyk-gateway stop
-```
-
-and then start the Lua build:
-
-```console
-service tyk-gateway-lua start
-```
-
-
