@@ -1127,6 +1127,7 @@ class DocsMerger:
             changes_made += 1
             return f'<{component}{before_href}href="{new_path}"{after_href}'
 
+        # BadgeCard is not beign used
         content = re.sub(r'<(Card|BadgeCard|Expandable)([^>]*\s+)href="([^"]+)"([^>]*>)', replace_card_href, content)
 
         # 7. Fix relative markdown links without leading slash: [text](path)
