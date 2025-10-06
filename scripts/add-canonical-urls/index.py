@@ -16,7 +16,7 @@ def find_mdx_files(directory: Path):
         for file in files:
             if file.endswith(".mdx"):
                 full_path = Path(root) / file
-                # Double-check: skip if any part of path is 'snippets'
+                # Skip if any part of path is 'snippets'
                 if "snippets" in full_path.parts:
                     print(f"⏩ Skipping file inside snippets: {full_path}")
                     continue
@@ -24,7 +24,7 @@ def find_mdx_files(directory: Path):
     return mdx_files
 
 def build_canonical_url(file_path: Path):
-    """Generate canonical URL, excluding '/index' if present."""
+    """Generate canonical URL, handling index.mdx and stripping version folder."""
     relative_path = file_path.relative_to(ROOT_DIR).as_posix()
     clean_path = re.sub(r"\.mdx$", "", relative_path)
 
@@ -32,6 +32,12 @@ def build_canonical_url(file_path: Path):
     canonical_path = re.sub(r"/index$", "", clean_path)
     if canonical_path == "index":
         canonical_path = ""  # top-level index
+
+    # Strip version folder if first segment is a number (like 5.8)
+    parts = canonical_path.split("/")
+    if parts and re.match(r"^\d+(\.\d+)?$", parts[0]):  # e.g., 5 or 5.8
+        parts = parts[1:]  # remove version folder
+    canonical_path = "/".join(parts)
 
     canonical_url = f"{BASE_URL}{'/' + canonical_path if canonical_path else ''}"
     return canonical_url
@@ -49,7 +55,7 @@ def add_or_update_canonical(file_path: Path):
     frontmatter = frontmatter_match.group(1)
     canonical_url = build_canonical_url(file_path)
 
-    # If canonical exists, update it
+    # Add or update canonical field
     if re.search(r'^["\']?canonical["\']?\s*:', frontmatter, flags=re.MULTILINE):
         new_frontmatter = re.sub(
             r'^["\']?canonical["\']?\s*:\s*.*$',
