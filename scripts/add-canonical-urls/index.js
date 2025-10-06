@@ -5,7 +5,7 @@ import path from "path";
 const ROOT_DIR = process.cwd(); // where the program is running
 const BASE_URL = "https://tyk.io/docs"; // canonical base
 
-// Recursively find all .mdx files excluding "snippets" folder
+// Recursively find all .mdx files excluding any "snippets" folder
 function findMdxFiles(dir) {
   let results = [];
   const files = fs.readdirSync(dir, { withFileTypes: true });
@@ -13,11 +13,20 @@ function findMdxFiles(dir) {
   for (const file of files) {
     const fullPath = path.join(dir, file.name);
 
-    // Skip "snippets" directory
+    // Skip "snippets" directory and any of its contents
     if (file.isDirectory()) {
-      if (file.name === "snippets") continue;
+      if (file.name === "snippets") {
+        console.log(`⏩ Skipping directory (and all inside): ${fullPath}`);
+        continue;
+      }
       results = results.concat(findMdxFiles(fullPath));
     } else if (file.isFile() && file.name.endsWith(".mdx")) {
+      // Double-check exclusion: if path contains /snippets/ anywhere, skip it
+      const parts = fullPath.split(path.sep);
+      if (parts.includes("snippets")) {
+        console.log(`⏩ Skipping file inside snippets: ${fullPath}`);
+        continue;
+      }
       results.push(fullPath);
     }
   }
@@ -37,20 +46,23 @@ function addCanonicalToFrontmatter(filePath) {
 
   const frontmatter = frontmatterMatch[1];
 
-  // Skip if canonical already exists
-  if (/^canonical\s*:|["']canonical["']\s*:/m.test(frontmatter)) {
-    console.log(`✅ Canonical already present in: ${filePath}`);
-    return;
-  }
-
   // Build canonical URL
   const relativePath = path.relative(ROOT_DIR, filePath);
   const cleanPath = relativePath.replace(/\\/g, "/").replace(/\.mdx$/, "");
   const canonicalUrl = `${BASE_URL}/${cleanPath}`;
 
-  // Insert canonical before ending triple dash
-  const newFrontmatter =
-    frontmatter + `\ncanonical: "${canonicalUrl}"`;
+  // If canonical exists, override it
+  let newFrontmatter;
+  if (/^canonical\s*:|["']canonical["']\s*:/m.test(frontmatter)) {
+    newFrontmatter = frontmatter.replace(
+      /^(\s*(?:["']?canonical["']?)\s*:\s*).*$/m,
+      `canonical: "${canonicalUrl}"`
+    );
+    console.log(`🔁 Updated canonical in: ${filePath}`);
+  } else {
+    newFrontmatter = frontmatter + `\ncanonical: "${canonicalUrl}"`;
+    console.log(`📝 Added canonical to: ${filePath}`);
+  }
 
   const newContent = content.replace(
     /^---\n([\s\S]*?)\n---/,
@@ -58,7 +70,6 @@ function addCanonicalToFrontmatter(filePath) {
   );
 
   fs.writeFileSync(filePath, newContent, "utf8");
-  console.log(`📝 Added canonical to: ${filePath}`);
 }
 
 // === MAIN ===
@@ -66,6 +77,6 @@ function addCanonicalToFrontmatter(filePath) {
   console.log("🔍 Searching for .mdx files...");
   const mdxFiles = findMdxFiles(ROOT_DIR);
 
-  console.log(`Found ${mdxFiles.length} .mdx files`);
+  console.log(`📄 Found ${mdxFiles.length} eligible .mdx files`);
   mdxFiles.forEach(addCanonicalToFrontmatter);
 })();
