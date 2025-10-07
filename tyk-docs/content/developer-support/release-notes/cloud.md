@@ -6,10 +6,35 @@ tags: ["Tyk Cloud", "Release notes", "v1.23", "1.23.0", "v1.24", "1.24.0", "v1.2
 
 ---
 
+# 1.30 Release Notes
+
+## 1.30.1 Release Notes
+
+### Release Date 25th of 2025
+
+### Release Highlights
+
+In release 1.30.1, we've improved the stability of our database connectivity. This is an internal change; no customer action required.
+No other changes have been added to this release.
+
+### Breaking Changes
+
+There are no breaking changes in this release.
+
+### Downloads
+- [latest version of Mserv](https://github.com/TykTechnologies/mserv/releases/latest)
+
+### Deprecations
+
+There are no deprecations in this release.
+
+### Changelog {#Changelog-v1.30.1}
+
+There is no changelog in this release.
+
 ## 1.30.0 Release Notes
 
 ### Release Date 1st September 2025
-
 
 ### Release Highlights
 
@@ -101,6 +126,8 @@ Users can now opt into automatic upgrades for Control Plane deployments and conf
 </li> 
 
 </ul>
+
+# 1.28 Release Notes
 
 ## 1.28.1 Release Notes
 
@@ -822,6 +849,12 @@ Dependencies across all Tyk Cloud components have been updated to address report
 
 ### FAQ
 Please visit our [Developer Support]({{< ref "developer-support/community" >}}) page for further information relating to reporting bugs, upgrading Tyk, technical support and how to contribute.
+
+
+
+
+
+
 
 
 
