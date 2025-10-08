@@ -33,9 +33,9 @@ def build_canonical_url(file_path: Path):
     if canonical_path == "index":
         canonical_path = ""  # top-level index
 
-    # Strip version folder if first segment is a number (like 5.8)
+    # Strip version folder if first segment is a number (like 5.8) or "nightly"
     parts = canonical_path.split("/")
-    if parts and re.match(r"^\d+(\.\d+)?$", parts[0]):  # e.g., 5 or 5.8
+    if parts and (re.match(r"^\d+(\.\d+)?$", parts[0]) or parts[0] == "nightly"):  # e.g., 5 or 5.8 or nightly
         parts = parts[1:]  # remove version folder
     canonical_path = "/".join(parts)
 
