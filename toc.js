@@ -1,3 +1,7 @@
+// This script enhances the Table of Contents (TOC) / right side navigation of Mintliffy by adding collapsible/expandable sections based on header depth.
+// It also fixes issues with incorrect depth values for custom anchor tags and ensures proper indentation and visibility of TOC items.
+// But custom anchor tags are not used anymore in our repository. So that part is not needed anymore.
+
 // toc-fix-v2.js
 (function () {
     let observer;
