@@ -4967,46 +4967,8 @@ deny["Only '%v' group has permission to access this API"] {
     not input.user.group_name == "TeamA-Admin"
 }
 
-# Rule is_tyk_oas check if endpoint belongs to oas api.
-default is_tyk_oas = false
-	is_tyk_oas {
-	startswith(input.request.path, "/api/apis/oas")
-}
+{{< include-raw "others/api_type_rules.rego.txt" >}}
 
-# Rule is_tyk_streams check if endpoint belongs to streams api.
-default is_tyk_streams = false
-	is_tyk_streams {
-	startswith(input.request.path, "/api/apis/streams")
-}
-
-# Rule is_tyk_classic check if endpoint belongs to classic api.
-# WARNING: CRITICAL MAINTENANCE REQUIREMENT
-# The is_tyk_classic rule below is defined by exclusion (not is_tyk_oas and not is_tyk_streams).
-# This approach is brittle and not forward-compatible.
-#
-# IMPORTANT: Whenever a new API type is introduced under the "/api/apis/" path,
-# this rule MUST be explicitly updated to exclude the new type.
-# Failure to do so will result in the new API type being incorrectly classified as "classic",
-# which may lead to incorrect authorization policies being applied.
-#
-# Example: If a new API type "graphql" is added with path "/api/apis/graphql",
-# this rule must be updated to:
-#
-# is_tyk_classic {
-#     not is_tyk_oas
-#     not is_tyk_streams
-#     not is_tyk_graphql  # Add exclusion for the new API type
-#     startswith(input.request.path, "/api/apis")
-# }
-#
-# Consider refactoring this rule to use positive matching instead of exclusion
-# if a specific pattern for classic APIs can be identified.
-default is_tyk_classic = false
-is_tyk_classic {
-	not is_tyk_oas
-	not is_tyk_streams
-	startswith(input.request.path, "/api/apis")
-}
 
 ```
 
@@ -5264,46 +5226,8 @@ deny["Only '%v' group has permission to access this API"] {
     not input.user.group_name == "TeamA-Admin"
 }
 
-# Rule is_tyk_oas check if endpoint belongs to oas api.
-default is_tyk_oas = false
-	is_tyk_oas {
-	startswith(input.request.path, "/api/apis/oas")
-}
+{{< include-raw "others/api_type_rules.rego.txt" >}}
 
-# Rule is_tyk_streams check if endpoint belongs to streams api.
-default is_tyk_streams = false
-	is_tyk_streams {
-	startswith(input.request.path, "/api/apis/streams")
-}
-
-# Rule is_tyk_classic check if endpoint belongs to classic api.
-# WARNING: CRITICAL MAINTENANCE REQUIREMENT
-# The is_tyk_classic rule below is defined by exclusion (not is_tyk_oas and not is_tyk_streams).
-# This approach is brittle and not forward-compatible.
-#
-# IMPORTANT: Whenever a new API type is introduced under the "/api/apis/" path,
-# this rule MUST be explicitly updated to exclude the new type.
-# Failure to do so will result in the new API type being incorrectly classified as "classic",
-# which may lead to incorrect authorization policies being applied.
-#
-# Example: If a new API type "graphql" is added with path "/api/apis/graphql",
-# this rule must be updated to:
-#
-# is_tyk_classic {
-#     not is_tyk_oas
-#     not is_tyk_streams
-#     not is_tyk_graphql  # Add exclusion for the new API type
-#     startswith(input.request.path, "/api/apis")
-# }
-#
-# Consider refactoring this rule to use positive matching instead of exclusion
-# if a specific pattern for classic APIs can be identified.
-default is_tyk_classic = false
-is_tyk_classic {
-	not is_tyk_oas
-	not is_tyk_streams
-	startswith(input.request.path, "/api/apis")
-}
 ```
 
 #### Test
