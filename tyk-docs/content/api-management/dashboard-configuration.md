@@ -4740,6 +4740,7 @@ For example:
 patch_request[x] {
   request_permission[_] == "apis"
   request_intent == "write"
+  is_tyk_classic
   contains(input.request.body.api_definition.name, "#external")
 
   x := {"api_definition": {"proxy": {"transport": {"proxy_url": "http://company-proxy:8080"}}}}
@@ -4949,6 +4950,7 @@ patch_request[x] {
     input.user.user_permissions["test_patch_request"]
     request_permission[_] == "apis"
     request_intent == "write"
+    is_tyk_classic
     contains(input.request.body.api_definition.name, "#external")
     x := {"api_definition": {"proxy": {"transport": {"proxy_url": "http://company-proxy:8080"}}}}
 }
@@ -4963,6 +4965,47 @@ deny["Only '%v' group has permission to access this API"] {
     contains(input.request.body.api_definition.name, "#admin-teamA")
     # Checks for the user group name.
     not input.user.group_name == "TeamA-Admin"
+}
+
+# Rule is_tyk_oas check if endpoint belongs to oas api.
+default is_tyk_oas = false
+	is_tyk_oas {
+	startswith(input.request.path, "/api/apis/oas")
+}
+
+# Rule is_tyk_streams check if endpoint belongs to streams api.
+default is_tyk_streams = false
+	is_tyk_streams {
+	startswith(input.request.path, "/api/apis/streams")
+}
+
+# Rule is_tyk_classic check if endpoint belongs to classic api.
+# WARNING: CRITICAL MAINTENANCE REQUIREMENT
+# The is_tyk_classic rule below is defined by exclusion (not is_tyk_oas and not is_tyk_streams).
+# This approach is brittle and not forward-compatible.
+#
+# IMPORTANT: Whenever a new API type is introduced under the "/api/apis/" path,
+# this rule MUST be explicitly updated to exclude the new type.
+# Failure to do so will result in the new API type being incorrectly classified as "classic",
+# which may lead to incorrect authorization policies being applied.
+#
+# Example: If a new API type "graphql" is added with path "/api/apis/graphql",
+# this rule must be updated to:
+#
+# is_tyk_classic {
+#     not is_tyk_oas
+#     not is_tyk_streams
+#     not is_tyk_graphql  # Add exclusion for the new API type
+#     startswith(input.request.path, "/api/apis")
+# }
+#
+# Consider refactoring this rule to use positive matching instead of exclusion
+# if a specific pattern for classic APIs can be identified.
+default is_tyk_classic = false
+is_tyk_classic {
+	not is_tyk_oas
+	not is_tyk_streams
+	startswith(input.request.path, "/api/apis")
 }
 
 ```
@@ -5202,6 +5245,7 @@ patch_request[x] {
     # Enforce only for users with ["test_patch_request"] permissions.
     # Remove the ["test_patch_request"] permission to enforce the proxy configuration for all users instead of those with the permission.
     input.user.user_permissions["test_patch_request"]
+    is_tyk_classic
     request_permission[_] == "apis"
     request_intent == "write"
     contains(input.request.body.api_definition.name, "#external")
@@ -5218,6 +5262,47 @@ deny["Only '%v' group has permission to access this API"] {
     contains(input.request.body.api_definition.name, "#admin-teamA")
     # Checks for the user group name.
     not input.user.group_name == "TeamA-Admin"
+}
+
+# Rule is_tyk_oas check if endpoint belongs to oas api.
+default is_tyk_oas = false
+	is_tyk_oas {
+	startswith(input.request.path, "/api/apis/oas")
+}
+
+# Rule is_tyk_streams check if endpoint belongs to streams api.
+default is_tyk_streams = false
+	is_tyk_streams {
+	startswith(input.request.path, "/api/apis/streams")
+}
+
+# Rule is_tyk_classic check if endpoint belongs to classic api.
+# WARNING: CRITICAL MAINTENANCE REQUIREMENT
+# The is_tyk_classic rule below is defined by exclusion (not is_tyk_oas and not is_tyk_streams).
+# This approach is brittle and not forward-compatible.
+#
+# IMPORTANT: Whenever a new API type is introduced under the "/api/apis/" path,
+# this rule MUST be explicitly updated to exclude the new type.
+# Failure to do so will result in the new API type being incorrectly classified as "classic",
+# which may lead to incorrect authorization policies being applied.
+#
+# Example: If a new API type "graphql" is added with path "/api/apis/graphql",
+# this rule must be updated to:
+#
+# is_tyk_classic {
+#     not is_tyk_oas
+#     not is_tyk_streams
+#     not is_tyk_graphql  # Add exclusion for the new API type
+#     startswith(input.request.path, "/api/apis")
+# }
+#
+# Consider refactoring this rule to use positive matching instead of exclusion
+# if a specific pattern for classic APIs can be identified.
+default is_tyk_classic = false
+is_tyk_classic {
+	not is_tyk_oas
+	not is_tyk_streams
+	startswith(input.request.path, "/api/apis")
 }
 ```
 
