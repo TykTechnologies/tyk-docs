@@ -4740,6 +4740,7 @@ For example:
 patch_request[x] {
   request_permission[_] == "apis"
   request_intent == "write"
+  is_tyk_classic
   contains(input.request.body.api_definition.name, "#external")
 
   x := {"api_definition": {"proxy": {"transport": {"proxy_url": "http://company-proxy:8080"}}}}
@@ -4949,6 +4950,7 @@ patch_request[x] {
     input.user.user_permissions["test_patch_request"]
     request_permission[_] == "apis"
     request_intent == "write"
+    is_tyk_classic
     contains(input.request.body.api_definition.name, "#external")
     x := {"api_definition": {"proxy": {"transport": {"proxy_url": "http://company-proxy:8080"}}}}
 }
@@ -4964,6 +4966,9 @@ deny["Only '%v' group has permission to access this API"] {
     # Checks for the user group name.
     not input.user.group_name == "TeamA-Admin"
 }
+
+{{< include-raw "others/api_type_rules.rego.txt" >}}
+
 
 ```
 
@@ -5202,6 +5207,7 @@ patch_request[x] {
     # Enforce only for users with ["test_patch_request"] permissions.
     # Remove the ["test_patch_request"] permission to enforce the proxy configuration for all users instead of those with the permission.
     input.user.user_permissions["test_patch_request"]
+    is_tyk_classic
     request_permission[_] == "apis"
     request_intent == "write"
     contains(input.request.body.api_definition.name, "#external")
@@ -5219,6 +5225,9 @@ deny["Only '%v' group has permission to access this API"] {
     # Checks for the user group name.
     not input.user.group_name == "TeamA-Admin"
 }
+
+{{< include-raw "others/api_type_rules.rego.txt" >}}
+
 ```
 
 #### Test
