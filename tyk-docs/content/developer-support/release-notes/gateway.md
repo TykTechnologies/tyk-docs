@@ -43,6 +43,115 @@ Our minor releases are supported until our next minor comes out.
 ---
 ## 5.10 Release Notes 
 
+### 5.10.1 Release Notes 
+
+#### Release Date xx October 2025
+
+#### Release Highlights
+
+This patch release contains various bug fixes. For a comprehensive list of changes, please refer to the detailed [changelog]({{< ref "#Changelog-v5.10.1" >}}).
+
+#### Breaking Changes
+
+There are no breaking changes in this release.
+
+#### Dependencies {#dependencies-5.10.1}
+
+##### Compatibility Matrix For Tyk Components
+
+| Gateway Version | Recommended Releases | Backwards Compatibility |
+|--------|-------------------|---- |
+| 5.10.1 | MDCB v2.8.5       | MDCB v2.8.5 |
+|        | Operator v1.2.0   | Operator v0.17 |
+|        | Sync v2.1.4       | Sync v2.1.0 |
+|        | Helm Chart v4.0   | Helm all versions |
+|        | Pump v1.12.2      | Pump all versions |
+
+##### 3rd Party Dependencies & Tools {#3rdPartyTools-v5.10.1}
+
+| Third Party Dependency | Tested Versions | Compatible Versions | Comments | 
+| ---------------------- | --------------- | ------------------- | -------- | 
+| [Go](https://go.dev/dl/)               | 1.24                   |  1.24  | [Go plugins]({{< ref "api-management/plugins/golang" >}}) must be built using Go 1.24 | 
+| [Redis](https://redis.io/download/)    | 6.2.x, 7.x, 7.4.x      | 6.2.x, 7.x, 7.4.x      | | 
+| [Valkey](https://valkey.io/download/)  | 7.2.x, 8.0.x, 8.1.x    | 7.2.x, 8.0.x, 8.1.x    | | 
+| [OpenAPI Specification](https://spec.openapis.org/oas/v3.0.3)| v3.0.x  | v3.0.x | Supported by [Tyk OAS]({{< ref "api-management/gateway-config-tyk-oas" >}}) |
+
+Given the potential time difference between your upgrade and the release of this version, we recommend users verify the ongoing support of third-party dependencies they install, as their status may have changed since the release.
+
+#### Deprecations
+
+There are no deprecations in this release.
+
+#### Upgrade instructions {#upgrade-5.10.1}
+
+If you are upgrading to 5.10.1, please follow the detailed [upgrade instructions](#upgrading-tyk).
+
+#### Downloads
+
+- [Docker image to pull](https://hub.docker.com/r/tykio/tyk-gateway/tags?page=&page_size=&ordering=&name=v5.10.1)
+  - ```bash
+    docker pull tykio/tyk-gateway:v5.10.1
+    ``` 
+- Helm charts
+  - [tyk-charts v4.0.0]({{<ref "developer-support/release-notes/helm-chart#400-release-notes" >}})
+
+Please note that the Tyk Helm Charts are configured to install the LTS version of Tyk Gateway. You will need to modify them to install v5.10.1.
+
+- [Source code tarball of Tyk Gateway v5.10.1](https://github.com/TykTechnologies/tyk/releases/tag/v5.10.1)
+
+#### Changelog {#Changelog-v5.10.1}
+
+##### Fixed
+
+<ul>
+<li>
+<details>
+<summary>Fixed issue with invalid or missing bundle manifests</summary>
+Fixed an issue where the Gateway would load and attempt to use plugin bundles even when the manifest file was invalid or missing. The Gateway now properly validates bundle manifests and fails safely by rejecting API requests when bundles cannot be properly loaded or verified. This prevents risks from corrupted or tampered bundles and ensures that APIs with invalid plugin configurations are not accessible, maintaining the integrity of authentication and authorization checks implemented by plugins.
+
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed JWT key activation when toggling default policy from draft to active</summary>
+Fixed an issue where JWT authentication keys would remain deactivated (showing "Key is inactive, please renew" errors) when a default policy was changed from draft to active status, particularly when the policy had never been previously applied through a request. The Gateway now properly evaluates the current state of all applied policies at request time, ensuring that keys become valid immediately when policies are reactivated or when switching between policies, eliminating the need for manual key deletion to restore access.
+
+</details>
+</li>
+
+<li>
+<details>
+<summary>Added new configuration option for limiting response body size.</summary>
+Added a new configuration option, `HttpServerOptions.MaxResponseBodySize`, to limit the maximum size of the response bodies processed during any response body transformations.  When the limit is exceeded, the Gateway returns an HTTP 500 "Response Body Too Large" error instead of attempting to process the oversized content.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed plugin loading failure errors being ignored for gRPC, Python, and Lua plugins</summary>
+Fixed an issue where plugin loading failure errors were ignored for gRPC, Python, and Lua plugins, allowing API requests to be processed even when plugins failed to load. This could lead to vulnerabilities, particularly when Custom Plugin authentication was configured, but the plugin couldn't be loaded due to incorrect paths or configurations. The Gateway now properly validates plugin drivers during request processing and fails safely by returning HTTP 500 Internal Server Error when any plugin fails to load, ensuring consistent behavior across all plugin types.
+
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed random version selection when `not_versioned` is set to true</summary>
+
+Fixed an issue where a Tyk Classic API with inconsistent versioning configuration would process requests using the configuration for a random version. A non-versioned API should have a single entry in the `version_data.versions` containing the configuration for the API; the `version_data.not_versioned` flag should be set to `true`. If, however, there were multiple entries in the `version_data.versions` array, the Gateway would select randomly among those versions. Now, if there are multiple entries in `version_data.versions` and `version_data.not_versioned` is set to `true`, Tyk will use the config for the entry with the key `"default"`, `"Default"` or `""` and will return an error if no such version exists.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Improved path handling during bundle decompression.</summary>
+Tyk Gateway now validates all file paths within zip bundles before extraction, rejecting bundles containing invalid paths. Bundle extraction fails immediately upon detecting invalid paths, with detailed error logging, ensuring that only proper bundles with valid relative paths are processed.
+</details>
+</li>
+
+</ul>
+
 ### 5.10.0 Release Notes 
 
 #### Release Date 13th October 2025
