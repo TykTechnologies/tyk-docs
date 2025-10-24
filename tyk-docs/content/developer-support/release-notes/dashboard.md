@@ -729,6 +729,138 @@ Fixed an issue where the `/apis/streams/{apiID}` endpoint was expecting a `Conte
 
 ## 5.8 Release Notes
 
+### 5.8.7 Release Notes
+
+#### Release xx October 2025
+
+#### Release Highlights
+
+This patch release contains various bug fixes. For a comprehensive list of changes, please refer to the detailed [changelog]({{< ref "#Changelog-v5.8.7" >}}).
+
+#### Breaking Changes
+
+There are no breaking changes in this release.
+
+#### Dependencies
+
+##### Compatibility Matrix For Tyk Components
+
+| Gateway Version | Recommended Releases | Backwards Compatibility |
+|----    |---- |---- |
+| 5.8.6 | MDCB v2.8.5    | MDCB v2.8.5 |
+|         | Operator v1.2.0  | Operator v0.17 |
+|         | Sync v2.1.4    | Sync v2.1.1 |
+|         | Helm Chart v4.0  | Helm all versions |
+| | EDP v1.14.1 | EDP all versions |
+| | Pump v1.12.2 | Pump all versions |
+| | TIB (if using standalone) v1.7.0 | TIB all versions |
+
+##### 3rd Party Dependencies & Tools
+
+| Third Party Dependency                                       | Tested Versions        | Compatible Versions    | Comments | 
+| ------------------------------------------------------------ | ---------------------- | ---------------------- | -------- | 
+| [Go](https://go.dev/dl/)                                     | 1.24  |  1.24  | [Go plugins]({{< ref "api-management/plugins/golang" >}}) must be built using Go 1.24 | 
+| [Redis](https://redis.io/download/)  | 6.2.x, 7.x  | 6.2.x, 7.x  | | 
+| [MongoDB](https://www.mongodb.com/try/download/community)  | 5.0.x, 6.0.x, 7.0.x  | 5.0.x, 6.0.x, 7.0.x  | | 
+| [DocumentDB](https://aws.amazon.com/documentdb/)  | 4, 5  | 4, 5  | | 
+| [PostgreSQL](https://www.postgresql.org/download/)         | 13.x - 17.x        | 13.x - 17.x            | | 
+| [OpenAPI Specification](https://spec.openapis.org/oas/v3.0.3)| v3.0.x                 | v3.0.x                 | Supported by [Tyk OAS]({{< ref "api-management/gateway-config-tyk-oas" >}}) |
+
+Given the potential time difference between your upgrade and the release of this version, we recommend users verify the ongoing support of third-party dependencies they install, as their status may have changed since the release.
+
+#### Deprecations
+
+There are no deprecations in this release.
+
+#### Upgrade instructions
+
+If you are upgrading to 5.8.7, please follow the detailed [upgrade instructions](#upgrading-tyk). 
+
+#### Downloads
+
+- [Docker Image to pull](https://hub.docker.com/r/tykio/tyk-dashboard/tags?page=&page_size=&ordering=&name=v5.8.7)
+  - ```bash
+    docker pull tykio/tyk-dashboard:v5.8.7
+    ``` 
+- Helm charts
+  - [tyk-charts v4.0.0]({{<ref "developer-support/release-notes/helm-chart#400-release-notes" >}})
+
+- [Source code tarball of Tyk Gateway v5.8.7](https://github.com/TykTechnologies/tyk/releases/tag/v5.8.7)
+
+#### Changelog {#Changelog-v5.8.7}
+
+##### Added
+
+<ul>
+  
+<li>
+<details>
+<summary>Added Open Policy Agent</summary>
+
+Added new Open Policy Agent (OPA) helper functions `isTykOAS`, `isTykStreams`, and `isTykClassic` to enable differentiated policy enforcement based on API type. This enhancement allows OPA rules to target specific API types (Classic, OAS, or Streams) and resolves compatibility issues when importing OAS definitions with existing OPA policies that were designed for Classic APIs only.
+</details>
+</li>
+
+</ul>
+
+##### Fixed
+
+<ul>
+  
+<li>
+<details>
+<summary>Fixed Custom Authentication fallback when custom plugin bundle is disabled</summary>
+
+Fixed an issue where Tyk would fall back to previously configured authentication methods when Custom Authentication was enabled, but the plugin bundle was disabled or failed to load. The system now fails safely by rejecting all API requests when Custom Authentication is configured, but the required plugin cannot be loaded, preventing unauthorized access through old authentication tokens.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed inconsistent sorting of OAS API subversions</summary>
+
+Fixed an issue where Tyk OAS API subversions were sorted inconsistently between different Dashboard screens chronologically by creation date on the APIs listing page and alphabetically by version name on the manage versions page. All API version listings now use consistent alphabetical sorting by version name, providing a more predictable and user-friendly experience when navigating between different screens.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed incorrect date labels and data aggregation in analytics charts</summary>
+
+Fixed multiple critical issues in the analytics aggregation layer when using PostgreSQL backend that caused incorrect chart rendering and service panics. Resolved problems, including hourly charts showing nonsensical dates like "30 Nov 1899", monthly charts displaying incorrect months, incomplete time-series data due to improper date padding, and API activity being incorrectly split across multiple rows.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed insufficient logging for Request Transform middleware in debugger</summary>
+
+Fixed an issue where the API debugger did not display sufficient information about transformations applied by Request Body Transform and Request Header Transform middleware. The debugger now shows detailed logs matching the format used for Response Transform middleware, including specific details about injected headers (e.g., "Adding: key: value") and body transformations, providing better visibility into request processing for debugging purposes.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Fixed 502 error creating GraphQL APIs with OPA rules in place</summary>
+
+Fixed an issue where creating GraphQL APIs using upstream introspection in the Dashboard could fail with `HTTP 502 Bad Gateway` errors when OPA rules (typically using `patch_request`) modified the introspection request body. The problem occurred because the Dashboard did not recalculate the `Content-Length` header after OPA modifications, causing length mismatches that resulted in proxy errors. The Dashboard now properly recalculates the content length for modified introspection requests, ensuring reliable GraphQL API creation regardless of OPA rule configurations.
+</details>
+</li>
+
+<li>
+<details>
+<summary>Dashboard Analytics and Monitoring Fixes</summary>
+
+- **Fixed non-clickable endpoint rows in the Activity page**: Endpoint rows in the API Activity view now properly respond to clicks and navigate to endpoint detail views with appropriate hover visual feedback.
+- **Fixed incorrect error code descriptions in API activity dashboard**: Error codes now display correct descriptions (409 shows "Conflict" instead of "Rate limit or quota exceeded", and missing descriptions     for 502, 504, 499, and 422 have been added).
+- **Fixed unicode character display in Log Browser**: Non-ASCII characters (Cyrillic, Arabic, Hindi, Telugu, Yoruba, etc.) now display correctly instead of showing garbled text when viewing request/response       logs.
+- **Fixed date range filtering showing extra day in analytics charts**: Date range selectors now accurately reflect the selected end date instead of automatically including the following day's data in charts     and legends.
+- **Fixed Log Browser querying wrong tables when SQL table sharding is enabled**: Dashboard now correctly queries sharded tables (tyk_analytics_YYYYMMDD) instead of the main tyk_analytics table when               `TYK_DB_STORAGE_LOGS_TABLESHARDING=true` is configured, ensuring analytics data displays properly with SQL database sharding.
+</details>
+</li>
+
+</ul>
+
 ### 5.8.6 Release Notes
 
 #### Release Date 25th September 2025
