@@ -4,7 +4,7 @@ from pathlib import Path
 
 # === CONFIG ===
 ROOT_DIR = Path.cwd()
-BASE_URL = "https://tyk.io/docs"
+BASE_URL = "https://tyk.io"
 
 def find_mdx_files(directory: Path):
     """Recursively find all .mdx files excluding any folder named 'snippets'."""
