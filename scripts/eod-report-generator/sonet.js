@@ -6,7 +6,7 @@ const anthropic = new Anthropic({
 
 export async function extractHeadings(combinedString) {
     const msg = await anthropic.messages.create({
-        model: "claude-3-5-sonnet-20241022",
+        model: "claude-sonnet-4-5-20250929",
         max_tokens: 1024,
         messages: [{ role: "user", content: `
 Below are some markdown headings. Extract the headings which is using acronyms or shortcodes like K8s for kubernetes in it. 
@@ -23,7 +23,7 @@ ${combinedString}` }],
 
 export async function formatName(prName) {
     const msg = await anthropic.messages.create({
-        model: "claude-3-5-sonnet-20241022",
+        model: "claude-sonnet-4-5-20250929",
         max_tokens: 1024,
         messages: [{ role: "user", content: `
     Hello, Claude. 
