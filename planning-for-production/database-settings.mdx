@@ -1,7 +1,7 @@
 ---
-title: "Database Management"
+title: "PostgreSQL and MongoDB Database Configuration"
 description: "How to configure Tyk's data storage for production"
-sidebarTitle: "Database Management"
+sidebarTitle: "PostgreSQL and MongoDB"
 ---
 
 import MongodbVersionsInclude from '/snippets/mongodb-versions-include.mdx';
@@ -16,123 +16,25 @@ Visit the following sections to see how to configure the Database for Production
 
 Please consult the [data storage configuration](/api-management/dashboard-configuration#data-storage-solutions) guide for further information relating to how to configure Tyk's data storage across different database engines.
 
-## Redis
+## Tyk Components Using Databases
 
-**Supported Versions**
-- Tyk 5.3 and later supports Redis 6.2.x, 7.0.x, and 7.2.x
-- Tyk 5.2.x and earlier supports Redis 6.0.x and Redis 6.2.x only.
+| Component               | Database Usage                               |
+|--------------------------|----------------------------------------------|
+| **Tyk Gateway**          | Session Management, Rate Limiting, Cache    |
+| **Tyk Dashboard**        | API Configuration, Developer Portal         |
+| **Tyk Pump**             | Analytics Processing, Uptime Data           |
+| **Tyk Identity Broker**  | Profile Storage, Token Caching               |
+| **MDCB**                 | Configuration Synchronization, Analytics Aggregation |
 
+## Supported Databases Versions
 
-**Split out Your Databases**
+Tyk components are regularly updated to maintain compatibility with the latest Redis versions. To check the specific Redis versions supported by each Tyk component, please refer to the release notes of your specific Tyk component and version.
 
-This is a no-brainer, but keep Redis and MongoDB off the system running the Gateway, they both use lots of RAM, and with Redis and the Gateway constantly communicating you will be facing resource contention on the CPU for a marginal decrease in latency.
-
-So in our setup, we recommend that Redis and MongoDB/PostgreSQL live on their own systems, separate from your Tyk Gateway. If you like, run them together on the same box, that's up to you.
-
-The network topology we like to use is:
-
-*   Two or more Tyk Gateway nodes (load balanced, each Gateway installed on separate machines).
-*   A separate MongoDB or PostgreSQL cluster
-*   A separate Redis server with fail-over or cluster
-*   One Tyk Dashboard node installed on a separate machine
-*   One Tyk Pump node installed on a separate machine that handles data transitions
-
-If you are making use of the Tyk Caching feature, then it is possible to use a secondary Redis server or Redis cluster to store cache data. This can be very useful in high-traffic APIs where latency is at a premium.
-
-
-**Make sure you have enough Redis connections**
-
-Tyk makes heavy use of Redis in order to provide a fast and reliable service, in order to do so effectively, it keeps a passive connection pool ready. For high-performance setups, this pool needs to be expanded to handle more simultaneous connections, otherwise you may run out of Redis connections.
-
-Tyk also lets you set a maximum number of open connections so that you don't over-commit connections to the server.
-
-To set your maximums and minimums, edit your `tyk.conf` and `tyk_analytics.conf` files to include:
-
-```yaml
-"storage": {
-  ...
-  "optimisation_max_idle": 2000,
-  "optimisation_max_active": 4000,
-  ...
-},
-```
-    
-
-Set the `max_idle` value to something large, we usually leave it at around `2000` for HA deployments, and then set your `max_active` to your upper limit (as in, how many additional connections over the idle pool should be used).
-
-**Protection of Redis data**
-
-Tyk uses Redis to store API tokens and OAuth clients, so it is advisable to *not* treat Redis instances as ephemeral. The exception to this is when you are using Tyk Multi Data Center Bridge, but you will still need to retain the master Redis instance.
-
-You must ensure that Redis is persisted, or at least in a configuration where it is easy to restore or failover. So, for example, with Elasticache, making sure there are many read-replicas and regular snapshots can ensure that your data survives a failure.
-
-**Redis Encryption**
-
-Redis supports [SSL/TLS encryption](https://redis.io/topics/encryption) from version 6 as an optional feature, enhancing the security of data in transit. To configure TLS or mTLS connections between an application and Redis, consider the following settings in Tyk's configuration files:
-
-- `storage.use_ssl`: Set this to true to enable TLS encryption for the connection.
-
-- `storage.ssl_insecure_skip_verify`: A flag that, when set to true, instructs the application not to verify the Redis server's TLS certificate. This is not recommended for production due to the risk of `man-in-the-middle` attacks.
-
-From **Tyk 5.3**, additional options are available for more granular control:
-
-- `storage.ca_file`: Path to the Certificate Authority (CA) file for verifying the Redis server's certificate.
-
-- `storage.cert_file` and `storage.key_file`: Paths to your application's certificate and private key files, necessary for mTLS where both parties verify each other's identity.
-
-- `storage.max_version` and `storage.min_version`: Define the acceptable range of TLS versions, enhancing security by restricting connections to secure TLS protocols (1.2 or 1.3).
-
-**Setting up an Insecure TLS Connection**
-- **Enable TLS**: By setting `"use_ssl": true`, you encrypt the connection.
-- **Skip Certificate Verification**: Setting `"ssl_insecure_skip_verify": true` bypasses the server's certificate verification, suitable only for non-production environments.
-
-**Setting up a Secure TLS Connection**
-- Ensure `use_ssl` is set to `true`.
-- Set `ssl_insecure_skip_verify` to `false` to enforce certificate verification against the CA specified in `ca_file`.
-- Specify the path to the CA file in `ca_file` for server certificate verification.
-- Adjust `min_version` and `max_version` to secure TLS versions, ideally 1.2 and 1.3.
-
-**Setting up a Mutual TLS (mTLS) Connection**
-- Follow the steps for a secure TLS connection.
-- Provide paths for `cert_file` and `key_file` for your application's TLS certificate and private key, enabling Redis server to verify your application's identity.
-
-**Example Gateway Configuration**
-```json
-"storage": {
-  "type": "redis",
-  "host": "server1",
-  "port": 6379,
-  "use_ssl": true,
-  "ssl_insecure_skip_verify": false,
-  "ca_file": "/path/to/ca.crt",
-  "cert_file": "/path/to/client.crt",
-  "key_file": "/path/to/client.key",
-  "max_version": "1.3",
-  "min_version": "1.2"
-}
-```
-
-**Capping Analytics**
-Tyk Gateways can generate a lot of analytics data. Be sure to read about [capping your Dashboard analytics](/api-management/tyk-pump#tyk-pump-capping-analytics-data-storage)
-
-
-### Redis Sizing Guidelines
-
-The average single request analytics record (without detailed logging turned on) is around 1KB.
-
-In terms of Redis, in addition to key storage itself, it should be able to hold the last 10 seconds of analytics data, preferably more, in the case of a Tyk Pump failure. So if you have 100 requests per second, you will need approximately 6MB for storing 60 seconds of data. Be aware that if detailed logging is turned on, this can grow by a magnitude of 10. 
-
-
-<Note>
-MDCB and Multi-Cloud clients - the Gateways write the data to a temporary Redis list and periodically send the analytics directly to the MDCB server, which, similar to Pump, processes them for purging to MongoDB or PostgreSQL.
-</Note>
-
-
-**Redis RAM Calculator**
-You can calculate your Redis RAM requirements by entering your known values in the middle section of the calculator settings below:
-
-<RedisCalculator />
-
+- **[Tyk Gateway](/developer-support/release-notes/gateway#3rd-party-dependencies--tools)**
+- **[Tyk Dashboard](/developer-support/release-notes/dashboard#3rd-party-dependencies--tools)**
+- **[Tyk Pump](/developer-support/release-notes/pump#3rd-party-dependencies--tools)**
+- **[Tyk Identity Broker](/developer-support/release-notes/tib/#3rd-party-dependencies--tools)**
+- **[MDCB](/developer-support/release-notes/mdcb/#3rd-party-dependencies--tools)**
 
 ## MongoDB
 
