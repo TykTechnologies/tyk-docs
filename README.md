@@ -1,4 +1,4 @@
-!["Tyk Docs"](https://tyk.io/docs/img/Tyk-Docs-logo-Dark.svg)
+!["Tyk Docs"](/img/logos/tyk-docs-logo-dark.svg)
 
 # Tyk Documentation
 
