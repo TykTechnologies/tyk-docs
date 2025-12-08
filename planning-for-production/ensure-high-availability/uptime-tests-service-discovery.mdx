@@ -1,0 +1,458 @@
+---
+title: "Configuring Service Discovery for Uptime Tests"
+description: "How to configure uptime tests to dynamically discover endpoints using service discovery"
+sidebarTitle: "Uptime Tests with Service Discovery"
+---
+
+## Introduction
+
+When running uptime tests in a dynamic environment where service endpoints change frequently, manually updating the uptime test check list becomes impractical. Tyk supports configuring uptime tests to use service discovery, allowing the Gateway to dynamically discover which endpoints to monitor.
+
+This is particularly useful when:
+- Your services are managed by container orchestrators (Kubernetes, Docker Swarm)
+- You use service registries (Consul, etcd, Eureka, Zookeeper)
+- Service endpoints change frequently due to scaling or failover
+- You want to automatically monitor all healthy instances of a service
+
+## Prerequisites
+
+Before configuring service discovery for uptime tests, ensure you have:
+
+1. **Uptime tests enabled** in your Gateway configuration (`tyk.conf`). See [Uptime Tests](/planning-for-production/ensure-high-availability/uptime-tests) for initial setup.
+2. **A service discovery endpoint** that returns your service endpoints in a supported JSON format.
+3. **Tyk Self-Managed** installation (uptime tests are not available on Tyk Cloud).
+
+## How It Works
+
+When service discovery is enabled for uptime tests:
+
+1. Tyk queries your service discovery endpoint at the configured interval
+2. The response is parsed according to your `data_path` configuration to extract endpoint URLs
+3. Tyk generates uptime test entries for each discovered endpoint
+4. The uptime tests run against all discovered endpoints
+5. When endpoints are added or removed from the service registry, Tyk automatically updates the test list
+
+## Query Endpoint JSON Structure
+
+The service discovery endpoint must return JSON that Tyk can parse to extract endpoint URLs. The structure depends on your service discovery system, but Tyk expects to find endpoint information at a path you specify.
+
+### Simple JSON Structure
+
+For a simple response where the endpoint URL is directly accessible:
+
+```json
+{
+  "action": "get",
+  "node": {
+    "key": "/services/my-api",
+    "value": "http://api-service:8080",
+    "modifiedIndex": 42,
+    "createdIndex": 42
+  }
+}
+```
+
+Configuration:
+```json
+{
+  "data_path": "node.value",
+  "use_nested_query": false
+}
+```
+
+### Nested JSON Structure
+
+When the endpoint information is stored as a JSON string within the response:
+
+```json
+{
+  "action": "get",
+  "node": {
+    "key": "/services/my-api",
+    "value": "{\"hostname\": \"http://api-service\", \"port\": \"8080\", \"health_endpoint\": \"/health\"}",
+    "modifiedIndex": 42,
+    "createdIndex": 42
+  }
+}
+```
+
+Configuration:
+```json
+{
+  "use_nested_query": true,
+  "parent_data_path": "node.value",
+  "data_path": "hostname",
+  "port_data_path": "port"
+}
+```
+
+### Target List Structure
+
+When you have multiple endpoints to monitor (common with load-balanced services):
+
+```json
+{
+  "services": [
+    {
+      "address": "http://api-node-1:8080",
+      "status": "healthy"
+    },
+    {
+      "address": "http://api-node-2:8080",
+      "status": "healthy"
+    },
+    {
+      "address": "http://api-node-3:8080",
+      "status": "healthy"
+    }
+  ]
+}
+```
+
+Configuration:
+```json
+{
+  "data_path": "services.address",
+  "use_target_list": true
+}
+```
+
+## API Definition Configuration
+
+To configure service discovery for uptime tests in your API definition, add the `service_discovery` configuration within the `uptime_tests` section:
+
+```json
+{
+  "uptime_tests": {
+    "check_list": [],
+    "service_discovery": {
+      "use_discovery_service": true,
+      "query_endpoint": "http://consul:8500/v1/health/service/my-api?passing=true",
+      "data_path": "Address",
+      "port_data_path": "ServicePort",
+      "use_target_list": true,
+      "cache_timeout": 60,
+      "target_path": "/health"
+    }
+  }
+}
+```
+
+### Configuration Options
+
+| Option | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `use_discovery_service` | boolean | Yes | Set to `true` to enable service discovery for uptime tests |
+| `query_endpoint` | string | Yes | The URL of your service discovery endpoint (Consul, etcd, Eureka, etc.) |
+| `data_path` | string | Yes | The JSON path to the hostname/address field in the response |
+| `parent_data_path` | string | No | Used with `use_nested_query` to specify the path to a JSON-encoded string containing the actual data |
+| `port_data_path` | string | No | The JSON path to the port field if separate from hostname |
+| `use_nested_query` | boolean | No | Set to `true` if the endpoint data is within a JSON-encoded string |
+| `use_target_list` | boolean | No | Set to `true` if the response contains multiple endpoints |
+| `cache_timeout` | integer | No | How long (in seconds) to cache the discovered endpoints. Default: 60 |
+| `target_path` | string | No | A path to append to discovered endpoints (e.g., `/health` for health check endpoints) |
+
+## Service Discovery Examples
+
+### Consul Example
+
+Consul's health endpoint returns healthy service instances. Configure Tyk to query Consul and extract service addresses:
+
+**Query Endpoint:**
+```
+http://consul:8500/v1/health/service/my-api?passing=true
+```
+
+**Sample Response:**
+```json
+[
+  {
+    "Node": {
+      "ID": "node-1",
+      "Node": "consul-node-1",
+      "Address": "10.0.0.1"
+    },
+    "Service": {
+      "ID": "my-api-1",
+      "Service": "my-api",
+      "Address": "10.0.0.1",
+      "Port": 8080
+    }
+  },
+  {
+    "Node": {
+      "ID": "node-2",
+      "Node": "consul-node-2",
+      "Address": "10.0.0.2"
+    },
+    "Service": {
+      "ID": "my-api-2",
+      "Service": "my-api",
+      "Address": "10.0.0.2",
+      "Port": 8080
+    }
+  }
+]
+```
+
+**Configuration:**
+```json
+{
+  "uptime_tests": {
+    "service_discovery": {
+      "use_discovery_service": true,
+      "query_endpoint": "http://consul:8500/v1/health/service/my-api?passing=true",
+      "data_path": "Service.Address",
+      "port_data_path": "Service.Port",
+      "use_target_list": true,
+      "cache_timeout": 30,
+      "target_path": "/health"
+    }
+  }
+}
+```
+
+### etcd Example
+
+For etcd v2 API returning service endpoints:
+
+**Query Endpoint:**
+```
+http://etcd:2379/v2/keys/services/my-api
+```
+
+**Sample Response:**
+```json
+{
+  "action": "get",
+  "node": {
+    "key": "/services/my-api",
+    "value": "http://10.0.0.1:8080",
+    "modifiedIndex": 123,
+    "createdIndex": 100
+  }
+}
+```
+
+**Configuration:**
+```json
+{
+  "uptime_tests": {
+    "service_discovery": {
+      "use_discovery_service": true,
+      "query_endpoint": "http://etcd:2379/v2/keys/services/my-api",
+      "data_path": "node.value",
+      "use_nested_query": false,
+      "use_target_list": false,
+      "cache_timeout": 60,
+      "target_path": "/health"
+    }
+  }
+}
+```
+
+### etcd with Nested JSON Example
+
+When etcd stores structured JSON as a string value:
+
+**Sample Response:**
+```json
+{
+  "action": "get",
+  "node": {
+    "key": "/services/my-api",
+    "value": "{\"hostname\": \"http://10.0.0.1\", \"port\": \"8080\"}",
+    "modifiedIndex": 123,
+    "createdIndex": 100
+  }
+}
+```
+
+**Configuration:**
+```json
+{
+  "uptime_tests": {
+    "service_discovery": {
+      "use_discovery_service": true,
+      "query_endpoint": "http://etcd:2379/v2/keys/services/my-api",
+      "use_nested_query": true,
+      "parent_data_path": "node.value",
+      "data_path": "hostname",
+      "port_data_path": "port",
+      "cache_timeout": 60,
+      "target_path": "/health"
+    }
+  }
+}
+```
+
+### Eureka Example
+
+For Netflix Eureka service registry:
+
+**Query Endpoint:**
+```
+http://eureka:8761/eureka/apps/MY-API
+```
+
+<Note>
+Eureka returns XML by default. To receive JSON, either configure your Eureka endpoint or use Tyk to add an `Accept: application/json` header via an API definition that proxies to Eureka.
+</Note>
+
+**Sample Response (JSON):**
+```json
+{
+  "application": {
+    "name": "MY-API",
+    "instance": [
+      {
+        "hostName": "api-node-1.example.com",
+        "port": {
+          "$": 8080,
+          "@enabled": "true"
+        },
+        "status": "UP"
+      },
+      {
+        "hostName": "api-node-2.example.com",
+        "port": {
+          "$": 8080,
+          "@enabled": "true"
+        },
+        "status": "UP"
+      }
+    ]
+  }
+}
+```
+
+**Configuration:**
+```json
+{
+  "uptime_tests": {
+    "service_discovery": {
+      "use_discovery_service": true,
+      "query_endpoint": "http://eureka:8761/eureka/apps/MY-API",
+      "data_path": "hostName",
+      "parent_data_path": "application.instance",
+      "port_data_path": "port.$",
+      "use_target_list": true,
+      "cache_timeout": 30,
+      "target_path": "/health"
+    }
+  }
+}
+```
+
+## Dashboard Configuration
+
+To configure service discovery for uptime tests via the Tyk Dashboard:
+
+**Step 1: Navigate to the API**
+
+From the Dashboard, select **APIs** from the menu and choose the API you want to configure.
+
+**Step 2: Open the Uptime Tests tab**
+
+Click on the **Uptime Tests** tab in the API Designer.
+
+**Step 3: Enable Service Discovery**
+
+In the uptime tests configuration section, enable service discovery and fill in the required fields:
+
+- **Query Endpoint**: Enter your service discovery URL
+- **Data Path**: Specify the JSON path to the endpoint value
+- **Target Path**: Optionally add a path to append (e.g., `/health`)
+- **Cache Timeout**: Set how often to refresh the endpoint list
+- **Use Target List**: Enable if multiple endpoints are returned
+- **Use Nested Query**: Enable if data is JSON-encoded within the response
+
+**Step 4: Save the API**
+
+Click **Update** to save your configuration.
+
+## Combining Static and Dynamic Tests
+
+You can combine static uptime test entries with service discovery. Any entries in the `check_list` array will be tested alongside dynamically discovered endpoints:
+
+```json
+{
+  "uptime_tests": {
+    "check_list": [
+      {
+        "url": "http://static-service:8080/health"
+      }
+    ],
+    "service_discovery": {
+      "use_discovery_service": true,
+      "query_endpoint": "http://consul:8500/v1/health/service/dynamic-api?passing=true",
+      "data_path": "Service.Address",
+      "port_data_path": "Service.Port",
+      "use_target_list": true,
+      "target_path": "/health"
+    }
+  }
+}
+```
+
+## Integration with Load Balancing
+
+When using uptime tests with service discovery, you can enable automatic failover by setting `check_host_against_uptime_tests` in your proxy configuration. This ensures that hosts detected as down are skipped during load balancing:
+
+```json
+{
+  "proxy": {
+    "enable_load_balancing": true,
+    "check_host_against_uptime_tests": true
+  },
+  "uptime_tests": {
+    "service_discovery": {
+      "use_discovery_service": true,
+      "query_endpoint": "http://consul:8500/v1/health/service/my-api?passing=true",
+      "data_path": "Service.Address",
+      "port_data_path": "Service.Port",
+      "use_target_list": true,
+      "target_path": "/health"
+    }
+  }
+}
+```
+
+<Note>
+The fully qualified host, including the port, must be exactly the same between the uptime test configuration and the load balancer target list for Tyk to link them together. For example: `10.0.0.1:8080`.
+</Note>
+
+## Troubleshooting
+
+### No endpoints discovered
+
+If uptime tests are not running against your service discovery endpoints:
+
+1. **Verify the query endpoint is accessible** from the Tyk Gateway
+2. **Check the JSON response** matches your `data_path` configuration
+3. **Enable debug logging** in Tyk to see service discovery queries
+4. **Verify `use_discovery_service`** is set to `true`
+
+### Incorrect endpoints discovered
+
+If wrong or malformed endpoints are being tested:
+
+1. **Check the `data_path`** matches the actual JSON structure
+2. **Verify `use_nested_query`** is set correctly for your response format
+3. **Ensure `port_data_path`** is correct if ports are separate from hostnames
+4. **Test your query endpoint** directly and verify the response structure
+
+### Cache not refreshing
+
+If endpoint changes are not reflected:
+
+1. **Reduce `cache_timeout`** to refresh more frequently
+2. **Check that your service registry** is returning updated information
+3. **Restart the Gateway** to force a cache refresh if needed
+
+## Related Documentation
+
+- [Uptime Tests](/planning-for-production/ensure-high-availability/uptime-tests) - Core uptime test configuration
+- [Service Discovery](/planning-for-production/ensure-high-availability/service-discovery) - Service discovery for API proxy configuration
+- [Load Balancing](/planning-for-production/ensure-high-availability/load-balancing) - Configuring load balancing in Tyk
+- [Circuit Breakers](/planning-for-production/ensure-high-availability/circuit-breakers) - Automatic circuit breaking for failed endpoints
