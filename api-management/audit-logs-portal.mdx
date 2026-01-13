@@ -1,0 +1,310 @@
+---
+title: "Enable and View Audit Logs in Tyk Developer Portal"
+description: "Learn how to enable audit logging in Tyk Enterprise Developer Portal and access the audit log file to track admin actions."
+keywords: "Audit Logs, Developer Portal, Enterprise Portal, compliance, security, admin actions"
+sidebarTitle: "Portal Audit Logs"
+---
+
+## Availability
+
+| Component | Version | Editions |
+| :-------- | :------ | :------- |
+| Tyk Enterprise Developer Portal | Available since [v1.15.0](/developer-support/release-notes/portal#1-15-0-release-notes) | Enterprise |
+
+## Prerequisites
+
+1. **Dashboard License**: [Contact our team](https://tyk.io/contact/) to obtain a license or get a self-managed trial license by completing the registration on our [website](https://tyk.io/self-managed-trial/).
+2. **Working Tyk Environment**: You need access to a running Tyk instance with the Enterprise Developer Portal deployed. For setup instructions, please refer to the [Portal Deployment Guide](/product-stack/tyk-enterprise-developer-portal/deploy/install-tyk-enterprise-portal).
+3. **Admin Access**: You need admin permissions to configure audit logging in the Portal.
+
+## What We Will Do
+
+In this guide, we will:
+1. Enable audit logs in the Tyk Enterprise Developer Portal using the file storage option
+2. Configure the log file path and format
+3. View the audit logs from the log file
+
+<Note>
+The Developer Portal uses file-based audit logging. Unlike the Tyk Dashboard, the Portal does not currently support database storage for audit logs or viewing them through the Portal UI.
+</Note>
+
+## Instructions
+
+### 1. Configure Audit Logging
+
+To enable audit logging in the Developer Portal, you need to configure the audit log settings.
+
+<Tabs>
+<Tab title="Environment Variables">
+
+Set the following environment variables:
+
+```bash
+PORTAL_AUDIT_LOG_ENABLE=true
+PORTAL_AUDIT_LOG_PATH=/var/log/portal
+```
+
+</Tab>
+<Tab title="Configuration File">
+
+Add the following to your Portal configuration file:
+
+```json
+{
+  "AuditLog": {
+    "Enable": true,
+    "Path": "/var/log/portal"
+  }
+}
+```
+
+</Tab>
+<Tab title="Docker Compose">
+
+Add the environment variables to your Docker Compose file:
+
+```yaml
+services:
+  tyk-portal:
+    image: tykio/portal:latest
+    environment:
+      - PORTAL_AUDIT_LOG_ENABLE=true
+      - PORTAL_AUDIT_LOG_PATH=/var/log/portal
+    volumes:
+      - portal-logs:/var/log/portal
+volumes:
+  portal-logs:
+```
+
+</Tab>
+<Tab title="Kubernetes">
+
+Add the configuration to your Kubernetes deployment:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tyk-portal
+spec:
+  template:
+    spec:
+      containers:
+        - name: portal
+          env:
+            - name: PORTAL_AUDIT_LOG_ENABLE
+              value: "true"
+            - name: PORTAL_AUDIT_LOG_PATH
+              value: "/var/log/portal"
+          volumeMounts:
+            - name: audit-logs
+              mountPath: /var/log/portal
+      volumes:
+        - name: audit-logs
+          emptyDir: {}
+```
+
+</Tab>
+</Tabs>
+
+#### Configuration Options
+
+| Parameter | Config File | Description | Default |
+| :-------- | :---------- | :---------- | :------ |
+| `PORTAL_AUDIT_LOG_ENABLE` | `AuditLog.Enable` | Enables or disables audit logging | `false` |
+| `PORTAL_AUDIT_LOG_PATH` | `AuditLog.Path` | Directory path for the `portal.log` file | (none) |
+
+<Warning>
+Ensure the directory specified in `PORTAL_AUDIT_LOG_PATH` exists and is writable by the Portal process. If using containers, mount a volume to persist logs.
+</Warning>
+
+### 2. Configure Log Format (Optional)
+
+You can also configure the log level and format for general Portal logging, which affects how audit log entries are formatted:
+
+<Tabs>
+<Tab title="Environment Variables">
+
+```bash
+PORTAL_LOG_LEVEL=info
+PORTAL_LOG_FORMAT=prod
+```
+
+</Tab>
+<Tab title="Configuration File">
+
+```json
+{
+  "LogLevel": "info",
+  "LogFormat": "prod"
+}
+```
+
+</Tab>
+</Tabs>
+
+#### Log Format Options
+
+| Parameter | Config File | Description | Options |
+| :-------- | :---------- | :---------- | :------ |
+| `PORTAL_LOG_LEVEL` | `LogLevel` | Sets the logging verbosity | `debug`, `info`, `warn`, `error`, `dpanic`, `panic`, `fatal` |
+| `PORTAL_LOG_FORMAT` | `LogFormat` | Sets the log output format | `dev` (human-readable), `prod` (JSON format) |
+
+<Note>
+For production environments, use `PORTAL_LOG_FORMAT=prod` to output logs in JSON format, which is easier to parse with log aggregation tools.
+</Note>
+
+### 3. Restart the Developer Portal
+
+After updating the configuration, restart your Developer Portal for the changes to take effect:
+
+```bash
+# For Docker
+docker restart tyk-portal
+
+# For Docker Compose
+docker compose restart tyk-portal
+
+# For Kubernetes
+kubectl rollout restart deployment tyk-portal -n tyk
+```
+
+### 4. View Audit Logs
+
+Once audit logging is enabled, admin actions are recorded in the `portal.log` file located in the directory specified by `PORTAL_AUDIT_LOG_PATH`.
+
+#### Access the Log File
+
+```bash
+# View the audit log file
+cat /var/log/portal/portal.log
+
+# Follow the log file in real-time
+tail -f /var/log/portal/portal.log
+
+# Search for specific actions
+grep "admin@example.com" /var/log/portal/portal.log
+```
+
+#### For Docker Containers
+
+```bash
+# Access logs from a running container
+docker exec -it tyk-portal cat /var/log/portal/portal.log
+
+# Or copy the log file to your local machine
+docker cp tyk-portal:/var/log/portal/portal.log ./portal-audit.log
+```
+
+#### For Kubernetes
+
+```bash
+# Access logs from a running pod
+kubectl exec -it deployment/tyk-portal -n tyk -- cat /var/log/portal/portal.log
+
+# Or copy the log file locally
+kubectl cp tyk/tyk-portal-xxxxx:/var/log/portal/portal.log ./portal-audit.log
+```
+
+### What Gets Logged
+
+The Portal audit log captures all administrative actions performed by portal admins, including:
+
+- User and team management operations
+- API product configuration changes
+- Portal theme and content updates
+- Access control and permission changes
+- OAuth client registration activities
+
+### 5. Integrate with Log Aggregation Tools (Optional)
+
+For production environments, consider integrating audit logs with your centralized logging system:
+
+#### Using Filebeat
+
+```yaml
+filebeat.inputs:
+  - type: log
+    enabled: true
+    paths:
+      - /var/log/portal/portal.log
+    json.keys_under_root: true
+
+output.elasticsearch:
+  hosts: ["elasticsearch:9200"]
+```
+
+#### Using Fluentd
+
+```yaml
+<source>
+  @type tail
+  path /var/log/portal/portal.log
+  pos_file /var/log/fluentd/portal.log.pos
+  tag portal.audit
+  <parse>
+    @type json
+  </parse>
+</source>
+
+<match portal.audit>
+  @type elasticsearch
+  host elasticsearch
+  port 9200
+</match>
+```
+
+## Troubleshooting
+
+### Audit Log File Not Created
+
+1. **Check if audit logging is enabled**: Verify `PORTAL_AUDIT_LOG_ENABLE` is set to `true`
+2. **Verify directory exists**: Ensure the directory specified in `PORTAL_AUDIT_LOG_PATH` exists
+3. **Check permissions**: Confirm the Portal process has write permissions to the log directory
+4. **Check Portal logs**: Review Portal startup logs for any configuration errors
+
+```bash
+# Check if the directory exists
+ls -la /var/log/portal/
+
+# Check Portal container logs
+docker logs tyk-portal 2>&1 | grep -i audit
+```
+
+### Permission Denied Errors
+
+1. **File permissions**: Ensure the Portal process user has write access to the log directory
+2. **SELinux/AppArmor**: Check if security policies are blocking file writes
+3. **Container volumes**: Verify the volume is correctly mounted and writable
+
+```bash
+# Fix permissions (adjust user/group as needed)
+sudo chown -R tyk:tyk /var/log/portal
+sudo chmod 755 /var/log/portal
+```
+
+### Log File Growing Too Large
+
+1. **Implement log rotation**: Configure logrotate to manage file size
+
+```bash
+# /etc/logrotate.d/portal
+/var/log/portal/portal.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 644 tyk tyk
+}
+```
+
+2. **Archive old logs**: Move older logs to archival storage
+3. **Monitor disk space**: Set up alerts for disk usage thresholds
+
+## Next Steps
+
+- Review the comprehensive [Audit Logs Getting Started Guide](/api-management/audit-logs-getting-started) for Dashboard audit configuration
+- Explore the [Portal Configuration Reference](/product-stack/tyk-enterprise-developer-portal/deploy/configuration) for all available settings
+- Learn about [Portal Deployment](/product-stack/tyk-enterprise-developer-portal/deploy/install-tyk-enterprise-portal) options
