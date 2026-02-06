@@ -1,0 +1,660 @@
+---
+title: "Implementing TLS with Tyk"
+description: "Secure access to APIs and Tyk components"
+keywords: "Authentication, Tyk Authentication, Mutual TLS, mTLS, Client mTLS"
+sidebarTitle: "Implement TLS"
+---
+
+## Introduction
+
+Transport Layer Security (TLS) and Mutual TLS (mTLS) can be used to secure access to Tyk components and to the hosted APIs that provide access to your upstream services. Tyk can also connect securely to those upstream services using TLS and mTLS. For an explanation of these security protocols, public key cryptography and how Tyk works with and manages certificates and private keys, please read our guide to [TLS and Certificates](/api-management/certificates).
+
+In this section we will cover:
+
+- [Congfiguring Tyk Gateway to use TLS](/api-management/implement-tls#using-tls-with-tyk-gateway)
+  - [Securing hosted APIs using mTLS](/api-management/implement-tls#configuring-mtls-for-hosted-apis)
+  - [Proxying to upstream services secured with mTLS](/api-management/implement-tls#configuring-tls-for-upstream-services)
+- [Configuring Tyk Dashboard to use TLS](/api-management/implement-tls#using-tls-with-tyk-dashboard)
+- [Configuring MDCB to use TLS](/api-management/implement-tls#using-tls-with-mdcb)
+
+## Using TLS with Tyk Gateway
+
+### Enable TLS
+
+The Tyk Gateway has two distinct interfaces:
+
+1. Control API Interface: The [Tyk Gateway API](/tyk-gateway-api) used for managing the Gateway (adding APIs, hot reloads, etc.)
+2. Hosted API Interface: The public-facing interface where API clients connect to access your APIs
+
+TLS is configured jointly for these interfaces in the Gateway config file (`tyk.conf`) or equivalent environment variables:
+
+```json
+{
+  "http_server_options": {
+    "use_ssl": true,
+    "server_name": "api.example.com"
+  },
+  "listen_port": 443
+}
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| [`use_ssl`](/tyk-oss-gateway/configuration#http-server-options-use-ssl) | Enables the use of TLS for the Gateway; if set to `true` then client requests to the control and hosted APIs must use HTTPS |
+| [`server_name`](/tyk-oss-gateway/configuration#http-server-options-server-name) | (optional) If provided this will be used for SNI (Server Name Indication) in the TLS handshake |
+| [`listen_port`](/tyk-oss-gateway/configuration#listen-port) | Set the port on which Tyk will listen; typically set to 443 for HTTPS |
+
+### Configuring Server Certificates for Tyk Gateway
+
+In the TLS handshake, Tyk Gateway is operating as the server and so must prove its identity to the client using a combination of its private key and certificate (containing the public key). Typically we refer to these as the server certificate pair.
+
+When a request is made to either the Control API or a Hosted API, Tyk will check the hostname in the SNI (Server Name Indication) in the request and will look for a matching Subject Common Name (CN) or Subject Alternative Name (SAN) among the server certificate pairs registered for the Gateway. Having located the appropriate server certificate pair, this will be used to complete the TLS handshake.
+
+Server certificates are also registered with the Gateway in `http_server_options`:
+
+```json
+"http_server_options": {
+  "ssl_certificates": ["server-cert-id", "/path/to/server-cert.pem"]
+}
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| [`ssl_certificates`](/tyk-oss-gateway/configuration#http-server-options-ssl-certificates) | An array of references to Tyk's server certificate pairs, which can be either Certificate IDs from the Tyk Certificate Store or relative paths to PEM files |
+
+<Note>
+The referenced server certificate pairs are used to verify Tyk's identity in the TLS handshake and so must contain both the certificate (public key) and private key.
+</Note>
+
+For information on how to expose the Control API on a different hostname and/or port, please see the [Planning For Production guide](/planning-for-production#change-your-control-port)).
+
+#### Configuring Server Certificates for API Custom Domains
+
+APIs hosted on Tyk can be exposed on individual hostnames (custom domains), for which separate server certificates can be registered.
+
+Tyk Gateway must first be configured to allow the use of custom domains via the [`enable_custom_domains`](/tyk-oss-gateway/configuration#enable-custom-domains) configuration option.
+
+Within the API definition, the custom domain is configured in the Tyk Vendor Extension:
+
+```yaml
+  server:
+    customDomain:
+      enabled: true
+      name: www.domain-name.com
+      certificates:
+        - /path/to/server-certificate-pair.pem
+        - server-cert-pair-id
+```
+[`x-tyk-api-gateway.server.customDomain`](/api-management/gateway-config-tyk-oas#domain).
+
+The server certificate pairs that the Gateway should associate with the domain must be provided in the `customDomain.certificates[]` list.
+
+Note: If you are using Tyk Classic APIs, the equivalent configuration is via `certificates[]` in the root of the API definition.
+
+
+### Advanced TLS Configuration
+
+#### TLS version
+
+The Transport Layer Security specification has evolved through multiple versions, the most recent being TLS 1.3 which is the fastest and most secure. TLS 1.0 and 1.1 have been deprecated due to vulnerabilities and should no longer be used; Tyk has not supported these since Tyk 5.6.
+
+Whilst TLS 1.3 is typically recommended, some legacy systems continue to use TLS 1.2, so Tyk has full support including the specification of allowed ciphers.
+
+You can configure Tyk Gateway with a minimum and maximum TLS version, and select the cipher suites to be used with TLS 1.2 using the `http_server_options` configuration:
+
+```json
+"http_server_options": {
+  "min_version": 771,  // TLS 1.2
+  "max_version": 772,  // TLS 1.3
+  "ssl_ciphers": ["TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"]
+}
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `min_version` and `max_version` | Can be configured with the values `771` (representing TLS 1.2) or `772` (representing TLS 1.3) |
+| `ssl_ciphers` | Indicates the allowed cipher suites when the request uses TLS 1.2 and is used to restrict the use of unsafe ciphers; the options are taken from the [Go TLS package](https://pkg.go.dev/crypto/tls#pkg-constants) documentation |
+
+<Note>
+  Tyk uses Golang libraries to provide TLS functionality, so the range of supported TLS versions is dependent upon the underlying library. Support for TLS 1.0 and 1.1 was removed in Go 1.22 (which was adopted in Tyk 5.3.6/5.6.0), so these are no longer supported by Tyk. The default minimum and maximum versions are currently TLS 1.2 and TLS 1.3 respectively.
+</Note>
+
+
+#### HTTP/2
+
+Tyk supports the use of [HTTP/2](https://datatracker.ietf.org/doc/html/rfc9113) for hosted APIs with compatible clients by configuring:
+
+```json
+"http_server_options": {
+  "enable_http2": true
+}
+```
+
+#### Skip CA Announcement
+
+When using mTLS, the server (Tyk Gateway) will announce to the client which Certificate Authorities it trusts, so that the client can ensure it presents a certificate that has been signed by a mutually trusted authority. If there are many Certificate Authorities this can add overhead to the mTLS handshake. Tyk provides an opportunity to skip the announcement (which is an optional step in the handshake) by configuring:
+
+```json
+"http_server_options": {
+  "skip_client_ca_announcement": true
+}
+```
+
+#### Skipping Server Certificate Verification
+
+In trusted environments, such as development environments, it is often easier to use self-signed certificates for expediency. During the TLS handshake, the client will be unable to verify the authenticity of the server certificate and the connection will be rejected.
+
+When acting as the TLS client (for example when operating with Tyk Dashboard), Tyk Gateway will skip the verification of the server certificate if you configure:
+
+```json
+"http_server_options": {
+  "ssl_insecure_skip_verify": true
+}
+```
+
+When set to `true` this:
+- Disables verification of the server's certificate chain
+- Skips hostname validation against the certificate's Common Name (CN) or Subject Alternative Names (SANs)
+- Accepts any certificate presented by the server, regardless of its validity or trust status
+
+<Note>
+It is important to note that this skips TLS security and so is not recommended for production environments. This setting does not affect the behaviour of Tyk when interacting with your upstream API servers - there is a separate configuration for that as explained [here](/api-management/implement-tls#configuring-tls-for-upstream-services).
+</Note>
+
+### Configuring mTLS for the Control API
+
+The Control API can enforce mutual TLS for additional security:
+
+```json
+"security": {
+  "control_api_use_mutual_tls": true,
+  "certificates": {
+    "control_api": ["/path/to/ca-cert.pem", "control-api-cert-id"]
+  }
+}
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `control_api_use_mutual_tls` | Require clients (e.g. Tyk Dashboard) to present a valid certificate when connecting to the Gateway API |
+| `certificates.control_api` | An array of references to CA certificates, which can be either Certificate IDs from the Tyk Certificate Store or relative paths to PEM files |
+
+<Note>
+The referenced certificates are used to verify the client's identity in the mTLS handshake and so will typically be the CA certificates that can be used to validate the client certificate.
+</Note>
+
+
+
+### Configuring mTLS for Hosted APIs
+
+Tyk has a very flexible approach to the use of mutual TLS to secure access to hosted APIs.
+
+With [TLS enabled](/api-management/implement-tls#enable-tls) for the Gateway you can selectively enforce mTLS per API.
+
+For each API, you can determine a list of one or more *allowed* client certificates. Once the mTLS handshake has completed, Tyk will check the certificate presented by the client against the *allow list* for that API. The request will be authorized only if the client certificate matches.
+
+For complete flexibility, Tyk offers two different types of allow list:
+
+- a static list stored in the API definition (historically referred to by Tyk as **static mTLS**)
+- a dynamic list in the Redis/temporal storage (historically referred to by Tyk as **dynamic mTLS**)
+
+#### Configuring mTLS with a static allow list
+
+Mutual TLS with a static allow list will be enforced for requests to an API if the Tyk Vendor Extension contains the following configuration:
+
+```yaml
+  server:
+    clientCertificates:
+      enabled: true
+      allowlist:
+        - client-cert-id1
+        - client-cert-id2
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `clientCertificates.enabled` | Set this to `true` to enable mTLS with a static allow list |
+| `clientCertificates.allowlist` | A list of certificate IDs for the client certificates that are authorized to access the API |
+
+<Note>
+If using Tyk Classic, the fields are `use_mutual_tls_auth` and `client_certificates`.
+</Note>
+
+This can be combined with any authentication method, or used alone to secure the API.
+
+You can upload a root CA certificate to the Tyk Certificate Store and include this in the static allow list. Tyk will then validate client certificates signed by the registered CA.
+
+From Tyk 5.12.0 we added support for [Certificate-Token Binding](/api-management/authentication/bearer-token) when using the Auth Token (also known as Bearer Token) method for authentication. This adds an additional layer of security on top of the static mTLS list by adding a link between one or more client certificates on the list and the Authentication Token. This prevents an Auth Token from being used with certificates belonging to a different API client.
+
+#### Configuring mTLS with a dynamic allow list
+
+An alternative to the allow list statically declared in the API definition, is Tyk's powerful dynamic allow list. This is a separate authentication method historically called [Dynamic mTLS](#dynamc-mtls-problem) but, from Tyk 5.12, referred to as [Certificate Auth]().
+
+This method relies upon a one-to-one mapping between API clients and client certificates. Each client certificate must be pre-registered with the Tyk Certificate Store and a [session state object]() created for each in the temporal storage (Redis). The certificate's ID is logged in the `certificate` field within the session object. The Redis key for the object is constructed from a combination of the certificate ID and Organisation ID.
+
+When a request is made to an API secured using mTLS with a dynamic allow list, the client certificate presented in the request is used to locate the session in Redis. If a match is found, the request is authorized.
+
+<Note>
+  From Tyk 5.12 this is called [Certificate Authentication]() and is selected by configuring the appropriate `securityScheme`.
+</Note>
+
+Prior to Tyk 5.12, *Dynamic mTLS* will be enforced for requests to an API if the Tyk Vendor Extension contains the following configuration:
+
+```json
+  server:
+    authentication:
+      enabled: true
+      securitySchemes:
+        authToken:
+          enabled: true
+          enableClientCertificate: true
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `authToken.enableClientCertificate` | Set this to `true` to enable mTLS with a dynamic allow list (prior to Tyk 5.12) |
+
+<Note>
+The `enableClientCertificate` field will still work in Tyk 5.12 but will be deprecated, users are encouraged to adopt [Certificate Authentication]().
+
+If using Tyk Classic, the equivalent field is `auth_configs.authToken.useCertificate`.
+</Note>
+
+
+**Adding a certificate to the dynamic allow list**
+
+The dynamic allow list comprises session objects in the Gateway temporal storage (typically Redis) that reference the client certificates that should be accepted.
+
+1. First you must [register](/api-management/certificates#tyk-certificate-store-api) the client certificate with the Tyk Certificate Store and note the certificate ID that is assigned.
+
+2. Next you *create a key*, providing the certificate ID in the `certificate` field of the session object payload.
+    - Tyk Gateway API: `POST /tyk/keys/create`
+    - Tyk Dashboard API: `POST /api/keys/create`
+
+3. Tyk will create a session object with the Redis key containing the certificate ID, which forms part of the dynamic allow list. Deleting this object will remove the certificate from the allow list, restricting access
+    - the Redis key is formed from a combination of the Organization ID and Certificate ID
+
+From the Tyk Dashboard UI, if you [create a key](/getting-started/using-tyk-dashboard#api-security) that grants access to an API secured with a dynamic allow list, the **Authentication** tab will be displayed, where you can select the client certificate from the Tyk Certificate Store.
+
+**Worked example:**
+1. Certificate is registered with Tyk Certificate Store and assigned a certificate ID `697b94798c24bdaedff3cd62a845c8c5559e5552c256a426672716c7f6ceb08fe56ab43f8ad0d163d8add122`
+2. This certificate ID comprises the Organization ID (`697b94798c24bdaedff3cd62`) concatenated with a unique ID allocated for the certificate (`a845c8c5559e5552c256a426672716c7f6ceb08fe56ab43f8ad0d163d8add122`)
+3. The full certificate ID is stored in the `certificate` field of a Tyk session state object
+4. This session state object is passed to Tyk to create a key granting access to the required API
+5. An entry is created in Redis with the key `apikey-eyJvcmciOiI2OTdiOTQ3OThjMjRiZGFlZGZmM2NkNjIiLCJpZCI6ImE4NDVjOGM1NTU5ZTU1NTJjMjU2YTQyNjY3MjcxNmM3ZjZjZWIwOGZlNTZhYjQzZjhhZDBkMTYzZDhhZGQxMjIiLCJoIjoic2hhMjU2In0=` and the session state object as the "value"
+6. This key is `apikey-` concatenated with a base64 encoded value
+7. The base64 encoded value decodes to `{"org":"697b94798c24bdaedff3cd62","id":"a845c8c5559e5552c256a426672716c7f6ceb08fe56ab43f8ad0d163d8add122","h":"sha256"}`
+8. Note that when [key hashing](/api-management/policies#access-key-hashing) is in use, the Redis key will be `apikey-hashedID` where `hashedID` is the sha256 hash of the base64 encoded value from step 7.
+9. When a request is made to the API, the provided certificate is hashed, to generate a fingerprint equivalent to the certificate ID. a temporary token is constructed from this fingerprint and the Organization ID and Tyk searches for this token in Redis (as for the Auth Token method). If a match is found, then the certificate presented in the request must match the one registered with the session object, as the Redis key is directly created from that certificate's ID (generated from the certificate fingerprint).
+
+<a id="dynamc-mtls-problem"></a>
+
+**The problem with legacy Dynamic mTLS mode**
+
+Prior to Tyk 5.12, this method was called **Dynamic mTLS** and permitted authentications using *either* the client certificate or an Auth Token matching the Redis key for the session state object. If the token was presented, then *Tyk treated the certificate as optional and did not enforce the mutual TLS handshake*.
+
+One concept behind the [mTLS handshake](/api-management/certificates#mutual-tls-mtls-%3A-two-way-authentication) is that it ensures that the client has possession of the private key. Possession of the certificate (i.e. public key) does not confirm the identity of the client (since this is by its nature public information).
+
+With Dynamic API the token can be constructed if you have knowledge of the certificate ID/hash and Organization ID - so possession of the token does not guarantee possession of the private key and hence is not equivalent to completion of the mTLS handshake (which requires possession of the private key).
+
+From Tyk 5.12 the option to authenticate using only the token has been placed behind a Gateway configuration option [`allow_unsafe_dynamic_mtls_token`](/tyk-oss-gateway/configuration#allow-unsafe-dynamic-mtls-token). If this is not set (the default behavior) then requests presenting just the token will be rejected; the certificate must be presented and the mTLS handshake is enforced.
+
+The legacy behavior is maintained for existing Tyk users that require this method for test purposes but is strongly discouraged, hence the default setting is to restrict authentication to be possible only using the certificate.
+
+<Note>
+  From Tyk 5.12 the option to use only the token to authenticate has been placed behind a Gateway configuration option `allow_unsafe_dynamic_mtls_token`. 
+</Note>
+
+### Configuring TLS for upstream services
+
+When communicating with upstream services Tyk is the TLS client and so must hold both the client certificate and private key. When mTLS is implemented with the upstream service, the Gateway will perform verification of the upstream's identity by examination of the server certificate that it presents.
+
+- CA certificates can be directly registered with the Tyk Certificate Store
+- Client certificates with private key can be registered as a pair with the Tyk Certificate Store
+    - the client certificate must be concatenated with the private key before being PEM encoded
+
+As usual for Tyk, some configuration is performed at the Gateway level and will be applied to all hosted APIs whereas more granular configuration can be set in the API definition where it will be applied for the specific API.
+
+#### Common configuration
+
+This is primarily managed using the `proxy` section of the Gateway configuration:
+
+| Field | Purpose |
+|-------|---------|
+| [`proxy.enable_http2`](/tyk-oss-gateway/configuration#proxy-enable-http2) | Use [HTTP/2](https://datatracker.ietf.org/doc/html/rfc9113) for upstream connections |
+| [`proxy.ssl_insecure_skip_verify`](/tyk-oss-gateway/configuration#proxy-ssl-insecure-skip-verify) | Do not verify server certificates presented by the upstream; not recommended for production environments |
+| [`proxy.ssl_min_version`](/tyk-oss-gateway/configuration#proxy-ssl-min-version) | Minimum TLS version allowed |
+| [`proxy.ssl_max_version`](/tyk-oss-gateway/configuration#proxy-ssl-max-version) | Maximum TLS version allowed |
+| [`proxy.ssl_ciphers`](/tyk-oss-gateway/configuration#proxy-ssl-ciphers) | Allowed cipher suites (TLS 1.2 only) |
+| [`proxy.ssl_disable_renegotiation`](https://tyk.io/docs/tyk-oss-gateway/configuration#proxy-ssl-disable-renegotiation) | Prevent [TLS renegotiation](/api-management/implement-tls#tls-1-2-renegotiation-behavior) (TLS 1.2 only) |
+
+Additional configuration for the handling of server certificates is controlled via:
+
+- [`ssl_force_common_name_check`](/tyk-oss-gateway/configuration#ssl-force-common-name-check): Validate that the upstream hostname matches the Common Name (CN) in the server certificate. Note that this can be enforced even if the server certificate chain verification is skipped.
+- [`security.pinned_public_keys`](/tyk-oss-gateway/configuration#security-pinned-public-keys): Specify an allow list of server certificates that will be accepted; if the upstream server presents a certificate that isn't on the list then the TLS handshake will fail; see [server certificate pinning](/api-management/upstream-authentication/mtls#certificate-pinning)
+- for mTLS, client certificates can be mapped to upstream domains using [`security.certificate.upstream`](/tyk-oss-gateway/configuration#security-certificates-upstream).
+
+#### API specific configuration
+
+Granular configuration of the TLS connection is controlled via the [`upstream.tlsTransport`](/api-management/gateway-config-tyk-oas#tlstransport) object in the Tyk Vendor Extension:
+
+```yaml
+  upstream:
+    tlsTransport:
+      insecureSkipVerify: true
+      minVersion: 1.2
+      maxVersion: 1.3
+      ciphers:
+        - TLS_RSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA
+      forceCommonNameCheck: true
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `insecureSkipVerify` | Disables verification of the upstream server's certificate chain; not recommended for production environments |
+| `minVersion` | Sets the minimum TLS version allowed (default: 1.2) |
+| `maxVersion` | Sets the maximum TLS version allowed (default: 1.3) |
+| `ciphers` | Allowed cipher suites (optionl, only for TLS 1.2) |
+| `forceCommonNameCheck` | Validate that the upstream hostname matches the Common Name (CN) in the server certificate |
+
+Full details for configuring the certificates to use for mTLS with upstream services are in the dedicated [upstream mTLS](/api-management/upstream-authentication/mtls) section.
+
+#### TLS 1.2 renegotiation behavior
+
+Prior to TLS 1.3, after completing the TLS handshake, either party (client or server) could request to renegotiate the session parameters (such as keys or ciphers). This introduced a potential security vulnerability, such as man-in-the-middle prefix injection attacks (e.g., CVE-2009-3555).
+
+The `proxy.ssl_disable_renegotiation` option in the Gateway configuration mitigates this risk. Setting it to `true` disallows any renegotiation once the TLS connection has been set up, which is the most secure configuration.
+
+By default, this option is `false`, which permits the Gateway (acting as a client) to initiate a renegotiation. This is for backward compatibility with legacy upstream services that may require it. However, even in this default mode, the Gateway will reject renegotiation requests initiated by the upstream server.
+
+This setting is only relevant to TLS 1.2 connections, as renegotiation is not a feature of TLS 1.3.
+
+#### Routing through a forward proxy
+
+The "custom proxy" feature in Tyk allows you to configure the Gateway to route requests to your upstream services through a forward proxy (also known as an HTTP proxy). This is often required in enterprise environments where outbound traffic must pass through a centralized proxy for security, logging, or policy enforcement.
+
+When you define an API in Tyk, you specify a *Target URL* for your upstream service. By default, the Tyk Gateway connects directly to this URL. The custom proxy feature allows you to insert an intermediary proxy for this connection.
+
+The configuration is handled within the [`upstream.proxy`](/api-management/gateway-config-tyk-oas#proxy) object of the Tyk Vendor Extension (`proxy` in the Tyk Classic API definition):
+
+```yaml
+  x-tyk-api-gateway:
+    upstream:
+      proxy:
+        enabled: true
+        url: https://user:pass@my-proxy.com:8080
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `enabled` | Set to `true` to activate the proxy redirect |
+| `url`     | The URL of the forward proxy to which Tyk should direct upstream requests |
+
+<Note>
+  If you are using a secure proxy with an `https://` URL then Tyk will apply the TLS configuration configured for the target upstream, using the host operating system's standard root CA store to validate the proxy's server certificate. Tyk does not support an mTLS connection to the forward proxy, only to the upstream target beyond the proxy.
+</Note>
+
+### Integrating with external services requiring mTLS
+
+Tyk Gateway can be integrated with various external services that support the proxying of hosted APIs, for example Identity Providers (for authentication), webhook targets (for event handling) and storage (for example to Redis).
+
+Tyk's [External Services Configuration guide](/configure/external-service) provides the details required to secure these connections using mTLS.
+
+
+## Using TLS with Tyk Dashboard
+
+The Tyk Dashboard can be configured to use HTTPS for its Control API using the `http_server_options` section in its configuration file (`tyk_analytics.conf`). This is simlar to the equivalently named section in the Gateway config, allowing configuration of TLS certificates (generic and for specific domains using SNI), minimum TLS version, cipher suites to be used (for TLS 1.2), and the option to skip certificate verification (recommended only for non-production deployments).
+
+<Note>
+    The Dashboard does not have access to the Tyk Certificate Store when configuring its own interfaces, so certificates and keys must be available in the filesystem and referenced using relative paths.
+</Note>
+
+For example:
+
+```json
+{
+  "http_server_options": {
+    "use_ssl": true,
+    "certificates": [
+      {
+        "domain_name": "dashboard.example.com",
+        "cert_file": "/path/to/server-cert.cert",
+        "key_file": "/path/to/server-cert.key"
+      }
+    ],
+    "ssl_certificates": ["/path/to/server-certificate-pair.pem"],
+    "min_version": 771,  // TLS 1.2
+    "ssl_ciphers": ["TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"],
+    "ssl_insecure_skip_verify": false
+  }
+}
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `use_ssl` | Enables HTTPS for the Dashboard web interface |
+| `certificates` | Domain-mapped server certificate pairs used for domain-specific configuration when using SNI |
+| `ssl_certificates` | Array of paths to PEM-encoded server certificate pairs. Each file must contain both the certificate and its private key in a single PEM file. Unlike `certificates[]`, these certificates cannot be mapped to specific domains. |
+| `min_version` | Minimum TLS version (771 = TLS 1.2, 772 = TLS 1.3) |
+| `ssl_ciphers` | List of allowed cipher suites (only applicable to TLS 1.2 handshakes) |
+| `ssl_insecure_skip_verify` | Skip TLS verification (not recommended for production) |
+
+<Note>
+    If both `certificates[]` and `ssl_certificates[]` are provided, all certificates from both configurations will be loaded, with domain-specific certificates from `certificates[]` taking precedence for their specified domains.
+</Note>
+
+Set the [host_config.generate_secure_paths](/tyk-dashboard/configuration#host_configgenerate_secure_paths) flag to `true` so that your Dashboard URL starts with HTTPS.
+
+#### Integrating with Gateway
+
+If TLS is in use for the Dashboard's control API, then the Gateways will need to verify the server certificate presented by the Dashboard (unless []() is in use).
+
+The following must be configured in the Gateway (via `tyk.conf` or environment variable):
+
+```json
+"security": {
+  "certificates": {
+    "dashboard_api": ["/path/to/ca-cert.pem"]
+  }
+}
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `certificates.dashboard_api` | An array of relative path references to CA certificates (PEM format) |
+
+### Using mTLS between Dashboard and storage
+
+#### Integrating with Redis
+
+To enable mTLS for the connection between Dashnboard and Redis, add the following settings to your `tyk_analytics.conf` file:
+
+```json
+{
+  "redis_use_ssl": true,
+  "redis_ca_file": "/path/to/ca.cert",
+  "redis_cert_file": "/path/to/client.cert",
+  "redis_key_file": "/path/to/client.key",
+}
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `redis_use_ssl` | Set to true to enable TLS for Redis connections |
+| `redis_cert_file` | Path to the client certificate file that Tyk Dashboard will present to Redis |
+| `redis_key_file` | Path to the client private key file corresponding to the certificate |
+| `redis_ca_file` | Path to the Certificate Authority (CA) certificate file the Dashboard should use to verify the Redis server's certificate |
+| `redis_tls_min_version` | Minimum TLS version to use. Options are "1.2" or "1.3". Defaults to "1.2" |
+| `redis_tls_max_version` | Maximum TLS version to use. Options are "1.2" or "1.3". Defaults to "1.3" |
+| `redis_ssl_insecure_skip_verify` | Set to `true` to skip verification of the Redis server's certificate; not recommended for production environments |
+
+**Important Notes**
+
+- **Certificate Format**: The cert and key files should be in PEM format
+- **File Permissions**: Ensure the Dashboard process has read access to the certificate and key files
+- **Redis Server Configuration**: Your Redis server must be configured to require client certificates for mTLS to work
+- **Gateway Sync**: Ensure your Tyk Gateway is also configured with the same [Redis mTLS settings](/configure/external-service#service-specific-configuration)
+
+For more details on configuring Tyk Dashboard with Redis, see the [Database Management](/planning-for-production/database-settings) guide.
+
+
+#### Integrating with MongoDB
+
+To enable mTLS for the connection between Dashboard and MongoDB persistent storage, add the following settings to your `tyk_analytics.conf` file:
+
+```json
+{
+  "storage": {
+    "main": {
+      "type": "mongo",
+      "connection_string": "mongodb://your-mongo-host:27017/tyk_analytics",
+      "mongo": {
+        "ssl": {
+          "enabled": true,
+          "ca_file": "/path/to/ca-cert.pem",
+          "key_file": "/path/to/client-cert-and-key.pem"
+          "insecure_skip_verify": false,
+          "allow_invalid_hostnames": false,
+        },
+        "driver": "mongo-go"
+      }
+    }
+  }
+}
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `type` | Set to `mongo` |
+| `connection_string` | URL of the MongoDB instance |
+| `ssl.enabled` | Set to `true` to enforce mTLS |
+| `ssl.ca_file` | Path to the Certificate Authority (CA) certificate file the Dashboard should use to verify the MongoDB server's certificate |
+| `ssl.key_file` | Path to file containing both the server certificate and private key for Dashboard |
+| `ssl.ssl_insecure_skip_verify` | Set to `true` to skip verification of the MongoDB server's certificate; not recommended for production environments |
+| `ssl.allow_invalid_hostnames` | Set to `true` to skip validation of the MongoDB server hostname |
+| `driver` | Choose the [MongoDB driver](/tyk-dashboard/configuration#mongo-driver) to be used, typically `mongo-go` |
+
+**Important Notes**
+
+- **Certificate Format**: The ca and key files should be in PEM format
+- **File Permissions**: Ensure the Dashboard process has read access to the certificate and key files
+- **Redis Server Configuration**: Your MongoDB server must be configured to require client certificates for mTLS to work
+
+For more details on using Tyk Dashboard with MongoDB, see the [Database Management](/planning-for-production/database-settings) guide.
+
+
+#### Integrating with PostgreSQL
+
+PostgreSQL uses connection string parameters for TLS configuration. To enable mTLS for the connection between Dashboard and PostgreSQL persistent storage, add the following settings to your `tyk_analytics.conf` file:
+
+```json
+{
+  "storage": {
+    "main": {
+      "type": "postgres",
+      "connection_string": "host=your-postgres-host port=5432 dbname=tyk_analytics user=tyk_user password=your_password sslmode=verify-full sslrootcert=/path/to/ca-cert.pem sslcert=/path/to/client-cert.pem sslkey=/path/to/client-key.pem"
+    }
+  }
+}
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `type` | Set to `postgres` |
+| `connection_string` | PostgreSQL connection string |
+
+
+| TLS Connection String Parameters | Description |
+|------------------------------|-------------|
+| `sslmode` | Set to `verify-full` for full certificate validation (recommended for production) |
+| `sslrootcert` | Path to the CA certificate file |
+| `sslcert` | Path to the client certificate file |
+| `sslkey` | Path to the client private key file |
+
+Alternative values for `sslmode`:
+
+- `require`: Encrypts connection but doesn't verify server certificate
+- `verify-ca`: Verifies server certificate against CA
+- `verify-full`: Verifies server certificate and hostname (most secure)
+
+For more details on using Tyk Dashboard with PostgreSQL, see the [Database Management](/planning-for-production/database-settings) guide.
+
+
+## Using TLS with MDCB
+
+In a distributed deployment, MDCB is the server and the Data Plane Gateways are the clients. If you want to secure this connection using TLS you must configure both components.
+
+### Configuring MDCB
+
+MDCB has two separate servers that can be configured individually in the `tyk-sink.conf` file or environment variables:
+
+- `server_options`: the main RPC (Remote Procedure Call) server is the primary endpoint that Tyk Gateways connect to in order to synchronize API definitions, policies, and security keys.
+- `http_server_options`: the HTTP control API server used for administrative, monitoring, and debugging purposes.
+
+Each server has similar configuration to Dashboard, with settings described in the [reference documentation](/tyk-multi-data-centre/mdcb-configuration-options).
+
+Note that you need to set `security.private_certificate_encoding_secret` in the MDCB configuration file to the same value as specified in your Control Plane Gateway and Dashboard configuration files, to ensure that MDCB can decode private keys that have been added to the [Tyk Certificate Store](/api-management/implement-tls#certificate-data).
+
+<Note>
+    MDCB does not have access to the Tyk Certificate Store when configuring its own interfaces, so certificates and keys must be available in the filesystem and referenced using relative paths.
+</Note>
+
+### Configuring Data Plane Gateway
+
+The following must be configured in the Data Plane Gateways (via `tyk.conf` or environment variables) to set up TLS for the connection to MDCB's RPC server:
+
+```json
+{
+  "slave_options": {
+    "use_ssl": true,
+    "ssl_insecure_skip_verify": false
+  },
+  "security": {
+    "certificates": {
+      "mdcb_api": [
+        "cert-id-from-store",
+        "/path/to/client-cert.pem"
+      ]
+  }
+}
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `slave_options.use_ssl` | Instructs the Gateway to use TLS in the connection to MDCB |
+| `slave_options.ssl_insecure_skip_verify` | Skips the verification of the server certificate presented by MDCB; not recommended for production environments |
+| `security.certificates.mdcb_api` | A list of client certificate-key pairs; this can contain relative paths to PEM files or certificate IDs allocated by the Tyk Certificate Store |
+
+The MDCB's server certificate will be verified against the CA certificates in the Gateway host's standard root CA store. This is not separately configurable.
+
+During the mTLS handshake, the server (MDCB) will advertise the Certificate Authorities with which it will verify the client certificate. The client (Data Plane Gateway) will present the first valid certificate in the `certificates.mdcb_api` list that matches one of these CAs. Multiple certificates allow for rotation scenarios where you might have overlapping validity periods.
+
+
+## Frequency Asked Questions
+
+### How to create a self-signed certificate pair
+
+You can create self-signed client and server certificates with this command:
+
+```
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
+```
+
+For the server's Common Name you can specify a domain, or just pass `-subj "/CN=localhost"` to the OpenSSL command
+
+### How to calculate the certificate fingerprint
+
+To get certificate SHA256 fingerprint use the following command:
+
+```
+openssl x509 -noout -fingerprint -sha256 -inform pem -in <cert>
+```
+
+### How to make a request using cURL
+
+If you are testing using cURL, your request to an mTLS secured API will look like:
+
+```
+curl --cert client_cert.pem --key client_key.pem https://localhost:8181
+```
