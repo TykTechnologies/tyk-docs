@@ -260,13 +260,15 @@ Output:
 time="Jan 29 08:27:48" level=info api_id=b1a41c9a89984ffd7bb7d4e3c6844ded api_key=00000000 api_name=httpbin org_id=678e6771247d80fd2c435bf3 prefix=access-log remote_addr="[::1]:63270" upstream_addr="http://httpbin.org/get"
 ```
 
-### Error Classification Fields
+### Error Classification
 
-Access logs automatically include structured error classification fields when requests result in errors. These fields help operators quickly identify the root cause of failures — such as TLS certificate expiry, connection refused, rate limiting, or authentication errors — directly from the access log, without needing to cross-reference system logs or analytics records.
+Access logs automatically include structured error classification fields when requests result in errors. These fields help operators quickly identify the root cause of failures — such as TLS certificate expiry, connection refused, rate limiting, or authentication errors — directly from the access log, without needing to cross-reference application logs or API Traffic Logs.
 
+<Note>
 Error classification fields are **only present when errors occur**. Successful requests do not include them.
+</Note>
 
-#### Error classification field reference
+#### Log Field Reference
 
 | Field | Type | Description | Present when |
 | :--- | :--- | :--- | :--- |
@@ -282,76 +284,6 @@ Error classification fields are **only present when errors occur**. Successful r
 <Note>
 Fields with empty or zero values are omitted from the log entry rather than being set to empty strings or zero. This keeps successful request logs unchanged and error logs concise.
 </Note>
-
-#### Example: Upstream connection refused (502)
-
-When the upstream server refuses the TCP connection, the access log includes:
-
-```
-time="Feb 10 14:23:01" level=info api_id=abc123 api_name=my-api
-  status=502 response_flag=UCF response_code_details=connection_refused
-  error_source=ReverseProxy error_target=api.backend.com:443
-  method=GET path=/users prefix=access-log
-```
-
-Key fields:
-- `response_flag=UCF` identifies the error as an Upstream Connection Failure.
-- `error_target=api.backend.com:443` shows the specific upstream that refused the connection.
-- `upstream_status` is absent because no HTTP response was received from the upstream.
-
-#### Example: TLS certificate expired (502)
-
-When the upstream's TLS certificate has expired:
-
-```
-time="Feb 10 14:25:33" level=info api_id=abc123 api_name=my-api
-  status=502 response_flag=TLE response_code_details=tls_certificate_expired
-  error_source=ReverseProxy error_target=api.backend.com:443
-  tls_cert_expiry=2024-01-15T00:00:00Z tls_cert_subject="CN=api.backend.com"
-  method=GET path=/users prefix=access-log
-```
-
-The `tls_cert_expiry` and `tls_cert_subject` fields help you identify exactly which certificate needs renewal and when it expired.
-
-#### Example: Circuit breaker open (503)
-
-When a [circuit breaker](/planning-for-production/ensure-high-availability/circuit-breakers) has tripped for an endpoint:
-
-```
-time="Feb 10 14:30:00" level=info api_id=abc123 api_name=my-api
-  status=503 response_flag=CBO response_code_details=circuit_breaker_open
-  error_source=ReverseProxy error_target=api.backend.com:443/health
-  circuit_breaker_state=OPEN
-  method=GET path=/health prefix=access-log
-```
-
-#### Example: Rate limited (429)
-
-When a client exceeds the configured rate limit:
-
-```
-time="Feb 10 14:31:22" level=info api_id=abc123 api_name=my-api
-  status=429 response_flag=RLT response_code_details=session_rate_limited
-  error_source=RateLimitAndQuotaCheck
-  method=POST path=/orders prefix=access-log
-```
-
-Note that `error_target` is absent for gateway-level errors (authentication, rate limiting, validation) because the request never reached the upstream.
-
-#### Example: Upstream returned 503 (5XX passthrough)
-
-When the upstream successfully received the request but responded with an error status:
-
-```
-time="Feb 10 14:32:45" level=info api_id=abc123 api_name=my-api
-  status=503 response_flag=URS response_code_details=upstream_response_5xx
-  error_source=Upstream error_target=api.backend.com:443
-  upstream_status=503
-  method=GET path=/health prefix=access-log
-```
-
-Key distinction: `error_source=Upstream` and `upstream_status=503` tell you the upstream *responded* with an error, as opposed to a connection failure where no response was received.
-
 #### Response flags: Upstream and proxy errors (5XX)
 
 These flags indicate errors that occur when the gateway attempts to proxy the request to the upstream service.
@@ -382,7 +314,9 @@ These flags indicate errors that occur when the gateway attempts to proxy the re
 
 These flags indicate errors that occur within the gateway's middleware pipeline before the request reaches the upstream. The `error_source` field identifies which middleware rejected the request.
 
-**Authentication errors**
+<Tabs>
+
+<Tab title="Authentication errors">
 
 | Flag | Name | HTTP Status | Description |
 | :--- | :--- | :--- | :--- |
@@ -397,14 +331,20 @@ These flags indicate errors that occur within the gateway's middleware pipeline 
 The HTTP status code for `AMF` varies by middleware: the Auth Token middleware returns `401`, while OAuth2 and JWT middleware return `400`. The `response_flag` is the same in both cases, but you can use `error_source` to identify which middleware generated the error.
 </Note>
 
-**Rate limiting errors**
+</Tab>
+
+
+<Tab title="Rate limiting errors">
 
 | Flag | Name | HTTP Status | Description |
 | :--- | :--- | :--- | :--- |
 | `RLT` | Rate Limited | 429 | The request was rejected due to a rate limit |
 | `QEX` | Quota Exceeded | 403 | The client's usage quota has been exhausted |
 
-**Request validation errors**
+</Tab>
+
+
+<Tab title="Request validation errors">
 
 | Flag | Name | HTTP Status | Description |
 | :--- | :--- | :--- | :--- |
@@ -412,6 +352,10 @@ The HTTP status code for `AMF` varies by middleware: the Auth Token middleware r
 | `CLM` | Content-Length Missing | 411 | The Content-Length header is required but was not provided |
 | `BIV` | Body Invalid | 400 or 422 | The request body is malformed or fails JSON schema validation |
 | `IHD` | Invalid Header | 400 | A required request header is malformed or invalid |
+
+</Tab>
+
+</Tabs>
 
 #### Understanding error_source
 
@@ -430,43 +374,93 @@ The `error_source` field identifies the gateway component that generated the err
 | `RequestSizeLimitMiddleware` | Request size limit middleware | `BTL`, `CLM` |
 | `ValidateJSONMiddleware` | JSON schema validation middleware | `BIV` |
 
-#### Distinguishing connection errors from upstream response errors
+#### Examples
 
-A common troubleshooting question is whether the upstream received the request or if the connection itself failed. The error classification fields make this distinction clear:
+<AccordionGroup>
+<Accordion title='Upstream connection refused (502)'>
 
-| Scenario | `error_source` | `upstream_status` | `error_target` | Example flags |
-| :--- | :--- | :--- | :--- | :--- |
-| Connection failed (upstream never received request) | `ReverseProxy` | absent (0) | present | `UCF`, `UCT`, `DNS`, `TLE` |
-| Upstream responded with error | `Upstream` | present (e.g., 503) | present | `URS` |
-| Gateway rejected request (never proxied) | middleware name | absent | absent | `RLT`, `AMF`, `BTL` |
+When the upstream server refuses the TCP connection, the access log includes:
 
-#### Filtering access logs by response flag
-
-You can filter access logs to focus on specific error types. For example, using `grep`:
-
-```bash
-# Find all TLS-related errors
-grep 'response_flag=TL' /var/log/tyk/access.log
-
-# Find all connection failures
-grep -E 'response_flag=(UCF|UCT|URR)' /var/log/tyk/access.log
-
-# Find all rate limiting events
-grep -E 'response_flag=(RLT|QEX)' /var/log/tyk/access.log
-
-# Find all auth failures for a specific API
-grep 'api_name=payments-api' /var/log/tyk/access.log | grep -E 'response_flag=(AMF|AKI|TKI|TKE)'
+```
+time="Feb 10 14:23:01" level=info api_id=abc123 api_name=my-api
+  status=502 response_flag=UCF response_code_details=connection_refused
+  error_source=ReverseProxy error_target=api.backend.com:443
+  method=GET path=/users prefix=access-log
 ```
 
-If you are using JSON log format (`TYK_LOGFORMAT=json`), you can query these fields with tools like `jq`:
+Key fields:
+- `response_flag=UCF` identifies the error as an Upstream Connection Failure.
+- `error_target=api.backend.com:443` shows the specific upstream that refused the connection.
+- `upstream_status` is absent because no HTTP response was received from the upstream.
 
-```bash
-# Find all connection refused errors with their targets
-cat /var/log/tyk/access.log | jq 'select(.response_flag == "UCF") | {time, error_target, path}'
+</Accordion>
 
-# Count errors by response flag
-cat /var/log/tyk/access.log | jq -r '.response_flag // empty' | sort | uniq -c | sort -rn
+<Accordion title='TLS certificate expired (502)'>
+
+When the upstream's TLS certificate has expired:
+
 ```
+time="Feb 10 14:25:33" level=info api_id=abc123 api_name=my-api
+  status=502 response_flag=TLE response_code_details=tls_certificate_expired
+  error_source=ReverseProxy error_target=api.backend.com:443
+  tls_cert_expiry=2024-01-15T00:00:00Z tls_cert_subject="CN=api.backend.com"
+  method=GET path=/users prefix=access-log
+```
+
+The `tls_cert_expiry` and `tls_cert_subject` fields help you identify exactly which certificate needs renewal and when it expired.
+
+</Accordion>
+
+
+<Accordion title='Circuit breaker open (503)'>
+
+When a [circuit breaker](/planning-for-production/ensure-high-availability/circuit-breakers) has tripped for an endpoint:
+
+```
+time="Feb 10 14:30:00" level=info api_id=abc123 api_name=my-api
+  status=503 response_flag=CBO response_code_details=circuit_breaker_open
+  error_source=ReverseProxy error_target=api.backend.com:443/health
+  circuit_breaker_state=OPEN
+  method=GET path=/health prefix=access-log
+```
+
+</Accordion>
+
+
+<Accordion title='Rate limited (429)'>
+
+When a client exceeds the configured rate limit:
+
+```
+time="Feb 10 14:31:22" level=info api_id=abc123 api_name=my-api
+  status=429 response_flag=RLT response_code_details=session_rate_limited
+  error_source=RateLimitAndQuotaCheck
+  method=POST path=/orders prefix=access-log
+```
+
+Note that `error_target` is absent for gateway-level errors (authentication, rate limiting, validation) because the request never reached the upstream.
+
+</Accordion>
+
+
+<Accordion title='Upstream returned 503 (5XX passthrough)'>
+
+When the upstream successfully received the request but responded with an error status:
+
+```
+time="Feb 10 14:32:45" level=info api_id=abc123 api_name=my-api
+  status=503 response_flag=URS response_code_details=upstream_response_5xx
+  error_source=Upstream error_target=api.backend.com:443
+  upstream_status=503
+  method=GET path=/health prefix=access-log
+```
+
+Key distinction: `error_source=Upstream` and `upstream_status=503` tell you the upstream *responded* with an error, as opposed to a connection failure where no response was received.
+
+</Accordion>
+
+</AccordionGroup>
+
 
 ### Performance Considerations
 
@@ -558,3 +552,21 @@ To enable Syslog as a log aggregator, update these settings in your `tyk.conf`:
 
 </Tab>
 </Tabs>
+
+## Troubleshooting
+
+<AccordionGroup>
+
+<Accordion title='Distinguishing connection errors from upstream response errors'>
+
+A common troubleshooting question is whether the upstream received the request or if the connection itself failed. The error classification fields make this distinction clear:
+
+| Scenario | `error_source` | `upstream_status` | `error_target` | Example flags |
+| :--- | :--- | :--- | :--- | :--- |
+| Connection failed (upstream never received request) | `ReverseProxy` | absent (0) | present | `UCF`, `UCT`, `DNS`, `TLE` |
+| Upstream responded with error | `Upstream` | present (e.g., 503) | present | `URS` |
+| Gateway rejected request (never proxied) | middleware name | absent | absent | `RLT`, `AMF`, `BTL` |
+
+</Accordion>
+
+</AccordionGroup>
