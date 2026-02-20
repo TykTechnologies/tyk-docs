@@ -449,8 +449,11 @@ class DocsMerger:
                             with open(item, 'r', encoding='utf-8') as f:
                                 content = f.read()
 
-                            # Rewrite internal links for this version
-                            modified_content = self.rewrite_internal_links(content, version, is_latest)
+                            # First: Rewrite snippet imports (always uses version)
+                            modified_content = self.rewrite_snippet_imports(content, version)
+
+                            # Then: Rewrite internal links for this version
+                            modified_content = self.rewrite_internal_links(modified_content, version, is_latest)
 
                             # Write modified content
                             with open(target_file, 'w', encoding='utf-8') as f:
