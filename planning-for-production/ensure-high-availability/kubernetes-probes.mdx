@@ -1,0 +1,122 @@
+---
+title: "A Practical Guide to Kubernetes Probes for the Tyk Gateway"
+description: "Best practices for configuring Kubernetes liveness and readiness probes for the Tyk Gateway, including tuning tips for production environments."
+sidebarTitle: "Kubernetes Probes"
+---
+
+## Introduction
+
+When running the Tyk Gateway in Kubernetes, configuring liveness and readiness probes correctly is one of the most critical steps to ensure a stable and resilient deployment. These probes are Kubernetes's eyes and ears, helping it understand the health of your Gateway pods to make intelligent decisions about routing traffic and restarting unhealthy containers. This guide provides a definitive set of best practices for setting and, most importantly, tuning these probes for a production environment.
+
+## Understanding Tyk's Health Endpoints: /hello vs. /ready
+
+The Tyk Gateway exposes two distinct HTTP endpoints for health checks:
+
+### Liveness Probe ( /hello )
+
+This is a simple check. It answers the question, "Is the Tyk process running and its web server responsive?" It will always return an HTTP 200 OK as long as the process is alive, even if its dependencies like Redis are unavailable. This is crucial to prevent Kubernetes from unnecessarily restarting the Gateway during a temporary downstream outage.
+
+Example response:
+
+```json
+{
+  "status": "pass",
+  "version": "5.8.10",
+  "description": "Tyk GW",
+  "details": {
+    "redis": {
+      "status": "pass",
+      "componentType": "datastore",
+      "time": "2026-02-05T20:34:28Z"
+    },
+    "rpc": {
+      "status": "pass",
+      "componentType": "system",
+      "time": "2026-02-05T20:34:28Z"
+    }
+  }
+}
+```
+
+### Readiness Probe ( /ready )
+
+This is a much stricter check. It answers the question, "Is the Gateway fully initialized and ready to process traffic?" It will return a non-200 status code (e.g., 503 Service Unavailable) if critical dependencies are not met. A Gateway is only considered "ready" if it has a healthy connection to Redis and has successfully loaded its API definitions.
+
+<Note>
+The `/ready` endpoint is only available in newer versions of the Tyk Gateway starting in v5.8.3+ and v5.9.0+.
+</Note>
+
+Example response:
+
+```json
+{
+  "status": "pass",
+  "version": "5.8.10",
+  "description": "Tyk GW Ready",
+  "details": {
+    "redis": {
+      "status": "pass",
+      "componentType": "datastore",
+      "time": "2026-02-05T20:34:38Z"
+    },
+    "rpc": {
+      "status": "pass",
+      "componentType": "system",
+      "time": "2026-02-05T20:34:38Z"
+    }
+  }
+}
+```
+
+## Role of the Liveness and Readiness Probes
+
+For a robust production environment, the rule is simple: use the appropriate endpoint for each probe.
+
+*   **Liveness Probe MUST use /hello**: This ensures Kubernetes only restarts a pod if the Gateway process itself has crashed or frozen.
+*   **Readiness Probe SHOULD use /ready**: This ensures a pod only receives traffic when it is fully connected to its dependencies and has loaded its configurations.
+
+This approach prevents traffic from being routed to a pod that has started but is not yet capable of processing requests correctly, which is a common source of errors in a dynamic environment.
+
+## Tuning the Probes
+
+This is the most important takeaway: there are no magic numbers for probe timings. Every environment is different. The values in the official Tyk Helm charts are a safe starting point, but they should be treated as just that - a start. Your ideal configuration will depend on factors like:
+
+*   **Number of APIs**: A Gateway loading thousands of APIs will take longer to start than one loading ten.
+*   **Resource Limits**: A pod with constrained CPU will be slower to initialize.
+*   **Network Latency**: Time to connect to Redis and other services impacts startup.
+*   **Workload**: A heavily loaded Gateway may respond to health checks more slowly.
+
+Your goal is to find the balance between responsiveness and stability. You want Kubernetes to react quickly to genuine failures but not overreact to transient issues or slow startups.
+
+## A Recommended Starting Point for Your values.yaml
+
+Start with the following configuration in your Helm `values.yaml`. It separates the probes and provides a conservative baseline for timings that works well for most deployments.
+
+```yaml
+gateway:
+  livenessProbe:
+    httpGet:
+      path: /hello
+      port: 8080 # Adjust to your gateway's listen port
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /ready # Use the stricter /ready endpoint
+      port: 8080 # Adjust to your gateway's listen port
+    initialDelaySeconds: 15 # Give more time for API loading
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+```
+
+## How to Tweak These Values
+
+*   **initialDelaySeconds**: If your pods are being marked as unhealthy on startup, this is the first value to increase. Check your pod logs to see how long the Gateway takes to initialize and add a buffer.
+*   **periodSeconds**: The default of 10 seconds is usually fine. Decreasing it makes Kubernetes detect failures faster but adds minor load. Increasing it can be useful if your Gateway is under extreme load and you want to reduce health check traffic.
+*   **timeoutSeconds**: If probes are failing due to timeouts (check `kubectl describe pod ...`), it might mean your Gateway is too busy to respond within the timeout period. A slight increase to 5 seconds can help, but persistent timeouts are a strong signal that your Gateway needs more CPU/memory resources.
+*   **failureThreshold**: A value of 3 is the industry standard. It provides a good shield against restarting pods due to single, transient network blips. It's rarely necessary to change this.
+
+By starting with the Helm chart defaults, applying the best practice of using `/ready` for the readiness probe, and then carefully observing and tweaking the timings, you can build a highly available and resilient Tyk Gateway deployment on Kubernetes.
