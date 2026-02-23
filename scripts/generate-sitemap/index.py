@@ -5,6 +5,9 @@ from datetime import datetime
 from typing import List, Dict, Any
 import os
 import yaml
+import frontmatter
+import xml.etree.ElementTree as ET
+from xml.dom import minidom
 
 # === CONFIG ===
 ROOT_DIR = Path.cwd()
@@ -76,6 +79,36 @@ def build_url(page_path: str) -> str:
         return BASE_URL
 
 
+def should_index_page(page_path: str) -> bool:
+    """Check if a page should be indexed (noindex not set to true in frontmatter)."""
+    # Try different file patterns
+    patterns = [
+        page_path + ".mdx",
+        page_path + "/index.mdx",
+    ]
+
+    for pattern in patterns:
+        file_path = ROOT_DIR / pattern
+        if file_path.exists():
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    # Parse frontmatter
+                    post = frontmatter.load(f)
+                    noindex = post.get('noindex', False)
+                    
+                    # Check if noindex is True (handles both boolean and string "True")
+                    if isinstance(noindex, bool) and noindex:
+                        return False
+                    if isinstance(noindex, str) and noindex.lower() == 'true':
+                        return False
+            except Exception as e:
+                # If we can't parse frontmatter, assume it should be indexed
+                pass
+            break
+
+    return True
+
+
 def get_file_lastmod(page_path: str) -> str:
     """Get the last modification time of the file if it exists."""
     # Try different file patterns
@@ -95,25 +128,24 @@ def get_file_lastmod(page_path: str) -> str:
 
 
 def slugify(text: str) -> str:
-    """Convert text to lowercase slug with only alphanumeric characters and dashes."""
+    """Convert text to lowercase slug with only alphanumeric characters, dashes, and underscores."""
     # Convert to lowercase
     text = text.lower()
     
     # Remove trailing periods first
     text = text.rstrip('.')
     
-    # Replace spaces and common separators with dashes
+    # Replace spaces with dashes (but keep underscores)
     text = text.replace(" ", "-")
-    text = text.replace("_", "-")
     
-    # Keep only alphanumeric characters (a-z, 0-9) and dashes
+    # Keep only alphanumeric characters (a-z, 0-9), dashes, and underscores
     # Remove all special characters (apostrophes, parentheses, periods, etc.)
     cleaned = ""
     for char in text:
-        if char.isalnum() or char == '-':
+        if char.isalnum() or char == '-' or char == '_':
             cleaned += char
     
-    # Clean up multiple consecutive dashes
+    # Clean up multiple consecutive dashes (but not underscores)
     while "--" in cleaned:
         cleaned = cleaned.replace("--", "-")
     
@@ -181,12 +213,8 @@ def extract_apis_from_swagger(swagger_file_path: str) -> List[str]:
 
 
 def generate_sitemap_xml(pages: List[str]) -> str:
-    """Generate the sitemap XML content."""
-    xml_header = '<?xml version="1.0" encoding="UTF-8"?>\n'
-    urlset_open = '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:news="http://www.google.com/schemas/sitemap-news/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1" xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">\n'
-    urlset_close = '</urlset>'
-
-    url_entries = []
+    """Generate the sitemap XML content with proper formatting."""
+    excluded_count = 0
 
     # Remove duplicates while preserving order
     seen = set()
@@ -196,31 +224,59 @@ def generate_sitemap_xml(pages: List[str]) -> str:
             seen.add(page)
             unique_pages.append(page)
 
+    # Create XML structure using ElementTree
+    urlset = ET.Element('urlset')
+    urlset.set('xmlns', 'http://www.sitemaps.org/schemas/sitemap/0.9')
+    urlset.set('xmlns:news', 'http://www.google.com/schemas/sitemap-news/0.9')
+    urlset.set('xmlns:xhtml', 'http://www.w3.org/1999/xhtml')
+    urlset.set('xmlns:image', 'http://www.google.com/schemas/sitemap-image/1.1')
+    urlset.set('xmlns:video', 'http://www.google.com/schemas/sitemap-video/1.1')
+
     for page in unique_pages:
         # Check if page is already a full URL (from API reference)
         if page.startswith("https://"):
-            url = page
+            url_text = page
             lastmod = None  # API references don't have file modification times
+            should_index = True  # API references are always indexed
         else:
-            url = build_url(page)
+            # Check if page should be indexed (not marked with noindex)
+            should_index = should_index_page(page)
+            if not should_index:
+                excluded_count += 1
+                continue
+            
+            url_text = build_url(page)
             lastmod = get_file_lastmod(page)
 
-        url_entry = f'<url>\n<loc>{url}</loc>\n'
-
+        # Create url element
+        url_elem = ET.SubElement(urlset, 'url')
+        
+        # Add loc element
+        loc_elem = ET.SubElement(url_elem, 'loc')
+        loc_elem.text = url_text
+        
+        # Add lastmod element if available
         if lastmod:
-            url_entry += f'<lastmod>{lastmod}</lastmod>\n'
+            lastmod_elem = ET.SubElement(url_elem, 'lastmod')
+            lastmod_elem.text = lastmod
 
-        url_entry += '</url>\n'
-        url_entries.append(url_entry)
+    if excluded_count > 0:
+        print(f"🚫 Excluded {excluded_count} pages marked with noindex=true")
 
-    sitemap_content = (
-        xml_header
-        + urlset_open
-        + "".join(url_entries)
-        + urlset_close
-    )
-
-    return sitemap_content
+    # Convert to string and format with minidom
+    xml_string = ET.tostring(urlset, encoding='unicode')
+    
+    # Parse with minidom for pretty printing
+    dom = minidom.parseString(xml_string)
+    
+    # Format with proper indentation (2 spaces)
+    formatted_xml = dom.toprettyxml(indent="  ", encoding='UTF-8').decode('utf-8')
+    
+    # Clean up extra blank lines that minidom adds
+    lines = [line for line in formatted_xml.split('\n') if line.strip()]
+    formatted_xml = '\n'.join(lines)
+    
+    return formatted_xml
 
 
 def main():
