@@ -1,0 +1,130 @@
+---
+title: "Securing an API with Client-side Certificate Authentication"
+description: "A tutorial on how to set up Client-side Certificate Authentication in Tyk."
+keywords: "Tyk Tutorials, Getting Started, Client Certificate, mTLS, Mutual TLS, Security"
+order: 7
+sidebarTitle: "Client Certificate Auth"
+---
+
+This tutorial will guide you through configuring an API in Tyk to use Client-side Certificate Authentication. This method, also known as mutual TLS (mTLS), adds a strong layer of security by ensuring that both the server and the client trust each other, verifying their identities through cryptographic certificates.
+
+We will start by creating a self-signed client certificate, then configure your API to use it, create a key, and finally test that everything is working correctly.
+
+### Prerequisites
+
+*   An active Tyk installation (Gateway and Dashboard).
+*   An existing API configured in Tyk. For this tutorial, we'll assume it's an API proxying `http://httpbin.org` and is currently set to use "Open (No Auth)".
+*   `openssl` installed on your local machine to generate the certificate.
+
+---
+
+### Step 1: Create a Client Certificate
+
+If you don't already have a client certificate, you can generate a self-signed one for testing purposes. This involves creating a private key and then a public certificate.
+
+1.  **Generate a Private Key:**
+
+    ```bash
+    openssl genrsa -out client.key 2048
+    ```
+
+2.  **Generate a Certificate Signing Request (CSR):**
+
+    ```bash
+    openssl req -new -key client.key -out client.csr
+    ```
+    You will be prompted to enter information for the certificate, such as country, organization, etc. You can fill these in or leave them as default.
+
+3.  **Generate the Self-Signed Certificate:**
+
+    ```bash
+    openssl x509 -req -days 365 -in client.csr -signkey client.key -out client.crt
+    ```
+
+    This creates a certificate (`client.crt`) that is valid for 365 days. You now have `client.key` (your private key) and `client.crt` (your public certificate).
+
+---
+
+### Step 2: Register the Certificate in Tyk Dashboard
+
+Now, you need to tell Tyk about this certificate so it can trust clients who present it.
+
+1.  Navigate to **System Management > Client Certificates** in your Tyk Dashboard.
+2.  Click the **Add Certificate** button.
+3.  A modal will appear. Open your `client.crt` file in a text editor, copy the entire content (including the `-----BEGIN CERTIFICATE-----` and `-----END CERTIFICATE-----` lines), and paste it into the **PEM-ENCODED PUBLIC KEY** text area.
+4.  Click **Save Certificate**. The certificate will be added to the list with a unique ID.
+
+---
+
+### Step 3: Configure Your API to Use Certificate Authentication
+
+Next, let's switch your API's authentication mode.
+
+1.  Go to **APIs** and select the API you want to configure.
+2.  In the API Designer, go to the **Core Settings** tab.
+3.  Under the **Authentication** section, select **Certificate Based Authentication** from the dropdown menu.
+4.  A new option, **Key hashing algorithm**, will appear. You can leave this as the default.
+5.  Click **Save** or **Update** to apply the changes.
+
+Your API is now protected and will require clients to present a valid, registered certificate.
+
+---
+
+### Step 4: Create a Key and Associate it with the Certificate
+
+Even with certificate authentication, Tyk uses an API Key to apply policies and manage access rights. We need to create a key and link it to the certificate we registered.
+
+1.  Navigate to **System Management > Keys**.
+2.  Click **Add Key**.
+3.  In the **API Access** section, select your API from the dropdown list to grant this key access.
+4.  Scroll down to the **Advanced Options** section.
+5.  In the **Client Certificate** dropdown, you will see the certificate you added in Step 2. Select it.
+6.  Click **Create Key**. Copy the generated key, as you will need it for testing.
+
+This key is now tied to the specific client certificate. It will only grant access if the request includes both a valid API key and the correct client certificate.
+
+---
+
+### Step 5: Test the Secured API
+
+Let's make sure everything is working. We'll use `curl` to test. You will need your Gateway domain, API listen path, the API key you just created, and the client certificate files (`client.crt` and `client.key`).
+
+#### 1. Successful Request (with Certificate and Key)
+
+Replace `YOUR_GATEWAY_URL`, `YOUR_API_LISTEN_PATH`, and `YOUR_API_KEY` with your actual values.
+
+```bash
+curl --cert client.crt --key client.key -H "Authorization: YOUR_API_KEY" YOUR_GATEWAY_URL/YOUR_API_LISTEN_PATH/
+```
+
+If successful, you should receive a `200 OK` response from `httpbin.org`.
+
+#### 2. Failed Request (without Certificate)
+
+Now, let's try making a request with only the API key.
+
+```bash
+curl -H "Authorization: YOUR_API_KEY" YOUR_GATEWAY_URL/YOUR_API_LISTEN_PATH/
+```
+
+You should receive a `401 Unauthorized` error with the message `"error": "Client certificate not found"`.
+
+---
+
+### Frequently Asked Questions (FAQ)
+
+**Q: Can I associate multiple keys with the same certificate?**
+
+A: Yes. You can create several keys and link them to the same client certificate. This is useful if you want to grant different access rights (e.g., access to different APIs or different rate limits) to the same client identity.
+
+**Q: Do I need to use self-signed certificates?**
+
+A: No. For production environments, it is highly recommended to use certificates issued by a trusted Certificate Authority (CA). The process in Tyk is the same: you register the public certificate PEM in the Dashboard.
+
+**Q: What happens if the client certificate expires?**
+
+A: Tyk will reject the certificate, and the client will receive a `401 Unauthorized` error. You will need to issue a new certificate to the client and register it in the Tyk Dashboard. You can then update the API key to point to the new certificate or create a new key.
+
+**Q: Does the API Key need to be in the header?**
+
+A: Yes, by default, Tyk looks for the API key in the `Authorization` header. This behavior can be configured in the API settings if you need to pass the key in a different header or as a query parameter.
