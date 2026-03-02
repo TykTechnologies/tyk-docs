@@ -868,7 +868,7 @@ We’ve provided a simple script to tear down the demo as follows:
 
 Data Plane Gateways need resources such as API keys, certificates, and OAuth clients to process API requests. To ensure high availability and resilience, these resources need to be synchronized from the Control Plane to the Data Planes.
 
-The MDCB Synchroniser is a feature that proactively pushes these resources to the Data Planes when they start up. This improves resilience in case the MDCB link or Control Plane is unavailable, as the Data Planes can continue to operate independently using the resources stored locally in their Redis instances. It also offers a performance improvement, as Gateways do not have to retrieve resources on-demand when an API is first called.
+The MDCB Synchroniser is a feature that proactively pushes these resources to the Data Planes when they start up. This improves resilience if the MDCB link or the Control Plane is unavailable, as the Data Planes can continue to operate independently using the resources stored locally in their Redis instances. It also offers a performance improvement, as Gateways do not have to retrieve resources on demand when an API is first called.
 
 <Note>
   **A note on spelling**
@@ -882,11 +882,13 @@ The MDCB Synchroniser is a feature that proactively pushes these resources to th
 
 ### How Resources are Synchronized
 
+There are two models for synchronizing resources from the Control Plane to the Data Planes: on-demand retrieval and proactive synchronization using the Synchroniser.
+
 #### Without the Synchroniser (On-demand)
 
-If the Synchroniser is not in use, resources are pulled by the Data Plane Gateways on-demand. When a Gateway requires a resource (for example, a TLS certificate to serve a request), it first checks its local Redis cache. If the resource doesn't exist locally, it requests it from the Control Plane via the MDCB. Once retrieved, the resource is cached in the local Redis for future use.
+If the Synchroniser is not in use, the Data Plane Gateways pull resources on demand. When a Gateway requires a resource (for example, a TLS certificate to serve a request), it first checks its local Redis cache. If the resource doesn't exist locally, it requests it from the Control Plane via the MDCB. Once retrieved, the resource is cached locally in Redis for future use.
 
-This model introduces a potential single point of failure: if the MDCB or Control Plane is down, a Data Plane Gateway cannot retrieve a resource it has not previously cached, which could impact API availability.
+This model introduces a potential single point of failure. If the MDCB or Control Plane is down, a Data Plane Gateway cannot retrieve a resource it has not previously cached, which could impact API availability.
 
 <img src="/img/mdcb/synchroniser-before.gif" alt="Without Synchroniser" width="1000" />
 
@@ -897,7 +899,7 @@ When the Synchroniser is enabled, API keys, certificates, and OAuth clients are 
 <Note>
   **Note**
 
-  By default, the Synchroniser will synchronize all certificates to every Data Plane. In Tyk 5.12.0 we added the option to configure a more granular, selective synchronization for TLS certificates. This is particularly useful in environments with a large number of certificates where different Data Planes serve different domains.
+  By default, the Synchroniser will synchronize all certificates to every Data Plane. In Tyk 5.12.0, we added the option to configure a more granular, selective synchronization for TLS certificates. This is particularly useful in environments with a large number of certificates where different Data Planes serve different domains.
 
   This selective approach reduces both the memory footprint of each Data Plane's Redis instance and unnecessary network traffic between the Control and Data Planes.
 </Note>
@@ -935,9 +937,9 @@ The Synchroniser behaviour is configured in the `tyk.conf` file or equivalent en
 <Note>
   *Note*
 
-  The `sync_used_certs_only` option was added in Tyk 5.12.0 to avoid loading irrelevant TLS certificates (which could generate noise in the Gateway application logs if expired) to the Data Plane. With this option set to `true` only certificates required for APIs loaded by the Gateway will be synchronised to the Data Plane.
+  The `sync_used_certs_only` option was added in Tyk 5.12.0 to prevent the Data Plane from loading irrelevant TLS certificates (which could generate noise in the Gateway application logs if expired). With this option set to `true` only certificates required for APIs loaded by the Gateway will be synchronised to the Data Plane.
 
-In Tyk 5.12.0 there is a small limitation that, when this option is enabled, certificates registered for APIs secured using [Certificate Authentication](/api-management/authentication/certificate-auth) will be retrieved on demand, not during the initial sync.
+In Tyk 5.12.0, there is a small limitation. When this option is enabled, certificates registered for APIs secured with [Certificate Authentication](/api-management/authentication/certificate-auth) are retrieved on demand rather than during the initial sync.
 </Note>
 
 #### Control Plane configuration
@@ -966,7 +968,7 @@ The Synchroniser behaviour is configured in the `tyk_sink.conf` file or equivale
 | [`time_between_batches`](/tyk-multi-data-centre/mdcb-configuration-options#sync_worker_config-time_between_batches) | The cooldown period in seconds between fetching batches of keys. The default is 0, which means there is no delay. |
 | [`max_workers`](/tyk-multi-data-centre/mdcb-configuration-options#sync_worker_config-max_workers) | The maximum number of Gateway groups (clusters) that can be synchronized concurrently. The default value is 10000. |
 | [`warmup_time`](/tyk-multi-data-centre/mdcb-configuration-options#sync_worker_config-warmup_time) | The time in seconds that MDCB will wait before starting the synchronization process. This allows the worker nodes to load APIs and policies from their local Redis before synchronising other resources. The default value is 2 seconds. |
-| [`group_key_ttl`](/tyk-multi-data-centre/mdcb-configuration-options#sync_worker_config-group_key_ttl) | The Time To Live (TTL) in seconds for the group synchronization key in Redis. This key (`syncworker-{groupID}-{orgID}`) is used to prevent multiple Gateways in the same group from triggering a sync simultaneously. The default value is 180 seconds. |
+| [`group_key_ttl`](/tyk-multi-data-centre/mdcb-configuration-options#sync_worker_config-group_key_ttl) | The Time To Live (TTL) in seconds for the group synchronization key in Redis. This key (`syncworker-{groupID}-{orgID}`) prevents multiple Gateways in the same group from triggering a sync simultaneously. The default value is 180 seconds. |
 
 
 ### Configuring the Synchroniser for Tyk Cloud
@@ -979,7 +981,7 @@ Please [submit a support ticket](https://support.tyk.io/hc/en-gb) to us if you w
 
 <Accordion title='How do I know if synchronization happened?'>
 
-You could check the MDCB log message to know about when synchronization started and finished:
+You could check the MDCB log message to know when synchronization started and finished:
 
 ```
 Starting oauth clients sync worker for orgID...
@@ -995,7 +997,7 @@ Sync oauth worker for orgID:...
 
 <Accordion title='Can I trigger a re-synchronization?'>
 
-Synchronization will be triggered once the Time To Live (TTL) of a Data Plane Gateway has expired. The default expiry duration is 3 minutes. The Time To Live (TTL) value can be set in the MDCB config using [`sync_worker_config.group_key_ttl`](/tyk-multi-data-centre/mdcb-configuration-options#sync_worker_config-group_key_ttl).
+Synchronization will be triggered when the Time To Live (TTL) of a Data Plane Gateway expires. The default expiry duration is 3 minutes. The Time To Live (TTL) value can be set in the MDCB config using [`sync_worker_config.group_key_ttl`](/tyk-multi-data-centre/mdcb-configuration-options#sync_worker_config-group_key_ttl).
 
 </Accordion>
 
