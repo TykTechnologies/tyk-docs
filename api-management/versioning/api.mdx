@@ -1,0 +1,103 @@
+---
+title: "API Versioning with the Tyk Dashboard and Gateway APIs"
+description: "In this tutorial, learn how to manage API versions using the Tyk Dashboard and Gateway APIs, including creating and linking base and child versions and promoting a child API to become the base version."
+keywords: "API versioning, version, Tyk Classic, Tyk OAS, API, versioning"
+sidebarTitle: "Manage API Versioning using Dashboard"
+---
+
+## API versioning with the Tyk Dashboard and Gateway APIs
+
+If you are not using the Dashboard's [API Designer](/api-management/api-versioning#api-versioning-in-the-tyk-dashboard-api-designer), you can use the Tyk Dashboard API to manage your APIs, including creating and linking base and child versions and, from Tyk 5.12.0, promoting a child API to become the base version.
+
+If you are not using Tyk Dashboard, you can use the Tyk Gateway API to create base and child APIs.
+
+You can either:
+- manually [configure the version metadata](/api-management/api-versioning#configuring-api-versioning-in-the-api-definition) using the `info.versioning` section of the Tyk Vendor Extension before [importing the API definition](/api-management/gateway-config-managing-oas#loading-the-api-definition-into-tyk) via the Dashboard or Gateway API
+- let Tyk manage the configuration of version metadata, as explained in the following sections
+
+<Note>
+  **Note**
+
+  If you are using Tyk Classic APIs, please see [this section](/api-management/api-versioning#versioning-with-tyk-classic-apis).
+</Note>
+
+### Creating Base Version
+
+Typically an existing API is used as the base version. You do not need to do anything to this, as Tyk will manage the updates to that API definition when the first child version is created.
+
+From **Tyk 5.10.0** you can optionally pre-configure the version metadata in the Tyk Vendor Extension of an unversioned API before creating any child versions, leaving `versioning.enabled=false` so that it is ignored, for example:
+
+```yaml
+x-tyk-api-gateway:
+  info:
+    versioning:
+      enabled: false
+      default: v1
+      fallbackToDefault: true
+      key: x-api-version
+      location: url
+      name: v1
+      stripVersioningData: true
+```
+
+All of the `info.versioning` settings will be ignored while `info.versioning.enabled` is set to `false`.
+
+### Creating Child Versions
+
+When you want to create a child version for an existing API using the control API, you simply provide additional query parameters when creating the child API, to link it to the base API.
+
+These parameters are common to the `POST /api/apis/oas` and `POST /tyk/apis/oas` endpoints:
+
+| Parameter               | Description |
+| :---------------------- | :---------- |
+| `base_api_id`           | The API ID of the *base API* to which the new API will be linked as a child. |
+| `base_api_version_name` | The version name (e.g. `v1`) that should be used to call the *base API*. If this has been [pre-configured](/api-management/api-versioning#creating-base-version) or this is not the first child API then it can be omitted. If provided, this will overwrite any existing base API version name. |
+| `new_version_name`      | The version name (e.g. `v2`) that will be used to route to this new child API. |
+| `set_default`           | Set this to `true` to make the new child API the [default version](/api-management/api-versioning#default-version). |
+
+These options are also available when [updating an existing API definition](/api-management/gateway-config-managing-oas#updating-an-api) using the `PATCH /api/apis/oas` or `PATCH /tyk/apis/oas` endpoints.
+
+#### Configuring the Versioning Identifier
+
+When using the control API to create the first new child version, if you have not already [pre-configured](/api-management/api-versioning#creating-base-version) the versioning identifier in the base API, the folowing settings will be used:
+
+- versioning identifier location: header
+- versioning identifier key: `x-tyk-version`
+
+If you need to change these, you should do so within the `info.versioning` section of the API definition for the base API as explained [previously](/api-management/api-versioning#configuring-api-versioning-in-the-api-definition).
+
+### Changing the Base Version
+
+<Note>
+  Available in the Tyk Dashboard API from Tyk 5.12.0
+</Note>
+
+If you have a base API routing to one or more child APIs, you can promote a child version to become the base API. During this process, the base API will be linked as a child of the new base API. You simply make a call to the `PATCH /api/apis/oas/{current-base-api-id}/{next-base-api-id}` endpoint in the Tyk Dashboard API.
+
+| Property     | Description                                               |
+| :----------- | :-------------------------------------------------------- |
+| Resource URL | `/api/apis/oas/{current-base-api-id}/{next-base-api-id}`  |
+| Method       | `PATCH`                                                   |
+| Type         | None                                                      |
+| Body         | None                                                      |
+| Parameters   | Path: `{current-base-api-id}` `{next-base-api-id}`        |
+
+- you need to specify which APIs to change - and do so using the API ID value from the `info.id` field in their respective Tyk Vendor Extensions.
+- if [API ownership](/api-management/user-management#api-ownership) is in use, the user calling this endpoint must have *write* access to both APIs.
+- this request will return `HTTP 400 Bad Request` if the `next-base-api-id` is not currently a child version of `current-base-api-id`
+
+Note that there is no equivalent endpoint in the Tyk Gateway API.
+
+### Deleting the Base Version
+
+<Note>
+  Available in the Tyk Dashboard API from Tyk 5.12.0
+</Note>
+
+Deleting a base API is no different from any other Tyk OAS API, except that it contains all the routing information for the linked child APIs. Typically if you delete the base API all the child APIs will be left "orphaned". If they are only exposed internally, no traffic can be routed to them.
+
+In Tyk 5.12.0 we added the facility to [promote a child API]() to become the base API - useful if you want to maintain the versioned API while deleting the original base version.
+
+We also added a new optional `purge` parameter to the [delete API](http://tyk.io/docs/api-reference/oas-apis/delete-oas-api) endpoint in the Tyk Dashboard API which will delete all child APIs linked to the API being deleted, allowing you to remove all versions of an API with one command.
+
+
