@@ -94,6 +94,8 @@ Span attributes are key-value pairs that provide contextual metadata for individ
 - `tyk.api.id`: API ID.
 - `tyk.api.path`: API listen path.
 - `tyk.api.tags`: If tagging is enabled in the API definition, the tags are added here.
+- `tyk.api.apikey.alias`: The identity alias of the authenticated client. Populated for APIs using JWT authentication or multi-auth (compliant mode).
+
 
 #### Resource Attributes
 
@@ -133,13 +135,62 @@ For the full list and details, refer to the official [OpenTelemetry Semantic Con
 
 This setting allows you to specify the type of context propagator to use for trace data. It's essential for ensuring compatibility and data integrity between different services in your architecture. The available options are:
 
-- **tracecontext**: This option supports the [W3C Trace Context](https://www.w3.org/TR/trace-context/) format.
-- **b3**: This option serializes `SpanContext` to/from the B3 multi Headers format. [Here](https://github.com/openzipkin/b3-propagation) you can find more information of this propagator.
+- **tracecontext**: Supports the [W3C Trace Context](https://www.w3.org/TR/trace-context/) format. This is the default.
+- **b3**: Serializes `SpanContext` to/from the B3 multi-header format. [More information](https://github.com/openzipkin/b3-propagation).
+- **custom**: Reads the trace ID from a custom header (set via `custom_trace_header`) and writes it back to that same custom header only. No standard headers are written to upstream.
+- **composite**: Reads the trace ID from a custom header (priority) or standard headers (fallback), and writes **both** the custom header and the standard `traceparent` header to upstream.
+
+<Note>
+`custom` and `composite` are available from Tyk Gateway v5.12.0 and require `custom_trace_header` to be set.
+</Note>
 
 The default setting is `tracecontext`. To configure this setting, you have two options:
 
 - **Environment Variable**: Use `TYK_GW_OPENTELEMETRY_CONTEXTPROPAGATION` to specify the context propagator type.
 - **Configuration File**: Navigate to the `opentelemetry.context_propagation` field in your configuration file to set your preferred option.
+
+#### Custom Trace Header
+
+If your upstream systems use a proprietary correlation header (for example, `X-Correlation-ID`), set `custom_trace_header` to that header name. The behavior depends on `context_propagation`:
+
+**Tracecontext mode** (`tracecontext` + `custom_trace_header`) — reads from the custom header (with fallback to `traceparent`), writes only the standard `traceparent` header to upstream. 
+
+```json
+{
+  "opentelemetry": {
+    "enabled": true,
+    "context_propagation": "tracecontext",
+    "custom_trace_header": "X-Correlation-ID"
+  }
+}
+```
+
+**Custom mode** (`custom` + `custom_trace_header`) — reads from and writes to the custom header only. No standard headers are involved.
+
+```json
+{
+  "opentelemetry": {
+    "enabled": true,
+    "context_propagation": "custom",
+    "custom_trace_header": "X-Correlation-ID"
+  }
+}
+```
+
+**Composite mode** (`composite` + `custom_trace_header`) — reads from the custom header (priority) or standard headers (fallback), and writes both the custom header and `traceparent` to upstream.
+
+```json
+{
+  "opentelemetry": {
+    "enabled": true,
+    "context_propagation": "composite",
+    "custom_trace_header": "X-Correlation-ID"
+  }
+}
+```
+
+In all modes, if the custom header is absent from the incoming request, the gateway falls back to standard headers or generates a new trace ID. The custom header is never generated if it wasn't present in the original request.
+
 
 #### Sampling Strategies
 
@@ -168,6 +219,31 @@ This option is useful for ensuring the sampling consistency between parent and c
 
 - **Environment Variable**: Use `TYK_GW_OPENTELEMETRY_SAMPLING_PARENTBASED`.
 - **Configuration File**: Update the `opentelemetry.sampling.parent_based` field in the configuration file.
+
+#### Span Processor Configuration
+
+When using `span_processor_type: batch` (the default), you can tune the batch processor to prevent span loss under high traffic. Use the `span_batch_config` block to configure the following fields:
+
+- `max_queue_size` — maximum number of spans buffered before export (default: `2048`)
+- `max_export_batch_size` — maximum number of spans per export batch (default: `512`)
+- `batch_timeout` — seconds to wait before forcing an export (default: `5`)
+
+```json
+{
+  "opentelemetry": {
+    "enabled": true,
+    "span_processor_type": "batch",
+    "span_batch_config": {
+      "max_queue_size": 8192,
+      "max_export_batch_size": 1024,
+      "batch_timeout": 3
+    }
+  }
+}
+```
+
+Increase `max_queue_size` and `max_export_batch_size` in high-throughput environments where spans are being dropped before they can be exported.
+
 
 ### OpenTelemetry Backends for Tracing
 
