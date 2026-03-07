@@ -1,0 +1,110 @@
+---
+title: "Plugin Developer Guide"
+description: "A detailed technical guide for plugin developers, outlining the full middleware execution order, data availability, and custom plugin hooks in the Tyk Gateway."
+sidebarTitle: "Plugin Developer Guide"
+---
+
+# Plugin Developer Guide: Middleware & Data
+
+This guide provides a detailed, technical overview of the Tyk Gateway's request processing lifecycle. Understanding the exact middleware execution order and the data available at each stage is crucial for building robust custom plugins.
+
+## Custom Plugin Hooks
+
+Tyk provides four main hooks where you can execute custom logic using Go, Python, or JavaScript plugins:
+
+*   **`pre`**: Executes before any Tyk-native middleware. Ideal for logic that needs to run on every request, before any processing by the gateway.
+*   **`auth`**: A custom authentication hook that runs as part of the authentication phase. Use this to implement custom authentication schemes.
+*   **`post_key_auth`**: Executes immediately after a successful authentication. At this point, the `SessionState` object is available, making it ideal for logic that needs to act on an authenticated session.
+*   **`post`**: Executes just before the request is proxied to the upstream service. This is the last point of modification for the outgoing request.
+
+## Middleware Execution Order
+
+The middleware chain is executed in a specific order, divided into three phases.
+
+### Phase 1: Pre-Authentication
+
+This phase occurs before authentication and focuses on initial validation and filtering. The `SessionState` object is **not** available in this phase.
+
+1.  **`VersionCheck`**: Determines the requested API version from the request.
+2.  **`CORSMiddleware`**: Handles CORS pre-flight requests.
+3.  **Custom `pre` Middleware**: Executes custom plugins attached to the `pre` hook.
+4.  **`RateCheckMW`**: Enforces global (non-key-specific) rate limits.
+5.  **`IPWhiteListMiddleware` / `IPBlackListMiddleware`**: Filters requests by client IP address.
+6.  **`CertificateCheckMW`**: Validates client certificates for mTLS.
+7.  **`OrganizationMonitor`**: Checks organization-level quotas and status.
+8.  **`RequestSizeLimitMiddleware`**: Validates the request body size.
+9.  **`MiddlewareContextVars`**: Populates the request context with data from the request (headers, query params, etc.).
+10. **`TrackEndpointMiddleware`**: Identifies the endpoint for analytics.
+
+### Phase 2: Authentication & Authorization
+
+This phase is skipped for keyless APIs. It establishes the caller's identity and permissions. The `SessionState` object is created during this phase.
+
+1.  **Authentication Middleware**: The gateway attempts to authenticate the request using the configured methods. The first successful method wins.
+    *   `Oauth2KeyExists` (OAuth 2.0)
+    *   `ExternalOAuthMiddleware` (External OAuth Providers)
+    *   `BasicAuthKeyIsValid` (Basic Authentication)
+    *   `HTTPSignatureValidationMiddleware` (HMAC)
+    *   `JWTMiddleware` (JWT)
+    *   `OpenIDMW` (OpenID Connect)
+    *   **Custom `auth` Middleware**: Executes custom authentication plugins.
+    *   `AuthKey` (Standard Tyk API Key)
+2.  **Custom `post_key_auth` Middleware**: Executes custom plugins attached to the `post_key_auth` hook. The `SessionState` is now available.
+3.  **`StripAuth`**: Removes sensitive authentication credentials from the request.
+4.  **`KeyExpired`**: Checks if the session has expired.
+5.  **`AccessRightsCheck`**: Enforces access permissions from the session.
+6.  **`GranularAccessMiddleware`**: Provides path-based access control.
+7.  **`RateLimitAndQuotaCheck`**: Enforces rate limits and quotas for the authenticated key.
+
+### Phase 3: Request Transformation & Proxying
+
+This phase modifies the request before it's sent to the upstream. The `SessionState` is available throughout this phase.
+
+1.  **`RateLimitForAPI`**: Applies a rate limit to the entire API.
+2.  **GraphQL Middleware**:
+    *   `GraphQLMiddleware`: Handles GraphQL query processing.
+    *   `GraphQLComplexityMiddleware`: Checks query complexity.
+    *   `GraphQLGranularAccessMiddleware`: Enforces field-level access control.
+3.  **Upstream Authentication**:
+    *   `UpstreamBasicAuthMiddleware`
+    *   `UpstreamOAuthMiddleware`
+4.  **Request Validation**:
+    *   `ValidateJSON`: Validates against a JSON schema.
+    *   `ValidateRequest`: Validates against an OpenAPI (OAS) schema.
+5.  **Request & Header Transformation**:
+    *   `TransformMiddleware` & `TransformJQMiddleware`: Modify the request body.
+    *   `TransformHeaders`: Modify request headers.
+    *   `URLRewriteMiddleware`: Rewrite the request URL path.
+    *   `TransformMethod`: Change the HTTP method.
+6.  **Pre-Proxy Logic**:
+    *   **`MockResponseMiddleware`**: Returns a mock response if configured.
+    *   **`RedisCacheMiddleware`**: Returns a cached response if available.
+    *   **`VirtualEndpoint`**: Executes a JavaScript function to generate a response.
+    *   **`RequestSigning`**: Signs the request before forwarding.
+7.  **Custom `post` Middleware**: Executes custom plugins attached to the `post` hook.
+
+## Data Availability
+
+Data is passed between middleware using the `http.Request` context.
+
+### Before Authentication (Phase 1)
+
+Before authentication, you can access data from the raw HTTP request. The `MiddlewareContextVars` middleware populates a context data map with:
+
+*   `headers`: A map of all request headers.
+*   `request_data`: A map of query string parameters.
+*   `path_parts`: An array of the URL path segments.
+*   `remote_addr`: The client's IP address.
+
+### After Authentication (Phase 2 & 3)
+
+Once an authentication middleware succeeds, it creates a **`SessionState`** object and attaches it to the request context. This is the most important data structure for plugin developers.
+
+You can access the session object in your plugins via `ctx.GetSession(r)`. The `SessionState` object contains:
+
+*   **`MetaData`**: A key-value map of arbitrary data associated with the API key. This is the primary way to pass custom data between plugins and other middleware. You can read and write to this map.
+*   **`AccessRights`**: Defines the APIs and versions the key can access.
+*   **`Rate`** and **`Quota`** limits for the key.
+*   **`KeyID`**: The ID of the authenticated key.
+
+By accessing and modifying the `SessionState` (especially its `MetaData`) and the request context, your custom plugins can dynamically influence the behavior of the Tyk Gateway.
