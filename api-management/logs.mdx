@@ -155,6 +155,42 @@ You can also configure which fields are logged by configuring the `TYK_GW_ANALYT
   HTTP response status code.
 </ParamField>
 
+<ParamField path="trace_id">
+  The OpenTelemetry trace ID for the request (32-character hex W3C trace ID). Only present when OpenTelemetry is enabled and a trace ID is available. Use this to navigate from an access log entry to the corresponding trace in your observability backend.
+</ParamField>
+
+<ParamField path="response_flag">
+  Error classification code, only present on error requests. See Error Classification Fields.
+</ParamField>
+
+<ParamField path="response_code_details">
+  Detailed error description in snake_case, only present on error requests.
+</ParamField>
+
+<ParamField path="error_source">
+  Gateway component that generated the error, only present on error requests.
+</ParamField>
+
+<ParamField path="error_target">
+  Upstream address for proxy errors, only present on error requests.
+</ParamField>
+
+<ParamField path="upstream_status">
+  HTTP status from upstream for passthrough errors, only present when upstream responded.
+</ParamField>
+
+<ParamField path="tls_cert_expiry">
+  TLS certificate expiration date in RFC 3339 format, only present on TLS certificate errors.
+</ParamField>
+
+<ParamField path="tls_cert_subject">
+  TLS certificate subject (for example, `CN=api.example.com`), only present on TLS certificate errors.
+</ParamField>
+
+<ParamField path="circuit_breaker_state">
+  Circuit breaker state (for example, `OPEN`), only present on circuit breaker errors.
+</ParamField>
+
 #### Default Template Example
 
 <Tabs>
@@ -187,7 +223,7 @@ TYK_GW_ACCESSLOGS_ENABLED=true
 Output:
 
 ```
-time="Jan 29 08:27:09" level=info api_id=b1a41c9a89984ffd7bb7d4e3c6844ded api_key=00000000 api_name=httpbin client_ip="::1" host="localhost:8080" latency_total=62 method=GET org_id=678e6771247d80fd2c435bf3 path=/get prefix=access-log protocol=HTTP/1.1 remote_addr="[::1]:63251" status=200 upstream_addr="http://httpbin.org/get" upstream_latency=61 user_agent=PostmanRuntime/7.43.0
+time="Jan 29 08:27:09" level=info api_id=b1a41c9a89984ffd7bb7d4e3c6844ded api_key=00000000 api_name=httpbin client_ip="::1" host="localhost:8080" latency_total=62 method=GET org_id=678e6771247d80fd2c435bf3 path=/get prefix=access-log protocol=HTTP/1.1 remote_addr="[::1]:63251" status=200 trace_id=4bf92f3577b34da6a3ce929d0e0e4736 upstream_addr="http://httpbin.org/get" upstream_latency=61 user_agent=PostmanRuntime/7.43.0
 ```
 
 #### Custom Template Example
@@ -228,7 +264,212 @@ Output:
 time="Jan 29 08:27:48" level=info api_id=b1a41c9a89984ffd7bb7d4e3c6844ded api_key=00000000 api_name=httpbin org_id=678e6771247d80fd2c435bf3 prefix=access-log remote_addr="[::1]:63270" upstream_addr="http://httpbin.org/get"
 ```
 
-#### Performance Considerations
+### Error Classification
+
+Access logs automatically include structured error classification fields for failed requests. These fields help developers quickly identify root causes, such as TLS certificate expiry, connection refusal, rate limiting, or authentication errors—directly from the access log without cross referencing application or API Traffic Logs.
+
+<Note>
+Error classification fields appear only when errors occur; successful requests do not include them.
+</Note>
+
+#### Log Field Reference
+
+| Field | Type | Description | Present when |
+| :--- | :--- | :--- | :--- |
+| `response_flag` | String | 3-letter code identifying the error category | Always (on error) |
+| `response_code_details` | String | snake_case description of the specific error | Always (on error) |
+| `error_source` | String | Gateway component where the error originated | Always (on error) |
+| `error_target` | String | Upstream address being accessed | Upstream/proxy errors |
+| `upstream_status` | Integer | HTTP status code returned by the upstream | Upstream responded with 5XX |
+| `tls_cert_expiry` | String | Certificate expiration date (RFC 3339) | TLS certificate errors |
+| `tls_cert_subject` | String | Certificate subject (e.g., `CN=api.example.com`) | TLS certificate errors |
+| `circuit_breaker_state` | String | State of the circuit breaker (e.g., `OPEN`) | Circuit breaker errors |
+
+<Note>
+Fields with empty or zero values are omitted from the log entry rather than being set to empty strings or zero. This keeps successful request logs unchanged and error logs concise.
+</Note>
+#### Response flags: Upstream and proxy errors (5XX)
+
+These flags indicate errors occurring when the gateway proxies requests to the upstream service.
+
+| Flag | Name | HTTP Status | Description |
+| :--- | :--- | :--- | :--- |
+| `TLE` | TLS Certificate Expired | 502 | The upstream server's TLS certificate has expired |
+| `TLI` | TLS Certificate Invalid | 502 | The upstream's TLS certificate failed validation |
+| `TLM` | TLS Hostname Mismatch | 502 | The certificate's CN/SAN does not match the hostname |
+| `TLN` | TLS Not Trusted | 502 | The certificate was issued by an unknown authority |
+| `TLH` | TLS Handshake Failure | 502 | The TLS handshake failed (bad certificate, client cert required) |
+| `TLP` | TLS Protocol Error | 502 | TLS protocol or version mismatch |
+| `TLA` | TLS Alert | 502 | A TLS alert was received from the upstream |
+| `UCF` | Connection Refused | 502 | The upstream server refused the TCP connection |
+| `UCT` | Connection Timeout | 502 | The TCP connection to the upstream timed out |
+| `URR` | Connection Reset | 502 | The connection was reset by the upstream server |
+| `EPI` | Broken Pipe | 502 | The connection was closed unexpectedly (EPIPE) |
+| `URT` | Response Timeout | 504 | The upstream did not respond within the timeout period |
+| `DNS` | DNS Resolution Failure | 502 | The upstream hostname could not be resolved |
+| `NRH` | No Route to Host | 502 | The upstream host or network is unreachable |
+| `NHU` | No Healthy Upstreams | 503 | All upstream targets in the load balancer are unhealthy |
+| `CBO` | Circuit Breaker Open | 503 | The [circuit breaker](/planning-for-production/ensure-high-availability/circuit-breakers) is open |
+| `URS` | Upstream Response 5XX | 5XX | The upstream returned a 5XX status code |
+| `UPE` | Upstream Error | 5XX | A generic upstream error that did not match a specific pattern |
+
+#### Response flags: Gateway errors (4XX)
+
+These flags indicate errors within the gateway's middleware pipeline before the request reaches the upstream. The `error_source` field identifies the middleware that rejected the request.
+
+<Tabs>
+<Tab title="Authentication Errors">
+
+| Flag | Name | HTTP Status | Description |
+| :--- | :--- | :--- | :--- |
+| `AMF` | Auth Field Missing | 400 or 401 | The authorization header or parameter is missing |
+| `AKI` | API Key Invalid | 403 | The API key was not found or is invalid |
+| `TKE` | Token Expired | 403 | The JWT, OAuth token, or client certificate has expired |
+| `TKI` | Token Invalid | 403 | The JWT or OAuth token is malformed or has an invalid signature |
+| `TCV` | Token Claims Invalid | 401 | JWT claims validation failed (e.g., issuer, audience, custom claims) |
+| `EAD` | External Auth Denied | 403 | An external authentication service denied the request |
+
+<Note>
+The HTTP status code for `AMF` varies by middleware: Auth Token middleware returns `401`, while OAuth2 and JWT middleware return `400`. The `response_flag` is the same, but `error_source` identifies the middleware that generated the error.
+</Note>
+
+</Tab>
+
+<Tab title="Rate Limiting Errors">
+
+| Flag | Name | HTTP Status | Description |
+| :--- | :--- | :--- | :--- |
+| `RLT` | Rate Limited | 429 | The request was rejected due to a rate limit |
+| `QEX` | Quota Exceeded | 403 | The client's usage quota has been exhausted |
+
+</Tab>
+
+<Tab title="Request Validation Errors">
+
+| Flag | Name | HTTP Status | Description |
+| :--- | :--- | :--- | :--- |
+| `BTL` | Body Too Large | 400 | The request body exceeds the configured size limit |
+| `CLM` | Content-Length Missing | 411 | The Content-Length header is required but was not provided |
+| `BIV` | Body Invalid | 400 or 422 | The request body is malformed or fails JSON schema validation |
+| `IHD` | Invalid Header | 400 | A required request header is malformed or invalid |
+
+</Tab>
+
+<Tab title="Client Connection Errors">
+
+| Flag | Name | HTTP Status | Description |
+| :--- | :--- | :--- | :--- |
+| `CDC` | Client Disconnected | 499 | The client closed the connection before a response was sent |
+
+</Tab>
+</Tabs>
+
+#### Understanding error_source
+
+The `error_source` field identifies the gateway component that generated the error, helping you locate where the failure occurred in the request processing pipeline.
+
+| error_source | Component | Typical flags |
+| :--- | :--- | :--- |
+| `ReverseProxy` | Upstream proxy and transport layer | `UCF`, `TLE`, `URT`, `DNS`, `CBO`, `NHU` |
+| `Upstream` | The upstream server itself (responded with error) | `URS` |
+| `AuthKey` | Auth Token middleware | `AMF`, `AKI`, `TKE` |
+| `Oauth2KeyExists` | OAuth2 middleware | `AMF`, `AKI`, `EAD` |
+| `JWTMiddleware` | JWT middleware | `AMF`, `TKI`, `TCV`, `TKE` |
+| `BasicAuthMiddleware` | Basic Auth middleware | `AMF`, `IHD`, `BIV` |
+| `RateLimitAndQuotaCheck` | Rate limiting and quota middleware | `RLT`, `QEX` |
+| `APIRateLimitMiddleware` | API-level rate limiting | `RLT` |
+| `RequestSizeLimitMiddleware` | Request size limit middleware | `BTL`, `CLM` |
+| `ValidateJSONMiddleware` | JSON schema validation middleware | `BIV` |
+
+#### Examples
+
+<AccordionGroup>
+<Accordion title='Upstream connection refused (502)'>
+
+When the upstream server refuses the TCP connection, the access log shows:
+
+```
+time="Feb 10 14:23:01" level=info api_id=abc123 api_name=my-api
+  status=502 response_flag=UCF response_code_details=connection_refused
+  error_source=ReverseProxy error_target=api.backend.com:443
+  method=GET path=/users prefix=access-log
+```
+
+Key fields:
+- `response_flag=UCF` identifies the error as an Upstream Connection Failure.
+- `error_target=api.backend.com:443` shows the specific upstream that refused the connection.
+- `upstream_status` is absent because no HTTP response was received from the upstream.
+
+</Accordion>
+
+<Accordion title='TLS certificate expired (502)'>
+
+When the upstream's TLS certificate has expired:
+
+```
+time="Feb 10 14:25:33" level=info api_id=abc123 api_name=my-api
+  status=502 response_flag=TLE response_code_details=tls_certificate_expired
+  error_source=ReverseProxy error_target=api.backend.com:443
+  tls_cert_expiry=2024-01-15T00:00:00Z tls_cert_subject="CN=api.backend.com"
+  method=GET path=/users prefix=access-log
+```
+
+The `tls_cert_expiry` and `tls_cert_subject` fields help you identify exactly which certificate needs renewal and when it expired.
+
+</Accordion>
+
+
+<Accordion title='Circuit breaker open (503)'>
+
+When a [circuit breaker](/planning-for-production/ensure-high-availability/circuit-breakers) trips for an endpoint, the access log shows:
+
+```
+time="Feb 10 14:30:00" level=info api_id=abc123 api_name=my-api
+  status=503 response_flag=CBO response_code_details=circuit_breaker_open
+  error_source=ReverseProxy error_target=api.backend.com:443/health
+  circuit_breaker_state=OPEN
+  method=GET path=/health prefix=access-log
+```
+
+</Accordion>
+
+
+<Accordion title='Rate limited (429)'>
+
+When a client exceeds the configured rate limit, the access log shows:
+
+```
+time="Feb 10 14:31:22" level=info api_id=abc123 api_name=my-api
+  status=429 response_flag=RLT response_code_details=session_rate_limited
+  error_source=RateLimitAndQuotaCheck
+  method=POST path=/orders prefix=access-log
+```
+
+Note that `error_target` is absent for gateway-level errors (authentication, rate limiting, validation) because the request did not reach the upstream.
+
+</Accordion>
+
+
+<Accordion title='Upstream returned 503 (5XX passthrough)'>
+
+When the upstream receives the request but responds with an error status, the access log shows:
+
+```
+time="Feb 10 14:32:45" level=info api_id=abc123 api_name=my-api
+  status=503 response_flag=URS response_code_details=upstream_response_5xx
+  error_source=Upstream error_target=api.backend.com:443
+  upstream_status=503
+  method=GET path=/health prefix=access-log
+```
+
+Key distinction: `error_source=Upstream` and `upstream_status=503` indicate that the upstream returned an error, unlike a connection failure, where no response was received.
+
+</Accordion>
+
+</AccordionGroup>
+
+
+### Performance Considerations
 
 Enabling access logs introduces some performance overhead:
 
@@ -318,3 +559,21 @@ To enable Syslog as a log aggregator, update these settings in your `tyk.conf`:
 
 </Tab>
 </Tabs>
+
+## Troubleshooting
+
+<AccordionGroup>
+
+<Accordion title='Distinguishing connection errors from upstream response errors'>
+
+A common troubleshooting question is whether the upstream received the request or if the connection itself failed. The error classification fields make this distinction clear:
+
+| Scenario | `error_source` | `upstream_status` | `error_target` | Example flags |
+| :--- | :--- | :--- | :--- | :--- |
+| Connection failed (upstream never received request) | `ReverseProxy` | absent (0) | present | `UCF`, `UCT`, `DNS`, `TLE` |
+| Upstream responded with error | `Upstream` | present (e.g., 503) | present | `URS` |
+| Gateway rejected request (never proxied) | middleware name | absent | absent | `RLT`, `AMF`, `BTL` |
+
+</Accordion>
+
+</AccordionGroup>
