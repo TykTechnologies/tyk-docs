@@ -1,687 +1,509 @@
 ---
-title: "Installation (Kubernetes)"
-description: "Install Tyk AI Studio"
-keywords: "AI Studio, AI Management"
+title: "Install Tyk AI Studio on Kubernetes"
+description: "Installation guide for the Tyk AI Studio on Kubernetes"
+keywords: "AI Studio, AI Management, Installation, Kubernetes, Helm"
 sidebarTitle: "Kubernetes"
 canonical: "https://tyk.io/docs/ai-management/ai-studio/deployment-k8s"
 ---
 
-This guide explains how to deploy Tyk AI Studio, a secure and extensible AI gateway, using pure Kubernetes manifests.
+## Availability
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| [Enterprise](ai-management/ai-studio/overview#enterprise-edition) | Self-Managed, Hybrid |
+
+<Note>
+This guide focuses on the Enterprise Edition of Tyk AI Studio. For the Community Edition, please refer to the [Tyk AI Studio GitHub repository](https://github.com/TykTechnologies/ai-studio/blob/main/docs/site/docs/deployment-helm-k8s.md). The Community Edition uses different Docker images (`tykio/tyk-ai-studio` and `tykio/tyk-microgateway`) and does not require a license key.
+</Note>
+
+This guide explains how to deploy Tyk AI Studio (control plane), a Microgateway (data plane), and PostgreSQL on Kubernetes using Helm. AI Studio manages configuration centrally and the Microgateway processes AI requests, receiving configuration via gRPC.
 
 ## Prerequisites
 
 - Kubernetes 1.16+
-- kubectl configured with access to your cluster
-- A `TYK_AI_LICENSE` string from Tyk Technologies (contact support@tyk.io or your account manager to obtain)
-- A securely generated `TYK_AI_SECRET_KEY` string for secrets encryption
-- If using SSL/TLS: cert-manager installed in your cluster
+- Helm 3.0+
+- `kubectl` configured with access to your cluster
+- A Tyk AI License key (contact support@tyk.io or your account manager to obtain)
+- For production with TLS: cert-manager installed in your cluster
 
-*Note: The following examples use placeholder values (e.g., `your-domain.com`, `your-secret-key`). Remember to replace these with your actual configuration values.*
+## Generate Secrets
 
-## Installation Options
-
-Tyk AI Studio can be deployed in several configurations:
-
-1. Local Development
-2. Production without TLS
-3. Production with TLS
-4. Production with External Database
-
-### Option 1: Local Development Setup
-
-1. Create a `local-deployment.yaml` file:
-
-```yaml
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: tyk-ai-studio
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: tyk-ai-config
-  namespace: tyk-ai-studio
-type: Opaque
-stringData:
-  ALLOW_REGISTRATIONS: "true"
-  ADMIN_EMAIL: "admin@localhost"
-  SITE_URL: "http://localhost:32580"
-  FROM_EMAIL: "noreply@localhost"
-  DEV_MODE: "true"
-  DATABASE_TYPE: "postgres"
-  TYK_AI_SECRET_KEY: "your-secret-key"
-  TYK_AI_LICENSE: "your-license"
-  DATABASE_URL: "postgres://postgres:localdev123@postgres:5432/tyk-ai-studio"
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: postgres
-  namespace: tyk-ai-studio
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: postgres
-  template:
-    metadata:
-      labels:
-        app: postgres
-    spec:
-      containers:
-      - name: postgres
-        image: postgres:13
-        env:
-        - name: POSTGRES_DB
-          value: "tyk-ai-studio"
-        - name: POSTGRES_USER
-          value: "postgres"
-        - name: POSTGRES_PASSWORD
-          value: "localdev123"
-        ports:
-        - containerPort: 5432
-        volumeMounts:
-        - name: postgres-data
-          mountPath: /var/lib/postgresql/data
-      volumes:
-      - name: postgres-data
-        emptyDir: {}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: postgres
-  namespace: tyk-ai-studio
-spec:
-  selector:
-    app: postgres
-  ports:
-  - port: 5432
-    targetPort: 5432
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: tyk-ai-studio
-  namespace: tyk-ai-studio
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: tyk-ai-studio
-  template:
-    metadata:
-      labels:
-        app: tyk-ai-studio
-    spec:
-      containers:
-      - name: ai-studio
-        image: tykio/tyk-ai-studio:latest
-        envFrom:
-        - secretRef:
-            name: tyk-ai-config
-        ports:
-        - containerPort: 8080
-        - containerPort: 9090
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: tyk-ai-studio
-  namespace: tyk-ai-studio
-spec:
-  type: NodePort
-  selector:
-    app: tyk-ai-studio
-  ports:
-  - name: http
-    port: 8080
-    targetPort: 8080
-    nodePort: 32580
-  - name: gateway
-    port: 9090
-    targetPort: 9090
-    nodePort: 32590
-```
-
-2. Deploy the application:
+Before installing, generate three secret keys to secure communication and encrypt data:
 
 ```bash
-kubectl apply -f local-deployment.yaml
+# Secret key for encryption (used for secrets management and SSO)
+openssl rand -hex 16
+# Example output: a35b3f7b0fb4dd3a048ba4fc6e9fe0a8
+
+# Encryption key for microgateway communication (must be exactly 32 hex chars)
+openssl rand -hex 16
+# Example output: 822d3d1e0e2d849263e45fc7bb842364
+
+# gRPC auth token (for hub-spoke communication)
+openssl rand -hex 16
+# Example output: 9f2c4a6b8d0e1f3a5c7d9e1b3a5c7d9e
 ```
 
-3. Access the application:
-- Web Interface: http://localhost:32580
-- Gateway: http://localhost:32590
+Save these values — you will substitute them into the values file below.
 
-### Option 2: Production without TLS
-
-For a production deployment without TLS certificates:
-
-1. Create `production-no-tls.yaml`:
-
-```yaml
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: tyk-ai-studio
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: tyk-ai-config
-  namespace: tyk-ai-studio
-type: Opaque
-stringData:
-  ALLOW_REGISTRATIONS: "true"
-  ADMIN_EMAIL: "admin@yourdomain.com"
-  SITE_URL: "http://app.yourdomain.com"
-  FROM_EMAIL: "noreply@yourdomain.com"
-  DEV_MODE: "false"
-  DATABASE_TYPE: "postgres"
-  TYK_AI_SECRET_KEY: "your-production-key"
-  TYK_AI_LICENSE: "your-production-license"
-  DATABASE_URL: "postgres://your-db-user:your-db-password@your-db-host:5432/tyk-ai-studio"
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: tyk-ai-studio
-  namespace: tyk-ai-studio
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: tyk-ai-studio
-  template:
-    metadata:
-      labels:
-        app: tyk-ai-studio
-    spec:
-      containers:
-      - name: ai-studio
-        image: tykio/tyk-ai-studio:latest
-        envFrom:
-        - secretRef:
-            name: tyk-ai-config
-        ports:
-        - containerPort: 8080
-        - containerPort: 9090
-        resources:
-          requests:
-            cpu: 500m
-            memory: 1Gi
-          limits:
-            cpu: 1000m
-            memory: 2Gi
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: tyk-ai-studio
-  namespace: tyk-ai-studio
-spec:
-  selector:
-    app: tyk-ai-studio
-  ports:
-  - name: http
-    port: 8080
-    targetPort: 8080
-  - name: gateway
-    port: 9090
-    targetPort: 9090
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: tyk-ai-studio-ingress
-  namespace: tyk-ai-studio
-  annotations:
-    kubernetes.io/ingress.class: nginx
-spec:
-  rules:
-  - host: app.yourdomain.com
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: tyk-ai-studio
-            port:
-              number: 8080
-  - host: gateway.yourdomain.com
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: tyk-ai-studio
-            port:
-              number: 9090
-```
 
-2. Deploy:
+## Option 1: Testing / Quickstart
+
+For local development or test clusters. Uses NodePort services, internal PostgreSQL, and no ingress.
+
+### 1. Add the Helm Chart
 
 ```bash
-kubectl apply -f production-no-tls.yaml
+cd /path/to/tyk-ai-studio/helm
+helm dependency update .
 ```
 
-### Option 3: Production with TLS
+### 2. Create `values-testing.yaml`
 
-For a secure production deployment with TLS:
+Replace the placeholder secrets with your generated values. The `grpcAuthToken` / `edgeAuthToken` and `microgatewayEncryptionKey` / `encryptionKey` pairs **must match**.
 
-1. Create `production-tls.yaml`:
+```yaml Expandable
+midsommar:
+  image:
+    repository: tykio/tyk-ai-studio-ent
+    tag: v2.0.0
+  service:
+    type: NodePort
+    ports:
+      - name: http
+        port: 8080
+        targetPort: 8080
+        nodePort: 32580
+      - name: gateway
+        port: 9090
+        targetPort: 9090
+        nodePort: 32590
+      - name: grpc
+        port: 50051
+        targetPort: 50051
 
-```yaml
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: tyk-ai-studio
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: tyk-ai-config
-  namespace: tyk-ai-studio
-type: Opaque
-stringData:
-  ALLOW_REGISTRATIONS: "true"
-  ADMIN_EMAIL: "admin@yourdomain.com"
-  SITE_URL: "https://app.yourdomain.com"
-  FROM_EMAIL: "noreply@yourdomain.com"
-  DEV_MODE: "false"
-  DATABASE_TYPE: "postgres"
-  TYK_AI_SECRET_KEY: "your-production-key"
-  TYK_AI_LICENSE: "your-production-license"
-  DATABASE_URL: "postgres://user:password@your-production-db:5432/tyk-ai-studio"
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: tyk-ai-studio
-  namespace: tyk-ai-studio
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: tyk-ai-studio
-  template:
-    metadata:
-      labels:
-        app: tyk-ai-studio
-    spec:
-      containers:
-      - name: ai-studio
-        image: tykio/tyk-ai-studio:latest
-        envFrom:
-        - secretRef:
-            name: tyk-ai-config
-        ports:
-        - containerPort: 8080
-        - containerPort: 9090
-        resources:
-          requests:
-            cpu: 500m
-            memory: 1Gi
-          limits:
-            cpu: 1000m
-            memory: 2Gi
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: tyk-ai-studio
-  namespace: tyk-ai-studio
-spec:
-  selector:
-    app: tyk-ai-studio
-  ports:
-  - name: http
+config:
+  allowRegistrations: "true"
+  siteUrl: "http://localhost:32580"                       # Update post-install if not localhost
+  fromEmail: "noreply@localhost"
+  devMode: "true"                                       # Required for login over plain HTTP
+  databaseType: "postgres"
+  tykAiSecretKey: "CHANGE-ME-first-secret"
+  tykAiLicense: "your-license-key"
+  ociCacheDir: "./data/cache/plugins"
+  ociRequireSignature: "false"
+  gatewayMode: "control"
+  grpcPort: "50051"
+  grpcHost: "0.0.0.0"
+  grpcTlsInsecure: "true"
+  grpcAuthToken: "CHANGE-ME-third-secret"
+  microgatewayEncryptionKey: "CHANGE-ME-second-secret"
+  # proxyUrl auto-resolves to the microgateway k8s service — no need to set it
+
+database:
+  internal: true
+  user: "tyk"
+  password: "your-db-password"
+  name: "tyk_ai_studio"
+
+postgres:
+  persistence:
+    enabled: true
+    size: 1Gi
+
+microgateway:
+  enabled: true
+  image:
+    repository: tykio/tyk-microgateway-ent
+    tag: v2.0.0
+  service:
+    type: NodePort
     port: 8080
-    targetPort: 8080
-  - name: gateway
-    port: 9090
-    targetPort: 9090
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: app-tls-certificate
-  namespace: tyk-ai-studio
-spec:
-  secretName: app-tls-secret
-  issuerRef:
-    name: letsencrypt-prod
-    kind: ClusterIssuer
-  dnsNames:
-  - app.yourdomain.com
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: gateway-tls-certificate
-  namespace: tyk-ai-studio
-spec:
-  secretName: gateway-tls-secret
-  issuerRef:
-    name: letsencrypt-prod
-    kind: ClusterIssuer
-  dnsNames:
-  - gateway.yourdomain.com
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: tyk-ai-studio-ingress
-  namespace: tyk-ai-studio
-  annotations:
-    kubernetes.io/ingress.class: nginx
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-spec:
-  tls:
-  - hosts:
-    - app.yourdomain.com
-    secretName: app-tls-secret
-  - hosts:
-    - gateway.yourdomain.com
-    secretName: gateway-tls-secret
-  rules:
-  - host: app.yourdomain.com
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: tyk-ai-studio
-            port:
-              number: 8080
-  - host: gateway.yourdomain.com
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: tyk-ai-studio
-            port:
-              number: 9090
+    nodePort: 32591
+  config:
+    edgeId: "edge-1"
+    edgeNamespace: "default"
+  secrets:
+    edgeAuthToken: "CHANGE-ME-third-secret"             # Must match config.grpcAuthToken
+    encryptionKey: "CHANGE-ME-second-secret"             # Must match config.microgatewayEncryptionKey
+    tykAiLicense: "your-license-key"
 ```
 
-2. Deploy:
+### 3. Install
 
 ```bash
-kubectl apply -f production-tls.yaml
+helm install midsommar . -f values-testing.yaml
 ```
 
-## Optional Components
+### 4. Set External Gateway URL
 
-### Reranker Service
+The Microgateway's internal service URL is used for routing by default, but the portal needs to display the correct external URL for tools and datasources. After install, patch the config with your cluster's node IP:
 
-The Reranker service improves RAG result relevance. Add it to your deployment:
+```bash
+# Get the node IP and set the gateway URL
+NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+GATEWAY_URL="http://${NODE_IP}:32591"
 
-```yaml
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: reranker
-  namespace: tyk-ai-studio
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: reranker
-  template:
-    metadata:
-      labels:
-        app: reranker
-    spec:
-      containers:
-      - name: reranker
-        image: tykio/reranker_cpu:latest
-        ports:
-        - containerPort: 8080
-        resources:
-          requests:
-            cpu: 500m
-            memory: 1Gi
-          limits:
-            cpu: 1000m
-            memory: 2Gi
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: reranker
-  namespace: tyk-ai-studio
-spec:
-  selector:
-    app: reranker
-  ports:
-  - port: 8080
-    targetPort: 8080
+# Patch the configmap with correct URLs and restart AI Studio
+STUDIO_URL="http://${NODE_IP}:32580"
+kubectl patch configmap midsommar-config -p \
+  "{\"data\":{\"SITE_URL\":\"${STUDIO_URL}\",\"TOOL_DISPLAY_URL\":\"${GATEWAY_URL}\",\"DATASOURCE_DISPLAY_URL\":\"${GATEWAY_URL}\"}}"
+kubectl rollout restart deployment midsommar
 ```
 
-### Transformer Server
+<Note>
+**Tip:** If you know your cluster's external IP or hostname upfront, you can skip this step by setting `config.toolDisplayUrl` and `config.datasourceDisplayUrl` in your values file instead.
+</Note>
 
-The Transformer Server handles embedding generation and model inference. Add it to your deployment:
+### 5. Verify
 
-```yaml
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: transformer-server
-  namespace: tyk-ai-studio
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: transformer-server
-  template:
-    metadata:
-      labels:
-        app: transformer-server
-    spec:
-      containers:
-      - name: transformer-server
-        image: tykio/transformer_server_cpu:latest
-        ports:
-        - containerPort: 8080
-        resources:
-          requests:
-            cpu: 500m
-            memory: 1Gi
-          limits:
-            cpu: 1000m
-            memory: 2Gi
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: transformer-server
-  namespace: tyk-ai-studio
-spec:
-  selector:
-    app: transformer-server
-  ports:
-  - port: 8080
-    targetPort: 8080
+```bash
+# Check all pods are running
+kubectl get pods
+
+# Check AI Studio health (via NodePort)
+curl -s http://${NODE_IP}:32580/health
+
+# Check Microgateway health (via NodePort)
+curl -s http://${NODE_IP}:32591/health
 ```
 
-## Database Options
+### Access Points
 
-### Using Internal PostgreSQL
+| Port | URL | Purpose |
+|------|-----|---------|
+| 32580 | `http://<node-ip>:32580` | AI Studio UI + REST API |
+| 32590 | `http://<node-ip>:32590` | Embedded AI Gateway |
+| 32591 | `http://<node-ip>:32591` | Microgateway (Edge Gateway) |
 
-For development or small deployments, you can deploy PostgreSQL within your cluster:
+---
+
+## Option 2: Production with TLS
+
+For production deployments with Ingress, TLS via cert-manager, and an external database.
+
+### 1. Create `values-production.yaml`
+
+Replace all placeholder values with your actual configuration.
+
+```yaml Expandable
+midsommar:
+  image:
+    repository: tykio/tyk-ai-studio-ent
+    tag: v2.0.0
+  ingress:
+    enabled: true
+    certificateEnabled: true
+    className: nginx
+    certManager:
+      issuer: letsencrypt-prod
+    hosts:
+      - host: studio.yourdomain.com
+        paths:
+          - path: /
+            pathType: Prefix
+            port: 8080
+    tls:
+      - secretName: studio-tls-secret
+        hosts:
+          - studio.yourdomain.com
+  service:
+    ports:
+      - name: http
+        port: 8080
+        targetPort: 8080
+      - name: gateway
+        port: 9090
+        targetPort: 9090
+      - name: grpc
+        port: 50051
+        targetPort: 50051
+
+config:
+  allowRegistrations: "true"
+  siteUrl: "https://studio.yourdomain.com"
+  fromEmail: "noreply@yourdomain.com"
+  devMode: "false"
+  databaseType: "postgres"
+  tykAiSecretKey: "CHANGE-ME-first-secret"
+  tykAiLicense: "your-license-key"
+  ociCacheDir: "./data/cache/plugins"
+  ociRequireSignature: "false"
+  gatewayMode: "control"
+  grpcPort: "50051"
+  grpcHost: "0.0.0.0"
+  grpcTlsInsecure: "true"                               # Set to "false" with TLS certs
+  grpcAuthToken: "CHANGE-ME-third-secret"
+  microgatewayEncryptionKey: "CHANGE-ME-second-secret"
+  # proxyUrl, toolDisplayUrl, datasourceDisplayUrl auto-resolve from microgateway ingress config
+
+database:
+  internal: false
+  url: "postgres://user:password@your-db-host:5432/tyk_ai_studio?sslmode=require"
+
+microgateway:
+  enabled: true
+  image:
+    repository: tykio/tyk-microgateway-ent
+    tag: v2.0.0
+  ingress:
+    enabled: true
+    certificateEnabled: true
+    className: nginx
+    certManager:
+      issuer: letsencrypt-prod
+    hosts:
+      - host: gateway.yourdomain.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: gateway-tls-secret
+        hosts:
+          - gateway.yourdomain.com
+  config:
+    edgeId: "edge-1"
+    edgeNamespace: "default"
+    allowInsecure: "false"
+    tlsEnabled: "false"                                  # gRPC client TLS to AI Studio
+  secrets:
+    edgeAuthToken: "CHANGE-ME-third-secret"
+    encryptionKey: "CHANGE-ME-second-secret"
+    tykAiLicense: "your-license-key"
+```
+
+### 2. Install
+
+```bash
+helm dependency update .
+helm install midsommar . -f values-production.yaml
+```
+
+### 3. Verify
+
+```bash
+kubectl get pods
+kubectl get ingress
+curl -s https://studio.yourdomain.com/health
+curl -s https://gateway.yourdomain.com/health
+```
+
+---
+
+## After Deployment
+
+### First User Registration
+
+After deployment, you need to create your first admin user:
+
+1. **Access the application**: Navigate to your configured `SITE_URL` (e.g., `https://studio.yourdomain.com`)
+2. **Register with admin email**: Use the EXACT email address you set in the `ADMIN_EMAIL` environment variable in your configuration.
+3. **Complete registration**: The first user who registers with the admin email will automatically become the administrator.
+
+<Note>
+**Important**: The first user registration must use the same email address specified in the `ADMIN_EMAIL` environment variable. This user will have full administrative privileges.
+</Note>
+
+### Add Your API Keys
+
+AI Studio pre-populates OpenAI and Anthropic LLM configurations on first startup with placeholder secrets (`OPENAI_KEY` and `ANTHROPIC_KEY`). To start using them:
+
+1. Open AI Studio at the `siteUrl` you configured and log in with your admin account
+2. Navigate to **Governance → Secrets** in the sidebar
+3. Click on **`OPENAI_KEY`** and edit it to add your OpenAI API key
+4. Click on **`ANTHROPIC_KEY`** and edit it to add your Anthropic API key
+
+### Push Configuration to the Microgateway
+
+1. Navigate to **AI Portal → Edge Gateways** in the sidebar
+2. Verify your edge gateway (`edge-1`) shows as **Connected**
+3. Click **Push Configuration** to sync the latest settings to the Microgateway
+
+Once the sync status shows **Synced**, the Microgateway is ready to proxy LLM requests.
+
+For further setup (additional LLMs, users, applications), see the **[Initial Configuration](/ai-management/ai-studio/configuration)** guide.
+
+---
+
+## Shared Secrets Reference
+
+These values **must match** between AI Studio and Microgateway configuration:
+
+| AI Studio Config | Microgateway Config | Purpose |
+|---|---|---|
+| `config.grpcAuthToken` | `microgateway.secrets.edgeAuthToken` | Authenticates the gRPC connection |
+| `config.microgatewayEncryptionKey` | `microgateway.secrets.encryptionKey` | Encrypts synced configuration data |
+| `config.tykAiLicense` | `microgateway.secrets.tykAiLicense` | Enterprise license |
+
+## Port Reference
+
+| Port | Component | Purpose |
+|------|-----------|---------|
+| 8080 | AI Studio | Admin UI + REST API |
+| 9090 | AI Studio | Embedded AI Gateway |
+| 50051 | AI Studio | gRPC control server (internal) |
+| 8080 | Microgateway | Edge AI Gateway |
+| 5432 | PostgreSQL | Database |
+
+---
+
+## Advanced Configuration
+
+### Message Queue (NATS)
+
+For distributed deployments with message persistence, add NATS configuration to your values file:
 
 ```yaml
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: postgres-pvc
-  namespace: tyk-ai-studio
-spec:
-  accessModes:
-    - ReadWriteOnce
+config:
+  queueType: "nats"
+  natsUrl: "nats://nats-server:4222"
+  natsStorageType: "file"
+  natsRetentionPolicy: "interest"
+  natsMaxAge: "4h"
+  natsTlsEnabled: true
+  natsCredentialsFile: "/etc/nats/user.creds"
+```
+
+### Optional Components
+
+#### Reranker Service
+
+Improves RAG result relevance:
+
+```yaml
+reranker:
+  enabled: true
+  image:
+    repository: tykio/reranker_cpu
+    tag: latest
   resources:
     requests:
-      storage: 10Gi
-  storageClassName: standard
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: postgres
-  namespace: tyk-ai-studio
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: postgres
-  template:
-    metadata:
-      labels:
-        app: postgres
-    spec:
-      containers:
-      - name: postgres
-        image: postgres:13
-        env:
-        - name: POSTGRES_DB
-          value: "tyk-ai-studio"
-        - name: POSTGRES_USER
-          value: "postgres"
-        - name: POSTGRES_PASSWORD
-          value: "secure-password"
-        ports:
-        - containerPort: 5432
-        volumeMounts:
-        - name: postgres-storage
-          mountPath: /var/lib/postgresql/data
-        resources:
-          requests:
-            cpu: 250m
-            memory: 512Mi
-          limits:
-            cpu: 500m
-            memory: 1Gi
-      volumes:
-      - name: postgres-storage
-        persistentVolumeClaim:
-          claimName: postgres-pvc
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: postgres
-  namespace: tyk-ai-studio
-spec:
-  selector:
-    app: postgres
-  ports:
-  - port: 5432
-    targetPort: 5432
+      cpu: 500m
+      memory: 1Gi
 ```
 
-### Using External Database
+#### Transformer Server
 
-For production environments, configure your external database connection in the Secret:
+Handles embedding generation:
 
 ```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: tyk-ai-config
-  namespace: tyk-ai-studio
-type: Opaque
-stringData:
-  DATABASE_URL: "postgres://user:password@your-db-host:5432/tyk-ai-studio"
-  # ... other config values
+transformer-server:
+  enabled: true
+  image:
+    repository: tykio/transformer_server_cpu
+    tag: latest
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
 ```
+
+### Scaling Edge Gateways
+
+To deploy multiple edge gateways for different regions, override `edgeId` and `edgeNamespace` per instance. You can either deploy separate Helm releases or create additional Kubernetes Deployments with unique values:
+
+```yaml
+microgateway:
+  config:
+    edgeId: "edge-eu-west-1"
+    edgeNamespace: "eu-west"
+```
+
+Each edge instance registers independently with AI Studio and receives only the configuration assigned to its namespace.
+
+### Database Options
+
+**Internal PostgreSQL** (testing/small deployments):
+
+```yaml
+database:
+  internal: true
+  user: "tyk"
+  password: "secure-password"
+  name: "tyk_ai_studio"
+
+postgres:
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: "standard"
+```
+
+**External Database** (production):
+
+```yaml
+database:
+  internal: false
+  url: "postgres://user:password@your-db-host:5432/tyk_ai_studio?sslmode=require"
+```
+
+---
 
 ## Maintenance
 
 ### Upgrading
 
-To upgrade an existing installation:
-
 ```bash
-# Update the deployment with new configuration
-kubectl apply -f your-deployment.yaml
-
-# Or update just the image
-kubectl set image deployment/tyk-ai-studio ai-studio=tykio/tyk-ai-studio:new-version -n tyk-ai-studio
+helm upgrade midsommar . -f your-values.yaml
 ```
 
 ### Uninstalling
 
-To remove the deployment:
-
 ```bash
-# Delete all resources in the namespace
-kubectl delete namespace tyk-ai-studio
-
-# Or delete specific resources
-kubectl delete -f your-deployment.yaml
+helm uninstall midsommar
 ```
 
 ### Viewing Logs
 
 ```bash
-# Main application logs
-kubectl logs -l app.kubernetes.io/name=tyk-ai-studio
+# AI Studio logs
+kubectl logs -l app.kubernetes.io/name=midsommar
 
-# Database logs (if using internal database)
+# Microgateway logs
+kubectl logs -l app=microgateway
+
+# Database logs (internal postgres)
 kubectl logs -l app=postgres
-
-# Optional component logs
-kubectl logs -l app=reranker
-kubectl logs -l app=transformer
 ```
 
 ## Troubleshooting
 
-1. Check pod status:
+<AccordionGroup>
+
+<Accordion title="Check pod and ingress status">
+
 ```bash
 kubectl get pods
-```
-
-2. Check ingress configuration:
-```bash
 kubectl get ingress
-```
-
-3. View pod details:
-```bash
 kubectl describe pod <pod-name>
+````
+
+</Accordion>
+
+<Accordion title="Common Issues">
+
+* **Database connection failures**: Check credentials and network access
+* **Ingress not working**: Verify DNS records and TLS configuration
+* **Login fails on HTTP**: Set `devMode: "true"` — session cookies require this when not using HTTPS
+* **Marketplace page is empty**: Set `ociCacheDir: "./data/cache/plugins"` in your config values — the marketplace service will not start without it
+* **Plugin signature verification**: Docker images use distroless bases without cosign. Set `ociRequireSignature: "false"` to disable signature verification
+
+</Accordion>
+
+<Accordion title="Microgateway cannot connect to AI Studio">
+
+* Verify the microgateway pod logs:
+
+```bash
+kubectl logs -l app=microgateway
 ```
 
-4. Common issues:
-- Database connection failures: Check credentials and network access
-- Ingress not working: Verify DNS records and TLS configuration
-- Resource constraints: Check pod resource limits and node capacity
+* Check that `CONTROL_ENDPOINT` resolves to the AI Studio service (default: `midsommar:50051`)
+* Verify `edgeAuthToken` matches `grpcAuthToken` exactly
+* Verify `encryptionKey` matches `microgatewayEncryptionKey` exactly
+* Check that `GATEWAY_MODE=control` is set in AI Studio config
 
-## First User Registration
+</Accordion>
 
-After deployment, you need to create your first admin user:
-
-1. **Access the application**: Navigate to your configured `SITE_URL` (e.g., `https://app.yourdomain.com`)
-2. **Register with admin email**: Use the EXACT email address you set in the `ADMIN_EMAIL` environment variable in your Secret
-3. **Complete registration**: The first user who registers with the admin email will automatically become the administrator
-
-
-
-    <Note>
-    **Important**: The first user registration must use the same email address specified in the `ADMIN_EMAIL` environment variable. This user will have full administrative privileges.
-    </Note>
-
-
-## Next Steps
-
-Once deployed and you've registered your first user, proceed to the [First Steps guide](/ai-management/ai-studio/configuration) to configure Tyk AI Studio.
+</AccordionGroup>
