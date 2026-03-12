@@ -1,0 +1,154 @@
+---
+title: "Tyk AI Studio Model Router"
+description: "Overview of Tyk AI Studio's model routing capabilities"
+keywords: "AI Studio, AI Management, Model Routing"
+sidebarTitle: "Model Router"
+---
+
+## Availability
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed, Hybrid |
+
+The **Model Router** is an Enterprise feature that provides intelligent request routing across multiple LLM vendors based on model name patterns. It enables organizations to create unified API endpoints that automatically route requests to the appropriate backend LLM based on configurable rules.
+
+### Use cases
+
+- **Multi-Vendor Failover:** Create a pool with multiple vendors for the same model pattern. If one vendor is unavailable or disabled, requests automatically go to other active vendors.
+- **Cost Optimization:** Route requests to different vendors based on cost. Use weights to prefer cheaper providers while maintaining access to premium ones.
+- **Model Abstraction:** Allow clients to request generic model names (e.g., `large-model`, `fast-model`) and map them to specific vendor models using model mappings.
+- **A/B Testing:** Use weighted routing to gradually shift traffic between model versions or vendors.
+
+## Model Router
+
+The Model Router acts as a unified endpoint that routes to multiple LLM vendors. It is exposed at `/router/{slug}/v1/chat/completions` and provides an OpenAI-compatible interface.
+
+Key components of a Model Router entity include:
+
+### Router
+
+A **Router** is the top-level entity that defines a routing endpoint. Each router:
+
+- Has a unique **slug** that becomes part of the API endpoint URL
+- Can be **active** or **inactive**
+- Contains one or more **pools** for routing logic
+- Supports **namespaces** for multi-tenant deployments
+
+Routers are exposed at `/router/{slug}/v1/chat/completions` and provide an OpenAI-compatible interface.
+
+### Pool
+
+A **Pool** groups vendors that handle specific model patterns. Each pool:
+
+- Has a **model pattern** using glob syntax (e.g., `claude-*`, `gpt-4*`, `*`)
+- Defines a **selection algorithm** for choosing among vendors
+- Has a **priority** value (higher priority pools are checked first)
+- Contains one or more **vendors**
+
+When a request arrives, pools are checked in priority order. The first pool whose pattern matches the requested model name handles the request.
+
+### Vendor
+
+A **Vendor** represents an LLM configuration within a pool. Each vendor:
+
+- References an existing [LLM configuration](/ai-management/ai-studio/llm-management)
+- Has a **weight** for weighted load balancing
+- Can be **active** or **inactive**
+- Contains optional **model mappings** for name translation
+
+### Model Mapping
+
+**Model Mappings** allow translating the requested model name to a different name when sending to a specific vendor. This is configured at the vendor level, enabling different translations for each backend.
+
+For example, if you want to route `gpt-4` requests to both OpenAI and Anthropic:
+- OpenAI vendor: No mapping needed (uses `gpt-4` as-is)
+- Anthropic vendor: Map `gpt-4` → `claude-3-opus-20240229`
+
+The Model Router entity is closely related to [LLM Management](/ai-management/ai-studio/llm-management), as the vendors within a pool reference the configured LLMs.
+
+### Selection Algorithms
+
+#### Round Robin
+
+The `round_robin` algorithm distributes requests evenly across active vendors in a pool. Each request goes to the next vendor in sequence.
+
+#### Weighted
+
+The `weighted` algorithm distributes requests based on vendor weights. A vendor with weight 3 receives three times as many requests as a vendor with weight 1.
+
+## Configuration
+
+Administrators can configure Model Routers through the UI or API. The configuration includes:
+
+- **Basic Information:** Name, Slug (used in the URL), Description, Active status, and Available Namespaces.
+- **Model Pools:** Define the routing logic based on model patterns.
+  - **Model Pattern:** Glob pattern to match (e.g., `claude-*`).
+  - **Selection Algorithm:** Choose `round_robin` or `weighted`.
+  - **Priority:** Higher values are checked first.
+- **Vendors:** Add vendors to a pool, referencing configured LLMs.
+  - **Weight:** Relative weight for load balancing.
+  - **Model Mappings:** Translate the requested model name to a target model name.
+
+## How to Create a Model Router
+
+You can create and manage Model Routers through the Tyk AI Studio Admin UI.
+
+1. **Navigate:** Go to the Model Routers section in the Admin UI.
+2. **Add New Router:** Click "Create Model Router".
+3. **Fill in the Basic Information:**
+   - **Name:** Human-readable name for the router (Required).
+   - **Slug:** URL-safe identifier used in the endpoint path `/router/{slug}/v1/chat/completions` (Required).
+   - **Description:** Optional description for the router.
+   - **Active:** Enable or disable the router.
+   - **Available Namespaces:** Select which edge namespaces this configuration should be available to (leave empty for global availability).
+4. **Add Model Pools:**
+   - Click "Add Pool" to define routing logic.
+   - **Name:** Pool identifier.
+   - **Model Pattern:** Glob pattern to match (e.g., `claude-*`).
+   - **Selection Algorithm:** Choose `round_robin` or `weighted`.
+   - **Priority:** Set the priority (higher values are checked first).
+5. **Add Vendors to Pools:**
+   - For each pool, click "Add Vendor".
+   - **LLM:** Select from your configured LLMs.
+   - **Weight:** Set the relative weight for load balancing.
+   - **Active:** Enable or disable this vendor.
+6. **Add Model Mappings (Optional):**
+   - **Source Model:** The model name in the incoming request.
+   - **Target Model:** The model name to send to this vendor.
+7. **Save:** Click "Create" to save the router.
+
+*TODO: Add product screenshots of the Model Router list view and the Create Model Router form.*
+
+## Using the Model Router
+
+Once a router is active, you can send OpenAI-compatible requests to its endpoint:
+
+```bash
+curl -X POST "https://your-host/router/{slug}/v1/chat/completions" \
+  -H "Authorization: Bearer YOUR_APP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-3-sonnet-20240229",
+    "messages": [
+      {"role": "user", "content": "Hello!"}
+    ]
+  }'
+```
+
+The router will:
+1. Match the model name against pool patterns (in priority order)
+2. Select a vendor using the pool's selection algorithm
+3. Apply any model mappings for the selected vendor
+4. Forward the request to the vendor's LLM endpoint
+5. Return the response to the client
+
+## Current Limitations
+
+- **AI Portal integration:** Model Routers are not yet integrated with the AI Portal. Users cannot browse or subscribe to routers through the portal interface. Routers are currently managed exclusively through the Admin UI and API.
+
+## Enterprise Feature
+
+Model Router is an Enterprise Edition feature. Attempting to use Model Router endpoints without an Enterprise license will return a `402 Payment Required` error.
+
+To enable Model Router functionality, ensure your deployment has a valid Enterprise license configured.
