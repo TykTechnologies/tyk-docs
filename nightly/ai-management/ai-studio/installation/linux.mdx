@@ -1,0 +1,532 @@
+---
+title: "Install Tyk AI Studio on Linux"
+description: "Installation guide for the Tyk AI Studio on Linux"
+keywords: "AI Studio, AI Management, Installation, Linux, DEB, RPM"
+sidebarTitle: "Linux"
+canonical: "https://tyk.io/docs/ai-management/ai-studio/installation/linux"
+---
+
+## Availability
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| [Enterprise](/nightly/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed, Hybrid |
+
+<Note>
+This guide focuses on the Enterprise Edition of Tyk AI Studio. For the Community Edition, please refer to the [Tyk AI Studio GitHub repository](https://github.com/TykTechnologies/ai-studio/blob/main/docs/site/docs/deployment-packages.md).
+
+The Community Edition uses different packages (`tyk-ai-studio` and `tyk-microgateway`) and does not require a license key.
+</Note>
+
+This guide covers installing Tyk AI Studio and the Edge Gateway on Linux servers using DEB or RPM packages. This is suitable for bare-metal servers, virtual machines, and cloud instances. In this architecture, AI Studio acts as the **control plane** (hub) and the Edge Gateway acts as the **data plane** (spoke), receiving configuration via gRPC.
+
+## Prerequisites
+
+- **OS**: Ubuntu/Debian (DEB) or RHEL 7-9/CentOS 7-9/Amazon Linux 2/2023 (RPM)
+- **Architecture**: amd64 (x86_64), arm64 (aarch64), or s390x
+
+  <Note>
+  RPM packages are published for EL 7, 8, 9 and Amazon Linux 2/2023. If you are running a different RPM-based distribution (e.g. CentOS Stream 10, Fedora), you can edit the repo file to use the closest supported version:
+  ```bash
+  # Example: use el/9 packages on CentOS Stream 10
+  sudo sed -i 's/el\/10/el\/9/g' /etc/yum.repos.d/tyk_*.repo
+  sudo yum clean all
+  ```
+  </Note>
+
+- **PostgreSQL 14+** (for AI Studio production use; SQLite is the default for development)
+- **systemd** (for service management)
+- **cosign** (for plugin signature verification in the Marketplace, [install instructions](https://docs.sigstore.dev/cosign/system_config/installation/))
+- Root or sudo access
+- A Tyk AI License key (contact support@tyk.io or your account manager to obtain)
+
+## Generate Secrets
+
+Before configuring, generate the required secret keys:
+
+```bash
+# Secret key for encryption (used for secrets management and SSO)
+openssl rand -hex 16
+
+# Encryption key for edge gateway communication (must be exactly 32 hex chars)
+openssl rand -hex 16
+
+# gRPC auth token (for hub-spoke communication)
+openssl rand -hex 16
+```
+
+Save these values, you will need them for both the AI Studio and Edge Gateway configuration.
+
+## Part 1: Install AI Studio
+
+### Add Package Repository
+
+**Debian / Ubuntu (DEB):**
+
+```bash
+curl -s https://packagecloud.io/install/repositories/tyk/tyk-ee-unstable/script.deb.sh | sudo bash
+```
+
+**RHEL / CentOS / Amazon Linux (RPM):**
+
+```bash
+curl -s https://packagecloud.io/install/repositories/tyk/tyk-ee-unstable/script.rpm.sh | sudo bash
+```
+
+### Install the Package
+
+**DEB:**
+
+```bash
+sudo apt-get install tyk-ai-studio-ee
+```
+
+**RPM:**
+
+```bash
+sudo yum install tyk-ai-studio-ee
+```
+
+The package installs:
+
+| Path | Description |
+|------|-------------|
+| `/opt/tyk-ai-studio/tyk-ai-studio` | Application binary |
+| `/opt/tyk-ai-studio/tyk-ai-studio.conf.example` | Example configuration |
+| `/etc/default/tyk-ai-studio` | Environment configuration (systemd) |
+| `/lib/systemd/system/tyk-ai-studio.service` | Systemd service unit |
+
+The installer automatically creates a `tyk` user and group to run the service.
+
+### Configure AI Studio
+
+Edit the environment configuration file:
+
+```bash
+# Debian/Ubuntu
+sudo vi /etc/default/tyk-ai-studio
+
+# RHEL/CentOS (symlinked automatically by the installer)
+sudo vi /etc/sysconfig/tyk-ai-studio
+```
+
+At minimum, set these values:
+
+```env Expandable
+# Security — REQUIRED: replace with your generated secrets
+TYK_AI_SECRET_KEY=your-generated-secret-key
+MICROGATEWAY_ENCRYPTION_KEY=your-generated-encryption-key
+
+# Site URL — set to your server's hostname/IP
+SITE_URL=http://your-server:8080
+
+# Admin email
+ADMIN_EMAIL=admin@example.com
+
+# Database — SQLite is default, use PostgreSQL for production
+DATABASE_TYPE=postgres
+DATABASE_URL=postgresql://user:password@localhost:5432/tyk_ai_studio?sslmode=require
+
+# Enterprise Edition — REQUIRED for EE installs
+TYK_AI_LICENSE=your-license-key
+
+# Plugin Marketplace — set this to enable the marketplace.
+# Without it, the Marketplace page will be empty.
+AI_STUDIO_OCI_CACHE_DIR=/opt/tyk-ai-studio/cache/plugins
+
+# If NOT using HTTPS, enable dev mode to allow login over plain HTTP
+# Without this, session cookies will be rejected by the browser
+DEVMODE=true
+
+# Hub-Spoke: Control Plane Mode
+GATEWAY_MODE=control
+GRPC_PORT=50051
+GRPC_HOST=0.0.0.0
+GRPC_TLS_INSECURE=true
+GRPC_AUTH_TOKEN=your-generated-grpc-token
+
+# Proxy URL — point to the Edge Gateway so AI requests are routed through it
+PROXY_URL=http://your-edge-gateway-host:9091
+
+# Portal display URLs — set these to your Edge Gateway's address so that
+# the portal shows the correct endpoint URLs for tools and datasources
+TOOL_DISPLAY_URL=http://your-edge-gateway-host:9091
+DATASOURCE_DISPLAY_URL=http://your-edge-gateway-host:9091
+```
+
+<Note>
+**Note:** `DEVMODE=true` disables secure cookie flags so that login works over HTTP. For production deployments with HTTPS, remove this setting.
+</Note>
+
+### Start AI Studio
+
+```bash
+sudo systemctl enable --now tyk-ai-studio
+```
+
+### Verify
+
+```bash
+sudo systemctl status tyk-ai-studio
+curl -s http://localhost:8080/health
+```
+
+View logs:
+
+```bash
+sudo journalctl -u tyk-ai-studio -f
+```
+
+## Part 2: Install Edge Gateway
+
+The Edge Gateway is the data plane component for hub-spoke deployments. It connects to AI Studio via gRPC to receive configuration and processes AI requests locally.
+
+Skip this section if you're using AI Studio in standalone mode with its embedded gateway.
+
+### Add Package Repository
+
+If you haven't already added the Enterprise repository in Part 1, add it now:
+
+**Debian / Ubuntu (DEB):**
+
+```bash
+curl -s https://packagecloud.io/install/repositories/tyk/tyk-ee-unstable/script.deb.sh | sudo bash
+```
+
+**RHEL / CentOS / Amazon Linux (RPM):**
+
+```bash
+curl -s https://packagecloud.io/install/repositories/tyk/tyk-ee-unstable/script.rpm.sh | sudo bash
+```
+
+### Install the Package
+
+**DEB:**
+
+```bash
+sudo apt-get install tyk-microgateway-ee
+```
+
+**RPM:**
+
+```bash
+sudo yum install tyk-microgateway-ee
+```
+
+The package installs:
+
+| Path | Description |
+|------|-------------|
+| `/opt/tyk-microgateway/tyk-microgateway` | Server binary |
+| `/opt/tyk-microgateway/mgw` | CLI tool |
+| `/opt/tyk-microgateway/data/` | Data directory (SQLite database) |
+| `/opt/tyk-microgateway/examples/analytics-pulse-config.yaml` | Analytics pulse example config |
+| `/etc/default/tyk-microgateway` | Environment configuration (systemd) |
+| `/lib/systemd/system/tyk-microgateway.service` | Systemd service unit |
+
+### Configure Edge Gateway
+
+<Note>
+**Important:** If you are installing the Edge Gateway on the **same machine** as AI Studio, you **must** change the `PORT` to something other than `8080` (e.g. `9091`) to avoid a port conflict. AI Studio already listens on port 8080.
+</Note>
+
+Edit the environment configuration file:
+
+```bash
+# Debian/Ubuntu
+sudo vi /etc/default/tyk-microgateway
+
+# RHEL/CentOS (symlinked automatically by the installer)
+sudo vi /etc/sysconfig/tyk-microgateway
+```
+
+At minimum, set these values:
+
+```env Expandable
+# Server port — change if running on the same host as AI Studio
+PORT=9091
+
+# Hub-Spoke: Edge Mode
+GATEWAY_MODE=edge
+CONTROL_ENDPOINT=your-studio-host:50051
+EDGE_ID=edge-1
+EDGE_NAMESPACE=default
+
+# Security — MUST MATCH AI Studio values
+EDGE_AUTH_TOKEN=must-match-studio-GRPC_AUTH_TOKEN
+ENCRYPTION_KEY=must-match-studio-MICROGATEWAY_ENCRYPTION_KEY
+
+# TLS — disable for initial setup, enable for production
+EDGE_ALLOW_INSECURE=true
+EDGE_TLS_ENABLED=false
+
+# Enterprise Edition — REQUIRED for EE installs
+TYK_AI_LICENSE=your-license-key
+```
+
+### Configure Analytics Pulse
+
+To send analytics data from the Edge Gateway back to the AI Studio control plane, configure the analytics pulse plugin.
+
+Copy the example config:
+
+```bash
+sudo cp /opt/tyk-microgateway/examples/analytics-pulse-config.yaml /opt/tyk-microgateway/analytics-pulse-config.yaml
+sudo chown tyk:tyk /opt/tyk-microgateway/analytics-pulse-config.yaml
+```
+
+The default configuration is:
+
+```yaml Expandable
+version: "1.0"
+
+data_collection_plugins:
+  - name: "analytics_pulse"
+    enabled: true
+    hook_types: ["analytics", "budget", "proxy_log"]
+    replace_database: false
+    priority: 100
+    config:
+      interval_seconds: 10
+      max_batch_size: 1000
+      max_buffer_size: 10000
+      compression_enabled: true
+      include_proxy_summaries: true
+      include_request_response_data: true
+      edge_retention_hours: 24
+      excluded_vendors: ["mock", "test"]
+      timeout_seconds: 30
+      max_retries: 3
+      retry_interval_secs: 5
+```
+
+Then enable it in `/etc/default/tyk-microgateway`:
+
+```env
+PLUGINS_CONFIG_PATH=/opt/tyk-microgateway/analytics-pulse-config.yaml
+```
+
+### Start Edge Gateway
+
+```bash
+sudo systemctl enable --now tyk-microgateway
+```
+
+### Verify
+
+```bash
+sudo systemctl status tyk-microgateway
+curl -s http://localhost:9091/health
+```
+
+View logs:
+
+```bash
+sudo journalctl -u tyk-microgateway -f
+```
+
+Check the AI Studio logs for a successful edge gateway connection:
+
+```bash
+sudo journalctl -u tyk-ai-studio | grep -i "edge\|grpc"
+```
+## Database Setup
+
+### PostgreSQL for AI Studio
+
+AI Studio defaults to SQLite, which is fine for development. For production, use PostgreSQL:
+
+```bash
+# Install PostgreSQL (Ubuntu/Debian)
+sudo apt-get install postgresql
+
+# Create database and user
+sudo -u postgres psql -c "CREATE USER tyk WITH PASSWORD 'your-db-password';"
+sudo -u postgres psql -c "CREATE DATABASE tyk_ai_studio OWNER tyk;"
+```
+
+Then set in `/etc/default/tyk-ai-studio`:
+
+```env
+DATABASE_TYPE=postgres
+DATABASE_URL=postgresql://tyk:your-db-password@localhost:5432/tyk_ai_studio?sslmode=require
+```
+
+### SQLite for Edge Gateway
+
+The Edge Gateway uses SQLite by default, stored at `/opt/tyk-microgateway/data/microgateway.db`. No additional setup is required.
+
+
+## First User Registration
+
+After starting the service, you need to create your first admin user:
+
+1. **Access the application**: Open your browser and navigate to `http://your-server:8080`
+2. **Register with admin email**: Use the EXACT email address you set in the `ADMIN_EMAIL` environment variable
+3. **Complete registration**: The first user who registers with the admin email will automatically become the administrator
+
+<Note>
+**Important**: The first user registration must use the same email address specified in the `ADMIN_EMAIL` environment variable. This user will have full administrative privileges.
+</Note>
+
+## Shared Secrets Reference
+
+When running AI Studio with an Edge Gateway, these values **must match**:
+
+| AI Studio Variable | Edge Gateway Variable | Purpose |
+|---|---|---|
+| `GRPC_AUTH_TOKEN` | `EDGE_AUTH_TOKEN` | Authenticates the gRPC connection |
+| `MICROGATEWAY_ENCRYPTION_KEY` | `ENCRYPTION_KEY` | Encrypts synced configuration data |
+| `TYK_AI_LICENSE` | `TYK_AI_LICENSE` | Enterprise license |
+
+## Firewall Configuration
+
+Open the following ports based on your deployment:
+
+| Port | Component | Required |
+|------|-----------|----------|
+| 8080 | AI Studio (API + UI) | Always |
+| 9090 | AI Studio (embedded gateway) | Standalone mode |
+| 50051 | AI Studio (gRPC control server) | Hub-spoke mode |
+| 9091 | Edge Gateway (proxy API) | Hub-spoke mode (on edge gateway host) |
+
+Example using `ufw`:
+
+```bash
+# AI Studio host
+sudo ufw allow 8080/tcp
+sudo ufw allow 9090/tcp
+sudo ufw allow 50051/tcp   # Only if using hub-spoke mode
+
+# Edge Gateway host (if separate machine)
+sudo ufw allow 9091/tcp
+```
+
+Example using `firewalld`:
+
+```bash
+# AI Studio host
+sudo firewall-cmd --permanent --add-port=8080/tcp
+sudo firewall-cmd --permanent --add-port=9090/tcp
+sudo firewall-cmd --permanent --add-port=50051/tcp
+sudo firewall-cmd --reload
+```
+
+## TLS Configuration (Production)
+
+For production deployments, enable TLS on the gRPC connection between AI Studio and the Edge Gateway.
+
+**AI Studio** (`/etc/default/tyk-ai-studio`):
+
+```env
+GRPC_TLS_INSECURE=false
+GRPC_TLS_CERT_PATH=/etc/tyk-ai-studio/tls/server-cert.pem
+GRPC_TLS_KEY_PATH=/etc/tyk-ai-studio/tls/server-key.pem
+```
+
+**Edge Gateway** (`/etc/default/tyk-microgateway`):
+
+```env
+EDGE_TLS_ENABLED=true
+EDGE_ALLOW_INSECURE=false
+# If using a private CA:
+# EDGE_TLS_CA_PATH=/etc/tyk-microgateway/tls/ca-cert.pem
+```
+
+## Upgrading
+
+**DEB:**
+
+```bash
+sudo apt-get update
+
+sudo apt-get upgrade tyk-ai-studio-ee
+sudo apt-get upgrade tyk-microgateway-ee  # if installed
+```
+
+**RPM:**
+
+```bash
+sudo yum update tyk-ai-studio-ee
+sudo yum update tyk-microgateway-ee  # if installed
+```
+
+<Note>
+**Note:** Package upgrades will **not** overwrite your configuration in `/etc/default/`. The services are automatically restarted after upgrade.
+</Note>
+
+## Troubleshooting
+
+<AccordionGroup>
+
+<Accordion title="Service fails to start">
+
+```bash
+sudo journalctl -u tyk-ai-studio --no-pager -n 50
+````
+
+**Common causes:**
+
+* Missing or invalid `TYK_AI_SECRET_KEY`
+* Database connection failure (check `DATABASE_URL`)
+* Port already in use
+
+</Accordion>
+
+<Accordion title="Permission errors">
+
+The services run as the `tyk` user. Ensure data directories are owned correctly:
+
+```bash
+sudo chown -R tyk:tyk /opt/tyk-ai-studio/
+sudo chown -R tyk:tyk /opt/tyk-microgateway/
+```
+
+</Accordion>
+
+<Accordion title="SELinux issues (RHEL/CentOS)">
+
+If SELinux is enforcing and blocking the service:
+
+```bash
+sudo setsebool -P httpd_can_network_connect 1
+
+# Or check audit log for specific denials:
+sudo ausearch -m avc -ts recent
+```
+
+</Accordion>
+
+<Accordion title="Marketplace page is empty">
+
+The Plugin Marketplace requires `AI_STUDIO_OCI_CACHE_DIR` to be set. Without it, the marketplace service does not start and no plugins will appear.
+
+Add this to `/etc/default/tyk-ai-studio`:
+
+```env
+AI_STUDIO_OCI_CACHE_DIR=/opt/tyk-ai-studio/cache/plugins
+```
+
+Restart the service after making this change:
+
+```bash
+sudo systemctl restart tyk-ai-studio
+```
+
+</Accordion>
+
+<Accordion title="Edge Gateway cannot connect to AI Studio">
+
+* Verify `CONTROL_ENDPOINT` points to the correct AI Studio host and gRPC port
+* Verify `EDGE_AUTH_TOKEN` matches `GRPC_AUTH_TOKEN` exactly
+* Verify `ENCRYPTION_KEY` matches `MICROGATEWAY_ENCRYPTION_KEY` exactly
+* Check firewall rules allow traffic on the gRPC port (default `50051`)
+* Check AI Studio logs:
+
+```bash
+sudo journalctl -u tyk-ai-studio | grep grpc
+```
+
+</Accordion>
+
+</AccordionGroup>
