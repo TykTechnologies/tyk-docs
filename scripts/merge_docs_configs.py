@@ -779,10 +779,10 @@ class DocsMerger:
             if "openapi" in result:
                 openapi_path = result["openapi"]
                 # Check if openapi path starts with swagger/
-                if openapi_path.startswith("swagger/"):
+                if isinstance(openapi_path, str) and openapi_path.startswith("swagger/"):
                     # Extract the path after swagger/
                     swagger_file = openapi_path[8:]  # Remove 'swagger/' prefix
-                    
+
                     # Check if it already has version by looking for known version patterns
                     path_parts = swagger_file.split('/')
                     if len(path_parts) >= 2:
@@ -793,10 +793,17 @@ class DocsMerger:
                             pass
                         else:
                             # No version, add it
-                            result["openapi"] = f"swagger/{version}/{swagger_file}"
+                            openapi_path = f"swagger/{version}/{swagger_file}"
                     else:
                         # No version subdirectory, add it
-                        result["openapi"] = f"swagger/{version}/{swagger_file}"
+                        openapi_path = f"swagger/{version}/{swagger_file}"
+
+                    # Convert to object form with source and directory
+                    if is_latest:
+                        directory = "api-reference"
+                    else:
+                        directory = f"{version}/api-reference"
+                    result["openapi"] = {"source": openapi_path, "directory": directory}
             
             return result
 
