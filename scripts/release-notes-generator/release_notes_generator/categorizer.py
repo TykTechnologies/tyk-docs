@@ -24,10 +24,43 @@ _FIX_VERSION_TO_COMPONENT: dict[str, str] = {
 }
 
 
+# Patterns in the ticket summary that indicate "Changed" regardless of issue type.
+# These are updates/upgrades, not new features.
+_CHANGED_PATTERNS = [
+    "update ",
+    "upgrade ",
+    "bump ",
+    "migrate ",
+    "rename ",
+    "replace ",
+    " to go ",
+    " to golang ",
+]
+
+
 def categorize_ticket(ticket: Ticket) -> str:
+    """Map a ticket to a changelog category.
+
+    Uses Jira issue type as the primary signal, with keyword-based
+    overrides for common patterns (e.g., "Update X to Go 1.25" is
+    "Changed" even if the Jira type is Story).
+    """
     if ticket.issue_type.lower() in ("security", "vulnerability"):
         return "Security Fixes"
+
     category = ISSUE_TYPE_TO_CATEGORY.get(ticket.issue_type, "Changed")
+
+    # Override: tickets whose summary indicates an update/upgrade
+    # should be "Changed", not "Added" (even if they're Stories).
+    if category == "Added":
+        summary_lower = ticket.summary.lower()
+        if any(pattern in summary_lower for pattern in _CHANGED_PATTERNS):
+            category = "Changed"
+            logger.debug(
+                "Ticket %s reclassified Added -> Changed (summary matches update pattern)",
+                ticket.key,
+            )
+
     logger.debug("Ticket %s (type=%s) -> '%s'", ticket.key, ticket.issue_type, category)
     return category
 

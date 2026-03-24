@@ -1,8 +1,8 @@
 from release_notes_generator.categorizer import categorize_ticket, group_tickets_by_component, infer_component_from_fix_version
 from release_notes_generator.models import Ticket
 
-def _t(key="TT-1", issue_type="Bug", components=None):
-    return Ticket(key=key, summary=f"Test {key}", issue_type=issue_type, components=components or [])
+def _t(key="TT-1", issue_type="Bug", components=None, summary=None):
+    return Ticket(key=key, summary=summary or f"Test {key}", issue_type=issue_type, components=components or [])
 
 class TestCategorizeTicket:
     def test_bug(self): assert categorize_ticket(_t(issue_type="Bug")) == "Fixed"
@@ -12,6 +12,31 @@ class TestCategorizeTicket:
     def test_improvement(self): assert categorize_ticket(_t(issue_type="Improvement")) == "Changed"
     def test_security(self): assert categorize_ticket(_t(issue_type="Security")) == "Security Fixes"
     def test_unknown(self): assert categorize_ticket(_t(issue_type="X")) == "Changed"
+
+    # Keyword override tests: Stories that are really "Changed".
+    def test_update_go_story_becomes_changed(self):
+        t = _t(issue_type="Story", summary="Update Dashboard to Go 1.25")
+        assert categorize_ticket(t) == "Changed"
+
+    def test_upgrade_story_becomes_changed(self):
+        t = _t(issue_type="Story", summary="Upgrade Redis client library")
+        assert categorize_ticket(t) == "Changed"
+
+    def test_bump_story_becomes_changed(self):
+        t = _t(issue_type="Story", summary="Bump Go version to 1.25")
+        assert categorize_ticket(t) == "Changed"
+
+    def test_replace_story_becomes_changed(self):
+        t = _t(issue_type="Story", summary="Replace legacy auth module")
+        assert categorize_ticket(t) == "Changed"
+
+    def test_real_feature_story_stays_added(self):
+        t = _t(issue_type="Story", summary="Add support for OpenAPI 3.1")
+        assert categorize_ticket(t) == "Added"
+
+    def test_bug_not_affected_by_keyword_override(self):
+        t = _t(issue_type="Bug", summary="Update breaks on restart")
+        assert categorize_ticket(t) == "Fixed"
 
 class TestInferComponentFromFixVersion:
     def test_portal(self): assert infer_component_from_fix_version("Tyk Portal 1.17.1") == "Tyk Portal"
