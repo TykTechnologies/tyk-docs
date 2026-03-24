@@ -229,7 +229,7 @@ def main():
         jira = JiraClient()
         if args.all_products:
             tickets = jira.fetch_tickets(args.fix_version)
-            groups = group_tickets_by_component(tickets)
+            groups = group_tickets_by_component(tickets, fix_version=args.fix_version)
         else:
             comp = get_component_for_product(args.product)
             tickets = jira.fetch_tickets(args.fix_version, comp)
