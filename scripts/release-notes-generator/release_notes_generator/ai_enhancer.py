@@ -13,43 +13,91 @@ from release_notes_generator.models import ChangelogEntry, Ticket
 
 logger = logging.getLogger(__name__)
 
+# Real examples extracted from tyk-docs gateway.mdx release notes.
+# These show the exact style, structure, and tone used in production.
 EXAMPLE_ENTRIES = """
-Example 1 (Bug fix):
-<summary>Fixed Gateway panic and SSE streaming issue with OpenTelemetry</summary>
+Example 1 — Bug fix (explains broken -> impact -> fixed):
 
-Resolved a bug that prevented upstream server-sent events (SSE) from being sent when OpenTelemetry was enabled, and fixed a gateway panic that occurred when detailed recording was active while SSE was in use. This ensures stable SSE streaming in configurations with OpenTelemetry.
+SUMMARY: Fixed Gateway Panic if HashiCorp Vault Path Not Found
+DETAIL: Resolved an issue where the Gateway could crash with a panic if the API definition contained an illegal reference to a secret in HashiCorp Vault. If the requested path did not exist in Vault, this could cause the Gateway process to exit, resulting in a complete service outage during API loads, hot reloads, or Dashboard saves. The Gateway now gracefully handles the missing Vault path and logs a clear error message.
 
-Example 2 (Bug fix):
-<summary>Request size limit middleware would block any request without a payload (for example GET, DELETE)</summary>
+Example 2 — Bug fix (multi-paragraph with technical detail):
 
-Resolved a problem in the request size limit middleware that caused GET and DELETE requests to fail validation. The middleware incorrectly expected a request body (payload) for these methods and blocked them when none was present.
+SUMMARY: Fixed Certificate Re-use After Swapping in Multi-Auth Keys
+DETAIL: Resolved an issue where swapping certificates in multi-auth (mTLS + Basic auth) keys prevented the original certificate from being reused. Previously, when updating a key's certificate, the original certificate remained incorrectly associated with the key internally, causing "key with given certificate already found" errors when attempting to reuse that certificate.
 
-Example 3 (New feature):
-<summary>Tyk Now Supports RSA-PSS Signed JWTs</summary>
+Tyk now properly detaches certificates during key updates, allowing certificates to be freely reused across different keys after being removed from their original association.
 
-Tyk now supports RSA-PSS signed JWTs (PS256, PS384, PS512), enhancing security while maintaining backward compatibility with RS256. No configuration changes are needed — just use RSA public keys, and Tyk will validate both algorithms seamlessly.
+Example 3 — Feature with config details and bullet list:
+
+SUMMARY: Added Client Certificate-Token Binding for Auth Token APIs
+DETAIL: This release introduces the ability to bind client certificates to Auth Tokens for APIs secured with a static mTLS allow list. This provides enhanced token security by ensuring tokens are only used with their associated certificates:
+
+- Added a new `mtls_static_certificate_bindings` field to the session object, which accepts a list of one or more certificate IDs.
+- Enforces that the certificate presented in the request matches the bound certificate IDs; otherwise, the request is rejected.
+- Supports binding multiple client certificates to a single key (token) to facilitate certificate rotation.
+
+This feature maintains full backward compatibility with existing keys that do not specify certificate bindings.
+
+Example 4 — Feature with new config option:
+
+SUMMARY: Configurable Gateway-Default JWKS Cache Timeout
+DETAIL: The Gateway default JWKS cache validity period is now configurable via a new option in the Gateway config file: `jwks.cache.timeout` or the equivalent environment variable. If not set, the timeout continues to default to 240 seconds. This simplifies JWKS cache management across large API deployments while providing flexibility for APIs that require specific caching behaviors.
+
+Example 5 — Changed/Updated (dependency bump, keep short):
+
+SUMMARY: Updated Gateway to Go 1.25
+DETAIL: Updated the Tyk Gateway to use Go 1.25, ensuring compatibility with the latest Go runtime features and reducing exposure to potential security vulnerabilities in older versions.
+
+Example 6 — Security fix:
+
+SUMMARY: Security Vulnerabilities Fixed
+DETAIL: Addressed CVEs reported in dependent libraries, providing increased protection against security vulnerabilities.
 """.strip()
 
-SYSTEM_PROMPT = f"""You are a technical writer for Tyk, an API gateway platform.
-Your job is to transform Jira ticket information into polished, user-facing changelog entries for release notes.
+SYSTEM_PROMPT = f"""You are a technical writer for Tyk Technologies. You write changelog entries for the tyk-docs release notes.
 
-Style guidelines:
-- Write in third person, professional tone
-- Be concise: the summary line should be a clear, actionable title (1 short sentence)
-- The detail text should be 2-4 sentences explaining what changed and why it matters to users
-- Use "Resolved", "Fixed", "Added", "Improved" etc. as appropriate
-- Do NOT include the Jira ticket key in the text
-- Do NOT use marketing language or exclamation marks
-- Focus on the user impact, not the internal implementation details
-- If the ticket is a bug fix, explain what was broken and how it's now fixed
+Your job: transform Jira ticket data into a polished, user-facing changelog entry.
 
-Here are examples of well-written entries:
+## Writing Style (from real Tyk release notes)
+
+**Voice & Tone:**
+- Professional, technically precise, third person
+- Use "we" for Tyk actions ("We've introduced..."), "you/users" for customer actions ("You can now...")
+- Start titles with past-tense action verbs: "Added", "Fixed", "Resolved", "Improved", "Optimized", "Updated", "Restructured"
+- No marketing language. No exclamation marks. No "we are excited/delighted".
+
+**Bug Fixes — always follow this structure:**
+1. State what was broken ("Resolved an issue where...")
+2. Explain the user impact ("Previously, ... causing...")
+3. State what's fixed now ("The Gateway now...", "Tyk now properly...")
+
+**Features — include these when relevant:**
+- What was added and why it matters to users
+- New configuration options with their names in backticks (e.g., `enable_config_inspection`)
+- Bullet lists for multi-point features (use markdown `-` bullets)
+- Default values and backward compatibility ("disabled by default", "maintains full backward compatibility")
+
+**Changed/Updated entries:**
+- Keep short (1-2 sentences)
+- Focus on what changed and why
+
+**Formatting rules:**
+- Use backticks for: config fields, environment variables, HTTP status codes (`HTTP 504`), API endpoints, header names
+- Multi-paragraph entries: use actual newlines between paragraphs
+- Bullet lists: use `- ` prefix per item
+- Do NOT include the Jira ticket key (e.g., TT-12345) in the text
+- Do NOT wrap output in markdown fences
+
+## Examples
 
 {EXAMPLE_ENTRIES}
 
-Return your response in exactly this format (no markdown fences, no extra text):
-SUMMARY: <the summary line text>
-DETAIL: <the detail paragraph text>
+## Output Format
+
+Return EXACTLY this format. DETAIL can be multi-line:
+SUMMARY: <title in past tense, 3-12 words>
+DETAIL: <body text, can be multiple paragraphs, can include bullet lists>
 """
 
 
@@ -87,29 +135,66 @@ class AIEnhancer:
         summaries = "\n".join(f"- [{e.category}] {e.summary_line}" for e in entries)
         try:
             msg = self.client.messages.create(
-                model=self.model, max_tokens=300,
-                system="You are a technical writer for Tyk API Gateway. Write a brief Release Highlights section (2-4 sentences) summarizing the most important changes. Focus on user impact. Be concise and professional. Do not use bullet points. Do not start with 'This release'.",
+                model=self.model, max_tokens=500,
+                system=(
+                    "You are a technical writer for Tyk Technologies. "
+                    "Write a Release Highlights section for the release notes. "
+                    "Use bold subsection headers like **Feature Name** followed by 1-2 paragraphs when there are significant features. "
+                    "For patch releases with mostly bug fixes, write 2-3 concise sentences instead. "
+                    "Focus on user impact. Be concise and professional. "
+                    "Do not start with 'This release'. "
+                    "End with: 'For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-vVERSION) below.' "
+                    "(replace VERSION with the actual version)."
+                ),
                 messages=[{"role": "user", "content": f"Changelog entries:\n{summaries}"}])
             return msg.content[0].text.strip()
         except Exception:
             logger.exception("Failed to generate release highlights")
-            return 'This release focuses mainly on bug fixes. For a comprehensive list of changes, please refer to the detailed [changelog]({{< ref "#Changelog-vVERSION">}}) below.'
+            return 'This release focuses mainly on bug fixes. For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-vVERSION) below.'
 
     def _call_api(self, ticket: Ticket, category: str) -> tuple[str, str]:
-        parts = [f"Jira ticket: {ticket.key}", f"Issue type: {ticket.issue_type}", f"Category: {category}", f"Summary: {ticket.summary}"]
+        parts = [
+            f"Jira ticket: {ticket.key}",
+            f"Issue type: {ticket.issue_type}",
+            f"Category: {category}",
+            f"Summary: {ticket.summary}",
+        ]
         if ticket.has_release_notes:
             parts.append(f"Release Notes field: {ticket.release_notes_text}")
         if ticket.description:
-            parts.append(f"Description: {ticket.description[:1000]}")
+            parts.append(f"Description: {ticket.description[:2000]}")
         if ticket.is_breaking:
             parts.append(f"Breaking Change: {ticket.breaking_change}")
-        msg = self.client.messages.create(model=self.model, max_tokens=500, system=SYSTEM_PROMPT, messages=[{"role": "user", "content": "\n".join(parts)}])
+        msg = self.client.messages.create(
+            model=self.model, max_tokens=800,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": "\n".join(parts)}],
+        )
         text = msg.content[0].text.strip()
-        summary_line = detail_text = ""
+        return self._parse_response(text, ticket)
+
+    @staticmethod
+    def _parse_response(text: str, ticket: Ticket) -> tuple[str, str]:
+        """Parse the SUMMARY/DETAIL response format.
+
+        DETAIL can be multi-line — everything after the DETAIL: prefix
+        until the end of the response.
+        """
+        summary_line = ""
+        detail_lines: list[str] = []
+        in_detail = False
+
         for line in text.split("\n"):
-            line = line.strip()
-            if line.upper().startswith("SUMMARY:"):
-                summary_line = line[8:].strip()
-            elif line.upper().startswith("DETAIL:"):
-                detail_text = line[7:].strip()
+            stripped = line.strip()
+            if stripped.upper().startswith("SUMMARY:"):
+                summary_line = stripped[8:].strip()
+                in_detail = False
+            elif stripped.upper().startswith("DETAIL:"):
+                detail_lines.append(stripped[7:].strip())
+                in_detail = True
+            elif in_detail:
+                detail_lines.append(line.rstrip())
+
+        detail_text = "\n".join(detail_lines).strip()
+
         return summary_line or ticket.summary, detail_text or ticket.best_text
