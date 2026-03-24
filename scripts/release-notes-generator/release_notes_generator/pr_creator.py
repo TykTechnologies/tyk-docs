@@ -28,11 +28,15 @@ class PRCreator:
         self._run_git("fetch", "origin", self.target_branch)
 
         # Create feature branch from the remote target branch.
+        # If the branch already exists (previous run), delete and recreate
+        # to avoid duplicating content from the prior insertion.
         try:
-            self._run_git("checkout", "-b", branch_name, f"origin/{self.target_branch}")
+            self._run_git("branch", "-D", branch_name)
+            logger.info("Deleted existing branch %s", branch_name)
         except subprocess.CalledProcessError:
-            logger.warning("Branch %s already exists, switching to it", branch_name)
-            self._run_git("checkout", branch_name)
+            pass  # Branch didn't exist, that's fine.
+
+        self._run_git("checkout", "-b", branch_name, f"origin/{self.target_branch}")
 
         logger.info("On branch: %s", branch_name)
         return branch_name
