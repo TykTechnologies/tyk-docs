@@ -46,9 +46,6 @@ def extract_semver(fix_version: str) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="release-notes-generator", description="Generate Tyk release notes from Jira tickets.")
     parser.add_argument("--fix-version", required=True, help="Jira fix version (e.g., 'Tyk 5.8.0').")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--product", choices=list(PRODUCT_ARG_TO_COMPONENT.keys()))
-    group.add_argument("--all-products", action="store_true")
     parser.add_argument("--release-date", required=True, help="'DD Month YYYY' format.")
     parser.add_argument("--repo-path", type=Path, default=None)
     parser.add_argument("--dry-run", action="store_true")
@@ -77,7 +74,7 @@ def print_config(args, semver: str) -> None:
     table.add_column(style="bold")
     table.add_row("Fix Version", args.fix_version)
     table.add_row("Semver", semver)
-    table.add_row("Product", args.product or "all products")
+    table.add_row("Product", "all (auto-detected from tickets)")
     table.add_row("Release Date", args.release_date)
     table.add_row("Mode", "[yellow]Dry Run[/yellow]" if args.dry_run else "[green]Live (PR)[/green]")
     table.add_row("AI Enhancement", "[red]Disabled[/red]" if args.no_ai else "[green]Enabled (Claude)[/green]")
@@ -227,13 +224,8 @@ def main():
     # --- Fetch from Jira ---
     with console.status("[bold cyan]Fetching tickets from Jira...[/bold cyan]"):
         jira = JiraClient()
-        if args.all_products:
-            tickets = jira.fetch_tickets(args.fix_version)
-            groups = group_tickets_by_component(tickets, fix_version=args.fix_version)
-        else:
-            comp = get_component_for_product(args.product)
-            tickets = jira.fetch_tickets(args.fix_version, comp)
-            groups = {comp: tickets} if tickets else {}
+        tickets = jira.fetch_tickets(args.fix_version)
+        groups = group_tickets_by_component(tickets, fix_version=args.fix_version)
 
     if not groups:
         console.print("[red]No tickets found. Check the fix version and try again.[/red]")
@@ -244,13 +236,12 @@ def main():
     print_tickets_summary(groups)
 
     # --- Prepare branch ---
-    product_label = args.product or "all"
     pr_creator = None
     branch_name = None
     if not args.dry_run:
         with console.status("[bold cyan]Preparing git branch...[/bold cyan]"):
             pr_creator = PRCreator(repo_path)
-            branch_name = pr_creator.prepare_branch(product_label, semver)
+            branch_name = pr_creator.prepare_branch("release", semver)
         console.print(f"[green]  Branch: {branch_name}[/green]")
 
     # --- Generate for each product ---
@@ -275,7 +266,7 @@ def main():
 
     # Build a human-readable product name for the PR title.
     # e.g., "Gateway, Dashboard" or "Portal"
-    products_title = ", ".join(processed_products) if processed_products else product_label.title()
+    products_title = ", ".join(processed_products) if processed_products else "Tyk"
 
     # --- Create PR ---
     if not args.dry_run and modified_files and pr_creator and branch_name:

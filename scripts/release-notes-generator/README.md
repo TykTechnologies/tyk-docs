@@ -33,15 +33,13 @@ export TYK_JIRA_API_TOKEN="your-token"
 # Preview (dry run, no PR created)
 python3 -m release_notes_generator \
   --fix-version "Tyk 5.13.0" \
-  --product dashboard \
   --release-date "24 March 2026" \
   --dry-run
 
-# Generate for all products and create a PR
+# Generate and create a PR
 export GITHUB_TOKEN="your-github-token"
 python3 -m release_notes_generator \
-  --fix-version "Tyk 5.13.0" \
-  --all-products \
+  --fix-version "Tyk Portal 1.17.1" \
   --release-date "24 March 2026"
 ```
 
@@ -50,13 +48,13 @@ python3 -m release_notes_generator \
 | Flag | Description |
 |---|---|
 | `--fix-version` | Jira fix version name (e.g., `"Tyk 5.13.0"`, `"Tyk Portal 1.17.1"`) |
-| `--product` | Single product: `gateway`, `dashboard`, `mdcb`, `pump`, `operator`, `sync`, `portal`, `helm` |
-| `--all-products` | Generate for all products that have tickets |
 | `--release-date` | Release date in `"DD Month YYYY"` format |
 | `--dry-run` | Print output to terminal, don't modify files or create PR |
 | `--no-ai` | Skip Claude AI enhancement, use raw Jira data |
 | `--repo-path` | Path to tyk-docs repo root (auto-detected if omitted) |
 | `--verbose` | Enable debug logging |
+
+Products are auto-detected from the tickets' Jira components. All matching products are processed in a single run.
 
 ## Supported Products
 
@@ -106,7 +104,6 @@ Trigger manually from **Actions > Generate Release Notes > Run workflow**.
 
 Inputs:
 - **Fix Version**: e.g., `Tyk 5.13.0` or `Tyk Portal 1.17.1`
-- **Product**: `all`, `gateway`, `dashboard`, `portal`, etc.
 - **Release Date**: e.g., `24 March 2026`
 
 ### Required Secrets
