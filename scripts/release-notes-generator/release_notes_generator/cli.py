@@ -256,6 +256,7 @@ def main():
     # --- Generate for each product ---
     modified_files: list[Path] = []
     all_keys: list[str] = []
+    processed_products: list[str] = []
 
     for comp_name, comp_tickets in groups.items():
         product_arg = next((a for a, c in PRODUCT_ARG_TO_COMPONENT.items() if c == comp_name), None)
@@ -269,17 +270,22 @@ def main():
         )
         if path:
             modified_files.append(path)
+            processed_products.append(get_product_config(product_arg).label)
         all_keys.extend(t.key for t in comp_tickets)
+
+    # Build a human-readable product name for the PR title.
+    # e.g., "Gateway, Dashboard" or "Portal"
+    products_title = ", ".join(processed_products) if processed_products else product_label.title()
 
     # --- Create PR ---
     if not args.dry_run and modified_files and pr_creator and branch_name:
         with console.status("[bold cyan]Pushing and creating PR...[/bold cyan]"):
             pr_creator.commit_and_push(
                 branch_name, modified_files,
-                f"docs: Add release notes for {product_label.title()} v{semver}",
+                f"docs: Add release notes for {products_title} v{semver}",
             )
             pr_url = pr_creator.create_pr(
-                branch_name=branch_name, product=product_label,
+                branch_name=branch_name, product=products_title,
                 version=semver, ticket_keys=all_keys,
             )
 
