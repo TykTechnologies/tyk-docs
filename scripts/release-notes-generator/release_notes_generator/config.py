@@ -15,12 +15,25 @@ class ProductConfig:
 
 
 COMPONENT_TO_PRODUCT: dict[str, ProductConfig] = {
+    # Gateway — two component names used in Jira.
     "Tyk Gateway": ProductConfig(file="gateway.mdx", docker="tykio/tyk-gateway", label="Gateway", source_repo="TykTechnologies/tyk"),
+    "Gateway": ProductConfig(file="gateway.mdx", docker="tykio/tyk-gateway", label="Gateway", source_repo="TykTechnologies/tyk"),
+    # Dashboard.
     "Tyk Dashboard": ProductConfig(file="dashboard.mdx", docker="tykio/tyk-dashboard", label="Dashboard"),
+    # MDCB — two component names.
     "MDCB": ProductConfig(file="mdcb.mdx", docker="tykio/tyk-mdcb-docker", label="MDCB"),
+    "Tyk MDCB": ProductConfig(file="mdcb.mdx", docker="tykio/tyk-mdcb-docker", label="MDCB"),
+    # Pump.
     "Tyk Pump": ProductConfig(file="pump.mdx", docker="tykio/tyk-pump-docker-pub", label="Pump", source_repo="TykTechnologies/tyk-pump"),
+    # Operator.
     "Tyk Operator": ProductConfig(file="operator.mdx", docker=None, label="Operator"),
+    # Sync.
     "Tyk Sync": ProductConfig(file="sync.mdx", docker=None, label="Sync"),
+    # Portal (Enterprise Developer Portal).
+    "Tyk Portal": ProductConfig(file="portal.mdx", docker="tykio/portal", label="Portal"),
+    "Tyk Portal (old)": ProductConfig(file="portal.mdx", docker="tykio/portal", label="Portal"),
+    # Helm Charts.
+    "Tyk Charts": ProductConfig(file="helm-chart.mdx", docker=None, label="Helm Chart"),
 }
 
 PRODUCT_ARG_TO_COMPONENT: dict[str, str] = {
@@ -30,6 +43,8 @@ PRODUCT_ARG_TO_COMPONENT: dict[str, str] = {
     "pump": "Tyk Pump",
     "operator": "Tyk Operator",
     "sync": "Tyk Sync",
+    "portal": "Tyk Portal",
+    "helm": "Tyk Charts",
 }
 
 ISSUE_TYPE_TO_CATEGORY: dict[str, str] = {
