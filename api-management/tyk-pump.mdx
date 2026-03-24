@@ -18,7 +18,6 @@ The Tyk Pump is our [open source](https://github.com/TykTechnologies/tyk-pump) a
 The Tyk Pump is not currently configurable in our Tyk Cloud solution.
 </Note>
 
-
 ### Tyk Pump Data Flow
 
 Here's the architecture depending on your deployment model:
@@ -1350,6 +1349,217 @@ Future expiry date.
 **Remarks:** Can be used to implement automated data expiry, if supported by storage.<br/>
 **Example:** `2022-11-23T07:26:25.762+00:00`.
 
+
+## API Traffic Logs
+
+<Badge color="orange">Gateway Only</Badge>
+
+API Traffic logs (also called Traffic Analytics) are comprehensive records of all API requests processed by Tyk Gateway. They capture detailed information about each request and response for analysis and reporting purposes.
+
+<Note>
+API Traffic logs are not written to stdout/stderr, unlike application and access logs. Instead, they are stored in Redis, then processed and forwarded by Tyk Pump to configured data sinks, such as databases or other external tools.
+</Note>
+
+### How API Traffic Logging Works
+
+```mermaid
+graph LR
+    A[Client Request] -->|Request received| B[Tyk Gateway]
+    B -->|Forward request| U[Upstream Service]
+
+    B -->|Generate API Traffic Log| C[Redis]
+
+    C -->|Tyk Pump reads logs| D[Tyk Pump]
+    D -->|Forward to data sinks| E[Persistent Storage]
+    D -->|Generate aggregated stats| F[Aggregate Pumps]
+    F -->|Store aggregated stats| E
+```
+
+When a client makes a request to the Tyk Gateway, the details of the request and response are captured and stored in Redis.
+
+Tyk Pump reads the API traffic records from Redis every 10 seconds and then flushes them after processing. It processes the records and forwards them to the configured data sinks, such as databases or other external tools.
+
+You can configure multiple pumps to send different types of data to different sinks. This setup allows you to route raw or processed analytics data wherever you need it.
+
+The Mongo Aggregate Pump and SQL Aggregate Pump aggregate raw analytics records before storing the summarized statistics in MongoDB or SQL databases. When you use Tyk Dashboard, the [Aggregate Pump](/api-management/tyk-pump#tyk-dashboard) collates this aggregated data and displays it in the [analytics UI](/api-management/dashboard-configuration#traffic-analytics).
+
+### Configure API Traffic Logs
+
+You can enable API traffic logging at the Gateway level by setting the [`enable_analytics`](/tyk-oss-gateway/configuration#enable-analytics) field in the configuration file or by defining the equivalent environment variable, `TYK_GW_ENABLEANALYTICS`.
+
+To prevent transaction records from being generated for specific endpoints, enable the [do-not-track middleware](/api-management/traffic-transformation/do-not-track) on those endpoints. This approach gives you fine-grained control over request tracking.
+
+For a complete list of analytics configuration options available in the Gateway, refer to the [analytics configuration reference documentation](/tyk-oss-gateway/configuration#analytics-config).
+
+<Note>
+To use analytics in the Tyk Dashboard, configure both per-request and aggregated pumps for your chosen database platform. For step-by-step guidance, see the [Setup Dashboard Analytics](/tyk-oss-gateway/configuration#analytics-config) section.
+</Note>
+### Configure Detailed Recording
+
+By default, the Tyk Gateway does **not** include request and response payloads in API traffic logs. This behavior keeps log records small and reduces the risk of capturing sensitive data.
+
+You can configure Tyk Gateway to capture request and response payloads in the API traffic log when required. Tyk refers to this capability as **detailed recording**. 
+
+You can enable it at different levels of granularity, following this order of precedence:
+
+1. [API level](/api-management/logs-metrics#configure-at-api-level)
+2. [Key level](/api-management/logs-metrics#configure-at-key-level)
+3. [Gateway level](/api-management/logs-metrics#configure-at-gateway-level)
+
+<Note>
+- Be aware that enabling detailed recording increases the size of the records and will require more storage space, as Tyk will store the entire request and response in wire format.
+- Tyk Cloud users can enable detailed recording per-API following the instructions on this page or, if required at the Gateway level, via a support request. The traffic logs are subject to the subscription's storage quota, so we recommend enabling detailed logging only if necessary to avoid unnecessary costs.
+</Note>
+
+<Tabs>
+<Tab title="API Level">
+
+You can enable detailed recording for an individual API by setting the [server.detailedActivityLogs.enabled](/api-management/gateway-config-tyk-oas#detailedactivitylogs) flag within the Tyk Vendor Extension.
+
+In the Dashboard UI, you can configure detailed recording using the **Record payload in traffic logs** option in the API Designer.
+
+<img src="/img/dashboard/api-designer/tyk-oas-detailed-logs.png" alt="Enabling detailed activity logs for a Tyk OAS API" />
+
+**Tyk Classic APIs**
+
+When working with Tyk Classic APIs, you should configure the equivalent `enable_detailed_recording` flag in the root of the API definition.
+
+In the Tyk Classic API Designer, the **Enable Detailed Logging** option can be found in **Core Settings**.
+
+<img src="/img/dashboard/endpoint-designer/classic-detailed-logging.png" alt="Enabling detailed activity logs for a Tyk Classic API" />
+When using Tyk Operator with Tyk Classic APIs, you can enable detailed recording by setting `spec.enable_detailed_recording` to `true`, as in this example:
+
+```yaml {linenos=true, linenostart=1, hl_lines=["10-10"]}
+apiVersion: tyk.tyk.io/v1alpha1
+kind: ApiDefinition
+metadata:
+  name: httpbin
+spec:
+  name: httpbin
+  use_keyless: true
+  protocol: http
+  active: true
+  enable_detailed_recording: true
+  proxy:
+    target_url: http://httpbin.org
+    listen_path: /httpbin
+    strip_listen_path: true
+```
+
+</Tab>
+
+<Tab title="Key Level">
+
+An alternative approach to controlling detailed recording is to enable it only for specific [access keys](/api-management/policies#what-is-a-session-object). This is particularly useful for debugging purposes, where you can configure detailed recording only for the key(s) that are reporting issues.
+
+You can enable detailed recording for a key simply by adding the following to the root of the key's JSON file:
+
+```
+"enable_detailed_recording": true
+```
+
+
+<Note>
+This will enable detailed recording only for API transactions that include this key in their requests.
+</Note>
+
+</Tab>
+
+<Tab title="Gateway Level">
+
+Detailed recording can be configured at the Gateway level, affecting all APIs deployed on the Gateway, by enabling the [detailed recording](/tyk-oss-gateway/configuration#analytics_configenable_detailed_recording) option in `tyk.conf`.
+
+```.json
+{
+    "enable_analytics": true,
+    "analytics_config": {
+        "enable_detailed_recording": true
+    }
+}
+```
+
+
+</Tab>
+
+</Tabs>
+
+### Aggregated Analytics
+
+The traffic logs generated by the Tyk Gateway are stored in the local [Redis](/api-management/logs-metrics#how-api-traffic-logging-works) temporal storage. They must be transferred to a persistent data store (such as MongoDB or PostgreSQL) for use by analytics tools, typically using Tyk Pump. Tyk Pump can also generate aggregated statistics from these data using the dedicated [Mongo Aggregate](/api-management/tyk-pump#mongodb) and [SQL Aggregate](/api-management/tyk-pump#sql) pumps. These offload processing from the Tyk Dashboard and reduce storage requirements compared to storing all raw logs.
+
+The aggregate pumps calculate statistics from the analytics records, aggregated by hour, for the following keys in the traffic logs:
+
+| Key            |  Analytics aggregated by         | Dashboard screen                                            |
+| :---------------- | :---------------------------------- | :------------------------------------------------------------- |
+| `APIID`        | API proxy                        | [Activity by API](/api-management/dashboard-configuration#activity-by-api)           |
+| `TrackPath`    | API endpoint                     | [Activity by endpoint](/api-management/dashboard-configuration#activity-by-endpoint) |
+| `ResponseCode` | HTTP status code (success/error) | [Activity by errors](/api-management/dashboard-configuration#activity-by-error)      |
+| `APIVersion`   | API version                      | n/a                                                         |
+| `APIKey`       | Client access key/token          | [Activity by Key](/api-management/dashboard-configuration#activity-by-key)           |
+| `OauthID`      | OAuth client (if OAuth used)     | [Traffic per OAuth Client](/api-management/dashboard-configuration#activity-by-oauth-client) |
+| `Geo`          | Geographic location of client    | [Activity by location](/api-management/dashboard-configuration#activity-by-location) |
+
+#### Custom Aggregation Keys
+
+Whereas Tyk Pump will automatically produce aggregated statistics for the keys in the previous section, you can also define custom aggregation keys using Tyk's custom analytics tag feature, which identifies specific HTTP request headers to be used as aggregation keys. This has various uses, for example
+
+- You need to record additional information from the request into the analytics but want to avoid [detailed logging](/api-management/logs-metrics#capturing-detailed-logs) due to the volume of traffic logs. 
+- You wish to track a group of API requests, for example:
+  - Show me all API requests where `tenant-id=123`
+  - Show me all API requests where `user-group=abc`
+
+The Traffic Log middleware is applied to all endpoints in the API and so configuration is found in the `middleware.global` section of the Tyk Vendor Extension, within the `trafficLogs` section. Custom aggregation tags are specified as a list of HTTP headers in [middleware.global.trafficLogs.tagHeaders](/api-management/gateway-config-tyk-oas#trafficlogs) that Tyk should use for generation of custom aggregation tags for the API.
+
+For example if we include the header name `x-user-id` in the list of headers, then Tyk will create an aggregation key for each different value observed in that header. These aggregation keys will be given the name `<header_name>-<header_value>`, for example `x-user-id-1234` if the request contains the HTTP header `"x-user-id":1234`.
+
+**Tyk Classic APIs**
+
+If you are using Tyk Classic APIs, then the equivalent field in the API definition is [tag_headers](/api-management/gateway-config-tyk-classic#traffic-logs).
+
+In the Tyk Classic API Designer, the **Tag Headers** option can be found in **Advanced Options**.
+
+<img src="/img/custom-analytics-tags/tag-headers.png" alt="Tag Headers" />
+
+When using Tyk Operator with Tyk Classic APIs, you can configure custom analytics tags by setting `spec.tag_headers` to `true`, as in this example:
+
+```yaml {linenos=true, linenostart=1, hl_lines=["10-12"]}
+apiVersion: tyk.tyk.io/v1alpha1
+kind: ApiDefinition
+metadata:
+  name: httpbin-tag-headers
+spec:
+  name: httpbin-tag-headers
+  use_keyless: true
+  protocol: http
+  active: true
+  tag_headers:
+  - Host
+  - User-Agent
+  proxy:
+    target_url: http://httpbin.org
+    listen_path: /httpbin-tag-headers
+    strip_listen_path: true
+```
+
+In this example we can see that the `Host` and `User-Agent` headers exist within the `tag_headers` array. For each incoming request, Tyk will add `host-<header_value>` and `user-agent-<header_value>` tags to the traffic log.
+
+**Suppressing generation of aggregates for custom keys**
+
+If you don't want or need aggregated analytics for the headers you record with `tagHeaders`, you can configure Tyk Pump (or Tyk MDCB if it is performing the pump functionality) to discard those statistics when writing to the persistent analytics store.
+
+For both cases, you add the tags you want to ignore, or their prefixes, to the `ignore_tag_prefix_list` field in the appropriate configuration file or environment variable:
+
+- [Hybrid Pump config](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables#pumpshybridmetaignore_tag_prefix_list)
+- [Mongo Pump config](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables#pumpsmongoaggregatemetaignore_tag_prefix_list)
+- [Splunk Pump config](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables#pumpssplunkmetaignore_tag_prefix_list)
+- [SQL Pump config](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables#pumpssqlaggregatemetaignore_tag_prefix_list)
+- [MDCB config](/tyk-multi-data-centre/mdcb-configuration-options#ignore_tag_prefix_list)
+
+<Note>
+If you add headers to the tags list that are unique to each request, such as a timestamp or unique request Id, then Tyk Gateway will essentially create an aggregation point _per request_ and the number of these tags in an hour will be equal to the number of requests. Since there's no real value in aggregating something that has a total of one, we recommend that you add such headers to the ignore list.
+</Note>
+
+
 ## Monitor your APIs with Prometheus
 
 Your Tyk Pump can expose Prometheus metrics for the requests served by your Tyk Gateway. This is helpful if you want to track how often your APIs are being called and how they are performing. Tyk collects latency data of how long your services take to respond to requests, how often your services are being called and what status code they return.
@@ -1567,7 +1777,7 @@ We'll show you how to setup Tyk Pump for Prometheus Service Discovery.
     PromOperator_Release=prometheus-stack
     Prometheus_Custom_Metrics='[{"name":"tyk_http_requests_total"\,"description":"Total of API requests"\,"metric_type":"counter"\,"labels":["response_code"\,"api_name"\,"method"\,"api_key"\,"alias"\,"path"]}\,          {              "name":"tyk_http_latency"\,              "description":"Latency of API requests"\,              "metric_type":"histogram"\,              "labels":["type"\,"response_code"\,"api_name"\,"method"\,"api_key"\,"alias"\,"path"]          }]'
 
-    helm upgrade tyk-redis oci://registry-1.docker.io/bitnamicharts/redis -n $NAMESPACE --create-namespace --install --version $REDIS_BITNAMI_CHART_VERSION
+    helm upgrade tyk-redis oci://registry-1.docker.io/bitnamicharts/redis -n $NAMESPACE --create-namespace --install --version $REDIS_BITNAMI_CHART_VERSION --set image.repository=bitnamilegacy/redis
 
     helm upgrade tyk-oss tyk-helm/tyk-oss -n $NAMESPACE --create-namespace \
     --install \
@@ -1649,7 +1859,7 @@ For Custom Metrics, commas are escaped to be used in helm --set command. You can
     PromOperator_Release=prometheus-stack
     Prometheus_Custom_Metrics='[{"name":"tyk_http_requests_total"\,"description":"Total of API requests"\,"metric_type":"counter"\,"labels":["response_code"\,"api_name"\,"method"\,"api_key"\,"alias"\,"path"]}\,          {              "name":"tyk_http_latency"\,              "description":"Latency of API requests"\,              "metric_type":"histogram"\,              "labels":["type"\,"response_code"\,"api_name"\,"method"\,"api_key"\,"alias"\,"path"]          }]'
 
-    helm upgrade tyk-redis oci://registry-1.docker.io/bitnamicharts/redis -n $NAMESPACE --create-namespace --install --version $REDIS_BITNAMI_CHART_VERSION
+    helm upgrade tyk-redis oci://registry-1.docker.io/bitnamicharts/redis -n $NAMESPACE --create-namespace --install --version $REDIS_BITNAMI_CHART_VERSION --set image.repository=bitnamilegacy/redis
 
     helm upgrade tyk-oss tyk-helm/tyk-oss -n $NAMESPACE --create-namespace \
     --install \
