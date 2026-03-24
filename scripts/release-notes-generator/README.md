@@ -14,8 +14,11 @@ Jira (Tyk AI Gateway)          Claude AI                    tyk-docs
        |                           |                           |
   2. Categorize               4. Generate release         6. Create PR
      Bug -> Fixed                highlights summary
-     Story -> Added
+     Story -> Added*
      Task -> Changed
+
+  * Stories with update/upgrade keywords
+    are reclassified as Changed
 ```
 
 ## Quick Start
@@ -46,8 +49,8 @@ python3 -m release_notes_generator \
 
 | Flag | Description |
 |---|---|
-| `--fix-version` | Jira fix version name (e.g., `"Tyk 5.13.0"`) |
-| `--product` | Single product: `gateway`, `dashboard`, `mdcb`, `pump`, `operator`, `sync` |
+| `--fix-version` | Jira fix version name (e.g., `"Tyk 5.13.0"`, `"Tyk Portal 1.17.1"`) |
+| `--product` | Single product: `gateway`, `dashboard`, `mdcb`, `pump`, `operator`, `sync`, `portal`, `helm` |
 | `--all-products` | Generate for all products that have tickets |
 | `--release-date` | Release date in `"DD Month YYYY"` format |
 | `--dry-run` | Print output to terminal, don't modify files or create PR |
@@ -55,13 +58,55 @@ python3 -m release_notes_generator \
 | `--repo-path` | Path to tyk-docs repo root (auto-detected if omitted) |
 | `--verbose` | Enable debug logging |
 
+## Supported Products
+
+| CLI Name | Jira Component(s) | Release Notes File |
+|---|---|---|
+| `gateway` | Tyk Gateway, Gateway | gateway.mdx |
+| `dashboard` | Tyk Dashboard | dashboard.mdx |
+| `mdcb` | MDCB, Tyk MDCB | mdcb.mdx |
+| `pump` | Tyk Pump | pump.mdx |
+| `operator` | Tyk Operator | operator.mdx |
+| `sync` | Tyk Sync | sync.mdx |
+| `portal` | Tyk Portal, Tyk Portal (old) | portal.mdx |
+| `helm` | Tyk Charts | helm-chart.mdx |
+
+Tickets without a Jira component are automatically assigned based on the fix version name (e.g., `"Tyk Portal 1.17.1"` implies Portal).
+
+## Categorization Logic
+
+| Jira Issue Type | Default Category | Override |
+|---|---|---|
+| Bug | Fixed | - |
+| Story | Added | Reclassified to **Changed** if summary contains update/upgrade/bump/migrate/replace |
+| New Feature | Added | Same override as Story |
+| Task | Changed | - |
+| Improvement | Changed | - |
+| Security | Security Fixes | - |
+
+## Output Format
+
+The tool renders changelog entries using the modern tyk-docs MDX format:
+
+```mdx
+##### Added
+
+<AccordionGroup>
+
+<Accordion title='New feature title'>
+Description of the feature and its user impact.
+</Accordion>
+
+</AccordionGroup>
+```
+
 ## GitHub Action
 
 Trigger manually from **Actions > Generate Release Notes > Run workflow**.
 
 Inputs:
-- **Fix Version**: e.g., `Tyk 5.13.0`
-- **Product**: `all`, `gateway`, `dashboard`, etc.
+- **Fix Version**: e.g., `Tyk 5.13.0` or `Tyk Portal 1.17.1`
+- **Product**: `all`, `gateway`, `dashboard`, `portal`, etc.
 - **Release Date**: e.g., `24 March 2026`
 
 ### Required Secrets
@@ -79,9 +124,9 @@ release_notes_generator/
   cli.py            CLI with rich terminal UI
   config.py         Product mappings, Jira field IDs, API endpoints
   jira_client.py    Fetches tickets via Tyk AI Gateway (POST + JQL)
-  categorizer.py    Issue type -> changelog category mapping
+  categorizer.py    Issue type -> category mapping + keyword overrides
   ai_enhancer.py    Claude API for polishing entries (parallel)
-  renderer.py       Renders into tyk-docs HTML/mdx format
+  renderer.py       Renders into AccordionGroup/Accordion MDX format
   file_inserter.py  Parses existing .mdx, inserts new version section
   pr_creator.py     Git branch + commit + GitHub PR creation
   models.py         Ticket, ChangelogEntry, ReleaseSection dataclasses
