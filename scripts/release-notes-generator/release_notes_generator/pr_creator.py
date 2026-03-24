@@ -46,7 +46,7 @@ class PRCreator:
             rel_path = f.relative_to(self.repo_path)
             self._run_git("add", str(rel_path))
         self._run_git("commit", "-m", commit_message)
-        self._run_git("push", "-u", "origin", branch_name)
+        self._run_git("push", "--force-with-lease", "-u", "origin", branch_name)
 
     def create_pr(self, branch_name: str, product: str, version: str, ticket_keys: list[str]) -> str | None:
         title = f"docs: Add release notes for {product.title()} v{version}"
