@@ -1,7 +1,7 @@
 ---
 title: "Custom Metrics"
-description: "Define custom metric instruments in Tyk Gateway with your own dimensions sourced from request headers, JWT claims, session data, and more."
-keywords: "Custom Metrics, OpenTelemetry, OTLP, Dimensions, Labels, Multi-tenant, Counter, Histogram, Cardinality"
+description: "Define custom metric instruments in Tyk Gateway with your own dimensions sourced from request headers, JWT claims, session data, endpoint paths, and more."
+keywords: "Custom Metrics, OpenTelemetry, OTLP, Dimensions, Labels, Multi-tenant, Counter, Histogram, Cardinality, config_data, endpoint, listen_path"
 ---
 
 ## Custom Metrics
@@ -56,16 +56,57 @@ Histograms require a `histogram_source` field that selects which latency to meas
 
 ## Dimension Sources
 
-Dimensions (labels) on custom instruments can be sourced from six places:
+Dimensions (labels) on custom instruments can be sourced from seven places:
 
 | Source | What It Provides | Example Keys |
 |--------|-----------------|--------------|
-| `metadata` | Request metadata always in scope | `method`, `response_code`, `api_id`, `api_name`, `org_id`, `response_flag`, `ip_address`, `api_version`, `host`, `scheme` |
+| `metadata` | Request metadata always in scope | `method`, `response_code`, `api_id`, `api_name`, `org_id`, `response_flag`, `ip_address`, `api_version`, `host`, `scheme`, `listen_path`, `endpoint` |
 | `session` | Authenticated session fields | `api_key`, `oauth_id`, `alias`, `portal_app`, `portal_org` |
 | `header` | Any HTTP request header | `X-Customer-ID`, `X-Tenant-ID`, `Authorization` |
-| `context` | Tyk context variables | `jwt_claims_tier`, `request_id`, `path_parts` |
+| `context` | Tyk [context variables](/api-management/traffic-transformation/request-context-variables) | `jwt_claims_tier`, `request_id`, `path_parts` |
 | `response_header` | Any upstream response header | `X-Cache-Status`, `X-Backend-Version` |
 | `gateway` | Gateway instance metadata (set at startup) | `node_id`, `node_version`, `group_id`, `tags` |
+| `config_data` | API definition metadata from the `config_data` map | Any key set on the API definition |
+
+### config_data source
+
+The [`config_data`](/api-management/gateway-config-tyk-oas#pluginconfigdata) source reads from the `config_data` map on the API definition — a free-form key-value store you can populate per API. This is useful for attaching static API-level metadata (such as environment, team, or cost centre) to metrics without modifying request headers or JWT claims.
+
+For example, if an API definition has:
+
+```json
+{
+  "config_data": {
+    "environment": "staging",
+    "team": "platform"
+  }
+}
+```
+
+You can define a dimension `{"source": "config_data", "key": "environment"}` and the metric will carry `environment="staging"` as an attribute on every request to that API.
+
+**Fallback behaviour:** When `config_data_disabled` is `true` on the API, or the key is not present in `config_data`, the dimension falls back to the `default` value defined on the dimension. If no default is set, an empty string is used.
+
+All `config_data` values are treated as strings.
+
+### listen_path and endpoint keys
+
+Two `metadata` keys are available for path-based dimensions:
+
+**`listen_path`** — the API's configured listen path (e.g. `/api/v1/`). This is the same for every request to a given API, making it a bounded, cardinality-safe dimension.
+
+**`endpoint`** — the matched track endpoint path template (e.g. `/user/{id}`, `/tracked/get`). This is only populated when `track_endpoints` is configured on the API definition. For requests that do not match any tracked endpoint, the value is an empty string. The value is the configured path template, not the raw request URL, so cardinality is bounded by the number of configured track endpoints.
+
+Example using both keys:
+
+```json
+{
+  "dimensions": [
+    { "source": "metadata", "key": "listen_path", "label": "tyk_listen_path" },
+    { "source": "metadata", "key": "endpoint",    "label": "tyk_endpoint", "default": "unmatched" }
+  ]
+}
+```
 
 Each dimension definition has four fields:
 
