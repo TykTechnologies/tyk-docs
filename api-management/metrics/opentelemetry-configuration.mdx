@@ -9,19 +9,36 @@ sidebarTitle: "Metrics Configuration"
 
 Tyk Gateway can export metrics natively via the OpenTelemetry Protocol (OTLP). When enabled, the gateway pushes metrics to any OTLP-compatible endpoint — including Prometheus (via OTel Collector), Grafana Mimir, Datadog, New Relic, Dynatrace, and Elastic — without requiring additional components alongside Tyk.
 
-<Note>
-OpenTelemetry must be enabled at the gateway level before metrics can be exported. If you have not yet configured OpenTelemetry for distributed tracing, see [Distributed Tracing](/api-management/traces) for the base setup.
-</Note>
+Metrics can be enabled independently — distributed tracing does not need to be configured. To configure distributed tracing alongside metrics, see [Distributed Tracing](/api-management/traces).
 
 ## Quick Start
 
-If OpenTelemetry is already enabled in your gateway config, add the `metrics` block:
+### Metrics only
+
+If you only need metrics export, configure the `metrics` sub-object directly:
 
 ```json
 {
   "opentelemetry": {
-    "enabled": true,
-    "endpoint": "otel-collector:4317",
+    "metrics": {
+      "enabled": true,
+      "endpoint": "otel-collector:4317"
+    }
+  }
+}
+```
+
+### Traces and metrics together
+
+When both are configured, `metrics.endpoint` defaults to the `traces.endpoint` value if not set explicitly:
+
+```json
+{
+  "opentelemetry": {
+    "traces": {
+      "enabled": true,
+      "endpoint": "otel-collector:4317"
+    },
     "metrics": {
       "enabled": true
     }
@@ -36,17 +53,29 @@ This is enough to start exporting [default gateway metrics](/api-management/metr
 ```json
 {
   "opentelemetry": {
-    "enabled": true,
-    "exporter": "grpc",
-    "endpoint": "otel-collector:4317",
+    "traces": {
+      "enabled": true,
+      "exporter": "grpc",
+      "endpoint": "otel-collector:4317",
+      "headers": {},
+      "connection_timeout": 5,
+      "resource_name": "tyk",
+      "tls": { "... TLS options ..." }
+    },
     "metrics": {
       "enabled": true,
       "exporter": "grpc",
       "endpoint": "otel-collector:4317",
+      "headers": {},
+      "connection_timeout": 5,
+      "resource_name": "tyk",
+      "tls": { "... TLS options ..." },
       "export_interval": 30,
       "temporality": "cumulative",
-      "cardinality_limit": 2000,
-      "runtime_metrics": true
+      "shutdown_timeout": 5,
+      "retry": { "... retry options ..." },
+      "runtime_metrics": true,
+      "api_metrics": [ "... custom metric definitions ..." ]
     }
   }
 }
@@ -56,13 +85,29 @@ This is enough to start exporting [default gateway metrics](/api-management/metr
 |-------|------|---------|-------------|
 | `enabled` | bool | `false` | Enables metrics export. |
 | `exporter` | string | `"grpc"` | Transport protocol: `"grpc"` (OTLP/gRPC) or `"http"` (OTLP/HTTP). |
-| `endpoint` | string | (inherits from top-level OTel config) | OTLP endpoint to send metrics to. If omitted, uses the top-level `opentelemetry.endpoint`. |
+| `endpoint` | string | inherits from `traces.endpoint` if set | OTLP endpoint to send metrics to. |
+| `headers` | map[string]string | — | Additional headers sent with each export request (e.g. for authentication). |
+| `connection_timeout` | int | — | Connection timeout in seconds. |
+| `resource_name` | string | `"tyk"` | Service name reported in resource attributes. |
+| `tls` | TLS object | — | TLS configuration for the exporter connection. |
 | `export_interval` | int | `30` | How often metrics are pushed to the endpoint, in seconds. |
 | `temporality` | string | `"cumulative"` | Aggregation temporality: `"cumulative"` (values accumulate since startup) or `"delta"` (values since the last export). Use `"delta"` for backends like Datadog or Dynatrace that prefer it. |
-| `cardinality_limit` | int | `2000` | Maximum number of unique attribute combinations per metric instrument. See [Cardinality Control](#cardinality-control). |
+| `shutdown_timeout` | int | — | Graceful shutdown timeout in seconds. |
+| `retry` | object | — | Retry configuration for failed export attempts. |
 | `runtime_metrics` | bool | `true` | Exports Go runtime metrics (memory, goroutines, GC). Set to `false` to disable. |
+| `api_metrics` | array | — | Custom metric instrument definitions. See [Custom Metrics](/api-management/metrics/custom-metrics). |
 
 ## Environment Variables
+
+### Traces
+
+| Environment Variable | Config Field |
+|----------------------|--------------|
+| `TYK_GW_OPENTELEMETRY_TRACES_ENABLED` | `traces.enabled` |
+| `TYK_GW_OPENTELEMETRY_TRACES_EXPORTER` | `traces.exporter` |
+| `TYK_GW_OPENTELEMETRY_TRACES_ENDPOINT` | `traces.endpoint` |
+
+### Metrics
 
 | Environment Variable | Config Field |
 |----------------------|--------------|
@@ -72,6 +117,10 @@ This is enough to start exporting [default gateway metrics](/api-management/metr
 | `TYK_GW_OPENTELEMETRY_METRICS_EXPORT_INTERVAL` | `metrics.export_interval` |
 | `TYK_GW_OPENTELEMETRY_METRICS_TEMPORALITY` | `metrics.temporality` |
 | `TYK_GW_OPENTELEMETRY_METRICS_CARDINALITY_LIMIT` | `metrics.cardinality_limit` |
+
+<Note>
+Root-level env vars such as `TYK_GW_OPENTELEMETRY_ENABLED` and `TYK_GW_OPENTELEMETRY_ENDPOINT` still work for traces but are deprecated. Use `TYK_GW_OPENTELEMETRY_TRACES_*` for new deployments.
+</Note>
 
 ## Tyk Cloud
 
@@ -117,4 +166,3 @@ increase(some_metric{otel_metric_overflow="true"}[5m]) > 0
 ```
 
 This lets you catch runaway cardinality before costs escalate.
-
