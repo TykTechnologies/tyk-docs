@@ -1,0 +1,182 @@
+---
+title: "Custom Metrics"
+description: "Define custom metric instruments in Tyk Gateway with your own dimensions sourced from request headers, JWT claims, session data, and more."
+keywords: "Custom Metrics, OpenTelemetry, OTLP, Dimensions, Labels, Multi-tenant, Counter, Histogram, Cardinality"
+---
+
+## Custom Metrics
+
+By default, Tyk Gateway exports [standard RED metrics](/api-management/metrics/default-metrics) with a fixed set of dimensions. Custom metrics let you define additional instruments with dimensions drawn from request headers, session data, JWT claims, and other context — enabling use cases such as:
+
+- **Multi-tenant billing:** Count requests per customer ID from a header or JWT claim
+- **Tier-based SLOs:** Track latency separately for premium vs. standard API tiers
+- **Business KPIs:** Measure domain-specific signals (e.g., successful transactions per payment provider)
+
+## The api_metrics Array
+
+Custom metrics are defined in the `api_metrics` array inside `opentelemetry.metrics`:
+
+```json
+{
+  "opentelemetry": {
+    "metrics": {
+      "enabled": true,
+      "api_metrics": [
+        { ... }
+      ]
+    }
+  }
+}
+```
+
+The behavior of this field depends on its value:
+
+| Value | Behavior |
+|-------|----------|
+| Field omitted or `null` | [Default RED metrics](/api-management/metrics/default-metrics) are exported automatically. |
+| Empty array `[]` | API-level metrics are disabled entirely — no request metrics are exported. |
+| Populated array | Only the instruments you define are exported. Default RED metrics are not exported unless you explicitly define them. |
+
+## Instrument Types
+
+Each entry in `api_metrics` defines one instrument:
+
+| Type | Description |
+|------|-------------|
+| `counter` | A monotonically increasing count. Use for request counts, error counts, etc. |
+| `histogram` | A distribution of values. Use for latency measurements. |
+
+Histograms require a `histogram_source` field that selects which latency to measure:
+
+| `histogram_source` | Measures |
+|--------------------|----------|
+| `total` | End-to-end request latency (client to gateway to upstream) |
+| `gateway` | Gateway processing time only (excludes upstream response time) |
+| `upstream` | Upstream service response time only |
+
+## Dimension Sources
+
+Dimensions (labels) on custom instruments can be sourced from six places:
+
+| Source | What It Provides | Example Keys |
+|--------|-----------------|--------------|
+| `metadata` | Request metadata always in scope | `method`, `response_code`, `api_id`, `api_name`, `org_id`, `response_flag`, `ip_address`, `api_version`, `host`, `scheme` |
+| `session` | Authenticated session fields | `api_key`, `oauth_id`, `alias`, `portal_app`, `portal_org` |
+| `header` | Any HTTP request header | `X-Customer-ID`, `X-Tenant-ID`, `Authorization` |
+| `context` | Tyk context variables | `jwt_claims_tier`, `request_id`, `path_parts` |
+| `response_header` | Any upstream response header | `X-Cache-Status`, `X-Backend-Version` |
+| `gateway` | Gateway instance metadata (set at startup) | `node_id`, `node_version`, `group_id`, `tags` |
+
+Each dimension definition has four fields:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `source` | Yes | One of the source names above. |
+| `key` | Yes | The specific field or header name to read from. |
+| `label` | Yes | The dimension name as it appears in your metrics backend. |
+| `default` | No | Fallback value when the key is not present on the request. |
+
+## Filters
+
+Each instrument can restrict which requests it records using the `filters` block. All filter conditions use AND logic (a request must match all specified filters):
+
+| Filter Field | Type | Description |
+|--------------|------|-------------|
+| `api_ids` | string array | Only record requests to these API IDs. |
+| `methods` | string array | Only record requests with these HTTP methods (e.g., `["GET", "POST"]`). |
+| `status_codes` | string array | Only record responses with these status codes. Supports exact values (`"200"`) and class patterns (`"2xx"`, `"4xx"`, `"5xx"`). |
+
+## Example Configuration
+
+The following example defines two custom instruments:
+
+1. A counter that tracks requests by customer ID and subscription tier
+2. A histogram that tracks latency for premium-tier requests only
+
+```json
+{
+  "opentelemetry": {
+    "metrics": {
+      "enabled": true,
+      "api_metrics": [
+        {
+          "name": "tyk.requests.by_customer",
+          "type": "counter",
+          "description": "Request count by customer ID and subscription tier",
+          "dimensions": [
+            {
+              "source": "header",
+              "key": "X-Customer-ID",
+              "label": "customer_id",
+              "default": "unknown"
+            },
+            {
+              "source": "context",
+              "key": "jwt_claims_tier",
+              "label": "tier",
+              "default": "standard"
+            },
+            {
+              "source": "metadata",
+              "key": "api_id",
+              "label": "api_id"
+            }
+          ],
+          "filters": {
+            "api_ids": ["payments-api", "orders-api"]
+          }
+        },
+        {
+          "name": "tyk.latency.premium_tier",
+          "type": "histogram",
+          "description": "End-to-end latency for premium tier requests",
+          "histogram_source": "total",
+          "histogram_buckets": [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+          "dimensions": [
+            {
+              "source": "context",
+              "key": "jwt_claims_tier",
+              "label": "tier"
+            },
+            {
+              "source": "metadata",
+              "key": "api_id",
+              "label": "api_id"
+            }
+          ],
+          "filters": {
+            "methods": ["POST", "PUT", "PATCH"],
+            "status_codes": ["2xx"]
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+## Full Field Reference
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Metric instrument name. Use lowercase with dots or underscores (e.g., `tyk.requests.by_customer`). |
+| `type` | string | Yes | `"counter"` or `"histogram"`. |
+| `description` | string | No | Human-readable description included in metric metadata. |
+| `dimensions` | array | Yes | List of dimension definitions. See [Dimension Sources](#dimension-sources). |
+| `filters` | object | No | Restricts which requests are recorded. See [Filters](#filters). |
+| `histogram_source` | string | Histograms only | `"total"`, `"gateway"`, or `"upstream"`. |
+| `histogram_buckets` | float array | No | Custom histogram bucket boundaries in seconds. If omitted, OTel default buckets are used. |
+
+## Cardinality Considerations
+
+Custom dimensions can significantly increase cardinality. Before adding a dimension, estimate the number of unique values it can take:
+
+- `api_id` — bounded (tens or hundreds of APIs)
+- `method` — bounded (fewer than 10 values)
+- `customer_id` from a header — potentially unbounded if unique per user
+
+The `cardinality_limit` setting (default: 2,000 unique combinations per instrument) protects against unbounded cardinality. When the limit is reached, new combinations are tracked in an overflow bucket. See [Cardinality Control](/api-management/metrics/opentelemetry-configuration#cardinality-control) for details.
+
+<Note>
+On Tyk Cloud, custom metric configuration is not currently self-service. Contact Tyk support to request custom dimensions for your Cloud deployment.
+</Note>
