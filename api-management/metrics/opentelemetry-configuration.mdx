@@ -1,0 +1,120 @@
+---
+title: "OpenTelemetry Metrics Configuration"
+description: "Configure native OpenTelemetry metrics export from Tyk Gateway. Reference for all configuration fields, environment variables, Tyk Cloud setup, and cardinality control."
+keywords: "OpenTelemetry, OTLP, Metrics, Configuration, Prometheus, Grafana, Datadog, New Relic, Dynatrace, Cardinality"
+sidebarTitle: "Metrics Configuration"
+---
+
+## OpenTelemetry Metrics Configuration
+
+Tyk Gateway can export metrics natively via the OpenTelemetry Protocol (OTLP). When enabled, the gateway pushes metrics to any OTLP-compatible endpoint — including Prometheus (via OTel Collector), Grafana Mimir, Datadog, New Relic, Dynatrace, and Elastic — without requiring additional components alongside Tyk.
+
+<Note>
+OpenTelemetry must be enabled at the gateway level before metrics can be exported. If you have not yet configured OpenTelemetry for distributed tracing, see [Distributed Tracing](/api-management/traces) for the base setup.
+</Note>
+
+## Quick Start
+
+If OpenTelemetry is already enabled in your gateway config, add the `metrics` block:
+
+```json
+{
+  "opentelemetry": {
+    "enabled": true,
+    "endpoint": "otel-collector:4317",
+    "metrics": {
+      "enabled": true
+    }
+  }
+}
+```
+
+This is enough to start exporting [default gateway metrics](/api-management/metrics/default-metrics) to the same OTLP endpoint configured for traces.
+
+## Full Configuration Reference
+
+```json
+{
+  "opentelemetry": {
+    "enabled": true,
+    "exporter": "grpc",
+    "endpoint": "otel-collector:4317",
+    "metrics": {
+      "enabled": true,
+      "exporter": "grpc",
+      "endpoint": "otel-collector:4317",
+      "export_interval": 30,
+      "temporality": "cumulative",
+      "cardinality_limit": 2000,
+      "runtime_metrics": true
+    }
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enables metrics export. |
+| `exporter` | string | `"grpc"` | Transport protocol: `"grpc"` (OTLP/gRPC) or `"http"` (OTLP/HTTP). |
+| `endpoint` | string | (inherits from top-level OTel config) | OTLP endpoint to send metrics to. If omitted, uses the top-level `opentelemetry.endpoint`. |
+| `export_interval` | int | `30` | How often metrics are pushed to the endpoint, in seconds. |
+| `temporality` | string | `"cumulative"` | Aggregation temporality: `"cumulative"` (values accumulate since startup) or `"delta"` (values since the last export). Use `"delta"` for backends like Datadog or Dynatrace that prefer it. |
+| `cardinality_limit` | int | `2000` | Maximum number of unique attribute combinations per metric instrument. See [Cardinality Control](#cardinality-control). |
+| `runtime_metrics` | bool | `true` | Exports Go runtime metrics (memory, goroutines, GC). Set to `false` to disable. |
+
+## Environment Variables
+
+| Environment Variable | Config Field |
+|----------------------|--------------|
+| `TYK_GW_OPENTELEMETRY_METRICS_ENABLED` | `metrics.enabled` |
+| `TYK_GW_OPENTELEMETRY_METRICS_EXPORTER` | `metrics.exporter` |
+| `TYK_GW_OPENTELEMETRY_METRICS_ENDPOINT` | `metrics.endpoint` |
+| `TYK_GW_OPENTELEMETRY_METRICS_EXPORT_INTERVAL` | `metrics.export_interval` |
+| `TYK_GW_OPENTELEMETRY_METRICS_TEMPORALITY` | `metrics.temporality` |
+| `TYK_GW_OPENTELEMETRY_METRICS_CARDINALITY_LIMIT` | `metrics.cardinality_limit` |
+
+## Tyk Cloud
+
+On Tyk Cloud, metrics export is enabled per environment via the **Telemetry** settings in the Tyk Cloud UI. A **Telemetry entitlement** is required — contact your account team if it is not available on your plan.
+
+**Supported export destinations on Tyk Cloud:**
+
+- New Relic
+- Elastic (Elasticsearch / OpenSearch)
+- Dynatrace
+- Custom OTLP endpoint (any OTLP-compatible backend)
+
+Tyk Cloud exports the [default gateway metrics](/api-management/metrics/default-metrics) through the telemetry pipeline. Custom metric configuration is not currently self-service on Tyk Cloud; contact Tyk support to request it.
+
+## Supported Backends
+
+The metrics exporter sends data using standard OTLP, so any OTLP-compatible backend works. Some common setups:
+
+**Via OTel Collector (recommended for self-managed):** Route metrics from the OTel Collector to Prometheus, Grafana Mimir, Splunk, or other backends. The Collector also handles batching, retries, and fanout to multiple destinations.
+
+**Direct OTLP:** Send directly to backends that natively accept OTLP, such as:
+
+- New Relic (`otlp.nr-data.net:4317`)
+- Dynatrace (via the Dynatrace OTLP endpoint)
+- Grafana Cloud Mimir
+- Any Prometheus-compatible endpoint with remote write
+
+## Cardinality Control
+
+Each unique combination of dimension values creates a separate time series in your metrics backend. For example, a metric with 100 APIs × 5 methods × 10 status codes = 5,000 time series. Adding dimensions that have many possible values (such as user IDs or free-text fields) can create millions of time series, causing high storage costs and potential out-of-memory crashes.
+
+The `cardinality_limit` field caps how many unique attribute combinations are tracked per metric instrument:
+
+- **Default limit:** 2,000 combinations per instrument
+- **When the limit is reached:** New attribute combinations are aggregated into an overflow bucket marked with `otel.metric.overflow=true`
+- **Existing time series are not affected** — only new combinations are blocked
+- **To disable the limit:** Set to `0` (not recommended for production)
+
+You can alert on cardinality overflow using this PromQL expression:
+
+```promql
+increase(some_metric{otel_metric_overflow="true"}[5m]) > 0
+```
+
+This lets you catch runaway cardinality before costs escalate.
+

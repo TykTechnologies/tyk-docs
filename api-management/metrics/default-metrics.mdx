@@ -1,0 +1,124 @@
+---
+title: "Default Gateway Metrics"
+description: "Complete reference of all metrics exported automatically by Tyk Gateway when OpenTelemetry metrics are enabled, including request metrics, Go runtime metrics, and configuration state metrics."
+keywords: "OpenTelemetry, Metrics, RED Metrics, Request Duration, Go Runtime, Prometheus, Grafana, API Observability"
+sidebarTitle: "Default Metrics"
+---
+
+## Default Gateway Metrics
+
+When `opentelemetry.metrics.enabled` is set to `true`, Tyk Gateway automatically exports three groups of metrics — no additional configuration required:
+
+1. [Request metrics](#request-metrics) — Rate, Errors, and Duration (RED) for every API request
+2. [Go runtime metrics](#go-runtime-metrics) — Memory, goroutines, and GC health
+3. [Configuration state metrics](#configuration-state-metrics) — API/policy load counts and reload events
+
+All metrics are exported as OpenTelemetry-semantic-convention-compliant instruments and include [resource attributes](#resource-attributes) that identify the gateway instance.
+
+## Request Metrics
+
+These four instruments cover the standard RED signals for every API proxied by the gateway.
+
+| Metric Name | Type | Unit | Description |
+|-------------|------|------|-------------|
+| `http.server.request.duration` | Histogram | seconds | End-to-end request latency (client to gateway to upstream and back). |
+| `tyk.gateway.request.duration` | Histogram | seconds | Time spent inside the gateway only (middleware processing, routing). Excludes upstream response time. |
+| `tyk.upstream.request.duration` | Histogram | seconds | Time spent waiting for the upstream service to respond. |
+| `tyk.api.requests.total` | Counter | requests | Total number of requests processed. |
+
+The three-way latency breakdown is particularly useful for distinguishing gateway processing overhead from upstream service slowness.
+
+### Default Dimensions
+
+All request metrics include the following dimensions by default:
+
+| Dimension | Values | Description |
+|-----------|--------|-------------|
+| `method` | `GET`, `POST`, `PUT`, etc. | HTTP request method. |
+| `api_id` | string | The Tyk API ID. |
+| `http.response.status_code` | `200`, `404`, `500`, etc. | HTTP response status code. |
+| `response_flag` | string | Tyk internal classification of the response outcome (e.g., `AuthorizationError`, `RateLimitExceeded`, `UpstreamError`). |
+
+**Why some dimensions are excluded by default:**
+
+- `route` — excluded because regex routes create unbounded cardinality
+- `api_name` — excluded because it maps 1:1 with `api_id`
+- `org_id` — better modeled as a resource attribute, not a metric dimension
+
+You can add these and other dimensions using [custom metrics](/api-management/metrics/custom-metrics).
+
+## Go Runtime Metrics
+
+These metrics are exported automatically and reflect the health of the Go runtime inside the gateway process. They can be disabled by setting `runtime_metrics: false` in the metrics config.
+
+| Metric Name | Type | Unit | Description |
+|-------------|------|------|-------------|
+| `go.memory.used` | Gauge | bytes | Current heap memory in use. |
+| `go.memory.limit` | Gauge | bytes | Soft memory limit set via `GOMEMLIMIT`. |
+| `go.memory.allocated` | Gauge | bytes | Total bytes allocated to the heap. |
+| `go.memory.allocations` | Counter | bytes | Cumulative bytes allocated since startup. |
+| `go.memory.gc.goal` | Gauge | bytes | Target heap size for the next GC cycle. |
+| `go.goroutine.count` | Gauge | goroutines | Number of active goroutines. Useful for detecting goroutine leaks. |
+| `go.processor.limit` | Gauge | threads | Number of OS threads available (`GOMAXPROCS`). |
+| `go.config.gogc` | Gauge | percent | GC target percentage (`GOGC` env var). |
+| `go.schedule.duration` | Histogram | seconds | Time goroutines wait to be scheduled. High values indicate CPU saturation. |
+
+## Configuration State Metrics
+
+These metrics reflect the operational state of the gateway's loaded configuration. They are useful for detecting silent configuration failures — for example, alerting when the number of loaded APIs drops unexpectedly.
+
+| Metric Name | Type | Unit | Description |
+|-------------|------|------|-------------|
+| `tyk.gateway.apis.loaded` | Gauge | APIs | Number of API definitions currently loaded and active. |
+| `tyk.gateway.policies.loaded` | Gauge | policies | Number of policies currently loaded and active. |
+| `tyk.gateway.config.reload.total` | Counter | reloads | Cumulative number of configuration reload events since startup. |
+| `tyk.gateway.config.reload.duration` | Histogram | seconds | Time taken to complete each configuration reload cycle. |
+
+## Resource Attributes
+
+Every metric exported from a gateway instance carries resource attributes — metadata that identifies the source. These are set once at startup and attached to all metrics.
+
+### Tyk-Specific Resource Attributes
+
+| Attribute | Always Present | Example | Description |
+|-----------|---------------|---------|-------------|
+| `tyk.gw.id` | Yes | `gw-prod-eu-west-1-a` | Unique gateway node ID. |
+| `tyk.gw.dataplane` | Yes | `true` | Whether the gateway is running as an edge/dataplane node. |
+| `tyk.gw.group.id` | No | `prod-eu-west-1` | Present only for edge (dataplane) gateways — identifies the group. |
+| `tyk.gw.tags` | No | `["region:eu", "env:prod"]` | Present only when the gateway has segment tags configured. |
+
+### Standard OTel Resource Attributes
+
+| Category | Attributes |
+|----------|-----------|
+| Service | `service.name`, `service.version`, `service.instance.id` |
+| Host | `host.name`, `host.arch`, `host.ip` |
+| Container | `container.id` |
+| Process | `process.pid` |
+
+### Using Resource Attributes in Prometheus
+
+When using an OTel Collector to export to Prometheus, enable `resource_to_telemetry_conversion` to expose resource attributes as metric labels:
+
+```yaml
+exporters:
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    resource_to_telemetry_conversion:
+      enabled: true
+```
+
+This allows PromQL queries like:
+
+```promql
+# All metrics from a specific gateway node
+{tyk_gw_id="gw-prod-eu-west-1-a"}
+
+# Compare request rates across gateways in an edge group
+sum by (tyk_gw_id) (
+  rate(tyk_api_requests_total{tyk_gw_group_id="edge-eu-west"}[5m])
+)
+```
+
+Without this setting, resource attributes are available via the `target_info` metric and can be joined in PromQL.
+
