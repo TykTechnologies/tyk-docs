@@ -37,13 +37,7 @@ All request metrics include the following dimensions by default:
 | `method` | `GET`, `POST`, `PUT`, etc. | HTTP request method. |
 | `api_id` | string | The Tyk API ID. |
 | `http.response.status_code` | `200`, `404`, `500`, etc. | HTTP response status code. |
-| `response_flag` | string | Tyk internal classification of the response outcome (e.g., `AuthorizationError`, `RateLimitExceeded`, `UpstreamError`). |
-
-**Why some dimensions are excluded by default:**
-
-- `route` — excluded because regex routes create unbounded cardinality
-- `api_name` — excluded because it maps 1:1 with `api_id`
-- `org_id` — better modeled as a resource attribute, not a metric dimension
+| `response_flag` | string | Tyk 3-letter error classification code (e.g., `AKI`, `URS`, `CBO`), or the HTTP status code string (e.g., `"200"`) for successful requests or when error classification is absent. See the [full list of response flags](/api-management/logs#error-classification). |
 
 You can add these and other dimensions using [custom metrics](/api-management/metrics/custom-metrics).
 
@@ -61,7 +55,6 @@ These metrics are exported automatically and reflect the health of the Go runtim
 | `go.goroutine.count` | Gauge | goroutines | Number of active goroutines. Useful for detecting goroutine leaks. |
 | `go.processor.limit` | Gauge | threads | Number of OS threads available (`GOMAXPROCS`). |
 | `go.config.gogc` | Gauge | percent | GC target percentage (`GOGC` env var). |
-| `go.schedule.duration` | Histogram | seconds | Time goroutines wait to be scheduled. High values indicate CPU saturation. |
 
 ## Configuration State Metrics
 
@@ -93,7 +86,6 @@ Every metric exported from a gateway instance carries resource attributes — me
 |----------|-----------|
 | Service | `service.name`, `service.version`, `service.instance.id` |
 | Host | `host.name`, `host.arch`, `host.ip` |
-| Container | `container.id` |
 | Process | `process.pid` |
 
 ### Using Resource Attributes in Prometheus
@@ -106,6 +98,21 @@ exporters:
     endpoint: "0.0.0.0:8889"
     resource_to_telemetry_conversion:
       enabled: true
+```
+
+Alternative, add a transform processor to metrics pipeline for OTLP exporters:
+
+```yaml
+processors:
+  transform/tyk_gw_resource_attrs:
+    error_mode: ignore
+    metric_statements:
+      - context: datapoint
+        statements:
+          - set(attributes["tyk_gw_group_id"], resource.attributes["tyk.gw.group.id"]) where resource.attributes["tyk.gw.group.id"] != nil
+          - set(attributes["tyk_gw_id"], resource.attributes["tyk.gw.id"]) where resource.attributes["tyk.gw.id"] != nil
+          - set(attributes["tyk_gw_tags"], resource.attributes["tyk.gw.tags"]) where resource.attributes["tyk.gw.tags"] != nil
+          - set(attributes["tyk_gw_dataplane"], resource.attributes["tyk.gw.dataplane"]) where resource.attributes["tyk.gw.dataplane"] != nil
 ```
 
 This allows PromQL queries like:
@@ -122,3 +129,40 @@ sum by (tyk_gw_id) (
 
 Without this setting, resource attributes are available via the `target_info` metric and can be joined in PromQL.
 
+## Exemplars
+
+Exemplars are sample observations attached to histogram metric data points that carry the active trace context — specifically the `trace_id` and `span_id` of the request that produced the measurement. They create a direct, clickable link from an aggregated metric to the specific trace that caused an anomaly.
+
+### How they work in Tyk
+
+No gateway configuration is required. When OpenTelemetry tracing is enabled and a histogram metric (such as `http.server.request.duration`) is recorded during an active sampled request, the OTel Go SDK automatically attaches the current trace and span IDs to the observation. Exemplars are only attached for sampled requests.
+
+### Infrastructure requirements
+
+Exemplar storage and rendering must be enabled in your observability stack — nothing additional is needed on the Tyk side.
+
+For example, in the following standard OTel pipeline:
+
+```
+Tyk Gateway
+  └─ OTLP/gRPC ──► OTel Collector ──► Prometheus ──► Grafana
+                                       (exemplar storage)   (exemplar markers)
+```
+
+| Component | Requirement |
+|-----------|-------------|
+| OTel Collector | Any version supporting OTLP metrics with exemplar passthrough |
+| Prometheus | v2.26+ — start with `--enable-feature=exemplar-storage` |
+| Grafana | v7.4+ — enable "Exemplars" toggle on the Prometheus data source |
+
+### Querying exemplars in Prometheus
+
+Exemplars are accessible via the Prometheus exemplar API:
+
+```
+GET /api/v1/query_exemplars?query=http_server_request_duration_seconds&start=<start>&end=<end>
+```
+
+### Grafana workflow
+
+When exemplar rendering is enabled, Grafana displays scatter plot markers on histogram panels. Clicking a marker navigates directly to the linked trace in your configured tracing backend (Jaeger, Grafana Tempo, etc.), with no manual trace ID lookup required.
