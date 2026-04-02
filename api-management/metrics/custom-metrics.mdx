@@ -56,7 +56,7 @@ Histograms require a `histogram_source` field that selects which latency to meas
 
 ## Dimension Sources
 
-Dimensions let you slice your metrics by any signal available at request time. Tyk can source dimension values from seven places — the sections below describe common use cases and which source and key to use for each.
+Dimensions let you slice your metrics by any signal available at request time. Tyk can source dimension values from six places — the sections below describe common use cases and which source and key to use for each.
 
 | Source | What It Provides | Example Keys |
 |--------|-----------------|--------------|
@@ -65,7 +65,6 @@ Dimensions let you slice your metrics by any signal available at request time. T
 | `header` | Any HTTP request header | `X-Customer-ID`, `X-Tenant-ID`, `Authorization` |
 | `context` | Tyk [context variables](/api-management/traffic-transformation/request-context-variables) | `jwt_claims_tier`, `request_id`, `path_parts` |
 | `response_header` | Any upstream response header | `X-Cache-Status`, `X-Backend-Version` |
-| `gateway` | Gateway instance metadata (set at startup) | `node_id`, `node_version`, `group_id`, `tags` |
 | `config_data` | API definition metadata from the `config_data` map | Any key set on the API definition |
 
 ### Response status
@@ -111,7 +110,7 @@ Prefer `listen_path` or `endpoint` (with `track_endpoints`) over raw `path` or `
 Several sources expose client identity, with different cardinality trade-offs:
 
 - **Session fields** (`session` source) — `alias` (the human-readable key alias), `portal_app` (Developer Portal app ID), and `portal_org` (Developer Portal org ID) are typically bounded and safe to use. `api_key` and `oauth_id` are ⚠️ high cardinality (one value per key/client) — only use these with [cardinality control](/api-management/metrics/opentelemetry-configuration#cardinality-control) enabled.
-- **JWT claims** (`context` source) — any claim is available as `jwt_claims_<name>` (e.g. `jwt_claims_tier`, `jwt_claims_tenant_id`). If claim values are bounded (e.g. a fixed set of subscription tiers), this is a safe and expressive dimension for segmenting by tenant or tier.
+- **JWT claims** (`context` source) — any claim is available as `jwt_claims_<name>` (e.g. `jwt_claims_tier`, `jwt_claims_tenant_id`). See [Request context variables](#request-context-variables) for setup requirements and cardinality notes.
 - **Request headers** (`header` source) — use when client identity is passed as a header (e.g. `X-Tenant-ID`). Cardinality depends on what the header contains.
 
 ### Custom API metadata
@@ -134,19 +133,71 @@ A dimension like `{"source": "config_data", "key": "team"}` will carry `team="pl
 
 **Fallback behaviour:** If `config_data_disabled` is `true` on the API, or the key is absent, the dimension falls back to the `default` value on the dimension definition. If no default is set, an empty string is used. All values are treated as strings.
 
-### Plugin-set context variables
+### Request context variables
 
-If you use custom middleware or plugins, any variable your code writes to Tyk's [request context](/api-management/traffic-transformation/request-context-variables) is accessible as a dimension via the `context` source:
+The `context` source reads from Tyk's [request context variables](/api-management/traffic-transformation/request-context-variables) — a set of values extracted from the incoming request and enriched during middleware processing. The `context` source covers two kinds of variables: those populated automatically by Tyk, and those written by custom plugins.
+
+<Note>
+Context variables must be enabled on the API definition (`enable_context_vars: true`) for the `context` source to work. Without this setting, all `context` dimensions will be empty.
+</Note>
+
+#### Default context variables (no plugin required)
+
+When context variables are enabled, Tyk automatically populates the following variables for every request:
+
+| Key | Description | Cardinality |
+|-----|-------------|-------------|
+| `request_id` | A generated correlation ID for the request. | ⚠️ Unbounded — unique per request. Not suitable as a metric dimension. |
+| `path` | The raw request path (e.g. `/api/v1/users/123`). | ⚠️ Potentially unbounded. See [Request path](#request-path). |
+| `path_parts` | The request path split by `/`. | ⚠️ Potentially unbounded. |
+| `remote_addr` | The connecting client IP address. | ⚠️ High cardinality. |
+| `jwt_claims_<name>` | Individual JWT claims, e.g. `jwt_claims_tier`, `jwt_claims_tenant_id`. Available when JWT auth is in use. | Bounded if the claim takes a fixed set of values (e.g. subscription tier). Safe to use. |
+| `cookies_<name>` | Cookie values by name (hyphens replaced with underscores). | Depends on cookie values. |
+| `headers_<name>` | Request header values by name (capitalised, hyphens replaced with underscores, e.g. `headers_User_Agent`). | Depends on header values. |
+| `token` | The raw inbound bearer token. | ⚠️ Extremely high cardinality. Do not use as a dimension. |
+
+The most useful defaults for metrics are **JWT claims** — they let you segment traffic by tenant, subscription tier, or any other bounded claim without requiring a plugin:
 
 ```json
-{ "source": "context", "key": "my_plugin_variable", "label": "my_variable" }
+{ "source": "context", "key": "jwt_claims_tier", "label": "tier", "default": "standard" }
 ```
 
-This lets you surface any signal your plugins compute — enriched tenant IDs, decoded token fields, feature flags, routing decisions — directly into your metrics dimensions without changes to the API definition.
+#### Custom context variables (via plugin)
 
-### Gateway identity and other request metadata
+Go plugins and JQ request transforms can write arbitrary variables into the request context, which are then accessible as `context` source dimensions. This is useful for computed signals — enriched tenant IDs, feature flags, routing decisions, or values decoded from opaque tokens.
 
-The `gateway` source exposes per-instance metadata (`node_id`, `node_version`, `group_id`, `tags`). This is useful for multi-region or edge deployments where you need to distinguish traffic by gateway node. Note that the same information is also available as [resource attributes](/api-management/metrics/default-metrics#resource-attributes) on all metrics — prefer resource attributes over dimensions when the value is constant for all requests from a given gateway instance.
+**Go plugin:**
+
+```go
+import "github.com/TykTechnologies/tyk/ctx"
+
+func MyPlugin(w http.ResponseWriter, r *http.Request) {
+    if ctxData, ok := r.Context().Value(ctx.ContextData).(map[string]interface{}); ok {
+        ctxData["my_custom_var"] = "value"
+    }
+}
+```
+
+**JQ transform** — return a `tyk_context` object alongside the transformed body:
+
+```json
+{
+  "body": "<transformed-body>",
+  "tyk_context": { "my_custom_var": "value" }
+}
+```
+
+The variable is then available as a dimension:
+
+```json
+{ "source": "context", "key": "my_custom_var", "label": "my_variable" }
+```
+
+<Note>
+Python, gRPC (coprocess), and JavaScript (JSVM) plugins cannot write to request context variables. To pass data from these plugins into metrics dimensions, use session metadata (`session` source, via `session.meta_data`) or inject a custom HTTP request header (`header` source) instead.
+</Note>
+
+### Other request metadata
 
 Remaining `metadata` keys available for general request context:
 
