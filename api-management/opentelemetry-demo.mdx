@@ -52,6 +52,59 @@ Grafana is pre-provisioned with all data sources and dashboards. No manual setup
 
 ## Architecture
 
+### Traffic Flow
+
+The demo wires together a multi-language e-commerce application through Tyk Gateway:
+
+```mermaid
+flowchart TD
+    LG[Load Generator\nLocust] --> FP
+    FP[Frontend Proxy\nEnvoy :8085] --> TGW
+    FP --> FE[Frontend\nTypeScript]
+    TGW[Tyk Gateway :8080] --> FE
+    FE --> CS[Checkout]
+    FE --> PC[Product Catalog]
+    FE --> REC[Recommendation]
+    FE --> CART[Cart]
+    CS --> PAY[Payment]
+    CS --> SHIP[Shipping]
+    CS --> EMAIL[Email]
+    TD[Tyk Dashboard :3000] -.->|API definitions every 5s| TGW
+```
+
+The Frontend Proxy (Envoy) routes all `/api/*` traffic through Tyk Gateway, which applies rate limiting, authentication, and telemetry enrichment before forwarding to the frontend microservice. Tyk Dashboard manages API definitions centrally.
+
+### Telemetry Data Flow
+
+All services — both the microservices and Tyk Gateway — send telemetry to a single OpenTelemetry Collector endpoint. The Collector enriches, transforms, and fans out to multiple backends that Grafana queries:
+
+```mermaid
+flowchart LR
+    MS[Microservices\nmulti-language] -->|OTLP gRPC :4317| COL
+    TGW[Tyk Gateway] -->|OTLP gRPC :4317| COL
+    TGW -->|Container logs| COL
+
+    subgraph COL[OTel Collector]
+        R[Receivers\nOTLP + filelog]
+        P[Processors\nbatch · resource · transform]
+        E[Exporters]
+        R --> P --> E
+    end
+
+    E -->|traces| JAE[Jaeger]
+    E -->|traces| TMP[Tempo]
+    E -->|metrics| PRO[Prometheus]
+    E -->|logs| LOK[Loki]
+    E -->|logs| OS[OpenSearch]
+
+    JAE --> GRA[Grafana]
+    TMP --> GRA
+    PRO --> GRA
+    LOK --> GRA
+```
+
+The key architectural point is that the OTel Collector is the **single ingestion endpoint** for all telemetry. Services only need to know one address (`otel-collector:4317`). The Collector handles routing, enrichment, and fan-out — so changing a backend requires only a Collector config change, not changes to every service.
+
 ## Grafana Dashboards
 
 ## How It Works: Tyk Gateway Observability Configuration
