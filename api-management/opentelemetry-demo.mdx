@@ -16,7 +16,7 @@ This guide covers:
 - Understanding the OTel Collector pipeline that routes telemetry to Grafana backends
 - Adapting the configuration to your own Docker Compose environment
 
-Whether you're evaluating Tyk's observability capabilities or looking for a working reference to replicate in production, this guide serves both purposes.
+Whether you're evaluating Tyk's observability capabilities, looking for a working reference to replicate in production, or exploring how to design dashboards and alerts for critical failure scenarios — the demo's built-in feature flags let you trigger error conditions on demand to see how the observability stack responds.
 
 ## Prerequisites
 
@@ -26,6 +26,8 @@ Whether you're evaluating Tyk's observability capabilities or looking for a work
 - A Tyk licence (the demo uses Tyk Self-Managed)
 
 ## Quick Start
+
+Before running the command below, complete the initial repository setup described in the [tyk-demo README](https://github.com/TykTechnologies/tyk-demo#readme) — this includes configuring your Tyk licence and any other prerequisites.
 
 From the tyk-demo repository root, run:
 
@@ -46,7 +48,7 @@ Allow 2–3 minutes for all services to initialise. Once ready, the following en
 | Tyk Dashboard | http://localhost:3000 |
 
 <Note>
-Grafana is pre-provisioned with all data sources and dashboards. No manual setup is required — navigate to **http://localhost:8085/grafana/** and open the **Tyk** folder to find the four dashboards.
+Grafana is pre-provisioned with all data sources and dashboards. No manual setup is required — navigate to **http://localhost:8085/grafana/** and open the **Tyk Demo** folder to find the four dashboards.
 </Note>
 
 ## Architecture
@@ -57,9 +59,9 @@ The demo wires together a multi-language e-commerce application through Tyk Gate
 
 ```mermaid
 flowchart TD
-    LG[Load Generator\nLocust] --> FP
-    FP[Frontend Proxy\nEnvoy :8085] --> TGW
-    FP --> FE[Frontend\nTypeScript]
+    LG[Load Generator Locust] --> FP
+    FP[Frontend Proxy :8085] --> TGW
+    FP --> FE[Frontend TypeScript]
     TGW[Tyk Gateway :8080] --> FE
     FE --> CS[Checkout]
     FE --> PC[Product Catalog]
@@ -71,7 +73,7 @@ flowchart TD
     TD[Tyk Dashboard :3000] -.->|API definitions every 5s| TGW
 ```
 
-The Frontend Proxy (Envoy) routes all `/api/*` traffic through Tyk Gateway, which applies rate limiting, authentication, and telemetry enrichment before forwarding to the frontend microservice. Tyk Dashboard manages API definitions centrally.
+The Frontend Proxy routes all `/api/*` traffic through Tyk Gateway, which applies rate limiting, authentication, and telemetry enrichment before forwarding to the frontend microservice. Tyk Dashboard manages API definitions centrally.
 
 ### Telemetry Data Flow
 
@@ -79,17 +81,18 @@ All services — both the microservices and Tyk Gateway — send telemetry to a 
 
 ```mermaid
 flowchart LR
-    MS[Microservices\nmulti-language] -->|OTLP gRPC :4317| COL
+    MS[Microservices multi-language] -->|OTLP gRPC :4317| COL
     TGW[Tyk Gateway] -->|OTLP gRPC :4317| COL
     TGW -->|Container logs| COL
 
     subgraph COL[OTel Collector]
-        R[Receivers\nOTLP + filelog]
+        R[Receivers OTLP + filelog]
         P[Processors\nbatch · resource · transform]
         E[Exporters]
         R --> P --> E
     end
 
+    E -->|traces| JAE[Jaeger]
     E -->|traces| TMP[Tempo]
     E -->|metrics| PRO[Prometheus]
     E -->|logs| LOK[Loki]
@@ -101,11 +104,11 @@ flowchart LR
     LOK --> GRA
 ```
 
-The key architectural point is that the OTel Collector is the **single ingestion endpoint** for all telemetry. Services only need to know one address (`otel-collector:4317`). The Collector handles routing, enrichment, and fan-out — so changing a backend requires only a Collector config change, not changes to every service.
+The key architectural point is that the OTel Collector is the **single ingestion endpoint** for all telemetry. Services only need to know one address (`otel-collector:4317`). In this setup, the Collector fans out traces to both Jaeger and Tempo, and logs to both Loki and OpenSearch — demonstrating how OTel Collector's pipeline configuration lets you route signals to multiple backends without touching service code. The pre-built Grafana dashboards query Tempo for traces and Loki for logs.
 
 ## Grafana Dashboards
 
-Open Grafana at **http://localhost:8085/grafana/** and navigate to **Dashboards → Tyk** folder. Four dashboards are pre-provisioned.
+Open Grafana at **http://localhost:8085/grafana/** and navigate to **Dashboards → Tyk Demo** folder. Four dashboards are pre-provisioned.
 
 ### Fleet Health
 
@@ -330,7 +333,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [resourcedetection, memory_limiter, transform, batch]
-      exporters: [otlp, otlp/tempo]         # → Tempo
+      exporters: [otlp, otlp/tempo]         # → Jaeger + Tempo
 
     metrics:
       receivers: [otlp, spanmetrics, hostmetrics, nginx, postgresql, redis, httpcheck/frontend-proxy]
