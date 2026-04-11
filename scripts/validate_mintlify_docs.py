@@ -115,8 +115,10 @@ def slugify_heading(text: str) -> str:
         elif c == '/':
             result.append('%2F')
         elif c == '.':
-            # omit before space or end; '-' between non-space chars
-            if next_c is not None and next_c != ' ':
+            # omit before space or end; also omit when preceded by a space-derived
+            # '-' (e.g. "Sample .env" → "sample-env", not "sample--env")
+            prev_result = result[-1] if result else None
+            if next_c is not None and next_c != ' ' and prev_result != '-':
                 result.append('-')
         elif c == ',':
             # omit before space or end
@@ -150,7 +152,7 @@ def extract_file_anchors(content: str) -> Set[str]:
     slug_count: Dict[str, int] = {}
 
     heading_re = re.compile(
-        r'^(?:\d+\.\s+|[-*+]\s+)?#{1,6}\s+(.+?)(?:\s+\{#([^}]+)\})?\s*$',
+        r'^[ \t]*(?:\d+\.\s+|[-*+]\s+)?#{1,6}\s+(.+?)(?:\s+\{#([^}]+)\})?\s*$',
         re.MULTILINE,
     )
     for m in heading_re.finditer(content):
@@ -175,20 +177,49 @@ def extract_file_anchors(content: str) -> Set[str]:
         ):
             anchors.add(m.group(1))
 
+    # <Tab title="..."> elements generate anchors from their slugified title
+    for m in re.finditer(r'<Tab\s+title=["\']([^"\']+)["\']', content, re.IGNORECASE):
+        slug = slugify_heading(m.group(1))
+        if slug:
+            anchors.add(slug)
+
     return anchors
 
 
 def build_anchor_map(directory: str) -> Dict[str, Set[str]]:
-    """Build a mapping of normalised file path → set of anchors for every MDX file."""
+    """Build a mapping of normalised file path → set of anchors for every MDX file.
+
+    Also resolves MDX import statements (e.g. ``import X from '/snippets/foo.mdx'``)
+    so that anchors defined inside an imported snippet are visible from the
+    importing file.  Only absolute-path imports rooted at the docs directory are
+    resolved; relative imports are silently ignored.
+    """
     anchor_map: Dict[str, Set[str]] = {}
+
+    # First pass: extract each file's own anchors.
+    file_contents: Dict[str, str] = {}
     for mdx_file in glob.glob(os.path.join(directory, '**/*.mdx'), recursive=True):
         try:
             with open(mdx_file, encoding='utf-8') as fh:
                 content = fh.read()
             rel = os.path.relpath(mdx_file, directory)
+            file_contents[rel] = content
             anchor_map[rel] = extract_file_anchors(content)
         except Exception as e:
             print(f"Warning: could not read {mdx_file} for anchor extraction: {e}")
+
+    # Second pass: merge in anchors from imported snippet files.
+    import_re = re.compile(
+        r"^import\s+\w+\s+from\s+['\"](/[^'\"]+\.mdx)['\"]",
+        re.MULTILINE,
+    )
+    for rel, content in file_contents.items():
+        for m in import_re.finditer(content):
+            # Absolute import path is relative to the docs root (starts with /).
+            imported_path = m.group(1).lstrip('/')
+            if imported_path in anchor_map:
+                anchor_map[rel] |= anchor_map[imported_path]
+
     return anchor_map
 
 
