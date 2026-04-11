@@ -16,8 +16,35 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
+    - name: Install lychee
+      run: |
+        LYCHEE_VERSION="v0.23.0"
+        ARCH=$(uname -m)
+        FILENAME="lychee-${ARCH}-unknown-linux-gnu.tar.gz"
+        curl -sfLO "https://github.com/lycheeverse/lychee/releases/download/lychee-${LYCHEE_VERSION}/${FILENAME}"
+        tar -xzf "${FILENAME}"
+        install -D lychee "$HOME/.local/bin/lychee"
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+
     - name: Check external links
-      uses: lycheeverse/lychee-action@v2
-      with:
-        args: --config lychee.toml '**/*.md' '**/*.mdx'
-        fail: true
+      run: |
+        attempt=1
+        max_attempts=3
+        delay=60
+        while [ $attempt -le $max_attempts ]; do
+          echo "::group::Attempt $attempt of $max_attempts"
+          if lychee --config lychee.toml --format markdown --output lychee-out.md '**/*.md' '**/*.mdx'; then
+            echo "::endgroup::"
+            cat lychee-out.md >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "::endgroup::"
+          if [ $attempt -lt $max_attempts ]; then
+            echo "Attempt $attempt failed. Retrying in ${delay}s (exponential backoff)..."
+            sleep $delay
+            delay=$((delay * 2))
+          fi
+          attempt=$((attempt + 1))
+        done
+        cat lychee-out.md >> "$GITHUB_STEP_SUMMARY"
+        exit 1
