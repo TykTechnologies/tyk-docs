@@ -76,10 +76,11 @@ def slugify_heading(text: str) -> str:
     Mintlify's heading-to-anchor algorithm (empirically determined):
       1. Strip leading/trailing whitespace and lowercase
       2. Remove inline HTML tags and markdown formatting (* _ ` ~)
-      3. Remove grouping/path chars () [] / ? ! entirely — preserves surrounding spaces
+      3. Remove grouping/separator chars () [] / ? ! : entirely — preserves surrounding spaces
          e.g. "(mTLS)" -> "mTLS", "A / B" -> "A  B" (double space -> double hyphen)
+         "Step 1: Create" -> "Step 1 Create" -> "step-1-create" (colon omitted, not "-")
       4. Convert remaining non-alphanumeric, non-space, non-hyphen chars to '-'
-         e.g. "5.1.1" -> "5-1-1", ": " -> "- " -> "--" (after step 5)
+         e.g. "5.1.1" -> "5-1-1", "." -> "-"
       5. Replace each individual space with a hyphen (NO collapsing of runs)
          e.g. "A  B" (double space) -> "A--B" (double hyphen)
       6. Strip leading hyphens only (keep trailing — e.g. "Heading ?" -> "heading-")
@@ -91,9 +92,10 @@ def slugify_heading(text: str) -> str:
     slug = re.sub(r'[*_`~]', '', slug)
     # Remove grouping/separator chars entirely (keep surrounding spaces intact so
     # "A / B" -> "A  B" -> "A--B" rather than "A - B" -> "A---B")
-    slug = re.sub(r'[()[\]/?!]', '', slug)
+    # Colon is also omitted by Mintlify: "Step 1: Create" -> "step-1-create" (not "--")
+    slug = re.sub(r'[()[\]/?!:]', '', slug)
     # Convert remaining non-alphanumeric, non-space, non-hyphen chars to hyphen
-    # (handles . : , ; & @ # etc.)
+    # (handles . , ; & @ # etc.)
     slug = re.sub(r'[^\w\s-]', '-', slug)
     # Replace each individual space with a hyphen (no run-collapsing so that
     # double spaces — left by removed chars — produce double hyphens)
