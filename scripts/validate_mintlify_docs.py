@@ -73,33 +73,63 @@ def remove_comments_and_code(content: str) -> str:
 def slugify_heading(text: str) -> str:
     """Convert a heading string to a Mintlify-compatible anchor slug.
 
-    Mintlify's heading-to-anchor algorithm (empirically determined):
-      1. Strip leading/trailing whitespace and lowercase
-      2. Remove inline HTML tags and markdown formatting (* _ ` ~)
-      3. Remove grouping/separator chars () [] / ? ! : entirely — preserves surrounding spaces
-         e.g. "(mTLS)" -> "mTLS", "A / B" -> "A  B" (double space -> double hyphen)
-         "Step 1: Create" -> "Step 1 Create" -> "step-1-create" (colon omitted, not "-")
-      4. Convert remaining non-alphanumeric, non-space, non-hyphen chars to '-'
-         e.g. "5.1.1" -> "5-1-1", "." -> "-"
-      5. Replace each individual space with a hyphen (NO collapsing of runs)
-         e.g. "A  B" (double space) -> "A--B" (double hyphen)
-      6. Strip leading hyphens only (keep trailing — e.g. "Heading ?" -> "heading-")
+    Empirically verified Mintlify slugify rules:
+      1. Lowercase and strip whitespace
+      2. Remove HTML tags; strip markdown formatting (* ` ~) — underscore is kept
+      3. ' - ' (space-hyphen-space) collapses to a single '-'
+         e.g. "Dispatcher - Hooks" -> "dispatcher-hooks"
+      4. Context-dependent character processing (char by char):
+         - ( [ ] ! : ?  -> always omitted
+         - )             -> omitted before space/end; '-' before non-space
+                            e.g. "(mTLS):" -> "mtls-"  (')' before ':' -> '-', ':' omitted)
+         - /             -> URL-encoded as '%2F'  (NOT removed)
+                            e.g. "A / B"  -> "a-%2F-b"
+         - .             -> omitted before space/end; '-' between non-space chars
+                            e.g. "2. Auth" -> "2-auth"   (omitted before space)
+                            e.g. "5.3.0"  -> "5-3-0"    (converted between digits)
+         - ,             -> omitted before space/end
+                            e.g. "Orgs, APIs" -> "orgs-apis"
+         - _ and -       -> kept as-is
+      5. Each remaining space -> '-'  (no collapsing of runs)
+      6. Strip leading hyphens only (keep trailing)
     """
     slug = text.strip().lower()
-    # Remove inline HTML tags (e.g. <code>, <strong>)
+    # Remove inline HTML tags
     slug = re.sub(r'<[^>]+>', '', slug)
-    # Remove markdown formatting characters (* _ ` ~)
-    slug = re.sub(r'[*_`~]', '', slug)
-    # Remove grouping/separator chars entirely (keep surrounding spaces intact so
-    # "A / B" -> "A  B" -> "A--B" rather than "A - B" -> "A---B")
-    # Colon is also omitted by Mintlify: "Step 1: Create" -> "step-1-create" (not "--")
-    slug = re.sub(r'[()[\]/?!:]', '', slug)
-    # Convert remaining non-alphanumeric, non-space, non-hyphen chars to hyphen
-    # (handles . , ; & @ # etc.)
-    slug = re.sub(r'[^\w\s-]', '-', slug)
-    # Replace each individual space with a hyphen (no run-collapsing so that
-    # double spaces — left by removed chars — produce double hyphens)
-    slug = slug.replace(' ', '-')
+    # Remove markdown formatting (* ` ~) — underscore is kept (verified: snake_case -> snake_case)
+    slug = re.sub(r'[*`~]', '', slug)
+    # Collapse ' - ' (space-hyphen-space) to a single '-' before space conversion
+    # e.g. "Dispatcher - Hooks" -> "dispatcher-hooks" (NOT "dispatcher---hooks")
+    slug = re.sub(r' - ', '-', slug)
+
+    result = []
+    for i, c in enumerate(slug):
+        next_c = slug[i + 1] if i + 1 < len(slug) else None
+
+        if c in ('(', '[', ']', '!', ':', '?'):
+            pass  # always omit
+        elif c == ')':
+            # omit before space or end; '-' before non-space
+            if next_c is not None and next_c != ' ':
+                result.append('-')
+        elif c == '/':
+            result.append('%2F')
+        elif c == '.':
+            # omit before space or end; '-' between non-space chars
+            if next_c is not None and next_c != ' ':
+                result.append('-')
+        elif c == ',':
+            # omit before space or end
+            if next_c is not None and next_c != ' ':
+                result.append('-')  # unverified edge case
+        elif c == ' ':
+            result.append('-')
+        elif c.isalnum() or c in ('-', '_'):
+            result.append(c)
+        else:
+            result.append('-')  # fallback for any other punctuation
+
+    slug = ''.join(result)
     # Strip leading hyphens only (keep trailing — they are meaningful in Mintlify)
     return slug.lstrip('-')
 
