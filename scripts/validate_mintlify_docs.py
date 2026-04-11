@@ -987,6 +987,16 @@ def main():
         else:
             print("✅ No broken image references found!")
 
+    if args.external_links or args.external_only:
+        if external_results:
+            failed_count = sum(1 for results in external_results.values() for r in results if not r['accessible'])
+            if failed_count:
+                print(f"❌ Found {failed_count} broken external links")
+            else:
+                print("✅ All external links are reachable!")
+        else:
+            print("✅ No external links found!")
+
     if args.check_anchors:
         if broken_anchors:
             total_broken_anchors = sum(len(v) for v in broken_anchors.values())
@@ -1011,6 +1021,11 @@ def main():
     has_broken_links = broken_links and not args.images_only
     has_broken_images = broken_images and not args.links_only
     has_broken_anchors = bool(broken_anchors) and args.check_anchors
+    has_broken_external = bool(external_results) and any(
+        not result['accessible']
+        for results in external_results.values()
+        for result in results
+    )
     has_validation_issues = (validation_results and 'error' not in validation_results and
                            (validation_results['self_referencing_redirects'] or
                             validation_results['navigation_redirect_conflicts'] or
@@ -1018,7 +1033,7 @@ def main():
                             validation_results['missing_navigation_files'] or
                             validation_results['missing_redirect_destinations']))
 
-    return 1 if (has_broken_links or has_broken_images or has_broken_anchors or has_validation_issues) else 0
+    return 1 if (has_broken_links or has_broken_images or has_broken_anchors or has_broken_external or has_validation_issues) else 0
 
 if __name__ == '__main__':
     exit(main())
