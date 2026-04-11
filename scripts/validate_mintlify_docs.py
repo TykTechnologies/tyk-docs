@@ -71,43 +71,56 @@ def remove_comments_and_code(content: str) -> str:
     return content
 
 def slugify_heading(text: str) -> str:
-    """Convert a heading string to a GFM-compatible anchor slug.
+    """Convert a heading string to a Mintlify-compatible anchor slug.
 
-    Mintlify follows GitHub Flavored Markdown slugification:
-      1. Strip leading/trailing whitespace
-      2. Lowercase
-      3. Remove characters that are not alphanumeric, spaces, or hyphens
-      4. Replace whitespace runs with a single hyphen
-      5. Collapse consecutive hyphens
+    Mintlify's heading-to-anchor algorithm (empirically determined):
+      1. Strip leading/trailing whitespace and lowercase
+      2. Remove inline HTML tags and markdown formatting (* _ ` ~)
+      3. Remove grouping/separator chars () [] / ? ! : entirely — preserves surrounding spaces
+         e.g. "(mTLS)" -> "mTLS", "A / B" -> "A  B" (double space -> double hyphen)
+         "Step 1: Create" -> "Step 1 Create" -> "step-1-create" (colon omitted, not "-")
+      4. Convert remaining non-alphanumeric, non-space, non-hyphen chars to '-'
+         e.g. "5.1.1" -> "5-1-1", "." -> "-"
+      5. Replace each individual space with a hyphen (NO collapsing of runs)
+         e.g. "A  B" (double space) -> "A--B" (double hyphen)
+      6. Strip leading hyphens only (keep trailing — e.g. "Heading ?" -> "heading-")
     """
     slug = text.strip().lower()
     # Remove inline HTML tags (e.g. <code>, <strong>)
     slug = re.sub(r'<[^>]+>', '', slug)
     # Remove markdown formatting characters (* _ ` ~)
     slug = re.sub(r'[*_`~]', '', slug)
-    # Keep only word chars (a-z 0-9 _), spaces, and hyphens; drop the rest
-    slug = re.sub(r'[^\w\s-]', '', slug)
-    # Collapse whitespace to a single hyphen
-    slug = re.sub(r'\s+', '-', slug)
-    # Collapse consecutive hyphens
-    slug = re.sub(r'-{2,}', '-', slug)
-    return slug.strip('-')
+    # Remove grouping/separator chars entirely (keep surrounding spaces intact so
+    # "A / B" -> "A  B" -> "A--B" rather than "A - B" -> "A---B")
+    # Colon is also omitted by Mintlify: "Step 1: Create" -> "step-1-create" (not "--")
+    slug = re.sub(r'[()[\]/?!:]', '', slug)
+    # Convert remaining non-alphanumeric, non-space, non-hyphen chars to hyphen
+    # (handles . , ; & @ # etc.)
+    slug = re.sub(r'[^\w\s-]', '-', slug)
+    # Replace each individual space with a hyphen (no run-collapsing so that
+    # double spaces — left by removed chars — produce double hyphens)
+    slug = slug.replace(' ', '-')
+    # Strip leading hyphens only (keep trailing — they are meaningful in Mintlify)
+    return slug.lstrip('-')
 
 
 def extract_file_anchors(content: str) -> Set[str]:
     """Return all valid anchor IDs defined within an MDX file.
 
     Sources considered:
-    - ATX headings (## Heading) → GFM slug
-    - Custom heading IDs: ## Heading {#custom-id} → custom-id (overrides slug)
+    - ATX headings (## Heading) → GFM slug, with Mintlify-style duplicate
+      disambiguation: the second occurrence of a slug gets a '-1' suffix,
+      the third gets '-2', etc.
+    - Custom heading IDs: ## Heading {#custom-id} → custom-id (overrides slug,
+      no disambiguation applied)
     - HTML <a id="..."> and <a name="..."> elements
     """
     anchors: Set[str] = set()
+    # Track how many times each base slug has appeared for disambiguation
+    slug_count: Dict[str, int] = {}
 
-    # ATX headings, optionally followed by a {#custom-id} specifier.
-    # Group 1 = heading text; Group 2 = custom id (may be absent)
     heading_re = re.compile(
-        r'^#{1,6}\s+(.+?)(?:\s+\{#([^}]+)\})?\s*$',
+        r'^(?:\d+\.\s+|[-*+]\s+)?#{1,6}\s+(.+?)(?:\s+\{#([^}]+)\})?\s*$',
         re.MULTILINE,
     )
     for m in heading_re.finditer(content):
@@ -116,8 +129,14 @@ def extract_file_anchors(content: str) -> Set[str]:
             anchors.add(custom_id.strip())
         else:
             slug = slugify_heading(m.group(1))
-            if slug:
-                anchors.add(slug)
+            if not slug:
+                continue
+            count = slug_count.get(slug, 0)
+            slug_count[slug] = count + 1
+            anchors.add(slug)
+            if count > 0:
+                # Mintlify disambiguates: 2nd occurrence → slug-1, 3rd → slug-2 …
+                anchors.add(f"{slug}-{count}")
 
     # <a id="..."> and <a name="...">
     for attr in ('id', 'name'):
@@ -223,16 +242,26 @@ def check_broken_anchors(
     anchor_map: Dict[str, Set[str]],
     existing_files: Set[str],
     redirects: Dict[str, str],
+    anchor_target_excludes: List[str],
 ) -> Dict[str, List[Tuple[str, str]]]:
     """Check that every anchor fragment in internal links resolves in the target file.
 
     Returns a dict mapping source file → list of (link_with_anchor, reason) tuples.
+    anchor_target_excludes: list of relative file paths (with or without .mdx) whose
+    anchors should not be validated (e.g. files that pull content via MDX imports).
     """
+    # Normalise excludes to bare paths without extension for comparison
+    excluded = {p.removesuffix('.mdx') for p in anchor_target_excludes}
+
     broken: Dict[str, List[Tuple[str, str]]] = {}
 
     for source_file, links in file_anchor_links.items():
         file_broken: List[Tuple[str, str]] = []
         for path, anchor in sorted(links):
+            # Skip if the target file is in the exclude list
+            if path.removesuffix('.mdx') in excluded:
+                continue
+
             rel_file = resolve_file_path(path, existing_files, redirects)
 
             if rel_file is None:
@@ -580,6 +609,7 @@ def check_broken_links(
     external_timeout: int = 10,
     external_delay: float = 1.0,
     check_anchors: bool = False,
+    anchor_target_excludes: Optional[List[str]] = None,
 ) -> Tuple[
     Dict[str, List[str]],
     Dict[str, List[str]],
@@ -618,7 +648,8 @@ def check_broken_links(
         print(f"\n🔍 Building anchor map for {base_dir}...")
         anchor_map = build_anchor_map(base_dir)
         broken_anchor_results = check_broken_anchors(
-            base_dir, file_anchor_links, anchor_map, existing_files, redirects
+            base_dir, file_anchor_links, anchor_map, existing_files, redirects,
+            anchor_target_excludes=anchor_target_excludes or [],
         )
 
     return broken_links, broken_images, redirects, external_results, broken_anchor_results
@@ -818,6 +849,8 @@ def main():
     parser.add_argument('--external-only', action='store_true', help='Only check external links')
     parser.add_argument('--external-errors-only', action='store_true', help='Only show failed external links')
     parser.add_argument('--check-anchors', action='store_true', help='Validate anchor fragments in internal links')
+    parser.add_argument('--anchor-target-excludes', nargs='*', default=[], metavar='PATH',
+                        help='Relative file paths whose anchors should not be validated (e.g. auto-generated files that use MDX imports)')
 
     args = parser.parse_args()
 
@@ -832,6 +865,7 @@ def main():
         external_timeout=args.external_timeout,
         external_delay=args.external_delay,
         check_anchors=args.check_anchors,
+        anchor_target_excludes=args.anchor_target_excludes,
     )
     
     # Validate docs.json if requested
