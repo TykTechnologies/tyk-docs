@@ -1,0 +1,176 @@
+---
+title: "MCP Gateway"
+description: "Tyk Gateway proxies and governs remote MCP servers — applying authentication, rate limiting, access control, key management, and observability to AI agent traffic at the gateway level."
+keywords: "MCP, Model Context Protocol, MCP Gateway, AI agent, remote MCP server, JSON-RPC, authentication, rate limiting, observability, policy enforcement"
+sidebarTitle: "Overview"
+---
+
+![MCP Gateway](/img/ai-management/mcp-gateway-header.png)
+
+The Model Context Protocol (MCP) is the open standard for connecting AI applications to external tools, data sources, and workflows.
+
+As MCP servers move into shared cloud infrastructure, they face the same operational challenges REST APIs faced a decade ago: who can call what, how often, with what credentials, and with what visibility.
+
+Tyk Gateway addresses these challenges natively, sitting between MCP clients and your remote MCP servers to enforce authentication, access policies, rate limits, and traffic governance on every JSON-RPC request.
+
+---
+
+## What is MCP?
+
+The Model Context Protocol is an open standard that defines how AI applications connect to external tools, data sources, and services.
+
+It uses a client-server model: an **MCP client** (an AI agent, LLM framework, or application) connects to an **MCP server** (a service that exposes capabilities) and interacts with it through JSON-RPC 2.0 messages over HTTP.
+
+MCP servers expose three types of capability, called **primitives**:
+
+- **Tools** — callable functions the AI can invoke to take actions or retrieve computed results, for example querying a database or calling an external API.
+- **Resources** — readable data sources the AI can access, identified by a URI, for example a file, a document, or a live data feed.
+- **Prompts** — reusable prompt templates the server makes available to the client, allowing servers to provide curated instructions for common tasks.
+
+MCP also defines client-side primitives — capabilities that servers can request from clients rather than expose themselves. These include **sampling** (server-requested LLM inference), **roots** (client-exposed filesystem locations), and **elicitation** (server-requested structured user input). See [MCP Gateway — Core concepts](/ai-management/mcp-gateway/core-concepts) for the full breakdown.
+
+Tyk supports the MCP `2025-11-25` specification. For the full protocol reference, see the [MCP specification](https://modelcontextprotocol.io/specification/2025-11-25).
+
+---
+
+## The problem with ungoverned MCP
+
+Remote MCP servers are HTTP services. Like any HTTP service, they need authentication, rate limiting, access control, and observability to be operated reliably at scale. Without a gateway layer, these concerns must be addressed — if at all — inside each individual server, leading to:
+
+**Inconsistent security.** Each MCP server implements its own authentication, or none at all. No central place exists to enforce who can access which tools, rotate credentials, or revoke access.
+
+**No visibility.** No standard way exists to see which AI agents are calling which tools, how often, and whether calls are succeeding. Troubleshooting failures or planning capacity requires digging into individual server logs.
+
+**Ungoverned proliferation.** MCP servers can appear across teams without oversight. No registry exists of what is available, no approval process, and no way to apply organisation-wide policies consistently.
+
+**Fragile direct connections.** AI agents connecting directly to MCP servers have no protection if a server is slow or unavailable. Rate limits, circuit breakers, and timeouts must be rebuilt on every server independently.
+
+---
+
+## Where Tyk fits
+
+Tyk Gateway sits in front of your remote MCP servers and proxies all MCP traffic through a centrally managed gateway layer. AI clients connect to Tyk at a configured listen path; Tyk authenticates the request, applies the configured middleware chain, and forwards the request to the upstream MCP server. The Tyk Dashboard serves as the registry layer — the central catalogue of every MCP server in your organisation, with the access policies and observability that govern how each one is used.
+
+![Where Tyk MCP Gateway fits](/img/ai-management/where-tyk-mcp-gateway-fits.png)
+
+Tyk understands the MCP protocol. It parses JSON-RPC 2.0 request bodies to identify the method being called and the specific tool, resource, or prompt being accessed. This means you can apply policies at the level of individual MCP primitives — rate limiting a particular tool, blocking access to a specific resource, or caching a prompt response — rather than treating all MCP traffic as an opaque HTTP stream.
+
+Tyk handles both MCP transport methods:
+
+- **`POST /mcp`** — JSON-RPC messages from client to server. Tyk applies the middleware chain and proxies the request, streaming SSE responses through if the upstream returns them.
+- **`GET /mcp`** — Long-lived SSE connections for server-initiated messages. Tyk maintains the connection and passes events through transparently.
+
+---
+
+## What Tyk MCP Gateway provides
+
+### Authentication and key management
+
+Tyk authenticates every MCP request before it reaches your upstream server. All authentication methods supported for REST APIs work identically for MCP: bearer tokens, API keys, JWT, OAuth 2.0, and mTLS. You issue and manage API keys through the Tyk Dashboard or API, and every key is associated with a security policy that defines what it can access and at what rate.
+
+This means your MCP servers don't need to implement their own authentication. Tyk handles credential verification, token validation, and key lifecycle — rotation, expiration, and revocation — centrally.
+
+The [MCP specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization) mandates OAuth 2.1 as the authorisation framework and requires MCP servers to implement **Protected Resource Metadata** (PRM) — a discovery document that tells OAuth-aware clients which authorisation server to use and which scopes the resource supports. Tyk implements PRM natively: it serves the `/.well-known/oauth-protected-resource` endpoint automatically and returns the correct `WWW-Authenticate` challenge on unauthenticated requests, so compliant MCP clients can self-configure without any pre-configuration. See [MCP Gateway — OAuth 2.1 authentication](/ai-management/mcp-gateway/oauth-2-1) for the full implementation details.
+
+### Access control and policy enforcement
+
+Security policies give you granular, per-consumer control over what MCP consumers can see and access, and how often. Rather than configuring each key individually, you define a policy once and issue keys that inherit its rules automatically.
+
+For MCP proxies, policies go significantly further than the rate limits and quotas available for standard REST APIs. A policy can control which proxies a consumer key can reach, which JSON-RPC methods it is permitted to use, which individual tools, resources, and prompts it can invoke or discover, and what rate limits and quotas apply at each level — independently for each consumer.
+
+This is what makes it practical to serve many different AI agents from a single MCP proxy. A read-only analyst agent and a privileged administrator agent can share the same upstream server but operate within completely different entitlements, each enforced at the gateway without any changes to the upstream.
+
+Tyk also filters discovery responses per consumer. When an agent calls `tools/list`, `resources/list`, or `prompts/list`, Tyk intercepts the upstream response and returns only the primitives that consumer is permitted to see — so **each agent's view of the server's capabilities is scoped to its own entitlements from the moment it connects**.
+
+### Service registry
+
+The Tyk Dashboard's MCP section serves as a central registry of all MCP servers in your organisation. Each MCP proxy is a registry entry — it records the upstream server's address, its listen path, the tools and resources it exposes, and the access policies that govern it.
+
+This gives teams a single authoritative source of truth for what MCP capabilities are available, who can access them, and under what conditions. When a new MCP server is onboarded, registering it as a proxy in the Dashboard makes it discoverable to authorised agents and invisible to everyone else — without changes to the upstream server or the agents themselves.
+
+Discovery filtering reinforces this: when an agent calls `tools/list`, Tyk returns only the primitives that agent's policy permits. Every agent's view of the registry is scoped to its own entitlements from the moment it connects. See [Managing MCP proxies](/ai-management/mcp-gateway/managing-mcp-proxies).
+
+### Traffic management
+
+Tyk applies the same traffic management capabilities to MCP traffic that it provides for REST and GraphQL:
+
+- **Rate limiting** at every level of granularity — across all consumers on a proxy, per consumer key, per JSON-RPC method, and down to the individual named tool, resource, or prompt. Limits at each level are tracked independently, so a consumer exhausting their budget on one tool does not affect their access to others.
+- **Throttling** to queue requests that exceed the rate limit rather than rejecting them immediately.
+- **Timeouts** per primitive, so a slow tool response does not stall the entire MCP session.
+- **Circuit breakers** that detect failure patterns on individual tools and temporarily stop forwarding requests, giving the upstream time to recover.
+- **Request size limits** to protect against oversized argument payloads on tools that accept large inputs.
+- **Upstream rate limits** that protect your MCP server from being overwhelmed regardless of how many consumers are configured.
+
+### Analytics
+
+Tyk records analytics for every MCP request and exposes them in the Tyk Dashboard under **Monitoring → Activity by MCP**. Analytics are captured at two levels.
+
+**Proxy-level charts** show total request volume, error counts, and HTTP error code distribution across all your MCP proxies. Use these to compare traffic and error rates between proxies and identify trends over time.
+
+**Primitive-level charts** break the data down by individual tool, resource, or prompt: call volumes over time, most frequently called primitives, highest error rates, and slowest average latency. These charts show exactly which tools AI agents are calling, which are failing, and which are your performance bottlenecks — without any additional instrumentation.
+
+Both levels of data appear alongside your REST and GraphQL API analytics, giving you a unified view of your entire API estate. See [MCP analytics](/ai-management/mcp-gateway/mcp-analytics).
+
+### Observability
+
+Beyond the Dashboard analytics page, Tyk emits MCP-specific observability signals that integrate with your existing monitoring infrastructure.
+
+**Structured access logs** include four MCP-specific fields on every logged request: the JSON-RPC method invoked (`mcp_method`), the primitive type (`mcp_primitive_type`), the primitive name (`mcp_primitive_name`), and a gateway-mapped error code when the request fails at the gateway layer (`mcp_error_code`). These fields let you filter and aggregate MCP traffic in your log management tooling using the same pipeline you use for REST APIs. See [MCP access logs](/ai-management/mcp-gateway/mcp-access-logs).
+
+**OpenTelemetry metrics** — when OTel is enabled on the gateway, Tyk emits four MCP-specific metric instruments covering request counts (with dimensions for method, primitive type, tool name, and error code), method distribution, upstream latency per tool, and end-to-end request latency. These metrics can be scraped by Prometheus and used to build dashboards in Grafana or your preferred metrics platform. See [MCP metrics](/ai-management/mcp-gateway/mcp-metrics) and [How to build a Grafana dashboard for MCP traffic](/ai-management/mcp-gateway/how-to-grafana-mcp-dashboard).
+
+---
+
+## How Tyk represents MCP proxies
+
+Tyk models each remote MCP server as a **[Tyk OAS definition](/ai-management/mcp-gateway/mcp_proxy_definitions)** — an OpenAPI 3.0 document extended with the `x-tyk-api-gateway` vendor extension. This is the same format used for REST APIs, so MCP proxies share the same configuration model, tooling, and management APIs as the rest of your Tyk estate.
+
+The MCP API definition configures:
+
+- The **listen path** — the URL prefix where Tyk exposes the MCP proxy to clients
+- The **upstream URL** — the address of your remote MCP server
+- **Authentication** — which method to use and how to validate credentials
+- **Middleware** — per-primitive access control, rate limits, caching, transformations, and more
+
+You create and manage MCP OAS definitions through the Tyk Dashboard or the Gateway API. No changes to your upstream MCP server are required.
+
+<Note>
+MCP OAS definitions require Tyk OAS format. Tyk Classic API definitions do not support MCP.
+</Note>
+
+---
+
+## In this section
+
+| Page | What it covers |
+|---|---|
+| [Core concepts](/ai-management/mcp-gateway/core-concepts) | The MCP protocol, the gateway's role, session lifecycle, the proxy definition, middleware levels, and the policy model for per-consumer access control and rate limiting. |
+| [Managing MCP proxies](/ai-management/mcp-gateway/managing-mcp-proxies) | How to create, configure, and delete MCP proxies in the Tyk Dashboard — the creation wizard, the Settings tab, and the Primitives tab for per-primitive middleware. |
+| [MCP proxy policies](/ai-management/mcp-gateway/policies) | Per-consumer access control and rate limiting: the five-level rate limit hierarchy, per-primitive rate limits (`mcp_primitives`), primitive allow/block lists (`mcp_access_rights`), and JSON-RPC method access control. |
+| [MCP OAS definition](/ai-management/mcp-gateway/mcp_proxy_definitions) | The structure of the Tyk OAS API definition for MCP — the `x-tyk-api-gateway` extension and how MCP concepts map to configuration fields. |
+| [MCP middleware](/ai-management/mcp-gateway/mcp-middleware) | Every middleware capability available for MCP primitives: access control, rate limiting, timeouts, circuit breakers, request transformation, virtual endpoints, and observability. |
+| [OAuth 2.1 authentication](/ai-management/mcp-gateway/oauth-2-1) | How Tyk implements the MCP OAuth 2.1 authorisation model: Protected Resource Metadata discovery, inbound Bearer token validation, and upstream OAuth. |
+| [MCP analytics](/ai-management/mcp-gateway/mcp-analytics) | The Activity by MCP dashboard page: proxy-level and primitive-level traffic, error, and latency charts. |
+| [MCP observability](/ai-management/mcp-gateway/mcp-observability) | Overview of all MCP observability signals — metrics, access logs, and distributed traces — and the shared MCP fields across each. |
+| [MCP metrics](/ai-management/mcp-gateway/mcp-metrics) | OTel metric instruments for MCP traffic: request counts, method distribution, upstream latency, and end-to-end latency, with dimensions and PromQL examples. |
+| [MCP access logs](/ai-management/mcp-gateway/mcp-access-logs) | MCP-specific structured access log fields: `mcp_method`, `mcp_primitive_type`, `mcp_primitive_name`, and `mcp_error_code`. |
+| [API extensions](/ai-management/mcp-gateway/mcp_api_extensions) | Reference for the MCP proxy management endpoints on the Tyk Gateway API and Dashboard API. |
+| [FAQ](/ai-management/mcp-gateway/faq) | Answers to common questions about MCP Gateway: transport, security, authentication, sessions, rate limiting, observability, and enterprise governance. |
+| [How to proxy a remote MCP server](/ai-management/mcp-gateway/how-to-proxy-remote-mcp) | Put Tyk in front of a remote MCP server — configuring the proxy, injecting upstream credentials, restricting tools with an allowlist, and issuing agent keys. |
+| [How to implement RBAC for an MCP proxy](/ai-management/mcp-gateway/how-to-mcp-rbac) | Use Tyk policies to give different agents different tool access on the same proxy — without creating separate proxy definitions. |
+| [How to rate limit individual MCP tools per consumer](/ai-management/mcp-gateway/how-to-rate-limit-tools-per-consumer) | Configure per-tool rate limits for different agent tiers on a single MCP proxy. |
+| [How to block an MCP tool](/ai-management/mcp-gateway/how-to-block-tool) | Block specific tools at the gateway level so agents cannot call them, regardless of what the upstream server exposes. |
+| [How to build a Grafana dashboard for MCP traffic](/ai-management/mcp-gateway/how-to-grafana-mcp-dashboard) | Build a starter Grafana dashboard covering request volume by JSON-RPC method, error rate, and top tools by call volume using Tyk's OTel metrics. The [MCP metrics](/ai-management/mcp-gateway/mcp-metrics) reference covers additional instruments for latency and session efficiency. |
+
+
+---
+
+## See also
+
+- [MCP Gateway — Core concepts](/ai-management/mcp-gateway/core-concepts) — The MCP protocol, the gateway's role, session lifecycle, middleware levels, and policies.
+- [MCP proxy policies](/ai-management/mcp-gateway/policies) — Per-consumer primitive rate limits, access control lists, and the full five-level rate limit hierarchy.
+- [MCP analytics](/ai-management/mcp-gateway/mcp-analytics) — Proxy-level and primitive-level traffic, error, and latency charts in the Tyk Dashboard.
+- [MCP observability](/ai-management/mcp-gateway/mcp-observability) — Overview of all MCP observability signals: metrics, access logs, and traces.
+- [Security policies](/api-management/security-policies) — How to define and apply access and rate-limit policies to MCP proxy keys.
+- [Authentication](/api-management/authentication) — The full range of authentication methods supported for Tyk APIs, all of which apply to MCP.
+- [Tyk OAS](/api-management/tyk-oas) — The base API definition format that MCP definitions extend.

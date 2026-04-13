@@ -1,0 +1,489 @@
+---
+title: "MCP OAS definition"
+description: "How Tyk represents MCP servers as OpenAPI definitions: the OpenAPI specification structure, MCP primitives and JSON-RPC methods, and the x-tyk-api-gateway extensions that configure gateway behaviour for MCP traffic."
+keywords: "MCP, Model Context Protocol, MCP API definition, x-tyk-api-gateway, JSON-RPC, primitives, tools, resources, prompts, operations, Tyk OAS, Streamable HTTP"
+sidebarTitle: "MCP OAS definition"
+---
+
+An MCP proxy definition is the configuration object that tells Tyk how to proxy an MCP server. It is built on the **[Tyk OAS API definition](/api-management/tyk-oas)** format — an OpenAPI 3.0 document extended with the `x-tyk-api-gateway` vendor extension — and adds the MCP-specific structures that allow Tyk to inspect JSON-RPC traffic and apply middleware at the method and primitive level. This page explains the structure of an MCP API definition, how MCP concepts (primitives, methods, operations) map to it, and which parts of the extension are specific to MCP.
+
+> If you are not familiar with Tyk OAS API definitions, read [Tyk OAS](/api-management/tyk-oas) first. This page focuses on the MCP-specific aspects and assumes knowledge of the base format.
+
+---
+
+## Structure overview
+
+An MCP API definition has two parts that work together:
+
+- **The OpenAPI specification** — Describes the MCP server's transport endpoints and, optionally, each JSON-RPC method as a documented operation. Tyk uses this to understand the API's shape and to present it in the Developer Portal.
+- **The `x-tyk-api-gateway` extension** — Contains all gateway configuration: the listen path, upstream URL, authentication, and the middleware maps that govern individual tools, resources, and prompts.
+
+The two parts share the same file or API object:
+
+```json
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Weather MCP proxy",
+    "version": "2025-11-25"
+  },
+  "paths": { ... },
+  "x-tyk-api-gateway": {
+    "info": { ... },
+    "server": { ... },
+    "upstream": { ... },
+    "middleware": { ... }
+  }
+}
+```
+
+The sections below explain each part and the MCP-specific patterns within them.
+
+---
+
+## MCP concepts in the definition
+
+Three core MCP concepts shape how you write an MCP API definition: primitives, JSON-RPC methods, and transport endpoints. Understanding them before reading the definition structure makes the configuration decisions much clearer.
+
+### Primitives
+
+Primitives are the capabilities an MCP server exposes. The MCP specification defines three categories:
+
+- **Tools** — Actions an AI agent can invoke. Each tool has a name, an input schema, and returns a result. For example, a `get-weather` tool that accepts a location and returns a forecast.
+- **Resources** — Data an AI agent can read. Each resource is identified by a URI (for example, `weather://stations/london`). Resources support URI wildcard patterns for template-based access (for example, `weather://stations/*`).
+- **Prompts** — Pre-written instruction templates that shape LLM behaviour. Each prompt has a name and accepts arguments that customise the generated content.
+
+Primitives are the level at which Tyk applies fine-grained middleware. You can rate limit a specific tool, cache a specific resource, or block a specific prompt — independently of every other primitive on the same server. In the `x-tyk-api-gateway` extension, each primitive category has its own middleware map: `mcpTools`, `mcpResources`, and `mcpPrompts`.
+
+### JSON-RPC methods
+
+MCP clients communicate with servers by sending JSON-RPC 2.0 requests. Every request carries a `method` field that identifies the operation:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "get-weather",
+    "arguments": { "location": "London" }
+  }
+}
+```
+
+Methods are organised into namespaces that correspond to MCP capabilities:
+
+| Namespace | Methods | Purpose |
+|---|---|---|
+| Lifecycle | `initialize`, `ping` | Session establishment and health checks |
+| Tools | `tools/list`, `tools/call` | Tool discovery and invocation |
+| Resources | `resources/list`, `resources/read`, `resources/templates/list`, `resources/subscribe`, `resources/unsubscribe` | Resource discovery, reading, and subscriptions |
+| Prompts | `prompts/list`, `prompts/get` | Prompt discovery and retrieval |
+| Completions | `completion/complete` | Argument autocompletion |
+| Logging | `logging/setLevel` | Server log level control |
+
+In the `x-tyk-api-gateway` extension, you can configure middleware at the method level — applying a rule to every `tools/call` request regardless of which tool is named — using the `middleware.operations` map.
+
+### Transport endpoints
+
+All MCP traffic flows through a single path (`/mcp`) that supports two HTTP methods:
+
+- **`POST /mcp`** — Clients send JSON-RPC messages. The server responds with either a single JSON object or a Server-Sent Events stream.
+- **`GET /mcp`** — Clients open a persistent SSE connection for server-initiated messages.
+
+These two transport endpoints are the only real HTTP endpoints your MCP server needs to expose. In the OpenAPI specification portion of the definition, they are documented as `POST /mcp` and `GET /mcp`. Tyk proxies both.
+
+---
+
+## The OpenAPI specification portion
+
+The OpenAPI specification in an MCP API definition documents the server's HTTP interface. For MCP, this has a standard structure that you can treat as a template.
+
+### Transport paths
+
+At minimum, the `paths` object documents the two transport endpoints:
+
+```json
+{
+  "paths": {
+    "/mcp": {
+      "post": {
+        "summary": "Send a JSON-RPC message",
+        "operationId": "mcpTransportPost",
+        "parameters": [
+          {
+            "name": "MCP-Protocol-Version",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "example": "2025-11-25" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/JSONRPCRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "JSON-RPC response or SSE stream",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/JSONRPCResponse" } },
+              "text/event-stream": { "schema": { "type": "string" } }
+            }
+          },
+          "202": { "description": "Accepted (notification, no response body)" }
+        }
+      },
+      "get": {
+        "summary": "Open an SSE stream",
+        "operationId": "mcpSSEGet",
+        "responses": {
+          "200": {
+            "description": "Server-sent events stream",
+            "content": {
+              "text/event-stream": { "schema": { "type": "string" } }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+The `operationId` values (`mcpTransportPost`, `mcpSSEGet`) are referenced internally by Tyk for the transport endpoints. These values are fixed — do not change them.
+
+### Method paths
+
+In addition to the transport paths, you can document each JSON-RPC method as a separate path. This is optional for gateway operation but makes the API browsable in the Tyk Developer Portal:
+
+```json
+{
+  "paths": {
+    "/mcp/tools/call": {
+      "post": {
+        "summary": "Invoke a tool",
+        "operationId": "tools/callPOST",
+        "x-mcp-method": "tools/call",
+        ...
+      }
+    },
+    "/mcp/resources/read": {
+      "post": {
+        "summary": "Read a resource",
+        "operationId": "resources/readPOST",
+        "x-mcp-method": "resources/read",
+        ...
+      }
+    }
+  }
+}
+```
+
+These paths are a documentation and governance interface. They present each JSON-RPC method as a distinct, typed operation — making MCP proxies discoverable alongside REST and GraphQL APIs in your Developer Portal. The path structure (`/mcp/{namespace}/{action}`) and the `operationId` convention (`{method}POST`) are what tie the OpenAPI spec to the `middleware.operations` map in the `x-tyk-api-gateway` extension.
+
+<Note>
+The method paths do not correspond to real HTTP endpoints. All traffic still flows through `POST /mcp`. The method paths exist solely for documentation, schema validation, and middleware configuration purposes.
+</Note>
+
+---
+
+## The x-tyk-api-gateway extension
+
+The `x-tyk-api-gateway` extension contains all gateway configuration. For MCP proxies, it has the same four top-level sections as any Tyk OAS API definition, with MCP-specific content in the `middleware` section.
+
+### info, server, and upstream
+
+The `info`, `server`, and `upstream` sections work identically to a standard Tyk OAS API definition. They configure the API's identity, its client-facing interface, and its upstream connectivity:
+
+```json
+{
+  "x-tyk-api-gateway": {
+    "info": {
+      "name": "Weather MCP proxy",
+      "state": { "active": true }
+    },
+    "server": {
+      "listenPath": { "value": "/weather/", "strip": true },
+      "authentication": {
+        "enabled": true,
+        "securitySchemes": {
+          "bearerAuth": { "enabled": true }
+        }
+      }
+    },
+    "upstream": {
+      "url": "https://weather-mcp.example.com"
+    }
+  }
+}
+```
+
+There are no MCP-specific fields in these three sections. You configure authentication, TLS, load balancing, upstream rate limits, and all other standard gateway capabilities exactly as you would for a REST API. See [Tyk OAS](/api-management/tyk-oas) for the full field reference for these sections.
+
+### The middleware section
+
+The `middleware` section is where MCP OAS definitions diverge from standard Tyk OAS API definitions. It contains the same `global` block for API-wide middleware, but adds two new concepts: an `operations` map keyed by JSON-RPC method, and three primitive maps — `mcpTools`, `mcpResources`, and `mcpPrompts`.
+
+```json
+{
+  "middleware": {
+    "global": { ... },
+    "operations": { ... },
+    "mcpTools": { ... },
+    "mcpResources": { ... },
+    "mcpPrompts": { ... }
+  }
+}
+```
+
+Each is explained below.
+
+#### global
+
+Global middleware applies to every request on the API. It is configured identically to a standard Tyk OAS API — CORS, traffic logs, header transformations, custom plugins, and so on. There is nothing MCP-specific here.
+
+#### operations — method-level middleware
+
+The `operations` map lets you configure middleware that applies to every invocation of a JSON-RPC method, regardless of which specific primitive is targeted. It is keyed by the operation ID of the method path in the OpenAPI spec, which follows the convention `{json-rpc-method}{HTTP-method}`:
+
+| JSON-RPC method | Operation ID key |
+|---|---|
+| `tools/call` | `tools/callPOST` |
+| `tools/list` | `tools/listPOST` |
+| `resources/read` | `resources/readPOST` |
+| `resources/list` | `resources/listPOST` |
+| `prompts/get` | `prompts/getPOST` |
+| `prompts/list` | `prompts/listPOST` |
+| `initialize` | `initializePOST` |
+
+For example, to rate limit all tool calls at the method level:
+
+```json
+{
+  "middleware": {
+    "operations": {
+      "tools/callPOST": {
+        "rateLimit": {
+          "enabled": true,
+          "rate": 500,
+          "per": 60
+        }
+      }
+    }
+  }
+}
+```
+
+This rate limit applies to every `tools/call` request, whatever tool name appears in `params.name`. Method-level middleware evaluates before primitive-level middleware.
+
+#### mcpTools — per-tool middleware
+
+The `mcpTools` map configures middleware for individual tools. Each key is the tool name as it appears in the `params.name` field of a `tools/call` request:
+
+```json
+{
+  "middleware": {
+    "mcpTools": {
+      "get-weather": {
+        "allow": { "enabled": true },
+        "rateLimit": { "enabled": true, "rate": 100, "per": 60 }
+      },
+      "execute-query": {
+        "allow": { "enabled": true },
+        "requestSizeLimit": { "enabled": true, "value": 8192 }
+      }
+    }
+  }
+}
+```
+
+When any tool in `mcpTools` has `allow` enabled, the entire tools category enters allowlist mode: only the explicitly listed tools are accessible, and all other tool names are rejected. Tools, resources, and prompts are evaluated independently — allowlisting tools does not affect access to resources or prompts.
+
+#### mcpResources — per-resource middleware
+
+The `mcpResources` map configures middleware for individual resources or URI patterns. Each key is matched against the `params.uri` field of a `resources/read` request. Keys can be exact URIs or wildcard patterns using `*`:
+
+```json
+{
+  "middleware": {
+    "mcpResources": {
+      "weather://stations/london": {
+        "allow": { "enabled": true },
+        "cache": { "enabled": true, "timeout": 300 }
+      },
+      "weather://stations/*": {
+        "allow": { "enabled": true },
+        "cache": { "enabled": true, "timeout": 60 }
+      }
+    }
+  }
+}
+```
+
+Tyk resolves matches in priority order: exact matches take precedence over wildcard matches. When multiple wildcard patterns match, the longest matching prefix wins.
+
+#### mcpPrompts — per-prompt middleware
+
+The `mcpPrompts` map configures middleware for individual prompts. Each key is the prompt name as it appears in the `params.name` field of a `prompts/get` request:
+
+```json
+{
+  "middleware": {
+    "mcpPrompts": {
+      "weather-summary": {
+        "allow": { "enabled": true }
+      },
+      "weather-alert": {
+        "allow": { "enabled": true },
+        "transformRequestHeaders": {
+          "enabled": true,
+          "add": [{ "name": "X-Prompt-Tier", "value": "premium" }]
+        }
+      }
+    }
+  }
+}
+```
+
+---
+
+## Middleware precedence
+
+When a request arrives, Tyk evaluates middleware in this order:
+
+1. **Global middleware** — Applies to all requests on the API.
+2. **Operation middleware** (`operations`) — Applies to all requests for the matched JSON-RPC method.
+3. **Primitive middleware** (`mcpTools`, `mcpResources`, or `mcpPrompts`) — Applies to the specific named tool, resource, or prompt.
+
+All three levels can be active simultaneously. A `tools/call` request to `execute-query` must pass global middleware, then the `tools/callPOST` operation middleware, then the `execute-query` primitive middleware — in that order. If any level rejects the request, processing stops and Tyk returns a JSON-RPC error to the client.
+
+All three middleware levels apply to all consumers of the proxy. For per-consumer control — different rate limits or tool access for different API keys — use security policies. Policies introduce a five-level rate limit hierarchy (including per-consumer primitive rate limits) and primitive allow/block lists that are evaluated independently for each consumer key. See [MCP proxy policies](/ai-management/mcp-gateway/policies) for details.
+
+---
+
+## A complete example
+
+The following definition configures a weather MCP proxy with bearer token authentication, method-level and tool-level rate limiting, resource caching, and a prompt allowlist.
+
+```json
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Weather MCP proxy",
+    "version": "2025-11-25"
+  },
+  "paths": {
+    "/mcp": {
+      "post": {
+        "operationId": "mcpTransportPost",
+        "summary": "Send a JSON-RPC message",
+        "parameters": [
+          {
+            "name": "MCP-Protocol-Version",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object" } } }
+        },
+        "responses": {
+          "200": { "description": "JSON-RPC response or SSE stream" }
+        }
+      },
+      "get": {
+        "operationId": "mcpSSEGet",
+        "summary": "Open an SSE stream",
+        "responses": {
+          "200": { "description": "Server-sent events stream" }
+        }
+      }
+    }
+  },
+  "x-tyk-api-gateway": {
+    "info": {
+      "name": "Weather MCP proxy",
+      "state": { "active": true }
+    },
+    "server": {
+      "listenPath": { "value": "/weather/", "strip": true },
+      "authentication": {
+        "enabled": true,
+        "securitySchemes": {
+          "bearerAuth": { "enabled": true }
+        }
+      }
+    },
+    "upstream": {
+      "url": "https://weather-mcp.example.com"
+    },
+    "middleware": {
+      "global": {
+        "trafficLogs": { "enabled": true }
+      },
+      "operations": {
+        "tools/callPOST": {
+          "rateLimit": { "enabled": true, "rate": 500, "per": 60 }
+        }
+      },
+      "mcpTools": {
+        "get-weather": {
+          "allow": { "enabled": true },
+          "rateLimit": { "enabled": true, "rate": 100, "per": 60 }
+        },
+        "get-forecast": {
+          "allow": { "enabled": true },
+          "rateLimit": { "enabled": true, "rate": 50, "per": 60 }
+        }
+      },
+      "mcpResources": {
+        "weather://stations/*": {
+          "allow": { "enabled": true }
+        }
+      },
+      "mcpPrompts": {
+        "weather-summary": {
+          "allow": { "enabled": true }
+        }
+      }
+    }
+  }
+}
+```
+
+What this definition does:
+
+- The API listens on `/weather/` and proxies to `https://weather-mcp.example.com`. Clients connect to `{gateway_host}/weather/mcp`.
+- Bearer token authentication is required on all requests.
+- All `tools/call` requests are rate limited to 500 per minute at the method level.
+- Only two tools are accessible (`get-weather` and `get-forecast`). Any other tool name is rejected. Each tool has its own tighter rate limit.
+- Resources matching `weather://stations/*` are accessible.
+- Only the `weather-summary` prompt is accessible.
+- Traffic logs are enabled for all requests.
+
+---
+
+## Summary
+
+| Concept | Where it lives in the definition |
+|---|---|
+| MCP primitives (tools, resources, prompts) | `middleware.mcpTools`, `middleware.mcpResources`, `middleware.mcpPrompts` |
+| JSON-RPC method middleware | `middleware.operations` — keyed by `{method}POST` |
+| API-wide middleware | `middleware.global` |
+| Transport endpoints (`POST /mcp`, `GET /mcp`) | `paths./mcp.post`, `paths./mcp.get` in the OpenAPI spec |
+| Listen path, authentication, upstream URL | `x-tyk-api-gateway.server`, `x-tyk-api-gateway.upstream` |
+
+## See also
+
+- [MCP Gateway overview](/ai-management/mcp-gateway/overview) — What Tyk MCP Gateway does and where it fits in your architecture.
+- [MCP Gateway — Core concepts](/ai-management/mcp-gateway/core-concepts) — The mental model: transport, sessions, middleware levels, and policies.
+- [MCP middleware](/ai-management/mcp-gateway/mcp-middleware) — Full list of middleware capabilities available for MCP primitives.
+- [MCP proxy policies](/ai-management/mcp-gateway/policies) — Per-consumer primitive rate limits, primitive access control lists, and the five-level rate limit hierarchy.
+- [Tyk OAS](/api-management/tyk-oas) — The base API definition format that MCP definitions extend.
+- [MCP API configuration](/tyk-apis/tyk-gateway-api/oas/mcp-api) — Complete field reference for every option in the `x-tyk-api-gateway` extension for MCP proxies.
