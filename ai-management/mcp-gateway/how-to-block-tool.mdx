@@ -1,0 +1,104 @@
+---
+title: "How to block an MCP tool for all consumers"
+description: "Prevent a specific MCP tool from being called through a proxy, regardless of consumer policy. The blocked tool remains on the upstream server but is never reachable through the gateway."
+keywords: "MCP, Model Context Protocol, block tool, blocklist, MCP middleware, MCP Inspector, Tyk Dashboard, access control"
+sidebarTitle: "Block an MCP Tool"
+---
+
+MCP servers often expose more tools than you want to make available through the gateway. Some tools are administrative, irreversible, or simply not ready for agent access. Rather than deploying a separate server with a reduced tool set — or remembering to exclude the tool from every consumer policy — you can block individual tools at the proxy layer.
+
+A blocked tool is rejected by Tyk before the request reaches the upstream, and filtered out of `tools/list` responses so agents cannot discover it exists. No consumer key or policy can override a definition-level block — if the tool is blocked, it is invisible and uncallable for everyone.
+
+This guide blocks the `delete_user` tool on the Mock MCP Server, then uses MCP Inspector to verify that calling it returns an error while all other tools continue to work.
+
+---
+
+## Before you begin
+
+- The Mock MCP Server running on `http://localhost:7878` — set up in the [quickstart](/ai-management/mcp-gateway/quickstart)
+- An MCP proxy named **Mock MCP Server** with authentication enabled — see [How to secure an MCP proxy](/ai-management/mcp-gateway/how-to-proxy-remote-mcp)
+- Node.js 18 or later (to run MCP Inspector)
+
+---
+
+## Step 1: Block the tool
+
+In the Tyk Dashboard sidebar, click **MCP**. Find **Mock MCP Server** in the list and click **Edit** to open the proxy designer.
+
+Click the **Primitives** tab.
+
+![Primitives tab on the Mock MCP Server proxy](/img/ai-management/mcp-how-to-circuitbreaker-primitives.png)
+
+Click **Add Primitive**. Set **Type** to **Tool** and enter `delete_user` as the name. Click **Add Primitive**.
+
+![Add delete_user as a tool primitive](/img/ai-management/mcp-hot-too-block-add-primitive.png)
+
+The `delete_user` entry appears in the primitives list:
+
+1. Click `delete_user` to open the middleware panel
+2. Click **Add Middleware**
+3. Select **Block List**
+4. Click **Add Middleware**
+
+![Block middleware selected for delete_user](/img/ai-management/mcp-how-to-block-primitive-middleware.png)
+
+Click **Save MCP Proxy**.
+
+---
+
+## Step 2: Verify with MCP Inspector
+
+Start MCP Inspector:
+
+```bash
+npx @modelcontextprotocol/inspector
+```
+
+Open the URL printed in your terminal. In the Inspector UI:
+
+1. Set **Transport Type** to `Streamable HTTP`
+2. Set **URL** to your MCP endpoint (find it under **MCP Proxy URL** in the proxy designer, then append `/mcp`)
+3. Add a header: `Authorization` = `Bearer {your-api-key}`
+4. Click **Connect**
+
+Click the **Tools** tab. Notice that `delete_user` no longer appears in the tool list — Tyk filters blocked tools out of `tools/list` responses, so agents cannot discover them at all.
+
+To confirm the block is also enforced at the call layer, call it directly. In MCP Inspector, enter `delete_user` manually in the tool name field, provide any value for **user_id**, and click **Run**.
+
+Tyk blocks the request before it reaches the upstream. The response panel shows:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "error": {
+    "code": -32002,
+    "message": "Requested endpoint is forbidden",
+    "data": {
+      "http_code": 403
+    }
+  },
+  "id": 6
+}
+```
+
+Select any other tool — `get_users`, `get_posts`, `get_products` — and run it. Those calls succeed normally. Only `delete_user` is blocked.
+
+---
+
+## Block vs. RBAC — when to use each
+
+Both `block` and RBAC allowlists restrict which tools a consumer can call, but they operate at different layers and serve different purposes.
+
+**Use `block`** when a tool should never be reachable through this proxy, for anyone. The restriction is set in the proxy definition and cannot be overridden by a policy. It is the right choice for tools that are dangerous, irreversible, or not yet ready for agent access — `delete_user`, `drop_table`, `send_email`.
+
+**Use RBAC** when different consumers should have different access to the same set of tools. A read-only agent sees only read tools; an admin agent sees all tools. The restriction is set in a security policy and scoped per consumer. See [How to implement RBAC for an MCP proxy](/ai-management/mcp-gateway/how-to-mcp-rbac).
+
+The two can be combined: block the tools that no one should ever reach, then use RBAC to scope what each consumer can see within what remains.
+
+---
+
+## What's next
+
+- [How to implement RBAC for an MCP proxy](/ai-management/mcp-gateway/how-to-mcp-rbac) — Scope tool access per consumer using security policies.
+- [MCP middleware](/ai-management/mcp-gateway/mcp-middleware) — Full reference for `block`, `allow`, and every other per-primitive middleware option.
+- [How to rate limit an MCP tool](/ai-management/mcp-gateway/how-to-rate-limit-tools-per-consumer) — Limit how many times a consumer can call a tool per minute.

@@ -1,0 +1,218 @@
+---
+title: "How to build a Grafana dashboard for MCP traffic"
+sidebarTitle: "Monitor MCP Traffic in Grafana"
+description: "Build a Grafana dashboard to monitor MCP tool call volumes, error rates, and latency using Tyk Gateway's OpenTelemetry metrics."
+keywords: "mcp, grafana, prometheus, opentelemetry, metrics, dashboard, monitoring, latency, errors, tools"
+---
+
+Without instrumentation, MCP traffic is opaque — you know requests are flowing, but not which tools agents are calling, which are slow, or where failures are concentrated. This guide builds a Grafana dashboard for MCP traffic using Tyk Gateway's OpenTelemetry metrics. By the end, you will have three panels covering request volume by JSON-RPC method, error rate, and top tools by call volume.
+
+---
+
+## Prerequisites
+
+### 1. Enable OTel metrics on the gateway
+
+Tyk exports metrics via OTLP (not a Prometheus scrape endpoint directly). The recommended setup uses an OpenTelemetry Collector to receive OTLP from Tyk and expose a Prometheus scrape endpoint.
+
+Add the following to your `tyk.conf`:
+
+```json
+"opentelemetry": {
+  "enabled": true,
+  "exporter": "grpc",
+  "endpoint": "localhost:4317"
+}
+```
+
+Then run an OTel Collector configured to receive OTLP on `:4317` and export to Prometheus on `:8889`. See [OpenTelemetry in Tyk](/api-management/traces) for full configuration options.
+
+### 2. Enable traffic logs on the MCP proxy
+
+Tyk Gateway only records metrics for APIs that have traffic logging enabled. In the Dashboard, open your MCP proxy definition, navigate to **Advanced Options**, and enable **Traffic Logs**. Without this, no requests are recorded and all panels will be empty.
+
+### 3. Configure the MCP metric instruments
+
+The metric instruments are configured in `tyk.conf`, under `opentelemetry.metrics`. Add the following to your gateway config:
+
+```json
+"opentelemetry": {
+  "enabled": true,
+  "exporter": "grpc",
+  "endpoint": "localhost:4317",
+  "metrics": {
+    "enabled": true,
+    "api_metrics": [
+      {
+        "name": "tyk.mcp.requests.total",
+        "type": "counter",
+        "description": "MCP request count by method, tool, API, and session",
+        "dimensions": [
+          { "source": "metadata", "key": "mcp_method",         "label": "mcp_method",     "default": "" },
+          { "source": "metadata", "key": "mcp_primitive_type", "label": "primitive_type", "default": "" },
+          { "source": "metadata", "key": "mcp_primitive_name", "label": "tool_name",      "default": "" },
+          { "source": "metadata", "key": "mcp_error_code",     "label": "error_code",     "default": "" },
+          { "source": "metadata", "key": "api_id",             "label": "api_id" },
+          { "source": "session",  "key": "alias",              "label": "session",        "default": "unknown" }
+        ]
+      },
+      {
+        "name": "tyk.mcp.upstream.duration",
+        "type": "histogram",
+        "description": "Upstream MCP server latency per tool and API",
+        "histogram_source": "upstream",
+        "histogram_buckets": [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+        "dimensions": [
+          { "source": "metadata", "key": "mcp_primitive_name", "label": "tool_name", "default": "" },
+          { "source": "metadata", "key": "api_id",             "label": "api_id" }
+        ]
+      },
+      {
+        "name": "tyk.mcp.request.duration",
+        "type": "histogram",
+        "description": "End-to-end MCP request latency per tool and API",
+        "histogram_source": "total",
+        "histogram_buckets": [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+        "dimensions": [
+          { "source": "metadata", "key": "mcp_primitive_name", "label": "tool_name",  "default": "" },
+          { "source": "metadata", "key": "mcp_method",         "label": "mcp_method", "default": "" },
+          { "source": "metadata", "key": "api_id",             "label": "api_id" }
+        ]
+      },
+      {
+        "name": "tyk.mcp.method.distribution",
+        "type": "counter",
+        "description": "Distribution of MCP method types for session efficiency analysis",
+        "dimensions": [
+          { "source": "metadata", "key": "mcp_method", "label": "mcp_method", "default": "" },
+          { "source": "metadata", "key": "api_id",     "label": "api_id" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Restart the gateway after making this change. See [MCP metrics](/ai-management/mcp-gateway/mcp-metrics) for the full reference on each instrument and additional use cases.
+
+---
+
+<Note>
+OTel metric names are translated when Prometheus scrapes them: dots become underscores, counter instruments get a `_total` suffix, and histogram instruments with a seconds unit get a `_seconds` suffix. So `tyk.mcp.requests.total` becomes `tyk_mcp_requests_total` in PromQL, and `tyk.mcp.upstream.duration` becomes `tyk_mcp_upstream_duration_seconds_bucket`, `tyk_mcp_upstream_duration_seconds_sum`, and `tyk_mcp_upstream_duration_seconds_count`.
+</Note>
+
+---
+
+## Step 1: Create the dashboard
+
+In Grafana, go to **Connections → Data Sources → Add new data source** and select **Prometheus**. Set the URL to your Prometheus server (e.g. `http://prometheus:9090`) and click **Save & test**.
+
+Then go to **Dashboards** → **New** → **New dashboard**.
+
+![Grafana new dashboard](/img/ai-management/grafana-new-dashboard.png)
+
+Before adding panels, create a datasource variable so you can switch Prometheus datasources without editing every panel individually.
+
+Open **Dashboard settings** → **Variables** → **Add variable**.
+
+![Grafana dashboard settings](/img/ai-management/grafana-dashboard-settings.png)
+
+Set the following:
+
+| Field | Value |
+|---|---|
+| **Variable type** | Datasource |
+| **Name** | `datasource` |
+| **Plugin type** | Prometheus |
+
+![Grafana data source variable](/img/ai-management/grafana-data-source-variable.png)
+
+Save the variable. All panels in the steps below use `$datasource` as their datasource, so the variable applies globally.
+
+---
+
+## Step 2: Generate traffic
+
+The panels in the following steps need data to display. Make a few tool calls through your MCP proxy to populate the metrics.
+
+If you need a quick way to generate traffic, use MCP Inspector with the Mock MCP Server — the full setup is covered in [How to secure an MCP proxy](/ai-management/mcp-gateway/how-to-proxy-remote-mcp). Once you have traffic flowing, come back here to build the dashboard.
+
+---
+
+## Step 3: Request rate by method
+
+Add a **Time series** panel. Title it `MCP request rate by method`.
+
+This panel shows request volume over time broken down by JSON-RPC method. Use it to see the balance between `tools/call`, `resources/read`, and session lifecycle calls such as `initialize`.
+
+**PromQL:**
+
+```promql
+sum by (mcp_method) (rate(tyk_mcp_requests_total[$__rate_interval]))
+```
+
+Set the **Legend** to `{{mcp_method}}`.
+
+<Note>
+`$__rate_interval` is a Grafana built-in variable that automatically selects an appropriate rate interval based on the dashboard time range and scrape interval. It produces more accurate rate calculations than a hardcoded interval such as `[5m]` and is the recommended choice for rate and histogram queries.
+</Note>
+
+---
+
+## Step 4: Error rate
+
+Add a **Stat** panel. Title it `MCP error rate`.
+
+This panel shows the percentage of requests that resulted in a gateway error — authentication failures, rate limit rejections, or upstream errors. It gives you an at-a-glance signal of proxy health.
+
+**PromQL:**
+
+```promql
+sum(rate(tyk_mcp_requests_total{error_code!=""}[$__rate_interval]))
+/
+sum(rate(tyk_mcp_requests_total[$__rate_interval]))
+* 100
+```
+
+Set the **Unit** to `Percent (0-100)`. Configure thresholds:
+
+| Value | Colour |
+|---|---|
+| 0 | Green |
+| 1 | Orange |
+| 5 | Red |
+
+---
+
+## Step 5: Top tools by call volume
+
+Add a **Bar chart** panel. Title it `Top tools by call volume`.
+
+This panel shows which tools AI agents are calling most frequently. The query filters to `tools/call` requests only, excluding lifecycle calls that would otherwise inflate counts.
+
+**PromQL:**
+
+```promql
+topk(10, sum by (tool_name) (increase(tyk_mcp_requests_total{mcp_method="tools/call"}[$__range])))
+```
+
+Set the **Legend** to `{{tool_name}}`.
+
+<Note>
+If the panel shows tool names but all counts are zero immediately after generating traffic, this is normal. The `increase()` function requires at least two Prometheus scrapes to return a non-zero result. Wait for the second OTel export cycle (up to two minutes) and refresh the dashboard.
+</Note>
+
+---
+
+![Grafana MCP dashboard](/img/ai-management/grafana.png)
+
+## Next steps
+
+The [MCP metrics](/ai-management/mcp-gateway/mcp-metrics) reference covers additional instruments you can add to this dashboard, including P95 upstream latency per tool, end-to-end latency, error classification by code, and per-session usage.
+
+## See also
+
+- [MCP metrics](/ai-management/mcp-gateway/mcp-metrics) — Full reference for all MCP metric instruments and dimensions
+- [MCP observability](/ai-management/mcp-gateway/mcp-observability) — Overview of all MCP observability signals
+- [Observability best practices](/api-management/observability-best-practices) — Cardinality control and export topology guidance
+- [OpenTelemetry in Tyk](/api-management/traces) — Enable and configure OTel on the gateway

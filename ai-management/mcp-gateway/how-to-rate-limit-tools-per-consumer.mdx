@@ -1,0 +1,123 @@
+---
+title: "How to rate limit individual MCP tools per consumer"
+description: "Apply per-tool rate limits to an MCP proxy so different consumers have different call budgets on the same tool — without creating separate proxy definitions."
+keywords: "MCP, Model Context Protocol, per-tool rate limiting, mcp_primitives, security policy, AI agent, MCP Inspector, Tyk Dashboard"
+sidebarTitle: "Rate Limit an MCP Tool"
+---
+
+Not all MCP tools cost the same. A tool that runs a complex query costs far more than one returning cached data. When multiple agents share the same proxy, a single blanket rate limit either over-restricts lightweight tools or under-protects expensive ones.
+
+Tyk lets you set rate limits on individual tools, per consumer. Each agent key tracks its own independent counter — one agent exhausting their budget on a tool does not affect another agent's counter for the same tool.
+
+This guide rate limits the `get_analytics` tool on the Mock MCP Server to 3 calls per minute for a specific consumer policy, then uses MCP Inspector to verify the limit is enforced.
+
+---
+
+## Before you begin
+
+- The Mock MCP Server running on `http://localhost:7878` — set up in the [quickstart](/ai-management/mcp-gateway/quickstart)
+- An MCP proxy named **Mock MCP Server** with authentication enabled — see [How to secure an MCP proxy](/ai-management/mcp-gateway/how-to-proxy-remote-mcp)
+- Node.js 18 or later (to run MCP Inspector)
+- A Dashboard user account with policy management permissions
+
+---
+
+## Step 1: Create a policy with a per-tool rate limit
+
+In the Tyk Dashboard sidebar, click **Policies**, then click **Add Policy**.
+
+On the **Access Rights** tab, find **Mock MCP Server** in the API list and click it to add it.
+
+Expand the Mock MCP Server access rights block and scroll to **Set Usage Limits by MCP Primitives/Methods**.
+
+Click **Add Rate Limit**:
+
+- Set **Rate** to `3`
+- Set **Per** to `60` seconds
+- Click **Add**, enter `get_analytics`, and set **Type** to **Tool**
+
+![Add get_analytics as a tool primitive](/img/ai-management/mcp-how-to-rate-limit-tool.png)
+
+Click **Add** to confirm the primitive.
+
+On the **Configurations** tab:
+
+- **Policy Name**: `Limited Agent`
+- **Policy State**: **Active**
+
+Click **Create Policy**.
+
+![Create the Limited Agent policy](/img/ai-management/mcp-how-to-limited-agent.png)
+
+---
+
+## Step 2: Issue a key
+
+In the Dashboard sidebar, click **Keys**, then **Add Key**.
+
+Under **Access rights**, click **Apply Policy** and select **Limited Agent**.
+
+Click the **Configurations** tab and set an **Alias** such as `limited-agent` to identify this key in analytics.
+
+Click **Create Key** and copy the key.
+
+---
+
+## Step 3: Verify with MCP Inspector
+
+Start MCP Inspector:
+
+```bash
+npx @modelcontextprotocol/inspector
+```
+
+Open the URL printed in your terminal. In the Inspector UI:
+
+1. Set **Transport Type** to `Streamable HTTP`
+2. Set **URL** to your MCP endpoint (find it under **MCP Proxy URL** in the proxy designer, then append `/mcp`)
+3. Add a header: `Authorization` = `Bearer {your-api-key}`
+4. Click **Connect**
+
+Click the **Tools** tab and select **get_analytics**.
+
+The tool requires a **metric** parameter. Enter `users` (or any of `posts`, `orders`, `revenue`).
+
+Click **Run** three times in quick succession. Each call succeeds — the response panel shows the analytics data from the Mock MCP Server.
+
+Click **Run** a fourth time. Tyk has exhausted the 3 calls per minute budget for this consumer and blocks the request. The response panel shows:
+
+**MCP error -32001: Streamable HTTP error: Error POSTing to endpoint:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "error": {
+    "code": -32003,
+    "message": "Rate Limit Exceeded",
+    "data": {
+      "http_code": 429
+    }
+  },
+  "id": 7
+}
+```
+
+Other tools — `get_users`, `get_posts`, `get_products` — are unaffected. Only the `get_analytics` counter is exhausted. Click any other tool and run it to confirm it continues to succeed.
+
+---
+
+## How per-consumer and shared limits compose
+
+The rate limit configured in this guide applies per consumer key — each key on the **Limited Agent** policy has its own independent counter for `get_analytics`. A second key on the same policy has its own separate 3 calls per minute budget.
+
+You can also apply a shared ceiling across all consumers at the API definition level using the **Primitives** tab on the proxy. A shared limit protects the upstream from aggregate overload, regardless of individual consumer budgets. Both limits are enforced simultaneously — whichever is exhausted first blocks the call.
+
+For the full picture of how rate limits compose across the middleware and policy layers, see [MCP proxy policies](/ai-management/mcp-gateway/policies).
+
+---
+
+## What's next
+
+- [How to implement RBAC for an MCP proxy](/ai-management/mcp-gateway/how-to-mcp-rbac) — Control which tools each consumer can access, not just how fast they can call them.
+- [MCP proxy policies](/ai-management/mcp-gateway/policies) — Full reference for `mcp_primitives` and all per-consumer policy configuration options, including quotas and primitive access control.
+- [MCP middleware](/ai-management/mcp-gateway/mcp-middleware) — Configure shared rate limits that apply to all consumers of a proxy.

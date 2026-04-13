@@ -1,0 +1,500 @@
+---
+title: "MCP middleware"
+description: "Apply per-primitive middleware to MCP tools, resources, and prompts in Tyk Gateway. Covers access control, traffic management, request transformation, circuit breakers, timeouts, and observability for MCP traffic."
+keywords: "MCP, Model Context Protocol, MCP middleware, MCP tools, MCP resources, MCP prompts, allowlist, rate limiting, circuit breaker, virtual endpoint, JSON-RPC, Tyk OAS"
+sidebarTitle: "MCP Middleware"
+---
+
+Tyk lets you apply middleware to individual MCP primitives — specific tools, resources, and prompts — giving you the same granular control over AI agent traffic that you have over conventional API endpoints. You can rate limit an expensive tool, block a sensitive prompt, set a circuit breaker on an unreliable resource, or apply a custom plugin to inspect tool call arguments before they reach the upstream. This page describes each middleware capability available for MCP proxies, when to use it, and how to configure it.
+
+> For an explanation of how middleware fits into the overall MCP API definition structure — the three levels, their evaluation order, and how they interact — see [MCP definitions](/ai-management/mcp-gateway/mcp_proxy_definitions).
+
+---
+
+## Configuration paths
+
+Middleware can be configured in three ways, depending on the level at which it applies and whether you are using the Dashboard UI or editing the definition directly.
+
+### Dashboard — Settings tab (proxy level)
+
+The **Settings** tab on the MCP Designer exposes middleware that applies to all requests through the proxy, regardless of which primitive is invoked. These options map to `x-tyk-api-gateway.middleware.global` in the definition:
+
+| Middleware | Maps to |
+|---|---|
+| CORS | `middleware.global.cors` |
+| Transform Request Headers | `middleware.global.transformRequestHeaders` |
+| Transform Response Headers | `middleware.global.transformResponseHeaders` |
+| Context Variables | `middleware.global.contextVariables` |
+| Traffic Logs | `middleware.global.trafficLogs` |
+| Plugin Config / Bundle | `middleware.global.pluginConfig` |
+
+### Dashboard — Primitives tab (primitive level)
+
+The **Primitives** tab lets you add middleware to individual tools, resources, and prompts. Click a primitive and then **Add Middleware**. These options map to the primitive's entry in `mcpTools`, `mcpResources`, or `mcpPrompts`. See [Managing MCP proxies using the Dashboard](/ai-management/mcp-gateway/managing-mcp-proxies#primitives-tab) for the full UI walkthrough.
+
+| Middleware | Maps to |
+|---|---|
+| Allow, Block | `allow`, `block` |
+| Ignore Authentication | `ignoreAuthentication` |
+| Rate Limit | `rateLimit` |
+| Request Size Limit | `requestSizeLimit` |
+| Circuit Breaker | `circuitBreaker` |
+| Transform Request Headers | `transformRequestHeaders` |
+| Transform Response Headers | `transformResponseHeaders` |
+| Virtual Endpoint | `virtualEndpoint` |
+| Track Endpoint, Do Not Track Endpoint | `trackEndpoint`, `doNotTrackEndpoint` |
+| Post Plugins | `postPlugins` |
+
+### MCP definition (all levels)
+
+All middleware options — including those not exposed in the Dashboard — can be configured by editing the proxy definition directly. Open the definition editor via **Actions → View MCP Proxy Definition** in the Dashboard, or submit the definition via the API. The following options are only available this way:
+
+- `transformRequestBody` — Request body transformation (supported)
+- `urlRewrite`, `transformRequestMethod` — Accepted by the schema but silently ignored at runtime; they have no effect on MCP primitives. See the warnings in the [request transformation](#request-transformation) section below.
+- `middleware.operations` — Method-level middleware applying to all calls of a given JSON-RPC method (for example, all `tools/call` requests), evaluated before primitive-level middleware
+
+<Note>
+Caching and mock responses are not supported for MCP primitives.
+</Note>
+
+The sections below document every option with definition examples. All definition examples apply to the `mcpTools`, `mcpResources`, or `mcpPrompts` maps unless otherwise noted.
+
+---
+
+## How primitive middleware is resolved
+
+Middleware for MCP primitives is configured in `x-tyk-api-gateway.middleware` inside one of three maps:
+
+- `mcpTools` — Keyed by tool name (the `params.name` value in a `tools/call` request)
+- `mcpResources` — Keyed by resource URI or URI wildcard pattern (the `params.uri` value in a `resources/read` request)
+- `mcpPrompts` — Keyed by prompt name (the `params.name` value in a `prompts/get` request)
+
+When Tyk receives a `tools/call`, `resources/read`, or `prompts/get` request, it extracts the primitive identifier from the JSON-RPC body, finds the matching entry in the relevant map, and executes the configured middleware before proxying to the upstream.
+
+The `middleware.operations` map applies middleware at the JSON-RPC method level rather than the individual primitive level. Method-level middleware evaluates before primitive-level middleware.
+
+---
+
+## Access control
+
+Access control middleware determines which primitives a client is allowed to invoke. It is the most commonly configured middleware for MCP proxies, because MCP servers typically expose more capabilities than you want to make available through the gateway.
+
+### allow
+
+The `allow` middleware adds a primitive to an explicit allowlist. When any primitive within a category has `allow` enabled, Tyk switches that entire category into **allowlist mode**: only the explicitly listed primitives are accessible, and all others are rejected with a JSON-RPC error.
+
+```json
+{
+  "middleware": {
+    "mcpTools": {
+      "get-weather": {
+        "allow": { "enabled": true }
+      },
+      "get-forecast": {
+        "allow": { "enabled": true }
+      }
+    }
+  }
+}
+```
+
+In this example, only `get-weather` and `get-forecast` are accessible. A request to any other tool name returns an error without reaching the upstream. Resources and prompts are unaffected — the three categories are evaluated independently, so allowlisting tools does not restrict resource or prompt access.
+
+Allowlist mode is the recommended approach when you have a known set of primitives to expose. It ensures that new tools added to the upstream MCP server are not automatically accessible through the gateway — you must explicitly add them to the allowlist.
+
+### block
+
+The `block` middleware explicitly denies access to a primitive. Tyk returns a JSON-RPC error without forwarding the request to the upstream. Use `block` when all primitives should be accessible by default except a specific subset.
+
+```json
+{
+  "middleware": {
+    "mcpTools": {
+      "admin-reset": {
+        "block": { "enabled": true }
+      }
+    }
+  }
+}
+```
+
+If no `allow` rules exist in the category, all primitives are accessible by default. Block rules apply on top of this open default. If `allow` rules are also present, block rules take precedence.
+
+### ignoreAuthentication
+
+The `ignoreAuthentication` middleware exempts a primitive from the API's authentication checks, allowing unauthenticated access to that specific primitive while the rest of the API remains protected.
+
+```json
+{
+  "middleware": {
+    "mcpTools": {
+      "server-status": {
+        "ignoreAuthentication": { "enabled": true }
+      }
+    }
+  }
+}
+```
+
+Use this for primitives that need to be publicly accessible — health checks, capability discovery, or public reference data — without requiring a separate unauthenticated API definition.
+
+---
+
+## Traffic management
+
+Traffic management middleware protects your upstream MCP server from overload and controls the quality of service for individual primitives.
+
+### rateLimit
+
+The `rateLimit` middleware applies a rate limit to a specific primitive, counted separately from any method-level or MCP server-level rate limits. Use it when different tools have meaningfully different costs — for example, a resource-intensive tool should have a tighter limit than one that reads static metadata.
+
+```json
+{
+  "middleware": {
+    "mcpTools": {
+      "execute-query": {
+        "rateLimit": {
+          "enabled": true,
+          "rate": 10,
+          "per": 60
+        }
+      },
+      "list-tables": {
+        "rateLimit": {
+          "enabled": true,
+          "rate": 200,
+          "per": 60
+        }
+      }
+    }
+  }
+}
+```
+
+The `rate` field is the maximum number of requests allowed in the time window specified by `per` (in seconds, or as a shorthand string such as `"1m"` or `"30s"`). Primitive-level rate limits are additive with method-level limits — a request must pass both.
+
+Rate limits configured in `mcpTools`, `mcpResources`, and `mcpPrompts` apply to all consumers of the proxy — they are shared ceilings. For per-consumer primitive rate limits that track each consumer key independently, use the `mcp_primitives` field in a security policy. Both can be active simultaneously: the middleware limit protects the upstream from aggregate overload; the policy limit enforces each consumer's individual entitlement. See [MCP proxy policies](/docs/ai-protocols/mcp/policies).
+
+### requestSizeLimit
+
+The `requestSizeLimit` middleware restricts the maximum size of the JSON-RPC request body for a specific primitive. Use it for tools that accept large argument payloads, where oversized requests could cause performance problems upstream.
+
+```json
+{
+  "middleware": {
+    "mcpTools": {
+      "process-document": {
+        "requestSizeLimit": {
+          "enabled": true,
+          "value": 65536
+        }
+      }
+    }
+  }
+}
+```
+
+The `value` field is in bytes. Requests that exceed the limit are rejected before reaching the upstream.
+
+### circuitBreaker
+
+The `circuitBreaker` middleware monitors the failure rate for a specific primitive and temporarily stops forwarding requests when the error rate exceeds a threshold. This protects the upstream from cascading failures and gives it time to recover.
+
+```json
+{
+  "middleware": {
+    "mcpTools": {
+      "search-index": {
+        "circuitBreaker": {
+          "enabled": true,
+          "threshold": 0.5,
+          "sampleSize": 20,
+          "coolDownPeriod": 30,
+          "halfOpenStateEnabled": true
+        }
+      }
+    }
+  }
+}
+```
+
+- **`threshold`** — The ratio of failed requests (0.0 to 1.0) that trips the breaker. `0.5` means the breaker trips when more than 50% of recent requests fail.
+- **`sampleSize`** — The number of requests in the evaluation window. The threshold is checked after each window.
+- **`coolDownPeriod`** — Seconds to wait with the breaker open before attempting recovery.
+- **`halfOpenStateEnabled`** — When `true`, allows a small number of probe requests through during the cool-down period to test whether the upstream has recovered, rather than waiting for the full period to elapse before reopening.
+
+Circuit breakers are most valuable for tools that call external services or perform expensive operations where failure is likely to persist, rather than being transient.
+
+### cache
+
+<Warning>
+The `cache` field is not supported for MCP primitives. Setting it has no effect. See the capability matrix at the end of this page.
+</Warning>
+
+The `cache` field is accepted in the configuration schema but does not activate caching for MCP primitives. Any `cache` configuration you set on an entry in `mcpTools`, `mcpResources`, or `mcpPrompts` is silently ignored at runtime. The limitation is architectural: Tyk's cache middleware derives cache keys from the HTTP URL path, which is the same for every MCP request (`/mcp`). It does not inspect the JSON-RPC request body, so it cannot distinguish a `resources/read` call for `weather://current` from a `tools/call` to `get_forecast` — they resolve to the same cache key. Caching MCP traffic meaningfully would require cache key derivation from the JSON-RPC method and primitive identifier, which is not currently implemented.
+
+---
+
+## Request transformation
+
+Request transformation middleware modifies requests before they reach the upstream MCP server. You can add or remove headers, rewrite the upstream URL, or replace the request body.
+
+### transformRequestHeaders
+
+The `transformRequestHeaders` middleware adds, removes, or modifies HTTP headers on the request forwarded to the upstream.
+
+```json
+{
+  "middleware": {
+    "mcpTools": {
+      "query-database": {
+        "transformRequestHeaders": {
+          "enabled": true,
+          "add": [
+            { "name": "X-Caller-Id", "value": "$tyk_context.request_id" },
+            { "name": "X-Tool-Name", "value": "query-database" }
+          ],
+          "remove": ["X-Internal-Debug"]
+        }
+      }
+    }
+  }
+}
+```
+
+Use this to inject authentication credentials your upstream expects, add tracing identifiers, or strip headers that should not reach the upstream.
+
+### transformRequestBody
+
+The `transformRequestBody` middleware transforms the JSON-RPC request body before it is forwarded to the upstream, using a Go template. This allows you to reshape the request — for example, to translate between different argument schemas or to inject values from the gateway context.
+
+```json
+{
+  "middleware": {
+    "mcpTools": {
+      "search": {
+        "transformRequestBody": {
+          "enabled": true,
+          "format": "json",
+          "body": "<base64-encoded Go template>"
+        }
+      }
+    }
+  }
+}
+```
+
+The template receives the full JSON-RPC request as input and must produce a valid JSON-RPC 2.0 request as output to maintain protocol compliance with the upstream.
+
+### urlRewrite
+
+<Warning>
+The `urlRewrite` field is not supported for MCP primitives. Setting it has no effect. The field is accepted by the configuration schema for forward compatibility but is silently ignored at runtime. URL rewriting is incompatible with MCP's single-endpoint transport — all traffic flows through `/mcp` regardless of which primitive is invoked.
+</Warning>
+
+### transformRequestMethod
+
+<Warning>
+The `transformRequestMethod` field is not supported for MCP primitives. Setting it has no effect. The field is accepted by the configuration schema for forward compatibility but is silently ignored at runtime. MCP always uses `POST` for JSON-RPC messages and `GET` for SSE streams; the HTTP method cannot be changed at the primitive level.
+</Warning>
+
+---
+
+## Response transformation
+
+### transformResponseHeaders
+
+The `transformResponseHeaders` middleware adds, removes, or modifies HTTP headers on the response returned to the client.
+
+```json
+{
+  "middleware": {
+    "mcpResources": {
+      "public://data/*": {
+        "transformResponseHeaders": {
+          "enabled": true,
+          "add": [
+            { "name": "Cache-Control", "value": "public, max-age=300" }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+<Note>
+Response body transformation (`transformResponseBody`) is not available for MCP primitives. MCP responses are JSON-RPC 2.0 messages and must be returned to the client unmodified to maintain protocol compliance. Response body transformation remains available for entries in `middleware.operations` if you need to transform at the method level, but the same protocol compliance constraint applies — use with care.
+</Note>
+
+---
+
+## Testing and development
+
+### mockResponse
+
+<Warning>
+The `mockResponse` field is not supported for MCP primitives. Setting it has no effect. Mock responses require Tyk to construct a complete HTTP response body before it reaches the client, which is incompatible with the streaming JSON-RPC transport MCP uses. See the capability matrix at the end of this page.
+</Warning>
+
+The `mockResponse` field is accepted in the configuration schema but does not intercept or replace responses for MCP primitives.
+
+### virtualEndpoint
+
+The `virtualEndpoint` middleware executes a JavaScript function in place of the upstream proxy. Use it to implement simple primitives directly in the gateway — for example, a tool that aggregates data from a Tyk context variable, performs a simple calculation, or returns a dynamically constructed response without needing a dedicated upstream service.
+
+```json
+{
+  "middleware": {
+    "mcpTools": {
+      "echo": {
+        "virtualEndpoint": {
+          "enabled": true,
+          "functionName": "echoTool",
+          "body": "<base64-encoded JavaScript>",
+          "proxyOnError": false
+        }
+      }
+    }
+  }
+}
+```
+
+The JavaScript function receives the request object and must return a response object in JSON-RPC 2.0 format. Set `proxyOnError` to `true` to fall back to the upstream if the virtual endpoint function throws an error.
+
+---
+
+## Observability
+
+### trackEndpoint and doNotTrackEndpoint
+
+By default, Tyk records analytics for all requests. These two middleware options let you override tracking behaviour at the primitive level.
+
+`trackEndpoint` enables detailed analytics for a primitive that might otherwise be excluded:
+
+```json
+{
+  "middleware": {
+    "mcpTools": {
+      "execute-query": {
+        "trackEndpoint": { "enabled": true }
+      }
+    }
+  }
+}
+```
+
+`doNotTrackEndpoint` excludes a primitive from analytics logs and dashboards. Use this for high-volume or sensitive primitives where capturing every request creates noise or a compliance concern:
+
+```json
+{
+  "middleware": {
+    "mcpTools": {
+      "health-check": {
+        "doNotTrackEndpoint": { "enabled": true }
+      }
+    }
+  }
+}
+```
+
+---
+
+## Plugins
+
+### postPlugins
+
+The `postPlugins` field executes one or more custom plugin functions after the main middleware chain completes, immediately before the request is proxied to the upstream. Use custom plugins when the built-in middleware capabilities are insufficient — for example, to validate request arguments against an external schema, to enrich the request with data from a third-party service, or to implement custom access control logic.
+
+```json
+{
+  "middleware": {
+    "mcpTools": {
+      "execute-query": {
+        "postPlugins": [
+          {
+            "enabled": true,
+            "functionName": "validateQuerySchema",
+            "path": "/opt/tyk/plugins/query-validator.so"
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+Plugins are loaded from the path specified or from a bundle configured in the global `pluginConfig` section. See [Custom plugins](/docs/plugins) for the full plugin development guide.
+
+---
+
+## Resource URI matching
+
+Resources in the `mcpResources` map are matched against the `params.uri` value in incoming `resources/read` requests. Tyk resolves the match in this order:
+
+1. **Exact match** — If the request URI matches a key exactly, that entry's middleware is applied.
+2. **Wildcard match** — If no exact match is found, Tyk checks for entries containing `*`. When multiple patterns match, the longest prefix wins.
+3. **No match** — If neither an exact nor wildcard match is found, the request is handled by the default middleware chain (all primitives are accessible unless the category is in allowlist mode).
+
+For example, given these entries:
+
+```json
+{
+  "mcpResources": {
+    "file:///config/database.json": {
+      "cache": { "enabled": true, "timeout": 3600 }
+    },
+    "file:///config/*": {
+      "cache": { "enabled": true, "timeout": 300 }
+    },
+    "file:///*": {
+      "allow": { "enabled": true }
+    }
+  }
+}
+```
+
+A request for `file:///config/database.json` matches the exact entry and gets a 1-hour cache. A request for `file:///config/settings.json` matches the `file:///config/*` pattern and gets a 5-minute cache. A request for `file:///logs/app.log` matches the `file:///*` fallback and is allowed but not cached.
+
+---
+
+## Middleware capability reference
+
+The following table summarises every middleware capability available for MCP proxies and where it can be configured.
+
+| Middleware | Field | Dashboard — Settings tab | Dashboard — Primitives tab | Definition |
+|---|---|---|---|---|
+| Allowlist | `allow` | — | Yes | Yes |
+| Blocklist | `block` | — | Yes | Yes |
+| Ignore authentication | `ignoreAuthentication` | — | Yes | Yes |
+| Rate limiting | `rateLimit` | — | Yes | Yes |
+| Request size limit | `requestSizeLimit` | — | Yes | Yes |
+| Circuit breaker | `circuitBreaker` | — | Yes | Yes |
+| Cache | `cache` | — | — | No — disabled for protocol compliance |
+| Transform request headers (global) | `middleware.global.transformRequestHeaders` | Yes | — | Yes |
+| Transform request headers (primitive) | `transformRequestHeaders` | — | Yes | Yes |
+| Transform request body | `transformRequestBody` | — | — | Yes |
+| URL rewrite | `urlRewrite` | — | — | No — silently ignored for protocol compliance |
+| Transform request method | `transformRequestMethod` | — | — | No — silently ignored for protocol compliance |
+| Transform response headers (global) | `middleware.global.transformResponseHeaders` | Yes | — | Yes |
+| Transform response headers (primitive) | `transformResponseHeaders` | — | Yes | Yes |
+| Transform response body | `transformResponseBody` | — | — | No — disabled for protocol compliance |
+| Mock response | `mockResponse` | — | — | No — disabled for protocol compliance |
+| Virtual endpoint | `virtualEndpoint` | — | Yes | Yes |
+| Track endpoint | `trackEndpoint` | — | Yes | Yes |
+| Do not track | `doNotTrackEndpoint` | — | Yes | Yes |
+| Post plugins | `postPlugins` | — | Yes | Yes |
+| CORS | `middleware.global.cors` | Yes | — | Yes |
+| Context variables | `middleware.global.contextVariables` | Yes | — | Yes |
+| Traffic logs | `middleware.global.trafficLogs` | Yes | — | Yes |
+| Plugin config / bundle | `middleware.global.pluginConfig` | Yes | — | Yes |
+
+---
+
+## See also
+
+- [MCP Gateway overview](/ai-management/mcp-gateway/overview) — What Tyk MCP Gateway does and where it fits in your architecture.
+- [MCP Gateway — Core concepts](/ai-management/mcp-gateway/core-concepts) — The middleware evaluation model and how the three levels interact.
+- [MCP definitions](/ai-management/mcp-gateway/mcp_proxy_definitions) — How the middleware maps fit into the overall definition structure.
+- [MCP proxy policies](/ai-management/mcp-gateway/policies) — Per-consumer primitive rate limits (`mcp_primitives`), primitive access control lists (`mcp_access_rights`), and the five-level rate limit hierarchy.
+- [Custom plugins](/docs/plugins) — Building and deploying Go or JavaScript plugins for advanced use cases.
