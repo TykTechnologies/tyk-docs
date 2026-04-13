@@ -33,7 +33,7 @@ This guide covers two categories of metrics:
 ## Prerequisites
 
 - Tyk Gateway 5.13 or later
-- OpenTelemetry enabled (`opentelemetry.enabled: true` in `tyk.conf`, or `TYK_GW_OPENTELEMETRY_ENABLED=true`)
+- OpenTelemetry enabled (`opentelemetry.enabled: true` and `opentelemetry.metrics.enabled: true` in `tyk.conf`, or `TYK_GW_OPENTELEMETRY_ENABLED=true` and `TYK_GW_OPENTELEMETRY_METRICS_ENABLED=true`)
 - An OTel Collector configured to export to Prometheus (or a compatible OTLP backend)
 - Prometheus scraping the Collector's metrics endpoint
 
@@ -103,11 +103,11 @@ Error rate is the primary SLI for API availability. Tyk classifies every non-suc
 | `http.server.request.duration` | `http_server_request_duration_seconds` | histogram | `http_request_method`, `http_response_status_code`, `tyk_api_id`, `tyk_response_flag` |
 | `tyk.api.requests.total` | `tyk_api_requests_total` | counter | `http_request_method`, `http_response_status_code`, `tyk_api_id` |
 
-**Response flag reference:**
+**Response flag reference** (full list: [Error classification](/api-management/logs#error-classification)):
 
 | Flag | HTTP Status | Upstream called? | `error_source` | Meaning |
 |------|------------|-----------------|----------------|---------|
-| *(absent)* | 200 | **Yes** | *(absent)* | Successful request |
+| *(HTTP status code, e.g. `200`)* | 200 | **Yes** | *(absent)* | Successful request — `tyk_response_flag` is set to the HTTP status code |
 | `AMF` | 401 | **No** | `AuthKey` | Auth header entirely absent |
 | `AKI` | 403 | **No** | `AuthKey` | Auth header present, key invalid or expired |
 | `QEX` | 403 | **No** | `RateLimitAndQuotaCheck` | Key's quota window exhausted |
@@ -220,8 +220,9 @@ Gateway health metrics reflect the internal state of the gateway process itself,
 
 | Metric name (OTel) | Prometheus name | Type | What it tells you |
 |-------------------|-----------------|------|------------------|
-| `go.memory.used` | `go_memory_used_bytes` | Gauge | Current memory in use by the Go runtime. Growing without traffic growth = leak |
+| `go.memory.used` | `go_memory_used_bytes` | Gauge | Memory in use by the Go runtime, broken down by `go_memory_type` label (`"stack"` or `"other"`). Monitor `go_memory_type="other"` for leak detection; the stack series grows proportionally with goroutine count |
 | `go.memory.gc.goal` | `go_memory_gc_goal_bytes` | Gauge | Target heap size before next GC cycle |
+| `go.memory.limit` | `go_memory_limit_bytes` | Gauge | Configured `GOMEMLIMIT` value; use as the denominator for utilization alerts (alert when `go_memory_used_bytes` exceeds 85% of this) |
 | `go.memory.allocated` | `go_memory_allocated_bytes_total` | Counter | Total bytes allocated since startup |
 | `go.memory.allocations` | `go_memory_allocations_total` | Counter | Total allocation count since startup. High rate = allocation pressure |
 
@@ -229,14 +230,14 @@ Gateway health metrics reflect the internal state of the gateway process itself,
 
 There is no fixed absolute limit — thresholds depend on how many APIs are loaded. Alert on **rate of growth** instead:
 
-- `go_memory_used_bytes` growing > 10% per hour with stable traffic and stable API count → investigate
-- If you set `GOMEMLIMIT`, alert when `go_memory_used_bytes` exceeds 85% of that limit — GC will become aggressive and start impacting request latency
+- `go_memory_used_bytes{go_memory_type="other"}` growing > 10% per hour with stable traffic and stable API count → investigate
+- If you set `GOMEMLIMIT`, alert when `go_memory_used_bytes{go_memory_type="other"}` exceeds 85% of `go_memory_limit_bytes` — GC will become aggressive and start impacting request latency
 
 **Troubleshooting memory issues:**
 
 | Issue | Possible Causes | Remediation |
 |-------|----------------|-------------|
-| `go_memory_used_bytes` growing monotonically over hours with stable API count | Memory leak in a middleware or connection pool | Requires `"enable_http_profiler": true` in `tyk.conf`. Capture heap profile: `curl http://gateway:<control_api_port>/debug/pprof/heap > heap.pprof`. Contact Tyk support with the profile and trend chart |
+| `go_memory_used_bytes{go_memory_type="other"}` growing monotonically over hours with stable API count | Memory leak in a middleware or connection pool | Requires `"enable_http_profiler": true` in `tyk.conf`. Capture heap profile: `curl http://gateway:<control_api_port>/debug/pprof/heap > heap.pprof`. Contact Tyk support with the profile and trend chart |
 | Memory growing proportionally with API count | Normal — each API definition has memory overhead | Increase instance memory; review whether all loaded APIs are still needed |
 | Memory growing faster than expected with stable API count | High allocation pressure from request handling | Check rate of `go_memory_allocations_total`; if climbing steeply, contact Tyk support with a heap profile |
 
@@ -257,7 +258,7 @@ There is no fixed absolute limit — thresholds depend on how many APIs are load
 A healthy gateway at moderate load runs with 500–2,000 goroutines. Alert at **5,000 goroutines sustained for 10 minutes**. A one-time spike during a traffic burst is normal; a monotonically increasing trend over hours is not.
 
 ```promql
-go_goroutine_count{job="tyk-gateway"}
+go_goroutine_count{service_name="tyk-gateway"}
 ```
 
 **Troubleshooting goroutine growth:**
@@ -467,7 +468,7 @@ groups:
 
       # Goroutine growth
       - alert: TykGoroutineGrowth
-        expr: go_goroutine_count{job="tyk-gateway"} > 5000
+        expr: go_goroutine_count{service_name="tyk-gateway"} > 5000
         for: 10m
         labels:
           severity: warning
@@ -540,17 +541,20 @@ rate(tyk_upstream_request_duration_seconds_sum{tyk_api_id="<api_id>"}[5m])
 ## Gateway health
 
 # Goroutine count trend
-go_goroutine_count{job="tyk-gateway"}
+go_goroutine_count{service_name="tyk-gateway"}
 
-# Memory in use
-go_memory_used_bytes{job="tyk-gateway"}
+# Memory in use (go_memory_type="other" = heap-adjacent; use for leak detection)
+go_memory_used_bytes{service_name="tyk-gateway", go_memory_type="other"}
 
 # GC target heap size
-go_memory_gc_goal_bytes{job="tyk-gateway"}
+go_memory_gc_goal_bytes{service_name="tyk-gateway"}
+
+# Configured GOMEMLIMIT (denominator for utilization alert)
+go_memory_limit_bytes{service_name="tyk-gateway"}
 
 # APIs and policies loaded
-tyk_gateway_apis_loaded{job="tyk-gateway"}
-tyk_gateway_policies_loaded{job="tyk-gateway"}
+tyk_gateway_apis_loaded{service_name="tyk-gateway"}
+tyk_gateway_policies_loaded{service_name="tyk-gateway"}
 
 ## Consumer-level breakdown (requires custom api_metrics configuration)
 # These metrics are NOT emitted by default. They must be defined in
