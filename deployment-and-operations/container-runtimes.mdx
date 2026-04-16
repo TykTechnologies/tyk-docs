@@ -1,0 +1,138 @@
+---
+title: "Container Runtimes"
+description: "Tyk runs as OCI-compatible containers and works with Docker, containerd, CRI-O, and Podman. Learn which runtimes are supported and how to configure each for local and Kubernetes deployments."
+sidebarTitle: "Container Runtimes"
+keywords: ["container runtime", "docker", "podman", "containerd", "CRI-O", "RHEL 8", "kubernetes", "OCI", "helm", "OpenShift"]
+canonical: "https://tyk.io/docs/deployment-and-operations/container-runtimes"
+---
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| Enterprise | Self-Managed, Hybrid |
+
+Tyk distributes all components as OCI-compatible container images, which means they run unchanged on any OCI-compliant runtime: Docker Engine, containerd, CRI-O, or Podman. You do not need to rebuild images when moving between runtimes or cloud providers.
+
+Since Kubernetes v1.24 removed the dockershim compatibility layer, managed Kubernetes services (EKS, GKE, AKS, OpenShift) use containerd or CRI-O directly. Docker is no longer required or present by default on Kubernetes nodes. Tyk's Helm-based installations work on all of these out of the box.
+
+## Supported runtimes
+
+The table below shows the default container runtime for each major provider.
+
+| Provider | Default runtime | Notes |
+| :--- | :--- | :--- |
+| **AWS EKS** | containerd | Default since dockershim removal; all Linux and Windows node groups |
+| **Google GKE** | containerd | Default since GKE 1.19; Docker deprecated by 1.24 |
+| **Azure AKS** | containerd | Linux nodes ≥ 1.19; Windows nodes ≥ 1.23 (only option) |
+| **Red Hat OpenShift** | CRI-O | Includes ROSA; uses CRI-O with runc/crun |
+| **Rancher (RKE2/K3s)** | containerd | Default for all cluster types |
+| **VMware Tanzu** | containerd | Default for all cluster types |
+| **DigitalOcean Kubernetes** | containerd | Default since Kubernetes 1.20 |
+| **IBM Cloud Kubernetes Service** | containerd | Default on all managed node pools |
+
+To check the container runtime on your cluster nodes:
+
+```bash
+kubectl get node -o jsonpath='{range .items[*]}{.metadata.name}{"  "}{.status.nodeInfo.containerRuntimeVersion}{"\n"}{end}'
+```
+
+## Running Tyk locally
+
+### Docker
+
+Docker is the fastest way to try Tyk on a laptop or VM. Tyk's quick starts and demo repositories use Docker Compose by default. See the [Docker installation guide](/tyk-self-managed/install/docker) for step-by-step instructions.
+
+### Podman (RHEL 8+)
+
+RHEL 8 ships Podman instead of Docker. Podman is daemonless, rootless-friendly, and uses the same CLI syntax as Docker. Tyk images run on Podman without modification.
+
+**Running Tyk Gateway with Podman (rootless):**
+
+```bash
+podman run -d --name tyk-gateway \
+  -p 8080:8080 \
+  -v $PWD/tyk.standalone.conf:/opt/tyk-gateway/tyk.conf:Z \
+  tykio/tyk-gateway:latest
+```
+
+The `:Z` suffix is required on SELinux-enabled systems (RHEL, Fedora) to relabel the bind-mounted volume so the container can access it.
+
+**Alias Podman as Docker (optional):**
+
+If your scripts call `docker`, you can alias Podman:
+
+```bash
+alias docker=podman
+```
+
+### Docker Compose and Podman Compose
+
+Tyk's demo repositories use standard `compose.yaml` files that work with both Docker Compose and Podman Compose.
+
+```yaml
+# Minimal example: Gateway + Redis
+services:
+  redis:
+    image: redis:7-alpine
+  gateway:
+    image: tykio/tyk-gateway:latest
+    ports: ["8080:8080"]
+    volumes:
+      - ./tyk.standalone.conf:/opt/tyk-gateway/tyk.conf:ro
+    depends_on: [redis]
+```
+
+```bash
+# Docker
+docker compose up -d
+
+# Podman
+podman compose up -d
+```
+
+## Running Tyk in Kubernetes
+
+Use Tyk's Helm charts for production Kubernetes deployments. The charts work across EKS, GKE, AKS, OpenShift (CRI-O), Rancher, and VMware Tanzu without modification.
+
+```bash
+helm repo add tyk-helm https://helm.tyk.io/public/helm/charts/
+helm repo update
+helm install tyk tyk-helm/tyk-stack -n tyk --create-namespace -f values.yaml
+```
+
+For full installation instructions, see the [Tyk Self-Managed Kubernetes guide](/tyk-self-managed/install/kubernetes) or the [Tyk Stack Helm Chart reference](/product-stack/tyk-charts/tyk-stack-chart).
+
+## Building images
+
+Both `docker build` and `podman build` produce OCI-compliant images that run on containerd, CRI-O, or Docker Engine without modification.
+
+```bash
+# Build with Docker
+docker build -t your-registry/tyk-gateway:TAG .
+
+# Build with Podman (RHEL 8+)
+podman build -t your-registry/tyk-gateway:TAG .
+```
+
+OCI images are supported by all major registries (ECR, ACR, Google Artifact Registry, Docker Hub). For production, pin images by digest rather than by tag for reproducible deployments.
+
+## FAQ
+
+<AccordionGroup>
+
+<Accordion title="Do I need to rebuild Tyk images when moving from Docker to containerd or CRI-O?">
+No. Docker-built images are OCI images and run unchanged on containerd and CRI-O.
+</Accordion>
+
+<Accordion title="Does Podman change how Tyk runs?">
+Functionally, no. Images are identical. On RHEL, apply SELinux volume labels (`:Z` / `:z`) to bind mounts and be aware of rootless defaults.
+</Accordion>
+
+<Accordion title="Can I use Docker Compose files with Podman?">
+Yes. Use `podman compose` or point Docker Compose at Podman's Docker-compatible socket. See the [Podman documentation](https://docs.podman.io/en/latest/markdown/podman-compose.1.html) for details.
+</Accordion>
+
+<Accordion title="How do I check which runtime my cluster uses?">
+Run the `kubectl` one-liner in the [Supported runtimes](#supported-runtimes) section above.
+</Accordion>
+
+</AccordionGroup>
