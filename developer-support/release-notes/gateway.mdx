@@ -40,7 +40,7 @@ New configuration capabilities include rate limit header customization, configur
 
 The release also addresses several critical issues including TLS certificate authentication errors, client mTLS authentication between gateways, CORS preflight request handling, and analytics generation for OAS mock endpoints. Go runtime has been updated to version 1.25 for improved performance and security.
 
-For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-v5.8.1) below.
+For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-v5.13.0) below.
 
 #### Breaking Changes
 
@@ -106,8 +106,8 @@ If you are upgrading to 5.13.0, please follow the detailed [upgrade instructions
 
 <AccordionGroup>
 
-<Accordion title='!!Updated Gateway and Plugin Compiler to Go 1.25'>
-Updated the Tyk Gateway and Plugin Compiler to use Go 1.25.5, ensuring compatibility with the latest Go runtime features and reducing exposure to potential security vulnerabilities in older versions.
+<Accordion title='Updated Gateway and Plugin Compiler to Go 1.25'>
+Updated the Tyk Gateway and Plugin Compiler to use Go 1.25, ensuring compatibility with the latest Go runtime features and reducing exposure to potential security vulnerabilities in older versions.
 </Accordion>
 
 <Accordion title='Upgraded OpenTelemetry SDK Dependencies'>
@@ -147,7 +147,7 @@ This provides an enterprise-grade solution for Redis storage management while ma
 </Accordion>
 
 <Accordion title='Added TLS Certificate Rotation Support for External Service Config'>
-Added support for TLS certificate rotation in External Service configurations without requiring Gateway restarts. This enhancement allows organizations with strict certificate rotation policies (such as financial institutions) to update certificates seamlessly during runtime.
+Added support for TLS certificate rotation in External Service configurations without requiring Gateway restarts. This enhancement allows organizations with strict certificate rotation policies to update certificates seamlessly during runtime.
 
 Key improvements include:
 
@@ -165,8 +165,46 @@ Added support for underscore characters in `$secret_vault` and `$secret_consul` 
 This enhancement aligns `$secret_vault` and `$secret_consul` patterns with existing `$secret_env`, `$tyk_context`, and `$tyk_meta` patterns that already support underscores. Users can now reference secrets using standard naming conventions like `API_KEY` and `DB_PASSWORD` without needing to duplicate secrets under underscore-free names. The change maintains full backward compatibility with existing references that don't contain underscores.
 </Accordion>
 
+<Accordion title='Added Configurable API Compression Size Limit'>
+Added a new Gateway configuration option `storage.max_decompressed_size` to control the maximum size limit for API definition decompression. This enhances the API compression feature by allowing operators to adjust the decompression limit based on their deployment requirements.
+
+When `storage.max_decompressed_size` is not configured, the Gateway maintains the default 100MB limit for backward compatibility. When set to a positive value ≥ 1MB, the Gateway uses that value as the decompression cap. Values below 1MB are automatically clamped to 1MB with a warning logged to prevent potential security issues while avoiding service disruption.
+
+This configuration change applies only to Gateway-level storage settings and does not affect the public API definition schema or Dashboard contracts.
+</Accordion>
+
+<Accordion title='Added customizable error response overrides for gateway and API-level configuration'>
+Introduced a comprehensive error response override system that allows administrators to customize HTTP error responses returned by the Tyk Gateway. This feature enables standardization, transformation, or masking of error responses from both gateway-generated errors and upstream service responses.
+
+**Key Capabilities:**
+- **Gateway-level overrides**: Configure global error response rules in `tyk.conf`
+- **API-level overrides**: Define custom error responses per API in both Classic and OAS API definitions
+- **Upstream error handling**: Intercept and customize 4xx/5xx responses from upstream services
+- **Flexible matching**: Support for exact status codes (401, 500), patterns (4xx, 5xx), error flags, message patterns, and JSON body field matching
+
+**Configuration Options:**
+- **Response customization**: Override status codes, response bodies, headers, and content types
+- **Template support**: Use inline Go templates, external template files, or message-only overrides
+- **Precedence rules**: API-level overrides take priority over gateway-level overrides
+- **Match conditions**: Filter overrides based on error flags, regex patterns, or JSON response fields
+
+**Supported Error Types:**
+- Gateway errors: Authentication failures, rate limits, validation errors, transform failures
+- Proxy errors: DNS failures, timeouts, circuit breaker events
+- Upstream errors: 4xx/5xx responses from backend services
+
+**Benefits:**
+- Standardize error responses across APIs and environments
+- Mask sensitive internal error details for security
+- Provide consistent error formats for client applications
+- Enable RFC 7807 Problem Details compliance
+- Reduce client-side error handling complexity
+
+This feature works seamlessly with existing analytics, logging, and observability systems, ensuring overridden responses are properly tracked and monitored.
+</Accordion>
+
 <Accordion title='Added Gateway Go Runtime Metrics via OpenTelemetry'>
-Added comprehensive Go runtime metrics collection through OpenTelemetry to provide visibility into Gateway resource utilization and performance characteristics. This enhancement enables SRE and DevOps teams to proactively monitor Gateway health and troubleshoot performance issues before they impact users.
+Added comprehensive Go runtime metrics collection through OpenTelemetry to provide visibility into Gateway resource utilization and performance characteristics. This enhancement enables teams to proactively monitor Gateway health and troubleshoot performance issues before they impact users.
 
 The new metrics include:
 - CPU utilization and processing time
@@ -177,6 +215,7 @@ The new metrics include:
 
 These runtime metrics complement existing request-level RED metrics to provide a complete operational picture of Gateway performance. Teams can now correlate system-level resource constraints with API latency patterns, detect potential goroutine or memory leaks early, and optimize infrastructure sizing based on actual resource utilization patterns.
 </Accordion>
+
 
 <Accordion title='Added Endpoint-Level Metrics via OpenTelemetry'>
 Added support for endpoint-level granularity in OpenTelemetry metrics, allowing users to distinguish between different endpoints within the same API. This enhancement provides more detailed observability for API monitoring and analytics.
@@ -192,7 +231,7 @@ This feature works with both Classic and OAS APIs that have endpoint tracking co
 </Accordion>
 
 <Accordion title='Added Gateway Configuration Metrics via OpenTelemetry'>
-Added OpenTelemetry metrics to continuously monitor Gateway configuration state, enabling platform teams to track deployment success and detect configuration drift. This addresses critical observability gaps where API definitions or policies could disappear during deployments without immediate detection.
+Added OpenTelemetry metrics to continuously monitor Gateway configuration state, enabling platform teams to track deployment success and detect configuration drift. This addresses observability gaps where API definitions or policies could disappear during deployments without immediate detection.
 
 The Gateway now exports the following configuration metrics via OTLP:
 
@@ -204,42 +243,10 @@ The Gateway now exports the following configuration metrics via OTLP:
 These metrics enable continuous monitoring and alerting scenarios such as detecting when API counts drop below expected thresholds (`tyk_apis_loaded < 90`), identifying complete policy wipes (`tyk_policies_loaded == 0`), and tracking deployment propagation across multiple Gateway instances. Teams can now set up proactive alerts for configuration drift and silent failures that previously went undetected until impacting production traffic.
 </Accordion>
 
-<Accordion title='Added OpenTelemetry Metrics Support to Library'>
-Extended the existing OpenTelemetry library to support OTLP metrics export alongside tracing capabilities. This provides a unified configuration surface for both traces and metrics exported to the same OTLP backend, meeting industry expectations for OpenTelemetry as the standard observability solution.
-
-Key features include:
-
-- Opt-in metrics via independent `metrics.enabled` configuration flag, leaving existing trace-only consumers unaffected
-- Reuses existing exporter settings (gRPC/HTTP), endpoint, TLS, and header configurations already established for tracing
-- Provides nil-safe instrument API (counters, histograms, gauges) that consumers can call without defensive checks
-- Exposes health and export statistics for monitoring the metrics pipeline itself
-- Configurable export intervals, temporality settings, shutdown timeouts, and retry policies
-
-The metrics subsystem maintains full backward compatibility with existing trace-only configurations while enabling customers to consolidate their observability data through a single OpenTelemetry configuration.
-</Accordion>
-
-<Accordion title='Added OpenTelemetry Metrics Cardinality Control'>
-Added a new `cardinality_limit` configuration option to the OpenTelemetry metrics configuration that allows operators to set a provider-wide cap on the number of unique time series per metric instrument. This prevents runaway memory growth and storage costs when high-cardinality attributes (such as API keys, OAuth IDs, or unique request identifiers) are attached to metric instruments.
-
-When the cardinality limit is reached, new attribute combinations are automatically collapsed into a synthetic overflow data point with the attribute `otel.metric.overflow=true`, preserving total count and sum accuracy while preventing excessive memory usage and series proliferation. This provides protection against backends that enforce series limits, such as Prometheus and Datadog.
-</Accordion>
-
 <Accordion title='Added OTel Metrics Exemplar Support'>
 Exemplars are now automatically enabled for OTel metrics, providing metric-to-trace correlation capabilities. When a trace is active during a metric measurement, the OTel Go SDK automatically attaches the current `trace_id` and `span_id` to histogram observations.
 
 This enables users to click on exemplar annotations in Grafana to jump directly from metric anomalies (such as latency spikes in the `http.server.duration` histogram) to the specific trace that caused the measurement, eliminating the need to manually hunt for related traces during incident investigation.
-</Accordion>
-
-<Accordion title='Added OpenTelemetry Metrics Integration'>
-Added initial OpenTelemetry metrics support to the Tyk Gateway with a foundational `tyk.http.requests` counter to validate the end-to-end metrics pipeline. This integration introduces a new metrics provider that supports OTLP export to external collectors for enhanced observability.
-
-The implementation includes:
-
-- A new `Instruments` struct in `internal/otel/metrics.go` that encapsulates the OpenTelemetry metrics provider and gateway instruments
-- Safe-to-call methods that no-op when metrics are disabled
-- Integration with the existing `config.OpenTelemetry.Metrics` configuration block
-
-Operators can enable metrics collection by setting `"metrics": {"enabled": true}` in their existing `opentelemetry` configuration. The counter increments on every completed HTTP request, providing a foundation for more detailed metrics attributes in future releases.
 </Accordion>
 
 <Accordion title='Added Config-Driven OpenTelemetry API Metrics'>
@@ -274,40 +281,6 @@ The new structure includes:
 This change provides clearer separation of concerns and simplifies configuration management for deployments that require only traces or only metrics telemetry.
 </Accordion>
 
-<Accordion title='Added Configurable API Compression Size Limit'>
-Added a new Gateway configuration option `storage.max_decompressed_size` to control the maximum size limit for API definition decompression. This enhances the API compression feature by allowing operators to adjust the decompression limit based on their deployment requirements.
-
-When `storage.max_decompressed_size` is not configured, the Gateway maintains the default 100MB limit for backward compatibility. When set to a positive value ≥ 1MB, the Gateway uses that value as the decompression cap. Values below 1MB are automatically clamped to 1MB with a warning logged to prevent potential security issues while avoiding service disruption.
-
-This configuration change applies only to Gateway-level storage settings and does not affect the public API definition schema or Dashboard contracts.
-</Accordion>
-
-<Accordion title='Added Centralised Error Overrides Infrastructure'>
-Added a foundational infrastructure for gateway-level error overrides that allows operators to standardise, transform, or mask error responses returned by the gateway. This infrastructure provides centralised rule compilation, efficient runtime matching, and flexible response generation.
-
-The new error override system features:
-
-- Map-based configuration indexed by HTTP status code for O(1) lookups and efficient fallback matching
-- Support for exact status code overrides (`401`, `500`) and pattern matching (`4xx`, `5xx`)
-- Multiple response override modes including explicit body, inline body template, file-based template, and message-only options
-- Custom headers and content-type aware template rendering (JSON/XML)
-- Additional matching logic for error flags, response body field/value patterns, and message regex matching
-
-All gateway-generated errors flow through the centralised `HandleError()` function in the gateway request lifecycle, enabling error overrides to be applied without requiring additional request middleware. The matching and override engine is designed to be shared between gateway-generated errors and upstream service errors (4xx/5xx responses from upstream services).
-</Accordion>
-
-<Accordion title='Added Per-API Error Response Overrides'>
-Added support for API-level error response overrides, allowing individual APIs to customize HTTP error responses independently of global gateway configuration. This feature extends the existing gateway-level error override infrastructure to the API definition level, enabling API owners to define their own override rules using the same configuration structure.
-
-The system supports customization of:
-- Tyk-generated errors (authentication failures, rate limits, validation errors)
-- Reverse proxy failures (timeouts, DNS errors, circuit breaker events)
-- Inline body templates and template file rendering
-- Custom HTTP headers and status code overrides
-- Pattern matching by status code and additional matching criteria
-
-API-level overrides follow the same configuration structure as gateway-level overrides, providing consistency while allowing granular control over error responses for specific APIs.
-</Accordion>
 
 <Accordion title='Added ConfigData Dimension Source for OpenTelemetry Metrics'>
 Added support for using API-level custom metadata from `config_data` as OpenTelemetry metric dimensions. Users can now configure a new dimension source `config_data` that extracts values from an API definition's `config_data` map into metric attributes.
@@ -385,15 +358,20 @@ Tyk Gateway now properly reads and applies OpenTelemetry configuration from the 
 Fixed an issue where the Gateway would fail to load APIs and policies if the Dashboard database was temporarily unavailable during startup. The Gateway will now automatically retry loading configurations with exponential backoff until successful, restoring self-healing capabilities without requiring a manual restart.
 </Accordion>
 
+<Accordion title='Added Strict Validation for Policy ID Characters'>
+Resolved an issue where policy IDs containing special characters could cause problems when parsing API endpoint requests. Previously, policy IDs with characters such as `#`, `?`, `%`, and `/` would interfere with URL parsing in Dashboard and Gateway API endpoints that use the policy ID as a path parameter, potentially causing request failures or unexpected behavior.
+
+Strict validation has been introduced across both the Dashboard and Gateway APIs to restrict policy identifiers to a safe character set (alphanumeric characters plus `_`, `-`, `.`, `~`). The validation occurs during policy creation and updates via the following endpoints:
+- `POST /api/portal/policies` and `PUT /api/portal/policies/{id}` (Dashboard API)
+- `POST /tyk/policies` and `PUT /tyk/policies/{polID}` (Gateway API)
+
+The API now returns a clear error message if an unacceptable character is used in the policy ID field, ensuring reliable policy management across all deployment types.
+</Accordion>
+
 <Accordion title='!!Fixed error response format for SOAP+XML requests'>
 Resolved an issue where requests with the `application/soap+xml` Content-Type received JSON-formatted error responses instead of the expected XML format. The Gateway now correctly returns XML-formatted errors for SOAP requests.
 </Accordion>
 
-<Accordion title='Fixed Policy ID Validation to Prevent Special Characters'>
-Resolved an issue where policy IDs containing special characters (`#`, `?`, `%`, `/`) could cause problems when parsing Dashboard and Gateway API endpoint requests. Previously, users could create policies with IDs containing these characters, which would then fail when used in URL paths for policy management endpoints like `/api/portal/policies/{id}` and `/tyk/policies/{polID}`.
-
-Tyk now enforces strict validation of policy IDs across both Dashboard and Gateway APIs, restricting policy identifiers to a safe character set (alphanumeric characters, `_`, `-`, `.`, `~`). The validation occurs when creating or updating policies via POST and PUT operations, and returns an error if unacceptable characters are detected in the `id` field.
-</Accordion>
 
 <Accordion title='Fixed Missing Default Configuration for Span Batch Processing'>
 Resolved an issue where SpanBatchConfig was not initialized with proper default values. Previously, this could cause span batch processing to behave unpredictably or fail when no explicit configuration was provided. The Gateway now properly sets appropriate defaults for span batch processing configuration, ensuring consistent behavior across all installations.
