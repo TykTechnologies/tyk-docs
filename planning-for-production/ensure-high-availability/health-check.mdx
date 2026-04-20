@@ -34,75 +34,94 @@ Health check is implemented as per the [Health Check Response Format for HTTP AP
 | Component | Liveness Endpoint | Readiness Endpoint | Configuration Key | Introduced In |
 |-----------|-------------------|--------------------|-------------------|---------------|
 | **Gateway** | `/hello` | `/ready` | [health_check_endpoint_name](/tyk-oss-gateway/configuration#health_check_endpoint_name) / [readiness_check_endpoint_name](/tyk-oss-gateway/configuration#readiness_check_endpoint_name) | Liveness: v2.7.5<br/>Readiness: v5.8.3+ |
-| **Dashboard** | `/hello` | N/A | [`health_check_endpoint_name`](/tyk-dashboard/configuration#health_check_endpoint_name) | - |
+| **Dashboard** | `/health` | N/A | [`health_check_endpoint_name`](/tyk-dashboard/configuration#health_check_endpoint_name) | v3.0.0 |
 | **Pump** | `/health` | N/A | [`health_check_endpoint_name`](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables#health_check_endpoint_name) | Liveness: v2.9.4 |
 
-For more details on configuring these endpoints, refer to the configuration references for [Gateway](/tyk-oss-gateway/configuration), [Dashboard](/tyk-dashboard/configuration), and [Pump](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables).
-
-### Status Levels
-
-The following status levels can be returned in the JSON response:
-
-- **pass**: Indicates that all components required for the component to work 100% are available, and there is no impact on your traffic.
-- **warn**: Indicates that one of the components is having an outage but your component is able to keep processing traffic. The impact is medium (i.e. no quotas are applied, no analytics, no RPC connection to [MDCB](/api-management/mdcb)).
-- **fail**: Indicates that critical dependencies (e.g., Redis AND the Tyk Dashboard) are unavailable, and can indicate other failures. The impact is high (i.e. no configuration changes are available for API/policies/keys, no quotas are applied, and no analytics).
-
-## Configuration
-
-By default, the liveness health check runs on `/hello` but can be configured to any path. For example:
+The default endpoint paths can be changed via the `health_check_endpoint_name` config key (all components) and `readiness_check_endpoint_name` (Gateway only). For example:
 
 ```yaml
 health_check_endpoint_name: "status"
 ```
 
-This configures the health check to run on `/status` instead of `/hello`.
+This changes the liveness endpoint to `/status`. For full details, refer to the [Gateway](/tyk-oss-gateway/configuration), [Dashboard](/tyk-dashboard/configuration), and [Pump](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables) configuration references.
 
-Similarly, you can customize the readiness endpoint:
+### Response Format
 
-```yaml
-readiness_check_endpoint_name: "is-ready"
+#### Gateway
+
+The Gateway's `/hello` and `/ready` endpoints return a structured JSON response. Health status is cached and refreshed every 10 seconds. Both endpoints reflect the most recent snapshot:
+
+```json
+{
+  "status": "pass",
+  "version": "v5.8.10",
+  "description": "Tyk GW",
+  "details": {
+    "redis": { "status": "pass", "componentType": "datastore", "time": "..." }
+  }
+}
 ```
 
-**Refresh Interval**
+The `status` field can have the following values:
 
-The health check endpoint refreshes every 10 seconds.
+| Status | HTTP Code | Description |
+|--------|-----------|-------------|
+| **pass** | 200 | All dependencies available. No impact on traffic. |
+| **warn** | 200 | One dependency is down but Gateway continues processing. Medium impact (no quotas, no analytics, no RPC connection to [MDCB](/api-management/mdcb)). |
+| **fail** | 200 (`/hello`) / 503 (`/ready`) | Critical dependencies (Redis and/or the Tyk Dashboard) unavailable. High impact (no configuration changes, no quotas, no analytics). |
 
-For more details on configuring these endpoints, refer to the configuration references for [Gateway](/tyk-oss-gateway/configuration), [Dashboard](/tyk-dashboard/configuration), and [Pump](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables).
+#### Dashboard, Pump
 
-## Kubernetes Probes Example
+Both return a simple live response with no caching:
 
-*   **Liveness Probe MUST use `/hello`**: Ensures Kubernetes restarts a pod only if the Gateway process has crashed or frozen.
-*   **Readiness Probe SHOULD use `/ready`**: Ensures a Gateway pod receives traffic only when fully connected to dependencies and configurations are loaded.
+```json
+{"status": "ok"}
+```
 
-Here is an example:
+HTTP 200 is returned when the service is running.
+
+## Deployment Configuration
+
+### Non-Kubernetes
+
+Point your load balancer or external monitoring system at `/hello` to check Gateway health. The endpoint names can also be set via environment variables instead of the config file:
+
+```bash
+TYK_GW_HEALTHCHECKENDPOINTNAME=status
+TYK_GW_READINESSCHECKENDPOINTNAME=is-ready
+```
+
+### Kubernetes (Helm)
+
+When deploying Tyk Gateway on Kubernetes, use `/hello` for the liveness probe and `/ready` for the readiness probe. Configure them via `gateway.livenessProbe` and `gateway.readinessProbe` in your Helm `values.yaml`:
 
 ```yaml
 gateway:
   livenessProbe:
     httpGet:
       path: /hello
-      port: 8080 # Adjust to your gateway's listen port
+      port: 8080
     initialDelaySeconds: 10
     periodSeconds: 10
     timeoutSeconds: 5
     failureThreshold: 3
   readinessProbe:
     httpGet:
-      path: /ready # Use the stricter /ready endpoint
-      port: 8080 # Adjust to your gateway's listen port
-    initialDelaySeconds: 15 # Give more time for API loading
+      path: /ready
+      port: 8080
+    initialDelaySeconds: 15
     periodSeconds: 10
     timeoutSeconds: 5
     failureThreshold: 3
 ```
 
 <Note>
-Adjust `initialDelaySeconds` based on the number of APIs your Gateway loads and available pod resources.
+Adjust `initialDelaySeconds` based on the number of APIs your Gateway loads and available pod resources. If using the Tyk Operator, probe configuration is still done at the Helm level; the Operator manages API definitions and policies, not the Gateway deployment itself.
 </Note>
 
 ## Health check examples
 
-The following examples show how the Health check endpoint returns for the Gateway.
+The following examples show how the Health check endpoint returns for the Gateway. For a description of the `status` values and HTTP codes, see [Response Format](#response-format).
 
 ### Pass Status (Liveness)
 
