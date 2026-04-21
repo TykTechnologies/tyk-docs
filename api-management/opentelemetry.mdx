@@ -1,11 +1,22 @@
 ---
 title: "OpenTelemetry in Tyk"
-description: "Overview of Tyk's native OpenTelemetry support for distributed tracing, metrics export, and log collection — the recommended observability stack for Tyk Gateway."
+description: "Overview of Tyk's native OpenTelemetry support for distributed tracing, metrics export, and log collection. The recommended observability approach for Tyk Gateway."
 keywords: "OpenTelemetry, OTel, OTLP, Distributed Tracing, Metrics, Observability, Tyk Gateway, Prometheus, Datadog, Jaeger"
-sidebarTitle: "OpenTelemetry"
+sidebarTitle: "Overview"
 ---
 
-[OpenTelemetry](https://opentelemetry.io/docs/what-is-opentelemetry/) is an open-source observability framework that provides a vendor-neutral standard for collecting traces, metrics, and logs. Since Tyk Gateway v5.2, OpenTelemetry is the recommended observability approach — the gateway natively exports traces and metrics via the [OpenTelemetry Protocol (OTLP)](https://opentelemetry.io/docs/specs/otlp/), and provides structured logs for easy collection, making it compatible with any modern observability backend.
+[OpenTelemetry](https://opentelemetry.io/docs/what-is-opentelemetry/) is an open-source observability framework providing a vendor-neutral standard for collecting traces, metrics, and logs. Since Tyk Gateway v5.2, it is the recommended observability approach for Tyk Gateway.
+
+Tyk supports all three signals. Traces and metrics are exported natively via the [OpenTelemetry Protocol (OTLP)](https://opentelemetry.io/docs/specs/otlp/) to any compatible backend. Logs are written as structured JSON to stdout and collected by an external agent. No additional components are required alongside Tyk to get started.
+
+```mermaid
+flowchart LR
+    GW["Tyk Gateway"]
+    GW -->|"Traces (OTLP)"| TC["Tracing backend\nDatadog · Jaeger · Dynatrace"]
+    GW -->|"Metrics (OTLP)"| MC["Metrics backend\nPrometheus · Grafana · Datadog"]
+    GW -->|"Logs (stdout)"| OC["OTel Collector"]
+    OC --> LC["Log backend\nElasticsearch · Loki"]
+```
 
 ## Distributed Tracing
 
@@ -25,9 +36,9 @@ Tyk Gateway natively pushes metrics to any OTLP-compatible backend via a configu
 
 When enabled, the gateway automatically exports three groups of metrics:
 
-- **Request metrics** — Rate, Errors, and Duration (RED) with a three-way latency split: total, gateway-only, and upstream-only
-- **Go runtime metrics** — Memory usage, goroutine count, and GC health
-- **Configuration state metrics** — Number of APIs and policies loaded, config reload counts and durations
+- **Request metrics:** Rate, Errors, and Duration (RED) with a three-way latency split: total, gateway-only, and upstream-only
+- **Go runtime metrics:** Memory usage, goroutine count, and GC health
+- **Configuration state metrics:** Number of APIs and policies loaded, config reload counts and durations
 
 You can extend these with [custom counters and histograms](/api-management/metrics/custom-metrics) that use request context, JWT claims, session data, response headers, or static API metadata as dimensions.
 
@@ -35,37 +46,32 @@ You can extend these with [custom counters and histograms](/api-management/metri
 
 For full configuration details, see:
 
-- [OpenTelemetry Metrics Configuration](/api-management/metrics/opentelemetry-configuration) — enabling metrics, export config, and cardinality control
-- [Default Gateway Metrics](/api-management/metrics/default-metrics) — all automatically exported metrics and their dimensions
-- [Custom Metrics](/api-management/metrics/custom-metrics) — defining your own counters and histograms
+- [OpenTelemetry Metrics Configuration](/api-management/metrics/opentelemetry-configuration): enabling metrics, export config, and cardinality control
+- [Default Gateway Metrics](/api-management/metrics/default-metrics): all automatically exported metrics and their dimensions
+- [Custom Metrics](/api-management/metrics/custom-metrics): defining your own counters and histograms
 
 ## Logs
 
-Tyk Gateway writes logs to `stdout`/`stderr` in structured JSON format — it does not have a native OTLP log exporter. To ship gateway logs to an observability backend, deploy the [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) with the [Filelog Receiver](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/filelogreceiver). The Collector tails container log files on each Kubernetes node, optionally enriches them with pod and namespace metadata, and forwards them to a backend like Elasticsearch.
+Tyk Gateway writes logs to `stdout`/`stderr` in structured JSON format. It does not have a native OTLP log exporter. To ship gateway logs to an observability backend, deploy the [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) with the [Filelog Receiver](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/filelogreceiver). The Collector tails container log files on each Kubernetes node, optionally enriches them with pod and namespace metadata, and forwards them to a backend like Elasticsearch.
 
 For a step-by-step guide, see [Collecting Gateway Logs with OTel on Kubernetes](/api-management/collecting-gateway-logs-otel-kubernetes).
 
+<Note>
+If you don't need a full OTel pipeline, [Tyk Pump](/api-management/tyk-pump) provides built-in API traffic analytics out of the box, with no external collector required.
+</Note>
+
 ## Resource Attributes
 
-All OTel signals (traces, metrics) produced by Tyk Gateway include resource attributes — metadata set once at startup that identifies the source gateway instance. These attributes let you filter and correlate signals across nodes, edge groups, and environments in your observability backend.
-
-### Tyk-Specific Attributes
+All OTel signals produced by Tyk Gateway include resource attributes: metadata set once at startup that identifies the source instance. Use these to filter and correlate signals across nodes, edge groups, and environments.
 
 | Attribute | Always Present | Description |
 |:----------|:--------------|:------------|
-| `tyk.gw.id` / `service.instance.id` | Yes | Unique node ID assigned to the gateway instance. |
+| `tyk.gw.id` / `service.instance.id` | Yes | Unique node ID for this gateway instance. |
 | `tyk.gw.dataplane` | Yes | Whether the gateway is running as an edge (dataplane) node. |
-| `tyk.gw.group.id` | No | Edge gateway group ID. Populated only for hybrid/dataplane gateways. |
-| `tyk.gw.tags` | No | Gateway segment tags. Populated only when the gateway is segmented. |
+| `tyk.gw.group.id` | No | Edge group ID. Populated only for hybrid/dataplane gateways. |
+| `tyk.gw.tags` | No | Segment tags. Populated only when the gateway is segmented. |
 
-### Standard OTel Attributes
-
-| Attribute | Example |
-|:----------|:--------|
-| `service.name` | `tyk-gateway` |
-| `service.version` | `v5.13.0` |
-| `host.name`, `host.arch`, `host.ip` | Host-level metadata |
-| `process.pid` | Container/process metadata |
+Standard OTel attributes (`service.name`, `service.version`, `host.name`, `host.arch`, `host.ip`, `process.pid`) are also included automatically.
 
 <Note>
 All OpenTelemetry configuration options are documented in the [Tyk Gateway configuration reference](/tyk-oss-gateway/configuration#opentelemetry).
@@ -73,13 +79,13 @@ All OpenTelemetry configuration options are documented in the [Tyk Gateway confi
 
 ## Signal Correlation
 
-Tyk's three signal types — traces, metrics, and logs — are produced independently, but three mechanisms let you correlate them in your observability backend.
+Tyk's three signal types (traces, metrics, and logs) are produced independently, but three mechanisms let you correlate them in your observability backend.
 
 ### Trace and Span IDs in Logs
 
 When OpenTelemetry tracing is enabled, Tyk Gateway injects trace context into both log types:
 
-**Access logs** include `trace_id` — the W3C trace ID for the request, matching the root span exported to your tracing backend. Enable access logs to get it:
+**Access logs** include `trace_id`, the W3C trace ID for the request, matching the root span exported to your tracing backend. Enable access logs to get it:
 
 ```bash
 TYK_GW_ACCESSLOGS_ENABLED=true
@@ -107,9 +113,9 @@ Trace and span IDs are only present in log entries associated with a sampled req
 
 When both OpenTelemetry tracing and metrics are enabled, Tyk Gateway automatically attaches exemplars to histogram metric observations. An exemplar embeds the `trace_id` and `span_id` of the active request directly inside a histogram bucket, creating a direct link from an aggregated metric to a specific trace.
 
-No gateway configuration is required — Tyk Gateway attaches exemplars automatically whenever a histogram is recorded during an active sampled request.
+No gateway configuration is required. Tyk Gateway attaches exemplars automatically whenever a histogram is recorded during an active sampled request.
 
-**What this enables:** When you see a latency spike on a `http.server.request.duration` histogram in Grafana, click the exemplar marker on the chart to navigate directly to the offending trace in Jaeger or Tempo — no manual trace ID search needed.
+**What this enables:** When you see a latency spike on a `http.server.request.duration` histogram in Grafana, click the exemplar marker on the chart to navigate directly to the offending trace in Jaeger or Tempo, with no manual trace ID search required.
 
 For full setup details, see [Exemplars](/api-management/metrics/default-metrics#exemplars) in the default metrics reference.
 
@@ -118,3 +124,9 @@ For full setup details, see [Exemplars](/api-management/metrics/default-metrics#
 Traces and metrics both carry the same [resource attributes](#resource-attributes) set at gateway startup. The key correlating attribute is `tyk.gw.id` (also exported as `service.instance.id`), which uniquely identifies the gateway node that produced each signal.
 
 When running multiple gateway replicas, this lets you filter metrics to a specific node using `tyk.gw.id` and find that same node's traces using the same attribute.
+
+## What's Next
+
+- **Getting Started:** A hands-on walkthrough spinning up a full observability stack (Loki, Grafana, Tempo, Prometheus) with Tyk Gateway. *(Coming soon)*
+- **[Best Practices](/api-management/observability-best-practices):** Production guidance on export topology, cardinality control, trace sampling, and log collection.
+- **[Gateway Observability Playbook](/api-management/gateway-observability-playbook):** Diagnosing common failures using RED metrics, response flags, and PromQL alert rules.
