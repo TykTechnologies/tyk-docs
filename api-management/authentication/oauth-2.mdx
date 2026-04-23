@@ -256,6 +256,271 @@ For example:
 }
 ```
 
+### Complete Example: OAuth 2.0 Authorization Code Grant for SSO
+
+This section provides a complete, step-by-step example of implementing the OAuth 2.0 Authorization Code Grant flow with Tyk, suitable for Single Sign-On (SSO) scenarios.
+
+#### Prerequisites
+
+- Tyk Dashboard running at `http://localhost:3000`
+- Tyk Gateway running at `http://localhost:8080`
+- Dashboard API credentials (admin secret)
+- An upstream API to protect (this example uses `http://httpbin.org`)
+
+#### Step 1: Create the API Definition with OAuth 2.0
+
+First, create an API that uses OAuth 2.0 with the Authorization Code grant type.
+
+**Using the Tyk Dashboard API:**
+
+```bash
+curl -X POST http://localhost:3000/api/apis/oas \
+  -H "Authorization: <DASHBOARD_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "openapi": "3.0.3",
+    "info": {
+      "title": "OAuth2 Protected API",
+      "version": "1.0.0"
+    },
+    "servers": [
+      {
+        "url": "http://localhost:8080/oauth2-api/"
+      }
+    ],
+    "security": [
+      {
+        "oauth2": []
+      }
+    ],
+    "paths": {
+      "/get": {
+        "get": {
+          "summary": "Get request details",
+          "responses": {
+            "200": {
+              "description": "Successful response"
+            }
+          }
+        }
+      }
+    },
+    "components": {
+      "securitySchemes": {
+        "oauth2": {
+          "type": "oauth2",
+          "flows": {
+            "authorizationCode": {
+              "authorizationUrl": "/oauth/authorize",
+              "tokenUrl": "/oauth/token",
+              "scopes": {}
+            }
+          }
+        }
+      }
+    },
+    "x-tyk-api-gateway": {
+      "info": {
+        "name": "OAuth2 Protected API",
+        "state": {
+          "active": true
+        }
+      },
+      "server": {
+        "listenPath": {
+          "strip": true,
+          "value": "/oauth2-api/"
+        },
+        "authentication": {
+          "enabled": true,
+          "securitySchemes": {
+            "oauth2": {
+              "enabled": true,
+              "allowedAuthorizeTypes": ["code"],
+              "authLoginRedirect": "http://localhost:3000/identity-server/login",
+              "refreshToken": true
+            }
+          }
+        }
+      },
+      "upstream": {
+        "url": "http://httpbin.org/"
+      }
+    }
+  }'
+```
+
+The response includes the API ID that you'll need for subsequent steps:
+
+```json
+{
+  "key": "b5eb9e7d72e34bdab5baa0260958feb9",
+  "status": "ok",
+  "action": "added"
+}
+```
+
+Save the API ID (e.g., `b5eb9e7d72e34bdab5baa0260958feb9`) for the next steps.
+
+#### Step 2: Create an OAuth Client
+
+Register a client application that will be authorized to access the API:
+
+```bash
+curl -X POST http://localhost:3000/api/apis/oauth/<API_ID> \
+  -H "Authorization: <DASHBOARD_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "redirect_uri": "http://localhost:3000/identity-server/callback",
+    "meta_data": {
+      "app_name": "My SSO Application"
+    }
+  }'
+```
+
+Response:
+
+```json
+{
+  "client_id": "c4a3b79a12d34e5f6789ab0c1d2e3f4a",
+  "secret": "MTIzNDU2Nzg5MGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6",
+  "redirect_uri": "http://localhost:3000/identity-server/callback",
+  "meta_data": {
+    "app_name": "My SSO Application"
+  }
+}
+```
+
+Note the `client_id` and `secret` values - you'll need these for authentication.
+
+#### Step 3: Initiate the Authorization Request
+
+The client application redirects the user to start the OAuth flow:
+
+```bash
+curl -X POST http://localhost:8080/oauth2-api/oauth/authorize/ \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "response_type=code&client_id=c4a3b79a12d34e5f6789ab0c1d2e3f4a&redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Fidentity-server%2Fcallback"
+```
+
+Tyk responds with a redirect to your identity server:
+
+```
+HTTP/1.1 307 Temporary Redirect
+Location: http://localhost:3000/identity-server/login?client_id=c4a3b79a12d34e5f6789ab0c1d2e3f4a&redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Fidentity-server%2Fcallback&response_type=code
+```
+
+#### Step 4: Identity Server Obtains Authorization Code
+
+After the user authenticates and approves access on the identity server, the identity server requests an authorization code from Tyk:
+
+```bash
+curl -X POST http://localhost:3000/api/apis/oauth/<API_ID>/authorize-client \
+  -H "Authorization: <DASHBOARD_API_KEY>" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "response_type=code&client_id=c4a3b79a12d34e5f6789ab0c1d2e3f4a&redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Fidentity-server%2Fcallback"
+```
+
+Response:
+
+```json
+{
+  "code": "5a4b3c2d1e0f9876543210abcdef1234",
+  "redirect_to": "http://localhost:3000/identity-server/callback?code=5a4b3c2d1e0f9876543210abcdef1234"
+}
+```
+
+The identity server redirects the user to the callback URL with the authorization code.
+
+#### Step 5: Exchange Authorization Code for Access Token
+
+The client application exchanges the authorization code for an access token:
+
+```bash
+# First, encode the client credentials for Basic Auth
+# client_id:secret -> base64
+# c4a3b79a12d34e5f6789ab0c1d2e3f4a:MTIzNDU2Nzg5MGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6
+# Base64: YzRhM2I3OWExMmQzNGU1ZjY3ODlhYjBjMWQyZTNmNGE6TVRJek5EVTJOemc1TUdGaVkyUmxabWRvYVdwcmJHMXViM0J4Y25OMGRYWjNlSGw2
+
+curl -X POST http://localhost:8080/oauth2-api/oauth/token/ \
+  -H "Authorization: Basic YzRhM2I3OWExMmQzNGU1ZjY3ODlhYjBjMWQyZTNmNGE6TVRJek5EVTJOemc1TUdGaVkyUmxabWRvYVdwcmJHMXViM0J4Y25OMGRYWjNlSGw2" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=authorization_code&client_id=c4a3b79a12d34e5f6789ab0c1d2e3f4a&code=5a4b3c2d1e0f9876543210abcdef1234&redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Fidentity-server%2Fcallback"
+```
+
+Response:
+
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+  "expires_in": 3600,
+  "refresh_token": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkw",
+  "token_type": "bearer"
+}
+```
+
+#### Step 6: Access the Protected API
+
+Use the access token to call the protected API:
+
+```bash
+curl -X GET http://localhost:8080/oauth2-api/get \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+```
+
+Response:
+
+```json
+{
+  "args": {},
+  "headers": {
+    "Accept": "*/*",
+    "Host": "httpbin.org",
+    "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  },
+  "origin": "192.168.1.1",
+  "url": "http://httpbin.org/get"
+}
+```
+
+#### Step 7: Refresh the Access Token (Optional)
+
+When the access token expires, use the refresh token to obtain a new one:
+
+```bash
+curl -X POST http://localhost:8080/oauth2-api/oauth/token/ \
+  -H "Authorization: Basic YzRhM2I3OWExMmQzNGU1ZjY3ODlhYjBjMWQyZTNmNGE6TVRJek5EVTJOemc1TUdGaVkyUmxabWRvYVdwcmJHMXViM0J4Y25OMGRYWjNlSGw2" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=refresh_token&client_id=c4a3b79a12d34e5f6789ab0c1d2e3f4a&client_secret=MTIzNDU2Nzg5MGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6&refresh_token=YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkw"
+```
+
+Response:
+
+```json
+{
+  "access_token": "new-access-token-here",
+  "expires_in": 3600,
+  "refresh_token": "new-refresh-token-here",
+  "token_type": "bearer"
+}
+```
+
+#### Flow Summary
+
+The complete Authorization Code Grant flow for SSO follows this sequence:
+
+1. **User initiates login** → Client redirects to Tyk's authorization endpoint
+2. **Tyk redirects to Identity Server** → User authenticates and authorizes
+3. **Identity Server requests authorization code** → Tyk issues code via Dashboard API
+4. **Identity Server redirects user back** → Client receives authorization code
+5. **Client exchanges code for tokens** → Tyk issues access and refresh tokens
+6. **Client accesses protected API** → Uses access token in Authorization header
+7. **Token refresh (when needed)** → Client uses refresh token for new access token
+
+<Note>
+**Identity Server Integration**: In a production SSO setup, your Identity Provider (IdP) such as Keycloak, Auth0, Okta, or a custom solution handles user authentication (step 2-3). The IdP must be configured with access to the Tyk Dashboard API to request authorization codes on behalf of authenticated users.
+</Note>
+
 
 
 ## Using the Client Credentials Grant
