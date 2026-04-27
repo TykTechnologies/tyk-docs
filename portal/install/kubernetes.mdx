@@ -79,9 +79,117 @@ This section provides a step-by-step instruction for installing the Tyk Develope
 
 ### Configuration
 
-Please refer to this [guide](/product-stack/tyk-charts/tyk-stack-chart) for an explanation of all configuration options.
+For the full list of configurable values, refer to the [tyk-stack chart guide](/product-stack/tyk-charts/tyk-stack-chart). The sections below cover common production configuration scenarios.
 
 > **Note**: Helm chart supports Developer Portal v1.2.0+.
+
+### Pod Security Context
+
+The chart ships with hardened defaults for the portal pod that satisfy the Kubernetes [Restricted Pod Security Standard](https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted):
+
+```yaml
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 2000
+
+containerSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  allowPrivilegeEscalation: false
+  privileged: false
+  readOnlyRootFilesystem: true
+  seccompProfile:
+    type: RuntimeDefault
+  capabilities:
+    drop:
+      - ALL
+```
+
+Override these in your `values.yaml` to match your cluster's PSS policy.
+
+<Warning>
+**Bootstrap job security context limitation**
+
+The bootstrap job does not inherit `securityContext` or `containerSecurityContext` from `values.yaml`. On clusters enforcing PSS Restricted or Baseline profiles, the job will fail with a security policy violation.
+
+**Workaround:** Disable the automatic bootstrap and run it manually after deployment. See [Bootstrap Job](#bootstrap-job) below.
+</Warning>
+
+### Bootstrap Job
+
+The bootstrap job runs once after `helm install`. It waits for the portal pod to become ready, then calls `POST /portal-api/bootstrap` to create the first admin user. The portal blocks its startup sequence until this call succeeds.
+
+**Verify bootstrap completed:**
+
+```bash
+kubectl get jobs -n <namespace>
+kubectl logs job/dev-portal-job-<release-name> -n <namespace>
+```
+
+A successful run logs: `API call completed.`
+
+**To disable automatic bootstrap and bootstrap manually** (required on clusters with strict Pod Security Standards):
+
+1. Set `global.components.bootstrap: false` in your `values.yaml` and deploy.
+2. Wait for the portal pod to be ready, then send the bootstrap request:
+
+```bash
+curl -X POST http://<portal-service>:<port>/portal-api/bootstrap \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "admin@example.com",
+    "password": "your-password",
+    "first_name": "Admin",
+    "last_name": "User"
+  }'
+```
+
+Once the call succeeds, the portal detects the new admin user and completes its startup sequence.
+
+### Storage
+
+The `storage.type` setting controls where the portal stores assets (themes, images, OpenAPI specs). Session storage is always backed by the portal database, regardless of this setting.
+
+| Type | Description | Notes |
+|---|---|---|
+| `db` | Assets stored in the portal database | Recommended for Kubernetes — no PVC required |
+| `s3` | Assets stored in an S3-compatible bucket | Suitable for cloud or multi-replica deployments |
+| `fs` | Assets stored on the container filesystem | Requires a PersistentVolumeClaim |
+
+For `fs` storage, configure a PVC using `storage.persistence`:
+
+```yaml
+storage:
+  type: fs
+  persistence:
+    storageClass: "standard"
+    accessModes:
+      - ReadWriteOnce
+    size: 8Gi
+```
+
+<Note>
+`storage.type: fs` with multiple replicas requires a storage class that supports `ReadWriteMany`. Use `db` or `s3` to avoid this constraint.
+</Note>
+
+### Scaling and Replicas
+
+The default `kind: StatefulSet` is suited for single-pod deployments. To run multiple replicas, switch to `Deployment`:
+
+```yaml
+kind: Deployment
+replicaCount: 3
+
+storage:
+  type: db  # or s3 — both support concurrent access from multiple replicas
+```
+
+Portal sessions are stored in the portal database. All replicas share the same session store automatically via the shared database connection — no sticky sessions or additional session store configuration is required.
+
+### Troubleshooting
+
+For bootstrap job failures, crash-loops, database connectivity issues, and license key errors, see [Kubernetes Bootstrap Failures](/portal/troubleshooting/kubernetes-bootstrap-failures).
 
 ## Legacy Helm Chart
 
