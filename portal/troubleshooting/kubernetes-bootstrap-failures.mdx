@@ -50,70 +50,84 @@ kubectl describe pod <pod-name> -n <namespace>
 kubectl logs <pod-name> -n <namespace> --previous
 ```
 
-### License Key Invalid or Missing
+### Probe Timeouts: Pod Killed Before Startup Completes
 
-If the portal starts with a missing or invalid license, it logs the following at startup:
+**Symptom:** Kubernetes terminates the pod before it finishes starting. Logs show:
+
+```
+Readiness probe failed: HTTP probe failed with statuscode: 503
+Liveness probe failed: HTTP probe failed with statuscode: 503
+```
+
+**Cause:** The portal's `/ready` endpoint performs a live database ping on every probe check. Short-lived database latency — such as TLS handshake overhead or connection pool delays — can cause the probe to time out, triggering Kubernetes to restart the pod before it has fully initialized.
+
+**Fix:** Increase the probe delays and thresholds in your `values.yaml`:
+
+```yaml
+livenessProbe:
+  initialDelaySeconds: 120
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  initialDelaySeconds: 120
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+```
+
+If the portal connects to a database over a high-latency or TLS-secured link, increase `initialDelaySeconds` further (e.g., `300`).
+
+### PostgreSQL Date Format Mismatch
+
+**Symptom:** The pod enters `CrashLoopBackOff` immediately after starting, even though the database is reachable. Logs contain:
+
+```
+{"level":"fatal","message":"checking if bootstrapped: recovering config: convert field 1 failed: parsing time \"15-JAN-26 13:58:19.626098 +05:30\" as \"2006-01-02 15:04:05.999999999Z07:00\""}
+```
+
+**Cause:** The date format returned by the PostgreSQL server does not match the ISO format the portal expects. This occurs when the PostgreSQL `DateStyle` is not set to ISO.
+
+**Fix:** Append `datestyle` and `lc_time` options to your `database.connectionString` in `values.yaml`.
+
+For a DSN-format connection string:
+```
+host=<host> user=<user> password=<pass> dbname=<db> port=5432 sslmode=disable options=-c datestyle=ISO,MDY -c lc_time=C
+```
+
+For a URL-format connection string:
+```
+postgres://<user>:<pass>@<host>:5432/<db>?options=-c%20datestyle%3DISO%2CMDY%20-c%20lc_time%3DC
+```
+
+### License Key Not Set
+
+If the portal starts without a valid license, it logs the following at startup:
 
 | Log message | Meaning |
 |---|---|
-| `Initialisig license: license is empty` | `license` value not set in `values.yaml` |
+| `Initialisig license: license is empty` | `license` field is missing or empty in `values.yaml` |
 | `Initialisig license: token not valid` | License key is set but malformed or expired |
 | `Licensing: license is invalid` | Periodic background check; license failed validation |
 
-**Fix:**
-- Verify the `license` field in your `values.yaml` contains a valid, unexpired license key.
-- If using a Kubernetes secret, confirm the secret contains a `DevPortalLicense` key and that `useSecretName` references it:
-  ```bash
-  kubectl get secret <secret-name> -n <namespace> -o jsonpath='{.data.DevPortalLicense}' | base64 -d
-  ```
-
-### Database Not Reachable
-
-The portal fails to start if it cannot connect to the database.
-
-**Check:**
-- `database.connectionString` uses the correct service FQDN within the cluster (e.g., `postgres-service.tyk.svc.cluster.local`).
-- The database pod is running and the port is reachable from the portal pod:
-  ```bash
-  kubectl exec -it deployment/tyk-dev-portal -n <namespace> -- nc -zv <db-host> <db-port>
-  ```
-- Network policies permit traffic from the portal pod to the database port.
-
-### Missing or Incorrect Environment Variables
-
-The portal will crash-loop if required configuration is absent. Confirm all required fields are set — see [Config settings](/portal/install/kubernetes#instructions) for the minimum required values.
-
-Inspect what the pod is actually receiving:
+**Fix:** Set the `license` field in your `values.yaml`. If using a Kubernetes secret, confirm the secret contains a `DevPortalLicense` key and that `useSecretName` references it:
 
 ```bash
-kubectl exec deployment/tyk-dev-portal -n <namespace> -- env | grep PORTAL
+kubectl get secret <secret-name> -n <namespace> -o jsonpath='{.data.DevPortalLicense}' | base64 -d
 ```
 
-To enable verbose logging during diagnosis, set `PORTAL_LOG_LEVEL=debug` via `extraEnvs` in your `values.yaml`:
+### Environment Variables Not Taking Effect
 
-```yaml
-extraEnvs:
-  - name: PORTAL_LOG_LEVEL
-    value: "debug"
-```
+**Symptom:** Configuration set via `extraEnvs` — such as `PORTAL_STORAGE` or `PORTAL_DATABASE_DIALECT` — is not reflected at runtime. The portal continues using previous values.
 
-## Bootstrap Job Completes but Admin UI Is Inaccessible
+**Cause:** The Helm chart generates environment variables for certain fields (including storage type and database dialect) from its own templated values. Variables passed through `extraEnvs` may be overridden by these chart-generated values.
 
-**Symptom:** The bootstrap job logs `API call completed.` but the Admin Portal is unreachable or returns an error.
+**Fix:** Use the chart's native fields in `values.yaml` instead of `extraEnvs` for these settings:
 
-**Check:**
-- The portal pod is running and healthy:
-  ```bash
-  kubectl get pods -n <namespace>
-  kubectl logs deployment/tyk-dev-portal -n <namespace>
-  ```
-- The service and any ingress are routing to the correct port (default: `3001`):
-  ```bash
-  kubectl get svc -n <namespace>
-  kubectl describe ingress -n <namespace>
-  ```
-- The `hostName` value in `values.yaml` matches the domain you are accessing.
-- If the database was unavailable during startup, the portal may have started in a degraded state. Restart the pod to trigger a clean reconnection:
-  ```bash
-  kubectl rollout restart deployment/tyk-dev-portal -n <namespace>
-  ```
+| Instead of `extraEnvs` | Use directly in `values.yaml` |
+|---|---|
+| `PORTAL_STORAGE=db` | `storage.type: db` |
+| `PORTAL_DATABASE_DIALECT=postgres` | `database.dialect: postgres` |
+
+Reserve `extraEnvs` for configuration options that have no direct Helm chart equivalent.
