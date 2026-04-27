@@ -3,6 +3,117 @@ title: "Kubernetes Bootstrap Failures"
 description: "Troubleshoot Helm bootstrap job failures, pod crash-loops, and inaccessible Admin UI after deploying the Tyk Developer Portal on Kubernetes."
 ---
 
+This page covers common failures when deploying the Tyk Developer Portal on Kubernetes. For installation steps and configuration, see [Install Developer Portal on Kubernetes](/portal/install/kubernetes).
+
+## Bootstrap Job Fails: Pod Security Standards Violation
+
+**Symptom:** `helm install` completes but the bootstrap job fails with a security policy error, for example:
+
+```
+Error creating: pods "dev-portal-job-..." is forbidden: violates PodSecurity "restricted:latest"
+```
+
+**Cause:** The bootstrap job runs as root and does not support security context configuration via `values.yaml`. Clusters enforcing the Kubernetes PSS [Restricted](https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted) or [Baseline](https://kubernetes.io/docs/concepts/security/pod-security-standards/#baseline) profiles will reject it.
+
+**Fix:** Disable the automatic bootstrap job and bootstrap the portal manually:
+
+1. Set `global.components.bootstrap: false` in your `values.yaml` and run `helm upgrade`.
+2. Wait for the portal pod to be ready:
+   ```bash
+   kubectl rollout status deployment/tyk-dev-portal -n <namespace>
+   ```
+3. Send the bootstrap request to create the first admin user:
+   ```bash
+   curl -X POST http://<portal-service>:<port>/portal-api/bootstrap \
+     -H "Content-Type: application/json" \
+     -d '{
+       "username": "admin@example.com",
+       "password": "your-password",
+       "first_name": "Admin",
+       "last_name": "User"
+     }'
+   ```
+
+Once the call succeeds, the portal shuts down the temporary bootstrap server and completes startup.
+
 <Note>
-This page is a placeholder. Content is being written.
+This is a known limitation in the Helm chart. The bootstrap job template does not yet support security context configuration. Use `global.components.bootstrap: false` and bootstrap manually as described above.
 </Note>
+
+## Portal Pod Crash-Looping
+
+**Symptom:** The portal pod restarts repeatedly. Inspect the pod state and logs:
+
+```bash
+kubectl get pods -n <namespace>
+kubectl describe pod <pod-name> -n <namespace>
+kubectl logs <pod-name> -n <namespace> --previous
+```
+
+### License Key Invalid or Missing
+
+If the portal starts with a missing or invalid license, it logs the following at startup:
+
+| Log message | Meaning |
+|---|---|
+| `Initialisig license: license is empty` | `license` value not set in `values.yaml` |
+| `Initialisig license: token not valid` | License key is set but malformed or expired |
+| `Licensing: license is invalid` | Periodic background check; license failed validation |
+
+**Fix:**
+- Verify the `license` field in your `values.yaml` contains a valid, unexpired license key.
+- If using a Kubernetes secret, confirm the secret contains a `DevPortalLicense` key and that `useSecretName` references it:
+  ```bash
+  kubectl get secret <secret-name> -n <namespace> -o jsonpath='{.data.DevPortalLicense}' | base64 -d
+  ```
+
+### Database Not Reachable
+
+The portal fails to start if it cannot connect to the database.
+
+**Check:**
+- `database.connectionString` uses the correct service FQDN within the cluster (e.g., `postgres-service.tyk.svc.cluster.local`).
+- The database pod is running and the port is reachable from the portal pod:
+  ```bash
+  kubectl exec -it deployment/tyk-dev-portal -n <namespace> -- nc -zv <db-host> <db-port>
+  ```
+- Network policies permit traffic from the portal pod to the database port.
+
+### Missing or Incorrect Environment Variables
+
+The portal will crash-loop if required configuration is absent. Confirm all required fields are set — see [Config settings](/portal/install/kubernetes#instructions) for the minimum required values.
+
+Inspect what the pod is actually receiving:
+
+```bash
+kubectl exec deployment/tyk-dev-portal -n <namespace> -- env | grep PORTAL
+```
+
+To enable verbose logging during diagnosis, set `PORTAL_LOG_LEVEL=debug` via `extraEnvs` in your `values.yaml`:
+
+```yaml
+extraEnvs:
+  - name: PORTAL_LOG_LEVEL
+    value: "debug"
+```
+
+## Bootstrap Job Completes but Admin UI Is Inaccessible
+
+**Symptom:** The bootstrap job logs `API call completed.` but the Admin Portal is unreachable or returns an error.
+
+**Check:**
+- The portal pod is running and healthy:
+  ```bash
+  kubectl get pods -n <namespace>
+  kubectl logs deployment/tyk-dev-portal -n <namespace>
+  ```
+- The service and any ingress are routing to the correct port (default: `3001`):
+  ```bash
+  kubectl get svc -n <namespace>
+  kubectl describe ingress -n <namespace>
+  ```
+- The `hostName` value in `values.yaml` matches the domain you are accessing.
+- If the database was unavailable during startup, the portal may have started in a degraded state. Restart the pod to trigger a clean reconnection:
+  ```bash
+  kubectl rollout restart deployment/tyk-dev-portal -n <namespace>
+  ```
