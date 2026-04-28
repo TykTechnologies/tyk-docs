@@ -12,7 +12,6 @@ Tyk Gateway exports all three observability signals (structured logs, distribute
 By the end of this guide you will have:
 
 - Structured JSON access logs from Tyk Gateway shipping to Loki
-- Distributed traces exporting to Tempo with trace-to-log correlation
 - Gateway metrics (request rate, latency, error rate) flowing to Prometheus
 - A Grafana instance wired up to all three backends
 
@@ -23,12 +22,12 @@ By the end of this guide you will have:
 | Structured JSON logs (`log_format: json`) | 5.6.0 |
 | Access logs (`access_logs.enabled`) | 5.8.0 |
 | Distributed traces (OTLP) | 5.3.0 |
-| OTLP metrics | 5.7.0 |
+| OTLP metrics | 5.13.0 |
 
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/) v2 installed
-- A running Tyk Self-Managed deployment (or a new one, see [Docker installation](/tyk-self-managed/install/docker))
+- A running Tyk Self-Managed deployment. We recommend following the [Tyk Self-Managed getting started guide](https://tyk.io/docs/getting-started/quick-start#getting-started-with-tyk-self-managed) to set up a local Docker environment — this guide was tested against that setup.
 - Basic familiarity with Docker Compose
 
 ## Architecture
@@ -57,6 +56,8 @@ flowchart LR
 <Note>
 Tyk Gateway does not export logs via OTLP. It writes structured JSON to stdout. The OTel Collector reads those logs from the Docker container log path using the `filelog` receiver.
 </Note>
+
+## Instructions
 
 ## Step 1: Configure Tyk Gateway
 
@@ -119,7 +120,6 @@ Create an `otelcol-config.yml` file in your deployment directory:
 
 ```yaml expandable
 receivers:
-  # Receives traces and metrics pushed from Tyk Gateway
   otlp:
     protocols:
       grpc:
@@ -127,38 +127,44 @@ receivers:
       http:
         endpoint: 0.0.0.0:4318
 
-  # Reads Tyk Gateway logs from the Docker container log path
   filelog/tyk-gateway:
-    include: ["/hostfs/var/lib/docker/containers/*/*-json.log"]
+    include: ["/var/lib/docker/containers/*/*-json.log"]
     include_file_name: false
     include_file_path: true
     start_at: end
     operators:
-      - type: container
-        format: docker
-        add_metadata_from_filepath: true
-      # Keep only tyk-gateway container logs
-      - type: filter
-        expr: 'attributes.attrs == nil or attributes.attrs.tag == nil or attributes.attrs.tag != "tyk-gateway"'
-      # Parse inner Tyk JSON log payload and extract timestamp and severity
+      - type: json_parser
+        parse_from: body
+        parse_to: attributes.docker
+        on_error: drop
+      - type: move
+        from: attributes.docker.log
+        to: body
       - type: json_parser
         parse_from: body
         parse_to: attributes.tyk
-        timestamp:
-          parse_from: attributes.tyk.time
-          layout: '%Y-%m-%dT%H:%M:%SZ'
-        severity:
-          parse_from: attributes.tyk.level
+        on_error: drop
+      - type: filter
+        expr: 'attributes.tyk.prefix == nil and attributes.tyk.msg == nil'
+      - type: time_parser
+        parse_from: attributes.tyk.time
+        layout: '%Y-%m-%dT%H:%M:%SZ'
+        on_error: send_quiet
+      - type: severity_parser
+        parse_from: attributes.tyk.level
         on_error: send_quiet
 
 processors:
   batch: {}
+  resource/tyk_gateway_logs:
+    attributes:
+      - action: upsert
+        key: service.name
+        value: tyk-gateway
   memory_limiter:
     check_interval: 1s
     limit_percentage: 75
     spike_limit_percentage: 20
-  # Promote gateway resource attributes into metric datapoint labels
-  # so you can filter by gateway instance in Grafana
   transform/tyk_gw_resource_attrs:
     error_mode: ignore
     metric_statements:
@@ -192,9 +198,13 @@ service:
       receivers: [otlp]
       processors: [memory_limiter, transform/tyk_gw_resource_attrs, batch]
       exporters: [otlphttp/prometheus]
-    logs:
-      receivers: [otlp, filelog/tyk-gateway]
+    logs/otlp:
+      receivers: [otlp]
       processors: [memory_limiter, batch]
+      exporters: [otlphttp/loki]
+    logs/filelog:
+      receivers: [filelog/tyk-gateway]
+      processors: [memory_limiter, resource/tyk_gateway_logs, batch]
       exporters: [otlphttp/loki]
 ```
 
@@ -204,9 +214,10 @@ Then add the `otel-collector` service to your `docker-compose.yml`:
 services:
   otel-collector:
     image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.133.0
+    user: "0"   # Required — without this, permission denied reading /var/lib/docker/containers
     volumes:
       - ./otelcol-config.yml:/etc/otelcol-contrib/config.yaml
-      - /var/lib/docker/containers:/hostfs/var/lib/docker/containers:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     ports:
       - "4317:4317"
@@ -325,13 +336,7 @@ datasources:
   - name: Tempo
     type: tempo
     url: http://tempo:3200
-    jsonData:
-      tracesToLogsV2:
-        datasourceUid: loki
-        filterByTraceID: true
 ```
-
-The `tracesToLogsV2` block wires up trace-to-log correlation in Grafana: clicking a trace ID in Tempo will automatically query Loki for matching log lines.
 
 ## Step 4: Start and verify
 
@@ -341,13 +346,24 @@ Restart your deployment to apply the gateway configuration changes and bring up 
 docker compose up -d
 ```
 
-Send a few test requests through Tyk Gateway, then open Grafana at **http://localhost:3001** and verify:
+Send test requests through Tyk Gateway, then open Grafana at **http://localhost:3001** and verify each signal.
+
+<Note>
+If you are following this guide using the Tyk Self-Managed getting started setup, an **httpbingo** API is pre-configured. Generate test traffic with:
+
+```bash
+for i in $(seq 1 10); do curl -s -o /dev/null -w "HTTP %{http_code}\n" \
+  -H "Authorization: <your-api-key>" http://localhost:8080/httpbingo/get; done
+```
+</Note>
 
 **Metrics**: in Explore, select the Prometheus datasource and run:
 ```promql
-tyk_http_requests_total
+{__name__="tyk.http.requests_total"}
 ```
-You should see request counts labelled by `api_id`, `response_code`, and `service_name`.
+You should see request counts rise as traffic flows through the gateway.
+
+![Metrics in Grafana](/img/observability/grafana-metrics.png)
 
 **Logs**: in Explore, select the Loki datasource and run:
 ```logql
@@ -355,7 +371,11 @@ You should see request counts labelled by `api_id`, `response_code`, and `servic
 ```
 You should see structured access log entries with fields like `api_id`, `path`, `status`, `latency_total`, and `trace_id`.
 
-**Traces**: in Explore, select the Tempo datasource and search for recent traces. Each trace should show two spans: a parent span for the full request lifecycle and a child span for the upstream call.
+![Logs in Grafana](/img/observability/grafana-logs.png)
+
+**Traces**: in Explore, select the Tempo datasource and search for recent traces. Each trace should show one span for the request.
+
+![Traces in Grafana](/img/observability/grafana-traces.png)
 
 <Tip>
 If traces are not appearing, verify that `TYK_GW_OPENTELEMETRY_TRACES_ENABLED=true` is set and that the gateway can reach `otel-collector:4317`. Check the OTel Collector logs with `docker compose logs otel-collector` for any connection errors.
