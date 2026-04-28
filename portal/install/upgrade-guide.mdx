@@ -1,8 +1,373 @@
 ---
 title: "Upgrade Guide"
 description: "Step-by-step instructions for upgrading the Tyk Developer Portal across Docker, Kubernetes, and Linux deployments."
+sidebarTitle: "Upgrade Guide"
+keywords: "Developer Portal, Tyk, Upgrade Developer Portal, Portal upgrade, Portal version update"
 ---
 
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| Enterprise | Self-Managed, Hybrid, Cloud |
+
+This guide explains how to upgrade the Tyk Developer Portal to a new version. The upgrade process involves replacing the Portal binary or container image, after which the Portal automatically applies any required database migrations on startup. You must also manually upgrade your theme to pick up template changes.
+
+## Before You Upgrade
+
+Complete the following steps before starting the upgrade:
+
+1. **Check the [Compatibility Matrix](/portal/overview/compatibility-matrix)** to confirm the new Portal version is compatible with your Tyk Dashboard and Gateway versions.
+
+2. **Review the release notes** for every version between your current version and the target version. Pay particular attention to the "Breaking Changes" section. See [Portal Release Notes](/developer-support/release-notes/portal).
+
+3. **Back up your database.** The Portal stores all configuration, products, plans, and consumer data in the database. Use the native backup utility for your database engine (PostgreSQL, MySQL, or MariaDB).
+
+4. **Back up your theme files.** If you have a custom theme, export it from the Admin Portal or copy the theme directory before upgrading.
+
+5. **Note your current Portal version.** You can find this in the Admin Portal under the account settings, or by checking the running container image tag.
+
+{/* TODO: Screenshot — Admin Portal showing the current version number */}
+
+## Upgrade Procedure
+
+### Tyk Cloud
+
+On Tyk Cloud, the Developer Portal upgrade is managed through the Tyk Cloud Console. You do not run Docker or Kubernetes commands directly.
+
+**1. Open the Tyk Cloud Console** and navigate to your deployment settings.
+
+**2. Select the target Portal version** from the version dropdown.
+
+**3. Apply the update.** Tyk Cloud orchestrates the rolling upgrade of the underlying infrastructure on your behalf. Database migrations run automatically during this process.
+
+After the upgrade completes, proceed to [Post-Upgrade Verification](#post-upgrade-verification).
+
+### Docker
+
+#### Docker Run
+
+**1. Stop and remove the running Portal container.**
+
+```console
+docker stop tyk-portal
+docker rm tyk-portal
+```
+
+**2. Pull the new Portal image.** Replace `<NEW_VERSION>` with the target version, for example `v1.17.1`.
+
+```console
+docker pull tykio/portal:<NEW_VERSION>
+```
+
+You can browse all available versions on [Docker Hub](https://hub.docker.com/r/tykio/portal/tags).
+
+**3. Start the Portal container using the new image.** Use the same `docker run` command from your initial installation, updating only the image tag. The Portal applies any required database migrations automatically on startup.
+
+```console
+docker run -d \
+    -p 3001:3001 \
+    --env-file .env \
+    --network tyk-portal \
+    --name tyk-portal \
+    tykio/portal:<NEW_VERSION>
+```
+
+**4. Verify the Portal has started successfully.**
+
+```console
+docker logs tyk-portal
+```
+
+Confirm there are no startup errors before proceeding to post-upgrade verification.
+
+#### Docker Compose
+
+**1. Update the Portal image tag** in your `docker-compose.yaml` file:
+
+```yaml
+tyk-portal:
+  image: tykio/portal:<NEW_VERSION>
+```
+
+**2. Pull the new image and restart the Portal container.**
+
+```console
+docker-compose pull tyk-portal
+docker-compose up -d tyk-portal
+```
+
+**3. Verify the Portal has started successfully.**
+
+```console
+docker-compose logs tyk-portal
+```
+
+---
+
+### Kubernetes
+
+#### Tyk Stack Helm Chart (`tyk-dev-portal`)
+
+**1. Update the Portal image tag** in your `values.yaml`:
+
+```yaml
+image:
+  tag: "<NEW_VERSION>"
+```
+
+**2. Run the Helm upgrade.**
+
+```console
+helm upgrade tyk-dev-portal tyk-helm/tyk-dev-portal \
+  -f values.yaml \
+  -n tyk
+```
+
+If the Portal is deployed as part of the full Tyk Stack chart, update `global.components.devPortal.image.tag` and run:
+
+```console
+helm upgrade tyk tyk-helm/tyk-stack \
+  -f values.yaml \
+  -n tyk
+```
+
+**3. Watch the rollout.**
+
+```console
+kubectl rollout status deployment/<portal-deployment-name> -n tyk
+```
+
+**4. Check the logs for startup errors.**
+
+```console
+kubectl logs -f <portal-pod-name> -n tyk
+```
+
 <Note>
-This page is a placeholder. Content is being written.
+If the Portal pod is restarted before startup completes — particularly after a theme upgrade — increase the `initialDelaySeconds` value in your readiness and liveness probe configuration to at least 60 seconds. A value that is too low causes Kubernetes to mark the pod as unhealthy and restart it before the application has finished initializing.
 </Note>
+
+#### Legacy Helm Chart (`tyk-pro`)
+
+**1. Update the Portal image tag** in your `values.yaml`:
+
+```yaml
+enterprisePortal:
+  image:
+    tag: "<NEW_VERSION>"
+```
+
+**2. Run the Helm upgrade.**
+
+```console
+helm upgrade tyk-pro tyk-helm/tyk-pro \
+  -f values.yaml \
+  -n tyk
+```
+
+**3. Watch the rollout.**
+
+```console
+kubectl rollout status deployment/<portal-deployment-name> -n tyk
+```
+
+**4. Check the logs for startup errors.**
+
+```console
+kubectl logs -f <portal-pod-name> -n tyk
+```
+
+---
+
+### Linux
+
+#### Red Hat / CentOS
+
+**1. Download the new Portal RPM package** from [packagecloud.io](https://packagecloud.io/tyk/portal). Replace `<VERSION>` with the target version.
+
+```console
+wget --content-disposition "https://packagecloud.io/tyk/portal/packages/<distro-type>/<distro-version>/portal_<VERSION>_1.x86_64.rpm/download.rpm?distro_version_id=284"
+```
+
+**2. Upgrade the installed package.**
+
+```console
+sudo rpm -Uvh portal-<VERSION>-1.x86_64.rpm
+```
+
+**3. Review the Portal configuration file** at `/opt/portal/portal.conf`. Consult the release notes for any new configuration options required by the new version.
+
+**4. Restart the Portal service.**
+
+```console
+sudo systemctl restart portal.service
+```
+
+**5. Check the service status.**
+
+```console
+systemctl status portal.service
+```
+
+#### Ubuntu / Debian
+
+**1. Download the new Portal DEB package** from [packagecloud.io](https://packagecloud.io/tyk/portal). Replace `<VERSION>` with the target version.
+
+```console
+wget --content-disposition "https://packagecloud.io/tyk/portal/packages/<distro-type>/<distro-version>/portal_<VERSION>_amd64.deb/download.deb?distro_version_id=284"
+```
+
+**2. Install the new package.** `dpkg -i` replaces the existing installation.
+
+```console
+sudo dpkg -i portal_<VERSION>_amd64.deb
+```
+
+**3. Review the Portal configuration file** at `/opt/portal/portal.conf`. Consult the release notes for any new configuration options required by the new version.
+
+**4. Restart the Portal service.**
+
+```console
+sudo systemctl restart portal.service
+```
+
+**5. Check the service status.**
+
+```console
+systemctl status portal.service
+```
+
+---
+
+## Upgrade Your Theme
+
+The Developer Portal does not automatically update the default theme when the Portal is upgraded, to prevent overwriting your customizations. After every Portal upgrade, you must check whether the new version includes theme changes and merge them into your custom theme.
+
+See [Upgrading Themes](/portal/customization/themes#upgrading-themes) for the full procedure.
+
+<Warning>
+Skipping the theme upgrade after a Portal version bump can cause template rendering errors, UI breakages on the live portal, or failed authentication flows. Always upgrade your theme as part of the portal upgrade process.
+</Warning>
+
+---
+
+## Post-Upgrade Verification
+
+After the Portal has started, confirm the following before directing traffic to the upgraded instance:
+
+1. **Admin Portal is accessible.** Log in at `http://<your-portal-host>:<port>/portal-admin`.
+
+{/* TODO: Screenshot — Admin Portal login page */}
+
+2. **API sync is working.** Navigate to **Providers** in the Admin Portal and confirm your providers show a healthy sync status. If sync fails after upgrade, check whether any policies in Tyk Dashboard reference API IDs that no longer exist — a stale policy referencing a deleted API will abort the entire sync. Delete or correct the affected policy and re-trigger sync. See also [Troubleshooting > Upgrade Failures](/portal/troubleshooting/upgrade-failures).
+
+3. **Consumer login works.** Open the live portal and verify that existing consumer accounts can log in.
+
+4. **API catalog is visible.** Confirm that published API products are visible to consumers on the live portal.
+
+5. **Theme renders correctly.** Check the live portal for visual regressions or template errors in the browser console.
+
+6. **Review the Portal logs.** Look for any `ERROR` or `WARN` messages that indicate a migration or configuration issue.
+
+---
+
+## Version-Specific Notes
+
+Review these notes for any version you are upgrading through, not only the target version.
+
+### v1.13.0
+
+**Breaking change — Plans API schema update:** The `RateLimit` and `Quota` fields in the `Plans` API object have changed data type from `string` to `integer`. If you use the Portal API to manage plans programmatically, update your integration before upgrading. See the [v1.13.0 release notes](/developer-support/release-notes/portal#1-13-0-release-notes) for full details.
+
+**Automatic migration:** The Portal automatically migrates existing resources to use the new Custom IDs introduced in this version. No manual action is required for this migration.
+
+**API Products policy override bug:** In v1.13.0, updating an API Product through the Portal UI can clear the version information on existing access policies in Tyk Dashboard, causing consumers to receive "Access to this API has been disallowed" errors. If you encounter this after upgrading to v1.13.0, re-save the affected policies in Tyk Dashboard to restore the version field. This issue is resolved in v1.16.0. If possible, upgrade directly to v1.16.0 or later rather than stopping at v1.13.0.
+
+### v1.14.0
+
+**SQLite is no longer supported.** If your installation uses SQLite as the database, you must migrate to PostgreSQL or MySQL before upgrading to v1.14.0 or later.
+
+For a full list of version-specific breaking changes and deprecations, see the [Portal Release Notes](/developer-support/release-notes/portal).
+
+---
+
+## Rollback Procedure
+
+If the upgrade causes issues that you cannot resolve, roll back to the previous version using the steps below.
+
+<Warning>
+A rollback involves restoring the database backup taken before the upgrade. Any data changes made after the upgrade — new users, access requests, or configuration updates — will be lost.
+</Warning>
+
+### Docker
+
+**1. Stop and remove the upgraded container.**
+
+```console
+docker stop tyk-portal
+docker rm tyk-portal
+```
+
+**2. Restore the database** from the backup you took before the upgrade.
+
+**3. Start the Portal using the previous image tag.**
+
+```console
+docker run -d \
+    -p 3001:3001 \
+    --env-file .env \
+    --network tyk-portal \
+    --name tyk-portal \
+    tykio/portal:<PREVIOUS_VERSION>
+```
+
+### Kubernetes
+
+**1. Restore the database** from the backup you took before the upgrade.
+
+**2. Roll back the Helm release.** First, list available revisions:
+
+```console
+helm history tyk-dev-portal -n tyk
+```
+
+Then roll back to the previous revision:
+
+```console
+helm rollback tyk-dev-portal -n tyk
+```
+
+To roll back to a specific revision number:
+
+```console
+helm rollback tyk-dev-portal <REVISION_NUMBER> -n tyk
+```
+
+### Linux
+
+**1. Restore the database** from the backup taken before the upgrade.
+
+**2. Downgrade the package** to the previous version.
+
+On Ubuntu / Debian:
+
+```console
+sudo apt-get install tyk-portal=<PREVIOUS_VERSION>
+```
+
+On Red Hat / CentOS:
+
+```console
+sudo yum downgrade tyk-portal-<PREVIOUS_VERSION>
+```
+
+**3. Restart the Portal service.**
+
+```console
+sudo systemctl restart portal.service
+```
+
+---
+
+## Common Upgrade Issues
+
+For detailed troubleshooting steps for common upgrade failure scenarios — including admin portal inaccessible after upgrade, API sync broken, and consumer login failures — see [Troubleshooting > Upgrade Failures](/portal/troubleshooting/upgrade-failures).
