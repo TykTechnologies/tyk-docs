@@ -1,0 +1,133 @@
+---
+title: "MCP access logs"
+sidebarTitle: "Access Logs"
+description: "MCP-specific fields available in Tyk Gateway structured access logs, including JSON-RPC method, primitive type, primitive name, and error code."
+keywords: "mcp, access logs, observability, logging, mcp_method, mcp_primitive_name, json-rpc"
+---
+
+When Tyk Gateway processes an MCP request, it adds four MCP-specific fields to the structured access log record for that request. These fields let you filter, aggregate, and analyse MCP traffic in your log management tooling using the same access log pipeline you use for REST APIs.
+
+For an overview of all MCP observability signals, see [MCP observability](/ai-management/mcp-gateway/mcp-observability).
+
+## Prerequisites
+
+Access logging must be enabled in your Tyk Gateway configuration. Set `access_logs.enabled` to `true` in `tyk.conf`:
+
+```json
+{
+  "access_logs": {
+    "enabled": true
+  }
+}
+```
+
+## MCP fields
+
+The following fields are added to access log records for MCP requests. Each field is only included when it has a non-empty value — fields are omitted from the record entirely when not applicable, keeping log volume low on lifecycle calls such as `initialize` and `ping`.
+
+| Field | Type | Description |
+|---|---|---|
+| `api_type` | string | API protocol type. Always `mcp` for MCP requests. |
+| `mcp_method` | string | JSON-RPC method invoked, for example `tools/call` or `resources/read`. Present on all MCP requests. |
+| `mcp_primitive_type` | string | MCP primitive category: `tool`, `resource`, or `prompt`. Present only when a primitive was matched. |
+| `mcp_primitive_name` | string | Name of the specific tool, resource, or prompt invoked, for example `get_current_weather`. Present only when a primitive was matched. |
+| `mcp_error_code` | integer | Gateway-mapped JSON-RPC error code. Present only when the request failed at the gateway layer. |
+
+The `mcp_error_code` field reflects errors that occur within the gateway — authentication failures, rate limit rejections, and upstream errors. It does not capture error codes from within the upstream MCP server's JSON-RPC response body.
+
+| Error code | Meaning |
+|---|---|
+| `-32001` | Authentication required |
+| `-32002` | Access denied |
+| `-32003` | Rate limit exceeded |
+| `-32004` | Upstream error (502/503/504) |
+| `-32600` | Invalid request (400) |
+| `-32603` | Internal error (500) |
+
+## Configuring which fields to include
+
+By default, when access logging is enabled, all available fields are included in each log record. To restrict the fields logged, set a `template` array in `access_logs`:
+
+```json
+{
+  "access_logs": {
+    "enabled": true,
+    "template": [
+      "client_ip",
+      "api_id",
+      "api_name",
+      "api_type",
+      "method",
+      "path",
+      "status",
+      "latency_total",
+      "mcp_method",
+      "mcp_primitive_type",
+      "mcp_primitive_name",
+      "mcp_error_code"
+    ]
+  }
+}
+```
+
+When a `template` is configured, only the listed fields appear in each log record. Fields in the template that have no value for a given request are omitted.
+
+## Example log records
+
+A successful `tools/call` request produces a record similar to the following:
+
+```json
+{
+  "api_id": "my-weather-mcp",
+  "api_name": "Weather MCP Proxy",
+  "api_type": "mcp",
+  "client_ip": "10.0.0.42",
+  "latency_total": 312,
+  "method": "POST",
+  "mcp_method": "tools/call",
+  "mcp_primitive_name": "get_current_weather",
+  "mcp_primitive_type": "tool",
+  "path": "/mcp",
+  "prefix": "access-log",
+  "status": 200
+}
+```
+
+A request that fails at the gateway due to a missing or invalid key produces a record with `mcp_error_code` set and no primitive fields (the primitive was never reached):
+
+```json
+{
+  "api_id": "my-weather-mcp",
+  "api_type": "mcp",
+  "client_ip": "10.0.0.42",
+  "latency_total": 4,
+  "method": "POST",
+  "mcp_error_code": -32001,
+  "mcp_method": "tools/call",
+  "path": "/mcp",
+  "prefix": "access-log",
+  "status": 401
+}
+```
+
+An `initialize` lifecycle call produces a record with `mcp_method` set but no primitive fields:
+
+```json
+{
+  "api_id": "my-weather-mcp",
+  "api_type": "mcp",
+  "client_ip": "10.0.0.42",
+  "latency_total": 18,
+  "method": "POST",
+  "mcp_method": "initialize",
+  "path": "/mcp",
+  "prefix": "access-log",
+  "status": 200
+}
+```
+
+## See also
+
+- [MCP observability](/ai-management/mcp-gateway/mcp-observability) — Overview of all MCP observability signals
+- [MCP metrics](/ai-management/mcp-gateway/mcp-metrics) — Custom OTel metric instruments with MCP dimensions
+- [Access logs](/api-management/logs) — General access log configuration and field reference

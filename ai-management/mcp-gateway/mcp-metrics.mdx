@@ -1,0 +1,258 @@
+---
+title: "MCP metrics"
+sidebarTitle: "Metrics"
+description: "Monitor MCP proxy traffic with OpenTelemetry custom metrics. Includes MCP-specific dimensions and worked examples for common monitoring use cases."
+keywords: "mcp, metrics, opentelemetry, dimensions, tools, primitives, latency, errors"
+---
+
+When Tyk Gateway proxies MCP traffic, it makes four MCP-specific fields available as `metadata` dimension sources in custom OTel metric instruments. Use these dimensions to monitor tool call volumes, track latency per primitive, classify gateway errors, and correlate usage to individual sessions — all through the same observability infrastructure you use for your REST APIs.
+
+For an overview of all MCP observability signals, see [MCP observability](/ai-management/mcp-gateway/mcp-observability).
+
+## MCP fields reference
+
+The following fields are derived from the JSON-RPC payload and available as `metadata` dimension sources in custom metrics.
+
+| Field | Description | Example values |
+|---|---|---|
+| `mcp_method` | JSON-RPC method invoked | `tools/call`, `initialize`, `resources/read`, `prompts/get` |
+| `mcp_primitive_type` | MCP primitive category | `tool`, `resource`, `prompt` |
+| `mcp_primitive_name` | Name of the specific tool, resource, or prompt | `get_current_weather`, `search_documents` |
+| `mcp_error_code` | Gateway-mapped JSON-RPC error code; empty string on success | `-32001` (auth required), `-32002` (access denied), `-32003` (rate limit exceeded), `-32004` (upstream error) |
+
+All four fields are populated only for MCP APIs. For non-MCP requests they are empty strings, so existing metric instruments are unaffected.
+
+<Note>
+`mcp_error_code` reflects errors mapped by the gateway layer — authentication failures, rate limit rejections, and upstream errors — not error codes in the upstream MCP server's JSON-RPC response body. See [MCP access logs](/ai-management/mcp-gateway/mcp-access-logs) for the full list of gateway error codes.
+</Note>
+
+## Use cases
+
+The examples below use Tyk's [custom metrics](/api-management/logs) system. Each instrument is a JSON object in the `opentelemetry.metrics.api_metrics` array in `tyk.conf`.
+
+### MCP traffic volume by method
+
+Track how many requests each JSON-RPC method receives across all MCP APIs. This shows the distribution of `tools/call`, `initialize`, `resources/read`, and other operations.
+
+```json
+{
+  "name": "tyk.mcp.requests.by_method",
+  "type": "counter",
+  "description": "Request count broken down by MCP JSON-RPC method",
+  "dimensions": [
+    { "source": "metadata", "key": "mcp_method",  "label": "mcp_method",  "default": "" },
+    { "source": "metadata", "key": "api_id",       "label": "api_id" }
+  ]
+}
+```
+
+### Top tools by call volume
+
+Identify the most frequently invoked tools — useful for cost attribution and optimisation. Add `api_id` to compare usage across multiple MCP backends.
+
+```json
+{
+  "name": "tyk.mcp.tool_calls.total",
+  "type": "counter",
+  "description": "MCP tool invocations by tool name and primitive type",
+  "dimensions": [
+    { "source": "metadata", "key": "mcp_primitive_name", "label": "tool_name",      "default": "" },
+    { "source": "metadata", "key": "mcp_primitive_type", "label": "primitive_type", "default": "" },
+    { "source": "metadata", "key": "api_id",             "label": "api_id" }
+  ],
+  "filters": { "methods": ["POST"] }
+}
+```
+
+### Tool execution latency — upstream
+
+Measure how long the upstream MCP server takes to respond per tool. Use this to identify slow tools and performance regressions; this measurement excludes gateway overhead.
+
+```json
+{
+  "name": "tyk.mcp.upstream.duration",
+  "type": "histogram",
+  "description": "Upstream latency per MCP tool",
+  "histogram_source": "upstream",
+  "histogram_buckets": [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+  "dimensions": [
+    { "source": "metadata", "key": "mcp_primitive_name", "label": "tool_name", "default": "" },
+    { "source": "metadata", "key": "api_id",             "label": "api_id" }
+  ],
+  "filters": { "methods": ["POST"] }
+}
+```
+
+### Total request duration with MCP labels
+
+Measure end-to-end latency (client → gateway → upstream → client) with MCP labels attached. Compare this with upstream latency to quantify gateway overhead.
+
+```json
+{
+  "name": "tyk.mcp.request.duration",
+  "type": "histogram",
+  "description": "End-to-end latency per MCP tool",
+  "histogram_source": "total",
+  "histogram_buckets": [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+  "dimensions": [
+    { "source": "metadata", "key": "mcp_primitive_name", "label": "tool_name",   "default": "" },
+    { "source": "metadata", "key": "mcp_method",         "label": "mcp_method",  "default": "" },
+    { "source": "metadata", "key": "api_id",             "label": "api_id" }
+  ]
+}
+```
+
+<Note>
+The `histogram_source` field accepts three values: `"upstream"` (upstream server latency only), `"total"` (end-to-end including gateway), and `"gateway"` (gateway processing time only, excluding upstream). Use `"gateway"` to isolate gateway overhead.
+</Note>
+
+### JSON-RPC error classification
+
+Count MCP errors by their gateway-mapped JSON-RPC error code. Unlike HTTP errors, MCP errors are typically returned with HTTP 200 — `mcp_error_code` is the only reliable way to detect gateway-layer failures.
+
+```json
+{
+  "name": "tyk.mcp.errors.by_code",
+  "type": "counter",
+  "description": "MCP JSON-RPC errors by error code and tool",
+  "dimensions": [
+    { "source": "metadata", "key": "mcp_error_code",     "label": "error_code", "default": "" },
+    { "source": "metadata", "key": "mcp_primitive_name", "label": "tool_name",  "default": "" },
+    { "source": "metadata", "key": "api_id",             "label": "api_id" }
+  ],
+  "filters": { "methods": ["POST"] }
+}
+```
+
+<Note>
+Filter this instrument in your metrics backend to exclude the empty `error_code` value (successful requests), or add a `status_codes` filter if your upstream signals errors via HTTP status.
+</Note>
+
+### Per-session tool usage
+
+Correlate tool call volume to individual MCP sessions using the authenticated session alias. Use this to identify heavy users, debug specific sessions, or allocate costs to teams.
+
+```json
+{
+  "name": "tyk.mcp.tool_calls.by_session",
+  "type": "counter",
+  "description": "Tool calls per session and tool",
+  "dimensions": [
+    { "source": "session",  "key": "alias",              "label": "session",    "default": "unknown" },
+    { "source": "metadata", "key": "mcp_primitive_name", "label": "tool_name",  "default": "" },
+    { "source": "metadata", "key": "api_id",             "label": "api_id" }
+  ],
+  "filters": { "methods": ["POST"] }
+}
+```
+
+<Note>
+`alias` is the human-readable key alias set on the API key or OAuth token. If your sessions are identified differently — for example, via a JWT claim — use the `context` source with the appropriate `jwt_claims_<name>` key instead.
+</Note>
+
+### Multi-API MCP backend comparison
+
+Compare performance across multiple MCP backends by including `api_id` alongside tool dimensions. Use this to determine whether the same tool performs differently on different upstream MCP servers.
+
+```json
+{
+  "name": "tyk.mcp.backend.upstream.duration",
+  "type": "histogram",
+  "description": "Upstream latency per tool broken down by MCP backend",
+  "histogram_source": "upstream",
+  "histogram_buckets": [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5],
+  "dimensions": [
+    { "source": "metadata", "key": "mcp_primitive_name", "label": "tool_name", "default": "" },
+    { "source": "metadata", "key": "api_id",             "label": "api_id" }
+  ]
+}
+```
+
+### Session efficiency
+
+Measure the ratio of productive `tools/call` operations to session lifecycle calls (`initialize`). A low ratio may indicate clients that open sessions but make few tool calls — useful for detecting misconfigured AI clients or idle connections.
+
+```json
+{
+  "name": "tyk.mcp.method.distribution",
+  "type": "counter",
+  "description": "Distribution of MCP method types for session efficiency analysis",
+  "dimensions": [
+    { "source": "metadata", "key": "mcp_method", "label": "mcp_method", "default": "" },
+    { "source": "metadata", "key": "api_id",     "label": "api_id" }
+  ]
+}
+```
+
+To compute efficiency, query your metrics backend for the ratio of `tools/call` to `initialize` counts:
+
+```promql
+# PromQL: ratio of tool calls to session initializations per API
+sum by (api_id) (rate(tyk_mcp_method_distribution_total{mcp_method="tools/call"}[5m]))
+/
+sum by (api_id) (rate(tyk_mcp_method_distribution_total{mcp_method="initialize"}[5m]))
+```
+
+## Complete configuration example
+
+Add the following to `tyk.conf`. This covers all the instruments needed for the Grafana dashboard panels:
+
+```json
+{
+  "opentelemetry": {
+    "metrics": {
+      "enabled": true,
+      "api_metrics": [
+        {
+          "name": "tyk.mcp.requests.total",
+          "type": "counter",
+          "description": "MCP request count by method, tool, API, and session",
+          "dimensions": [
+            { "source": "metadata", "key": "mcp_method",         "label": "mcp_method",      "default": "" },
+            { "source": "metadata", "key": "mcp_primitive_type", "label": "primitive_type",  "default": "" },
+            { "source": "metadata", "key": "mcp_primitive_name", "label": "tool_name",       "default": "" },
+            { "source": "metadata", "key": "mcp_error_code",     "label": "error_code",      "default": "" },
+            { "source": "metadata", "key": "api_id",             "label": "api_id" },
+            { "source": "session",  "key": "alias",              "label": "session",         "default": "unknown" }
+          ]
+        },
+        {
+          "name": "tyk.mcp.upstream.duration",
+          "type": "histogram",
+          "description": "Upstream MCP server latency per tool and API",
+          "histogram_source": "upstream",
+          "histogram_buckets": [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+          "dimensions": [
+            { "source": "metadata", "key": "mcp_primitive_name", "label": "tool_name", "default": "" },
+            { "source": "metadata", "key": "api_id",             "label": "api_id" }
+          ]
+        },
+        {
+          "name": "tyk.mcp.request.duration",
+          "type": "histogram",
+          "description": "End-to-end MCP request latency per tool and API",
+          "histogram_source": "total",
+          "histogram_buckets": [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+          "dimensions": [
+            { "source": "metadata", "key": "mcp_primitive_name", "label": "tool_name",  "default": "" },
+            { "source": "metadata", "key": "mcp_method",         "label": "mcp_method", "default": "" },
+            { "source": "metadata", "key": "api_id",             "label": "api_id" }
+          ]
+        }
+      ]
+    }
+  }
+}
+```
+
+<Note>
+The `tyk.mcp.requests.total` counter uses 6 dimensions. Keep the total dimension count at 10 or fewer per instrument to stay on the OTel SDK fast path. See [Performance Considerations](/api-management/logs#performance-considerations) for guidance.
+</Note>
+
+## See also
+
+- [MCP observability](/ai-management/mcp-gateway/mcp-observability) — Overview of all MCP observability signals
+- [MCP access logs](/ai-management/mcp-gateway/mcp-access-logs) — Access log fields populated for MCP requests
+- [Custom metrics](/api-management/logs) — How to define custom metric instruments and dimensions
+- [Default gateway metrics](/api-management/logs) — Standard RED metrics exported by the gateway
+- [Observability best practices](/api-management/logs) — Cardinality control, sampling strategy, and export topology guidance

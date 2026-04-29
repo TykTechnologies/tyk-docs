@@ -1,0 +1,387 @@
+---
+title: "MCP Gateway — FAQ"
+description: "Answers to frequently asked questions about Tyk's MCP Gateway: how it works, what it protects against, how authentication and sessions behave, what you can observe, and how to govern AI agent traffic at scale."
+keywords: "MCP, Model Context Protocol, MCP Gateway FAQ, MCP security, MCP authentication, MCP sessions, MCP rate limiting, AI agent governance, prompt injection, MCP tools, MCP SSE"
+sidebarTitle: "FAQ"
+---
+
+This FAQ answers common questions about Tyk's MCP Gateway — how it works, how it secures AI agent traffic, and how to govern MCP access at scale. Questions are grouped by topic so you can jump directly to the area you need.
+
+---
+
+## The basics
+
+### Do I need to modify my MCP server to use Tyk?
+
+No. Tyk sits in front of your existing MCP server as a reverse proxy. Your upstream server does not need to know about Tyk — it receives standard MCP requests over HTTP and responds normally. All authentication, access control, rate limiting, and observability are applied at the gateway layer.
+
+### Does Tyk work with both local and remote MCP servers?
+
+Tyk is designed for **remote MCP servers** — servers reachable over HTTP or HTTPS from the gateway. If your MCP server currently runs locally over stdio (the standard desktop configuration), you will need to either deploy it as an HTTP service or use one of the available stdio-to-HTTP bridge tools to expose it as a remote endpoint before Tyk can proxy it.
+
+### Which transport methods does Tyk support?
+
+Tyk supports the Streamable HTTP transport defined in the MCP specification (version 2025-11-25):
+
+- **`POST /mcp`** — for JSON-RPC messages from client to server. Tyk applies the middleware chain and proxies the request, streaming SSE responses through if the upstream returns them.
+- **`GET /mcp`** — for long-lived Server-Sent Events connections carrying server-initiated messages. Tyk maintains the connection and passes events through transparently.
+
+The older HTTP+SSE transport (two separate endpoints: a POST endpoint and a `/sse` endpoint) used by earlier MCP versions is not supported. Check that your upstream server implements Streamable HTTP.
+
+### What MCP protocol versions does Tyk support?
+
+Tyk passes the `MCP-Protocol-Version` header through to the upstream unchanged — version negotiation is handled between the client and the upstream MCP server. The current MCP specification version is `2025-11-25`. See [MCP OAS definition](/ai-management/mcp-gateway/mcp_proxy_definitions) for details on configuring the proxy definition.
+
+### Can Tyk proxy multiple MCP servers?
+
+Yes. Each remote MCP server gets its own **MCP proxy definition** in Tyk — its own listen path, upstream URL, authentication configuration, and middleware. An AI agent that needs to reach GitHub's MCP server and an internal database tools server connects to two separate Tyk endpoints, each governed independently. There is no limit on the number of MCP proxies you can create.
+
+---
+
+## The Dashboard
+
+### What can I configure for an MCP proxy in the Dashboard?
+
+The MCP Designer has two tabs.
+
+The **Settings** tab covers core proxy configuration (name, upstream server URL, gateway assignment) and proxy-level middleware that applies to all traffic through the proxy:
+
+| Middleware | What it does |
+|---|---|
+| CORS | Cross-origin resource sharing headers for browser-based clients |
+| Transform Request Headers | Add, remove, or modify headers on every upstream request |
+| Transform Response Headers | Add, remove, or modify headers on every response |
+| Context Variables | Make Tyk request metadata available in transforms and plugins |
+| Traffic Logs | Configure analytics capture behaviour |
+| Plugin Config / Bundle | Configure custom plugin drivers and bundle sources |
+
+The **Primitives** tab lists the tools, resources, and prompts defined for this proxy and lets you manage per-primitive middleware — access control, rate limits, timeouts, circuit breakers, and more — without editing the definition directly.
+
+### What requires editing the proxy definition directly?
+
+The Primitives tab covers most per-primitive middleware. A few options require the definition editor (**Actions → View MCP Proxy Definition**) or the Dashboard API:
+
+- **Transform request body** — advanced request body transformation via Go template
+- **`middleware.operations`** — method-level middleware applying to all calls of a specific JSON-RPC method (for example, all `tools/call` requests)
+- **Policy ACL fields** (`mcp_access_rights`, `json_rpc_methods_access_rights`) — per-consumer primitive and method access control configured via the Dashboard API
+
+<Note>
+`urlRewrite`, `transformRequestMethod`, and `mockResponse` are accepted by the configuration schema but have no effect on MCP primitives. See [MCP middleware](/ai-management/mcp-gateway/mcp-middleware) for the full capability reference.
+</Note>
+
+### How do I add middleware to a specific tool, resource, or prompt?
+
+Open the proxy and click the **Primitives** tab. Click **Add Primitive**, select the type (Tool, Resource, or Prompt), and enter the name exactly as the upstream MCP server advertises it.
+
+Click the primitive in the list to open its detail view, then click **Add Middleware**. Available middleware includes Allow, Block, Rate Limit, Circuit Breaker, Request Size Limit, Ignore Authentication, Transform Request/Response Headers, Virtual Endpoint, Track Endpoint, Do Not Track Endpoint, and Post Plugins.
+
+Each middleware option maps directly to the corresponding field in `x-tyk-api-gateway.middleware.mcpTools`, `mcpResources`, or `mcpPrompts` in the proxy definition.
+
+### How do I set a rate limit that applies to all consumers of a proxy?
+
+Use the Primitives tab. Add the tool as a primitive, click it, and add **Rate Limit** middleware. This rate limit applies in aggregate — across all keys calling that tool on this proxy combined. It protects the upstream from overload regardless of which consumer is calling.
+
+For per-consumer rate limits that apply independently per API key, use the `mcp_primitives` field in a security policy. See [MCP proxy policies](/ai-management/mcp-gateway/policies).
+
+---
+
+## Security
+
+### Research shows that most public MCP servers have no authentication. How does Tyk address this?
+
+This is one of the most documented problems with the current MCP ecosystem. Studies in 2025 found that a significant proportion of publicly accessible MCP servers had no authentication at all, exposing their full tool catalogues to anyone who could reach the endpoint.
+
+Tyk adds authentication in front of your upstream server without requiring any changes to it. All authentication methods Tyk supports for REST APIs — Bearer tokens, API keys, JWT, OAuth 2.0, and mutual TLS — apply identically to MCP. Your upstream server never needs to validate credentials; Tyk does it before the request gets there.
+
+
+### How do I stop an AI agent from calling destructive tools?
+
+Use the **Primitives** tab on the MCP Designer. Add each tool you want to permit as a primitive (type: Tool), then add **Allow** middleware to it. Once any tool has an Allow rule, Tyk switches the entire tools category into allowlist mode — any tool not explicitly listed is blocked with a JSON-RPC error before the request reaches the upstream.
+
+Alternatively, configure the allowlist directly in the proxy definition using `"allow": { "enabled": true }` entries in `x-tyk-api-gateway.middleware.mcpTools`.
+
+This means new tools added to the upstream MCP server are **not automatically accessible** through the gateway. You must explicitly add them to the allowlist. This is the recommended default posture: deny by default, permit explicitly.
+
+See [MCP middleware — access control](/ai-management/mcp-gateway/mcp-middleware#access-control) and [How to block an MCP tool](/ai-management/mcp-gateway/how-to-block-tool).
+
+### Over-permissioning is a known MCP problem. How does Tyk help?
+
+Over-permissioning — agents having access to more tools and data than they need — compounds in the absence of a central control point. When every agent connects directly to every MCP server, there is no practical way to enforce least-privilege access at scale.
+
+Tyk makes over-permissioning addressable through three mechanisms:
+
+1. **Per-proxy tool allowlists** — configure which tools are accessible through each proxy, regardless of what the upstream server exposes. Applies to all consumers of that proxy.
+2. **Security policies — proxy access** — issue API keys against policies that grant access only to the specific MCP proxies a given agent needs. An agent that needs GitHub MCP does not automatically have access to your internal database MCP server.
+3. **Security policies — primitive ACLs** — use `mcp_access_rights` in the policy access rights entry to restrict which specific tools, resources, and prompts an individual consumer can invoke, without affecting other consumers of the same proxy. This lets you grant two agents access to the same MCP proxy while giving each a different subset of its tools.
+
+### What happens if an agent's API key is compromised?
+
+Revoke the key from the Tyk Dashboard under **Keys**. Access to every MCP proxy that key was permitted to reach is cut off immediately on the next request — no grace period, no upstream credential rotation required. The upstream MCP server is unaffected; only requests carrying the revoked Tyk key are blocked.
+
+If the key was scoped to specific MCP proxies via a policy, other agents on the same policy are not affected.
+
+---
+
+## Authentication and OAuth
+
+### What authentication methods can AI agents use?
+
+Any authentication method Tyk supports for REST APIs also applies to MCP: Bearer tokens (API keys), JWT, OAuth 2.0 (with external token introspection), and mutual TLS. The inbound authentication method is configured per proxy in the `server.authentication` section of the API definition.
+
+For most deployments, Bearer token authentication using Tyk-issued API keys is the simplest starting point. For organisations with an existing OAuth 2.1 identity provider, JWT authentication allows agents to present tokens issued by your IdP directly.
+
+### Does Tyk support the MCP OAuth 2.1 specification?
+
+Yes. The MCP specification (version 2025-11-25) bases its authorisation model on OAuth 2.1 and recommends that MCP servers expose **Protected Resource Metadata** (RFC 9728) so clients can discover authorisation servers automatically.
+
+Tyk implements this end-to-end:
+
+- The `/.well-known/oauth-protected-resource` endpoint is served natively by Tyk when PRM is enabled — no upstream changes are required.
+- On authentication failure, Tyk includes a `WWW-Authenticate: Bearer resource_metadata=...` header pointing to the PRM document.
+- OAuth 2.1-aware MCP clients follow this header, discover the authorisation server, obtain a token, and retry — without any pre-configuration.
+- On the upstream side, Tyk can acquire and inject OAuth tokens using the client credentials flow (Enterprise Edition), so upstream MCP servers that require OAuth tokens receive them automatically.
+
+See [MCP Gateway — OAuth 2.1 authentication](/ai-management/mcp-gateway/oauth-2-1) for the complete guide.
+
+### What is Protected Resource Metadata and do I need to configure it?
+
+PRM is the machine-readable discovery document at `/.well-known/oauth-protected-resource`. It tells OAuth clients which authorisation server to use and which scopes the API supports. The MCP specification recommends all MCP servers expose it.
+
+You do not strictly need it if you are issuing Tyk API keys manually and configuring agents with the key directly. PRM becomes valuable when:
+
+- You have many AI agents that should self-configure their auth without manual setup.
+- You are using an OAuth 2.1 identity provider and want agents to obtain tokens automatically.
+- You need to comply with the MCP specification's authorisation recommendations.
+
+Configure it by adding a `protectedResourceMetadata` block to the proxy's `server.authentication` section. See [MCP Gateway — OAuth 2.1 authentication — configuring PRM](/ai-management/mcp-gateway/oauth-2-1#configuring-prm).
+
+### Our upstream MCP servers each require different credentials. How do we manage that?
+
+Configure the upstream authentication independently per proxy. Tyk supports three patterns:
+
+- **Static token injection** — inject a fixed Bearer token (such as a GitHub PAT) into every proxied request via global `transformRequestHeaders` middleware.
+- **OAuth client credentials** — have Tyk obtain and refresh an OAuth token from the upstream's authorisation server using configured client credentials (Enterprise Edition).
+- **Basic authentication** — inject HTTP basic auth credentials via `upstream.authentication.basicAuth`.
+
+In every case, the agent presents a Tyk credential and Tyk presents the correct vendor credential to the upstream. Agents never need to know about or hold vendor-specific credentials.
+
+---
+
+## Sessions and connections
+
+### MCP is described as stateful. How does Tyk handle sessions?
+
+The MCP protocol establishes sessions identified by an `Mcp-Session-Id` header. After initialisation, clients include this identifier on every subsequent request so the server can associate them with established session state.
+
+Tyk passes the `Mcp-Session-Id` header through unchanged in both directions. It does not maintain session state itself — session management is an upstream concern. If your upstream MCP server is load-balanced across multiple instances, configure session-aware routing (sticky sessions) in Tyk's upstream load-balancing settings to ensure requests from the same session consistently reach the same instance.
+
+### What happens if the SSE connection drops?
+
+Tyk passes through the `Last-Event-ID` header when a client reconnects to the `GET /mcp` SSE stream. The upstream MCP server uses this to resume the stream from the last delivered event. Tyk maintains the long-lived connection for the duration of the session and re-establishes it transparently if it drops at the gateway layer.
+
+### Does Tyk buffer SSE responses?
+
+No. Tyk streams SSE responses through to the client without buffering the body. This preserves the real-time nature of server-sent events and avoids memory pressure on long-running tool calls that produce incremental output.
+
+---
+
+## Access control
+
+### What happens when a vendor adds new tools to their MCP server?
+
+If you are using a tool allowlist (any tool with `"allow": { "enabled": true }`), new tools added to the upstream server are **blocked by default** — they do not appear on the allowlist, so Tyk rejects calls to them before they reach the upstream. You must explicitly add new tools to the allowlist to make them accessible.
+
+This is intentional. It prevents new upstream tools from becoming automatically accessible to AI agents without review, which is especially important for third-party MCP servers where you do not control the tool catalogue.
+
+If you have not configured any allowlist rules, all tools are accessible by default and new upstream tools become reachable immediately.
+
+### Can I block specific MCP protocol operations for a consumer without affecting others?
+
+Yes. Use `json_rpc_methods_access_rights` in the policy access rights entry for the MCP proxy. This controls which JSON-RPC protocol methods — such as `tools/call`, `tools/list`, `resources/read`, or `sampling/createMessage` — the consumer's key is allowed to use.
+
+To restrict a consumer to tool listing and tool calls only, blocking server-initiated sampling requests:
+
+```json
+"json_rpc_methods_access_rights": {
+  "allowed": ["tools/call", "tools/list"]
+}
+```
+
+A non-empty `allowed` list acts as an explicit allowlist — only the listed methods are accessible. Use `blocked` to exclude specific methods while leaving all others accessible. This applies per consumer key; other keys with different policies are unaffected. Configure this field via the Dashboard API — it is not available in the Dashboard UI policy editor. See [MCP proxy policies](/ai-management/mcp-gateway/policies#access-rights-entry).
+
+### Can I give different agents access to different tools on the same MCP server?
+
+Yes, and there are two approaches depending on how different the access needs to be.
+
+**Separate proxy definitions** work well when agents have clearly distinct roles — for example, a read-only agent and a write-access agent. Create two proxies targeting the same upstream, each with a different tool allowlist. This is straightforward to reason about and administer.
+
+**Policy-level primitive ACLs** (`mcp_access_rights`) work well when you have many agents with overlapping but slightly different access needs and creating a separate proxy per agent is not practical. Set `mcp_access_rights` in the policy's access rights entry for the MCP proxy to control exactly which tools, resources, and prompts that policy's consumers can invoke. Each consumer key gets its own enforced view of the proxy's primitive catalogue.
+
+```json
+"mcp_access_rights": {
+  "tools": { "allowed": ["search", "get_document"] },
+  "resources": { "blocked": ["internal://.*"] }
+}
+```
+
+The two approaches compose: a proxy-level allowlist controls what any consumer can ever call; policy ACLs then further restrict what specific consumers can call within that set. Configure `mcp_access_rights` via the Dashboard API. See [MCP proxy policies](/ai-management/mcp-gateway/policies) for details.
+
+---
+
+## Traffic management
+
+### Does adding Tyk as a gateway add latency?
+
+Tyk adds a small amount of latency for the middleware chain evaluation — typically 1–5 ms for standard middleware. For most MCP use cases, where tool calls themselves involve network round-trips and computation, this overhead is not significant.
+
+The latency that matters is introduced by optional middleware you choose to add: content safety plugins (which involve additional API calls to external services like Bedrock Guardrails) and circuit breakers (which introduce an evaluation step). Each of these is a trade-off you control.
+
+Co-locating your Tyk Gateway with your upstream MCP servers in the same network reduces the baseline overhead further.
+
+### How does rate limiting work for MCP traffic?
+
+Tyk applies rate limits at five levels. All active limits are evaluated on every request; whichever is exhausted first blocks the call.
+
+| Level | Scope | Configured in |
+|---|---|---|
+| 1. API-level | All consumers, shared ceiling | MCP proxy API definition |
+| 2. Policy global | Per consumer key, all APIs in the policy | Policy `rate` / `per` |
+| 3. Per MCP proxy | Per consumer key, this proxy only | Per-API limits in policy access rights |
+| 4. JSON-RPC method | Per consumer key, per protocol method (e.g. `tools/call`) | `json_rpc_methods` in policy access rights |
+| 5. MCP primitive | Per consumer key, per named tool/resource/prompt | `mcp_primitives` in policy access rights |
+
+Levels 1–3 apply to all traffic aggregated at their scope. Level 4 counts every invocation of a given JSON-RPC method regardless of which primitive is named — a `tools/call` counter covers all tool calls combined. Level 5 counts invocations of one specific named primitive.
+
+Levels 4 and 5 apply concurrently. A call to `get_report` increments both the `tools/call` method counter (level 4, if set) and the `get_report` primitive counter (level 5, if set). Either reaching its limit blocks the call.
+
+There is also a **middleware-level primitive rate limit** (configured in the API definition's `mcpTools`/`mcpResources`/`mcpPrompts` maps) that applies to all consumers of a proxy, not just one key. The key distinction: middleware rate limits protect the upstream from aggregate overload; policy rate limits enforce per-consumer entitlements.
+
+See [MCP proxy policies](/ai-management/mcp-gateway/policies) and [MCP middleware — traffic management](/ai-management/mcp-gateway/mcp-middleware#traffic-management).
+
+### Can I set different rate limits on the same tool for different consumers?
+
+Yes. Use `mcp_primitives` in the policy access rights entry to set per-primitive rate limits that apply only to keys bound to that policy. Two consumers on different policies can have completely different limits on the same tool, and their counters are tracked independently.
+
+A standard tier policy might allow 10 calls per minute to an expensive `generate_report` tool, while a premium tier policy allows 100:
+
+```json
+"mcp_primitives": [
+  {
+    "type": "tool",
+    "name": "generate_report",
+    "limit": { "rate": 100, "per": 60 }
+  }
+]
+```
+
+This is the key difference between policy-level primitive limits and middleware-level primitive limits. Middleware limits are shared across all consumers — they protect the upstream from aggregate overload. Policy primitive limits are per-consumer — they enforce individual entitlements. Both can be active simultaneously. See [MCP proxy policies](/ai-management/mcp-gateway/policies) for the full configuration reference.
+
+### What happens when an upstream MCP server is slow or unavailable?
+
+Configure a circuit breaker on the tools that call the problematic server. Tyk monitors the failure rate and temporarily stops forwarding requests to that tool when the error rate exceeds a threshold, giving the upstream time to recover. During the open circuit period, Tyk returns a JSON-RPC error to the agent immediately rather than timing out.
+
+Combine this with per-tool timeouts so that a slow upstream response does not stall the entire MCP session. See [MCP middleware — circuit breakers and timeouts](/ai-management/mcp-gateway/mcp-middleware#traffic-management).
+
+---
+
+## Observability
+
+### What can I see in analytics for MCP traffic?
+
+Tyk records analytics at two levels: proxy level and primitive level.
+
+**Proxy-level charts** (in the Tyk Dashboard under **Monitoring → Activity by MCP**) show total request volume, error counts, and HTTP error code distribution across all your MCP proxies. Use these to compare traffic and error rates between proxies.
+
+**Primitive-level charts** on the same page break the data down by individual tool, resource, or prompt: call volumes over time, most frequently called primitives, highest error rates, and slowest average latency. These charts let you identify which specific tools agents are using most, which are failing, and which are your performance bottlenecks — without needing external tooling.
+
+All MCP analytics appear alongside your REST and GraphQL API data, giving a unified view of the entire API estate. See [MCP analytics](/ai-management/mcp-gateway/mcp-analytics).
+
+### How do I see which AI agents are calling which tools?
+
+Issue a separate API key per agent (or per agent team). Keys can have an alias set at creation time that identifies the agent. Analytics are reported per key, so filtering by key shows total call volume per agent against each MCP proxy. This is why per-agent key issuance is recommended over shared keys.
+
+### What MCP-specific information appears in access logs?
+
+When structured access logging is enabled, Tyk adds four MCP-specific fields to every log record for an MCP request:
+
+| Field | Description |
+|---|---|
+| `mcp_method` | JSON-RPC method invoked, for example `tools/call` |
+| `mcp_primitive_type` | Primitive category: `tool`, `resource`, or `prompt` |
+| `mcp_primitive_name` | Name of the specific primitive invoked |
+| `mcp_error_code` | Gateway-mapped JSON-RPC error code, present only on gateway errors |
+
+These fields let you filter and aggregate MCP traffic in your log management tooling using the same access log pipeline you use for REST APIs. See [MCP access logs](/ai-management/mcp-gateway/mcp-access-logs).
+
+### Does Tyk export OpenTelemetry metrics for MCP traffic?
+
+Yes. When OpenTelemetry is enabled on the gateway, Tyk emits four MCP-specific metric instruments:
+
+| Instrument | Type | What it measures |
+|---|---|---|
+| `tyk.mcp.requests.total` | Counter | Total requests, with dimensions for method, primitive type, tool name, error code, and API |
+| `tyk.mcp.method.distribution` | Counter | Request counts broken down by JSON-RPC method |
+| `tyk.mcp.upstream.duration` | Histogram | Upstream response time per tool |
+| `tyk.mcp.request.duration` | Histogram | End-to-end request duration including gateway overhead |
+
+These metrics can be scraped by Prometheus and used to build dashboards in Grafana or your preferred metrics platform. See [MCP metrics](/ai-management/mcp-gateway/mcp-metrics) for the full dimension reference and PromQL examples, and [How to build a Grafana dashboard for MCP traffic](/ai-management/mcp-gateway/how-to-grafana-mcp-dashboard) for a step-by-step guide.
+
+### Can I exclude high-frequency health-check tools from analytics noise?
+
+Yes. Open the proxy, click the **Primitives** tab, add the tool as a primitive, and add **Do Not Track Endpoint** middleware to it. Alternatively, add `"doNotTrackEndpoint": { "enabled": true }` to the tool's entry in `x-tyk-api-gateway.middleware.mcpTools` directly. Either way, calls to that tool are excluded from analytics logs and dashboards. See [MCP middleware — observability](/ai-management/mcp-gateway/mcp-middleware#observability).
+
+---
+
+## Governance and enterprise
+
+### We have developers connecting AI agents directly to MCP servers without oversight. How do we regain control?
+
+This is the **shadow IT** problem specific to AI agents. Because MCP servers are just HTTP endpoints, developers can point any MCP client at them directly using vendor-issued credentials.
+
+The practical approach is to make the Tyk gateway the approved, supported path and deprecate direct connections:
+
+1. Deploy Tyk proxies for every MCP server your organisation uses or permits.
+2. Establish a policy that AI agents must connect via the gateway.
+3. Issue Tyk API keys to authorised agents and revoke or rotate the direct vendor credentials.
+4. Use Tyk analytics to verify that direct connections have dropped to zero.
+
+The governance case for this — central visibility, credential management, access control, audit trail — is covered in [How to proxy a remote MCP server through Tyk](/ai-management/mcp-gateway/how-to-proxy-remote-mcp).
+
+### How do I apply consistent policies across all MCP servers in my organisation?
+
+Create Tyk security policies that span multiple MCP proxies. A single policy can grant access to many proxies and apply a consistent rate limit and quota across all of them. Issuing a key against that policy gives the agent access to every permitted proxy under the same controls.
+
+For tool-level restrictions that apply to all consumers, each proxy has its own middleware configuration. Changes to the allowlist or rate limits on a proxy take effect immediately for all keys permitted to reach that proxy — you do not need to update each key individually.
+
+For restrictions that vary by consumer tier, use the policy's MCP-specific access rights fields. Set `mcp_primitives` to enforce different rate limits per primitive for different consumer tiers. Set `mcp_access_rights` to give each tier access to a different subset of tools, resources, and prompts on the same proxy. Because policies are reusable, updating a policy's primitive limits or ACLs applies immediately to every key bound to that policy.
+
+### Does Tyk provide an MCP service registry?
+
+Yes. The Tyk Dashboard's MCP section functions as a central service registry for all MCP servers in your organisation. Each MCP proxy is a registry entry — it records the upstream server address, listen path, available tools and resources, and the access policies that govern it.
+
+Teams have a single authoritative source of truth for what MCP capabilities are available, who can access them, and under what conditions. New MCP servers are onboarded by registering a proxy in the Dashboard; until registered, they are not accessible through the gateway. This directly addresses the ungoverned proliferation problem — MCP servers cannot appear outside oversight if the gateway is the required path for agent access.
+
+Discovery filtering scopes the registry view per consumer: when an agent calls `tools/list`, Tyk returns only the primitives its policy permits. Each agent sees a registry filtered to its own entitlements from the moment it connects.
+
+See [Managing MCP proxies](/ai-management/mcp-gateway/managing-mcp-proxies) for the full management interface.
+
+### Do we need a separate Tyk instance for MCP or can it share infrastructure with our REST APIs?
+
+MCP proxies are managed through the same Tyk Gateway and Dashboard instance as your REST and GraphQL APIs. They use the same configuration model, the same policy engine, and produce analytics in the same Dashboard. No separate infrastructure is required.
+
+The only constraint is that MCP OAS definitions require Tyk OAS format. They cannot be created as Tyk Classic API definitions.
+
+---
+
+## See also
+
+- [MCP Gateway overview](/ai-management/mcp-gateway/overview) — What Tyk MCP Gateway does and why it exists.
+- [MCP Gateway — Core concepts](/ai-management/mcp-gateway/core-concepts) — Transport, sessions, middleware levels, and how the proxy definition, middleware, and policies compose.
+- [MCP proxy policies](/ai-management/mcp-gateway/policies) — Full reference for the five-level rate limit hierarchy, primitive ACLs (`mcp_access_rights`), JSON-RPC method ACLs, and Dashboard UI walkthrough.
+- [MCP Gateway — OAuth 2.1 authentication](/ai-management/mcp-gateway/oauth-2-1) — The full authentication model including PRM discovery and upstream OAuth.
+- [MCP middleware](/ai-management/mcp-gateway/mcp-middleware) — Every middleware capability available for MCP primitives.
+- [MCP Gateway quickstart](/ai-management/mcp-gateway/quickstart) — Create your first MCP proxy and send a test request in under five minutes.
+- [MCP analytics](/ai-management/mcp-gateway/mcp-analytics) — The Activity by MCP dashboard page: proxy-level and primitive-level traffic charts.
+- [MCP observability](/ai-management/mcp-gateway/mcp-observability) — Overview of all MCP observability signals: metrics, access logs, and traces.
+- [MCP metrics](/ai-management/mcp-gateway/mcp-metrics) — OTel metric instruments, dimensions, and PromQL examples.
+- [MCP access logs](/ai-management/mcp-gateway/mcp-access-logs) — MCP-specific structured access log fields.

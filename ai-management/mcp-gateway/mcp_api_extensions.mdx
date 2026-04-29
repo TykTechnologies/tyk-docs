@@ -1,0 +1,751 @@
+---
+title: "MCP API extensions"
+description: "Reference for the MCP proxy management endpoints added to the Tyk Gateway API and Tyk Dashboard API. Covers all CRUD operations, versioning parameters, response shapes, validation rules, and the differences between the two APIs."
+keywords: "MCP, Model Context Protocol, Gateway API, Dashboard API, tyk-apis, MCP proxy, REST API reference, x-tyk-authorization, API extensions"
+sidebarTitle: "API Extensions"
+---
+
+Tyk extends both the Tyk Gateway API and the Tyk Dashboard API with a dedicated set of endpoints for managing MCP OAS definitions. These endpoints are separate from the standard OAS API endpoints — MCP proxies are stored and managed through their own resource paths and are excluded from the standard `/tyk/apis` and `/api/apis` listings. This page documents every endpoint in both APIs: their parameters, request and response shapes, validation behaviour, and the differences between the two interfaces.
+
+<Note>
+For the full OpenAPI specifications of the Gateway API and Dashboard API, see [Tyk APIs](/tyk-apis).
+</Note>
+
+---
+
+## Tyk Gateway API extensions
+
+The Tyk Gateway API is the admin interface exposed directly by Tyk Gateway. MCP management endpoints are accessible at `/tyk/mcps` and require the gateway's admin secret in the `X-Tyk-Authorization` header.
+
+Changes made via the Gateway API take effect only after a gateway reload. The MCP endpoints write the proxy definition to disk and return immediately — they do not trigger an automatic reload.
+
+**Authentication**: `X-Tyk-Authorization: {gateway-secret}`
+**Base URL**: `{gateway-host}` (typically `http://localhost:8080`)
+
+---
+
+### List MCP proxies
+
+Returns all MCP OAS definitions loaded on this gateway instance. Standard Tyk OAS APIs are excluded from this response.
+
+| Property | Value |
+|---|---|
+| Method | `GET` |
+| URL | `/tyk/mcps` |
+| Auth | `X-Tyk-Authorization` |
+| Request body | None |
+| Query parameters | None |
+
+**Response** — `200 OK`
+
+```json
+[
+  {
+    "openapi": "3.0.3",
+    "info": { "title": "Weather MCP proxy", "version": "2025-11-25" },
+    "paths": { ... },
+    "x-tyk-api-gateway": { ... }
+  }
+]
+```
+
+An empty array is returned if no MCP proxies are configured.
+
+---
+
+### Get an MCP proxy
+
+Returns the full Tyk OAS definition for a single MCP proxy.
+
+| Property | Value |
+|---|---|
+| Method | `GET` |
+| URL | `/tyk/mcps/{apiID}` |
+| Auth | `X-Tyk-Authorization` |
+| Request body | None |
+| Query parameters | None |
+
+**Path parameters**
+
+| Parameter | Description |
+|---|---|
+| `apiID` | The API ID of the MCP proxy to retrieve. |
+
+**Response headers**
+
+| Header | Description |
+|---|---|
+| `X-Tyk-Base-API-ID` | Present only when the retrieved proxy is a versioned child. Contains the API ID of the base (parent) proxy. |
+
+**Response** — `200 OK`
+
+```json
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Weather MCP proxy", "version": "2025-11-25" },
+  "paths": { ... },
+  "x-tyk-api-gateway": {
+    "info": { "id": "weather-mcp-api", "name": "Weather MCP proxy", "state": { "active": true } },
+    "server": { "listenPath": { "value": "/weather-mcp/", "strip": true } },
+    "upstream": { "url": "https://weather-mcp.example.com" }
+  }
+}
+```
+
+**Error responses**
+
+| Status | Condition |
+|---|---|
+| `400 Bad Request` | The `apiID` value fails path component validation (for example, contains path traversal sequences). |
+| `404 Not Found` | No API exists with the given ID, or the API exists but is not an MCP proxy. |
+
+---
+
+### Create an MCP proxy
+
+Creates a new MCP proxy from a Tyk OAS definition. The request body must be a valid OpenAPI 3.0.3 document containing an `x-tyk-api-gateway` extension.
+
+| Property | Value |
+|---|---|
+| Method | `POST` |
+| URL | `/tyk/mcps` |
+| Auth | `X-Tyk-Authorization` |
+| Content-Type | `application/json` |
+| Request body | Tyk OAS MCP definition |
+
+**Query parameters**
+
+| Parameter | Required | Description |
+|---|---|---|
+| `base_api_id` | No | The API ID of an existing MCP proxy to create this definition as a version of. If provided, `version_name` is also required. |
+| `version_name` | No | The version identifier for the new proxy (for example, `v2`). Required when `base_api_id` is specified. |
+| `set_default` | No | Set to `true` to make the new version the default version of the base proxy. Only applies when `base_api_id` is specified. |
+
+**Request body** — Minimum viable MCP proxy definition
+
+```json
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Weather MCP proxy", "version": "2025-11-25" },
+  "paths": {
+    "/mcp": {
+      "post": { "operationId": "mcpTransportPost", "responses": { "200": { "description": "JSON-RPC response" } } },
+      "get":  { "operationId": "mcpSSEGet",         "responses": { "200": { "description": "SSE stream" } } }
+    }
+  },
+  "x-tyk-api-gateway": {
+    "info": {
+      "name": "Weather MCP proxy",
+      "state": { "active": true }
+    },
+    "server": {
+      "listenPath": { "value": "/weather-mcp/", "strip": true },
+      "authentication": { "enabled": true }
+    },
+    "upstream": {
+      "url": "https://weather-mcp.example.com"
+    }
+  }
+}
+```
+
+If no `id` is provided in `x-tyk-api-gateway.info`, the gateway generates one.
+
+**Response** — `200 OK`
+
+```json
+{
+  "key": "weather-mcp-api",
+  "status": "ok",
+  "action": "added"
+}
+```
+
+**Error responses**
+
+| Status | Condition |
+|---|---|
+| `400 Bad Request` | Request body is not valid JSON, `x-tyk-api-gateway` extension is missing, the definition fails MCP schema validation, or OAS structure validation fails. |
+| `422 Unprocessable Entity` | Versioning parameters are invalid — for example, `base_api_id` refers to an API that does not exist or is not an MCP proxy. |
+
+---
+
+### Update an MCP proxy
+
+Replaces the definition of an existing MCP proxy in full. Partial updates are not supported — provide the complete Tyk OAS definition in the request body.
+
+| Property | Value |
+|---|---|
+| Method | `PUT` |
+| URL | `/tyk/mcps/{apiID}` |
+| Auth | `X-Tyk-Authorization` |
+| Content-Type | `application/json` |
+| Request body | Complete Tyk OAS MCP definition |
+
+The `x-tyk-api-gateway.info.id` field in the request body must match the `{apiID}` path parameter. A mismatch returns `400 Bad Request`.
+
+**Response** — `200 OK`
+
+```json
+{
+  "key": "weather-mcp-api",
+  "status": "ok",
+  "action": "modified"
+}
+```
+
+**Error responses**
+
+| Status | Condition |
+|---|---|
+| `400 Bad Request` | Invalid API ID, malformed request body, API ID mismatch between URL and body, the API is not an MCP proxy, or validation fails. |
+| `404 Not Found` | No API exists with the given ID. |
+
+---
+
+### Delete an MCP proxy
+
+Removes an MCP proxy definition from the gateway.
+
+| Property | Value |
+|---|---|
+| Method | `DELETE` |
+| URL | `/tyk/mcps/{apiID}` |
+| Auth | `X-Tyk-Authorization` |
+| Request body | None |
+
+If the deleted proxy is a versioned child, its entry is removed from the base proxy's version map. If it is a base proxy with existing versions, those children remain but lose their parent reference.
+
+**Response** — `200 OK`
+
+```json
+{
+  "key": "weather-mcp-api",
+  "status": "ok",
+  "action": "deleted"
+}
+```
+
+**Error responses**
+
+| Status | Condition |
+|---|---|
+| `400 Bad Request` | Invalid API ID, or the API exists but is not an MCP proxy. |
+| `404 Not Found` | No API exists with the given ID. |
+| `500 Internal Server Error` | The definition files could not be deleted from disk. |
+
+---
+
+### Hot reload
+
+Changes made via the Gateway API are written to disk but are not applied to live traffic until the gateway reloads. After any create, update, or delete operation, issue a reload:
+
+```bash
+# Reload all gateway instances in the group
+GET /tyk/reload/group
+
+# Reload this gateway instance only
+GET /tyk/reload
+```
+
+Both endpoints require the `X-Tyk-Authorization` header.
+
+---
+
+## Tyk Dashboard API extensions
+
+The Tyk Dashboard API is the management interface exposed by Tyk Dashboard. It proxies operations to connected gateway instances and triggers reloads automatically — you don't need to issue a manual reload after Dashboard API operations.
+
+The Dashboard API accepts both JSON and YAML request bodies for create and update operations.
+
+**Authentication**: Dashboard user API key (retrieved from your user profile in the Dashboard)
+**Base URL**: `{dashboard-host}` (typically `http://localhost:3000`)
+
+---
+
+### List MCP proxies
+
+Returns all MCP proxies managed by this Dashboard instance, with pagination metadata.
+
+| Property | Value |
+|---|---|
+| Method | `GET` |
+| URL | `/api/mcps` |
+| Auth | `Authorization: {dashboard-api-key}` |
+| Request body | None |
+| Query parameters | None |
+
+**Response** — `200 OK`
+
+```json
+{
+  "mcps": [
+    {
+      "openapi": "3.0.3",
+      "info": { "title": "Weather MCP proxy", ... },
+      "x-tyk-api-gateway": { ... }
+    }
+  ],
+  "pages": 1
+}
+```
+
+The `pages` field contains the total number of pages available.
+
+---
+
+### Get an MCP proxy
+
+Returns the full Tyk OAS definition for a single MCP proxy.
+
+| Property | Value |
+|---|---|
+| Method | `GET` |
+| URL | `/api/mcps/{apiId}` |
+| Auth | `Authorization: {dashboard-api-key}` |
+| Request body | None |
+
+**Response** — `200 OK`
+
+Returns the full Tyk OAS definition. See [Get an MCP proxy — Gateway API](#get-an-mcp-proxy) for the response shape.
+
+**Error responses**
+
+| Status | Condition |
+|---|---|
+| `400 Bad Request` | The API exists but is not an MCP proxy. |
+| `404 Not Found` | No API exists with the given ID. |
+
+---
+
+### Create an MCP proxy
+
+Creates a new MCP proxy from a Tyk OAS definition. The Dashboard API accepts both JSON and YAML.
+
+| Property | Value |
+|---|---|
+| Method | `POST` |
+| URL | `/api/mcps` |
+| Auth | `Authorization: {dashboard-api-key}` |
+| Content-Type | `application/json` or `application/x-yaml` |
+| Request body | Tyk OAS MCP definition |
+
+**Query parameters**
+
+| Parameter | Required | Description |
+|---|---|---|
+| `base_api_id` | No | The API ID of an existing MCP proxy to create this definition as a version of. The base API must exist and must itself be an MCP proxy. |
+
+**Example request**
+
+```bash
+curl -X POST ${DASH_URL}/api/mcps \
+  -H "Authorization: ${DASH_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "openapi": "3.0.3",
+    "info": { "title": "Weather MCP proxy", "version": "2025-11-25" },
+    "paths": {
+      "/mcp": {
+        "post": { "operationId": "mcpTransportPost", "responses": { "200": { "description": "JSON-RPC response" } } },
+        "get":  { "operationId": "mcpSSEGet",         "responses": { "200": { "description": "SSE stream" } } }
+      }
+    },
+    "x-tyk-api-gateway": {
+      "info": { "name": "Weather MCP proxy", "state": { "active": true } },
+      "server": {
+        "listenPath": { "value": "/weather-mcp/", "strip": true },
+        "authentication": { "enabled": true }
+      },
+      "upstream": { "url": "https://weather-mcp.example.com" }
+    }
+  }'
+```
+
+**Response** — `200 OK`
+
+```json
+{
+  "Status": "OK",
+  "Message": "API created",
+  "Meta": "weather-mcp-api-id"
+}
+```
+
+The Dashboard triggers a gateway reload automatically. The proxy is active as soon as the response is returned.
+
+**Error responses**
+
+| Status | Condition |
+|---|---|
+| `400 Bad Request` | Validation failed, `base_api_id` refers to a non-existent or non-MCP proxy, or the definition is structurally invalid. |
+| `500 Internal Server Error` | An internal processing error occurred. |
+
+---
+
+### Update an MCP proxy
+
+Replaces the definition of an existing MCP proxy in full.
+
+| Property | Value |
+|---|---|
+| Method | `PUT` |
+| URL | `/api/mcps/{apiId}` |
+| Auth | `Authorization: {dashboard-api-key}` |
+| Content-Type | `application/json` or `application/x-yaml` |
+| Request body | Complete Tyk OAS MCP definition |
+
+**Example request**
+
+```bash
+curl -X PUT ${DASH_URL}/api/mcps/{apiID} \
+  -H "Authorization: ${DASH_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "openapi": "3.0.3",
+    "info": { "title": "Weather MCP proxy", "version": "2025-11-25" },
+    "paths": { ... },
+    "x-tyk-api-gateway": {
+      "info": { "id": "{apiID}", "name": "Weather MCP proxy", "state": { "active": true } },
+      "server": {
+        "listenPath": { "value": "/weather-mcp/", "strip": true },
+        "authentication": { "enabled": true }
+      },
+      "upstream": { "url": "https://weather-mcp-v2.example.com" }
+    }
+  }'
+```
+
+**Response** — `200 OK`
+
+```json
+{
+  "Status": "OK",
+  "Message": "API updated",
+  "Meta": "{apiID}"
+}
+```
+
+The Dashboard triggers a gateway reload automatically.
+
+**Error responses**
+
+| Status | Condition |
+|---|---|
+| `400 Bad Request` | The API is not an MCP proxy, or validation fails. |
+| `404 Not Found` | No API exists with the given ID. |
+
+---
+
+### Delete an MCP proxy
+
+Removes an MCP proxy and triggers a gateway reload.
+
+| Property | Value |
+|---|---|
+| Method | `DELETE` |
+| URL | `/api/mcps/{apiId}` |
+| Auth | `Authorization: {dashboard-api-key}` |
+| Request body | None |
+
+**Example request**
+
+```bash
+curl -X DELETE ${DASH_URL}/api/mcps/{apiID} \
+  -H "Authorization: ${DASH_KEY}"
+```
+
+**Response** — `200 OK`
+
+```json
+{
+  "Status": "OK",
+  "Message": "API deleted",
+  "Meta": "{apiID}"
+}
+```
+
+The Dashboard triggers a gateway reload automatically.
+
+**Error responses**
+
+| Status | Condition |
+|---|---|
+| `400 Bad Request` | The API exists but is not an MCP proxy. |
+| `404 Not Found` | No API exists with the given ID. |
+
+---
+
+### List versions of an MCP proxy
+
+Returns all versioned children of a base MCP proxy.
+
+| Property | Value |
+|---|---|
+| Method | `GET` |
+| URL | `/api/mcps/{apiId}/versions` |
+| Auth | `Authorization: {dashboard-api-key}` |
+| Request body | None |
+
+The `{apiId}` must refer to a base proxy, not a versioned child. Calling this endpoint on a child proxy returns `422 Unprocessable Entity`.
+
+**Response** — `200 OK`
+
+```json
+{
+  "apis": [
+    { "apiId": "weather-mcp-v2", "name": "Weather MCP proxy v2" }
+  ],
+  "pages": 1
+}
+```
+
+**Error responses**
+
+| Status | Condition |
+|---|---|
+| `400 Bad Request` | The API exists but is not an MCP proxy. |
+| `422 Unprocessable Entity` | The API does not exist, is not in OAS format, or is itself a versioned child rather than a base proxy. |
+
+---
+
+### Get the MCP definition schema
+
+Returns the JSON Schema that Tyk uses to validate MCP OAS definitions. Use this to validate definitions client-side before submitting them to the API.
+
+| Property | Value |
+|---|---|
+| Method | `GET` |
+| URL | `/api/schemas/apidefs/mcp` |
+| Auth | `Authorization: {dashboard-api-key}` |
+| Request body | None |
+
+**Query parameters**
+
+| Parameter | Required | Description |
+|---|---|---|
+| `mcpVersion` | No | OAS version to return the schema for. Accepts `3.0` or `3.1`. Defaults to `3.0`. |
+| `pretty` | No | Set to `true` to return the schema with indented formatting. |
+
+**Response** — `200 OK`
+
+Returns a JSON Schema document describing the valid structure of a Tyk OAS MCP definition.
+
+---
+
+## Policy API extensions
+
+MCP policies are managed through the standard Tyk policy endpoints — there are no dedicated MCP policy routes. The existing endpoints accept and validate MCP-specific fields inside each `access_rights` entry. Tyk validates that these fields are only used on policies whose access rights target MCP proxies.
+
+For a conceptual explanation of what the policy fields do and how to configure access tiers, see [MCP proxy policies](/ai-management/mcp-gateway/policies).
+
+---
+
+### Gateway API
+
+**Authentication**: `X-Tyk-Authorization: {gateway-secret}`
+
+| Operation | Method | URL |
+|---|---|---|
+| List policies | `GET` | `/policies` |
+| Get a policy | `GET` | `/policies/{polID}` |
+| Create a policy | `POST` | `/policies` |
+| Update a policy | `PUT` | `/policies/{polID}` |
+| Delete a policy | `DELETE` | `/policies/{polID}` |
+
+**Success responses**
+
+| Operation | Status | Body |
+|---|---|---|
+| List / Get | `200 OK` | Policy object or array |
+| Create | `200 OK` | `{"key": "{polID}", "status": "ok", "action": "added"}` |
+| Update | `200 OK` | `{"key": "{polID}", "status": "ok", "action": "modified"}` |
+| Delete | `200 OK` | `{"key": "{polID}", "status": "ok", "action": "deleted"}` |
+
+---
+
+### Dashboard API
+
+**Authentication**: `Authorization: {dashboard-api-key}`
+
+| Operation | Method | URL |
+|---|---|---|
+| List policies | `GET` | `/api/portal/policies` |
+| Get a policy | `GET` | `/api/portal/policies/{polID}` |
+| Create a policy | `POST` | `/api/portal/policies` |
+| Update a policy | `PUT` | `/api/portal/policies/{polID}` |
+| Delete a policy | `DELETE` | `/api/portal/policies/{polID}` |
+
+The Dashboard API triggers a gateway reload automatically on create, update, and delete. The Gateway API requires a manual reload via `/tyk/reload` or `/tyk/reload/group`.
+
+---
+
+### MCP-specific fields in access rights
+
+The MCP-specific fields sit inside each entry in the `access_rights` object, alongside the standard `limit` and `versions` fields.
+
+| Field | Type | Description |
+|---|---|---|
+| `mcp_primitives` | array | Per-primitive rate limits. Each entry targets one named tool, resource, or prompt. |
+| `mcp_access_rights` | object | Primitive-level allow/block lists for tools, resources, and prompts. Values support Go regular expressions. |
+| `json_rpc_methods` | array | Per-method rate limits. Each entry targets one JSON-RPC method name such as `tools/call`. |
+| `json_rpc_methods_access_rights` | object | Method-level allow/block list. Controls which JSON-RPC protocol methods the consumer may use. |
+
+#### `mcp_primitives` entry
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | string | Primitive type: `tool`, `resource`, or `prompt`. |
+| `name` | string | Name of the primitive as exposed by the MCP server. Case-sensitive. |
+| `limit.rate` | integer | Maximum calls allowed per time window. |
+| `limit.per` | integer | Time window in seconds. |
+
+#### `mcp_access_rights` object
+
+| Field | Type | Description |
+|---|---|---|
+| `tools.allowed` | array of strings | Allowlist of tool names. If non-empty, only listed tools are accessible. |
+| `tools.blocked` | array of strings | Tools to block. Applied after `allowed`. |
+| `resources.allowed` | array of strings | Allowlist of resource URIs. |
+| `resources.blocked` | array of strings | Resource URIs to block. |
+| `prompts.allowed` | array of strings | Allowlist of prompt names. |
+| `prompts.blocked` | array of strings | Prompt names to block. |
+
+#### `json_rpc_methods` entry
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | The JSON-RPC method name, for example `tools/call` or `resources/read`. |
+| `limit.rate` | integer | Maximum calls using this method per time window. |
+| `limit.per` | integer | Time window in seconds. |
+
+#### `json_rpc_methods_access_rights` object
+
+| Field | Type | Description |
+|---|---|---|
+| `allowed` | array of strings | If non-empty, only these methods are permitted. |
+| `blocked` | array of strings | Methods to block. Applied after `allowed`. |
+
+---
+
+### Example policy request
+
+The following creates a policy that restricts a consumer to read-only JSON-RPC methods, limits them to two specific tools, and applies a per-primitive rate limit:
+
+```json
+{
+  "name": "Weather Agent — Standard Tier",
+  "state": "active",
+  "rate": 1000,
+  "per": 60,
+  "quota_max": 50000,
+  "quota_renewal_rate": 86400,
+  "access_rights": {
+    "{mcp-proxy-api-id}": {
+      "api_id": "{mcp-proxy-api-id}",
+      "api_name": "Weather MCP Proxy",
+      "versions": ["Default"],
+      "limit": { "rate": 200, "per": 60 },
+      "json_rpc_methods_access_rights": {
+        "allowed": ["tools/call", "tools/list", "resources/list", "resources/read"]
+      },
+      "mcp_access_rights": {
+        "tools": { "allowed": ["get_forecast", "search_weather"] },
+        "resources": { "blocked": ["internal://.*"] },
+        "prompts": {}
+      },
+      "json_rpc_methods": [
+        { "name": "tools/call", "limit": { "rate": 100, "per": 60 } }
+      ],
+      "mcp_primitives": [
+        { "type": "tool", "name": "get_forecast", "limit": { "rate": 20, "per": 60 } },
+        { "type": "resource", "name": "weather://current", "limit": { "rate": 10, "per": 60 } }
+      ]
+    }
+  }
+}
+```
+
+---
+
+### Policy validation for MCP
+
+When a policy is created or updated, Tyk validates the MCP-specific fields:
+
+- **MCP fields on non-MCP APIs** — if `mcp_primitives`, `mcp_access_rights`, `json_rpc_methods`, or `json_rpc_methods_access_rights` are set against an API ID that is not an MCP proxy, the request is rejected with `400 Bad Request`.
+- **REST fields on MCP proxies** — fields specific to REST APIs (`allowed_urls`, `endpoints`, `field_access_rights`) are rejected when set against an MCP proxy ID.
+- **Primitive type values** — the `type` field in each `mcp_primitives` entry must be `tool`, `resource`, or `prompt`. Any other value is rejected.
+
+---
+
+## MCP proxy isolation
+
+MCP proxies are managed separately from standard Tyk OAS APIs throughout the API surface:
+
+- `GET /tyk/apis` and `GET /api/apis` do not include MCP proxies in their responses.
+- `GET /tyk/mcps` and `GET /api/mcps` only return MCP proxies — standard OAS APIs do not appear.
+- Create and update operations on `/tyk/mcps` or `/api/mcps` reject definitions that are not valid MCP proxies.
+- Get and delete operations on `/tyk/mcps/{id}` or `/api/mcps/{id}` return `404` or `400` if the API ID refers to a non-MCP definition.
+
+This separation ensures that MCP proxy configuration and standard API configuration cannot be accidentally cross-applied.
+
+---
+
+## Validation
+
+Both APIs apply the same validation rules when creating or updating an MCP proxy.
+
+### Required structure
+
+Every MCP proxy definition must be a valid OpenAPI 3.0.3 document containing an `x-tyk-api-gateway` vendor extension at the root level. Definitions without this extension are rejected with `400 Bad Request`.
+
+### MCP schema validation
+
+The definition is validated against Tyk's MCP JSON schema. This schema enforces the structure of the `x-tyk-api-gateway` extension for MCP proxies — including the `mcpTools`, `mcpResources`, and `mcpPrompts` middleware maps — before any further processing.
+
+### Authentication metadata
+
+If `x-tyk-api-gateway.server.authentication.protectedResourceMetadata` is present and enabled, Tyk validates the PRM configuration. For MCP proxies specifically, at least one entry in `authorizationServers` is required.
+
+### Middleware restrictions
+
+Some middleware options are silently ignored when configured on MCP primitives (entries in `mcpTools`, `mcpResources`, or `mcpPrompts`). The schema accepts these fields for forward compatibility, but Tyk does not apply them at runtime:
+
+| Middleware | Reason |
+|---|---|
+| `transformRequestMethod` | Changing the HTTP method is not applicable to MCP's fixed POST/GET transport. |
+| `transformResponseBody` | MCP responses must be returned unmodified to preserve JSON-RPC 2.0 protocol compliance. |
+| `urlRewrite` | URL rewriting conflicts with MCP's single-endpoint transport (`/mcp`). |
+| `cache` | Cache keys are derived from the URL path, which is identical for all MCP requests (`/mcp`). |
+| `mockResponse` | Mock responses are incompatible with MCP's streaming JSON-RPC transport. |
+
+Global middleware settings that are also not supported for MCP OAS definitions:
+
+| Setting | Reason |
+|---|---|
+| `server.batchProcessing` | Batch HTTP processing is incompatible with the MCP transport model. |
+| `middleware.global.cache` | Caching is not supported for MCP APIs. Neither global nor per-primitive `cache` middleware has any effect on MCP traffic. |
+
+---
+
+## Gateway API vs Dashboard API
+
+| Aspect | Gateway API (`/tyk/mcps`) | Dashboard API (`/api/mcps`) |
+|---|---|---|
+| **Authentication** | `X-Tyk-Authorization: {secret}` header | `Authorization: {api-key}` header |
+| **Content types accepted** | `application/json` | `application/json`, `application/x-yaml` |
+| **List response format** | JSON array of OAS definitions | `{"mcps": [...], "pages": N}` |
+| **Reload on change** | Manual — must call `/tyk/reload` or `/tyk/reload/group` | Automatic |
+| **Versioning parameters** | `base_api_id`, `version_name`, `set_default` | `base_api_id` |
+| **Version listing** | Not available | `GET /api/mcps/{apiId}/versions` |
+| **Schema endpoint** | Not available | `GET /api/schemas/apidefs/mcp` |
+| **Multi-gateway propagation** | Applies to this gateway instance only | Propagates to all connected gateways |
+
+---
+
+## See also
+
+- [Managing MCP proxies](/ai-management/mcp-gateway/managing-mcp-proxies) — Step-by-step instructions for create, update, and delete operations using the Dashboard UI, Dashboard API, and Gateway API.
+- [MCP OAS definition](/ai-management/mcp-gateway/mcp_proxy_definitions) — The complete structure of the `x-tyk-api-gateway` extension for MCP proxies — every field explained.
+- [MCP middleware](/ai-management/mcp-gateway/mcp-middleware) — Per-primitive middleware options available in `mcpTools`, `mcpResources`, and `mcpPrompts`.
+- [Tyk APIs](/tyk-apis) — OpenAPI specifications for the full Tyk Gateway API and Tyk Dashboard API.
