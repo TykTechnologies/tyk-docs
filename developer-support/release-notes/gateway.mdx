@@ -37,6 +37,15 @@ Enhanced Developer Experience & Operational Excellence
 This release brings significant improvements to day-to-day operations with configurable rate limit headers that now correctly display rate limit information (rather than quota data) in HTTP 429 responses, addressing industry standard compliance. Enhanced session management provides automatic cleanup of expired Redis objects, while TLS certificate rotation support eliminates the need for Gateway restarts during routine certificate updates.
 Additional quality-of-life improvements include underscore support in Vault/Consul secret paths, configurable API compression limits, and numerous stability fixes addressing CORS preflight handling, analytics generation for OAS mock endpoints, and client mTLS authentication between Gateways.
 
+**MCP Gateway**
+Tyk 5.13.0 introduces the MCP (Model Context Protocol) Gateway, enabling teams to proxy, secure, and manage AI agent tool servers within Tyk API management. MCP Gateway is generally available in this release.
+
+MCP APIs now support Server-Sent Events (SSE) streaming, enabling long-lived agent sessions that survive beyond the configured write timeout. A configurable `sse_write_timeout` terminates idle streams cleanly, and the Gateway sends a structured error event to the client when an upstream connection drops unexpectedly.
+
+Tool-Based Access Control (TBAC) enforces fine-grained access rules at two levels: JSON-RPC method level (e.g., `tools/call`, `resources/read`) and MCP primitive level (individual tool, resource, or prompt by name). Per-primitive rate limiting sets independent rate limits for each method or named primitive within a key or policy. When multiple policies apply, access lists merge as a union and rate limits use the most permissive value.
+
+MCP traffic now appears in Gateway access logs with dedicated fields (`mcp_method`, `mcp_primitive_type`, `mcp_primitive_name`) alongside a new `api_type` field present on all access log entries. OpenTelemetry custom metrics expose the same four MCP dimensions — including `mcp_error_code` — aligned with the OpenTelemetry `mcp.*` semantic conventions.
+
 For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-v5.13.0) below.
 
 #### Breaking Changes
@@ -112,6 +121,65 @@ Updated all OpenTelemetry Go SDK dependencies to their latest compatible version
 ##### Added
 
 <AccordionGroup>
+
+<Accordion title='Added MCP Gateway'>
+Tyk 5.13.0 introduces the MCP (Model Context Protocol) Gateway, enabling teams to proxy, secure, and manage AI agent tool servers using Tyk API management. MCP Proxy definitions use OpenAPI Specification (OAS) format and support the JSON-RPC over HTTP transport used by MCP clients and servers.
+
+This release includes:
+- **SSE streaming**: MCP APIs now support long-lived Server-Sent Events connections. The write deadline is cleared for SSE streams so connections survive beyond the configured write timeout. A configurable `sse_write_timeout` idle timeout terminates stale connections cleanly. A structured `event: error` message is sent to the client if the upstream connection drops unexpectedly.
+- **Protected Resource Metadata (PRM)**: The `/.well-known/oauth-protected-resource` endpoint is now served as a middleware in the Gateway chain, making `$tyk_context.*` substitution variables available for use in PRM resource field values.
+
+For configuration details, see the [MCP Gateway documentation](/ai-management/mcp-gateway/overview).
+</Accordion>
+
+<Accordion title='Added Tool-Based Access Control (TBAC) for MCP Proxy APIs'>
+MCP Proxy APIs now support granular access control at the JSON-RPC method and MCP primitive levels. Two new middleware components enforce access rules independently for each request:
+
+- **JSON-RPC method access control**: Allows or denies requests by method name (e.g., `tools/call`, `resources/read`, `prompts/get`). Configured via `json_rpc_methods_access_rights` in a key or policy access definition.
+- **MCP primitive access control**: Allows or denies requests by primitive type (tool, resource, or prompt) and name. Configured via `mcp_access_rights` in a key or policy access definition.
+
+When multiple policies apply to a key, access control lists merge using union semantics — a primitive allowed by any policy is accessible. Block rules take precedence over allow rules. Denied requests receive a JSON-RPC error response rather than an HTTP error, maintaining protocol compatibility with MCP clients.
+
+For configuration details, see the [MCP proxy policies documentation](/ai-management/mcp-gateway/policies).
+</Accordion>
+
+<Accordion title='Added per-primitive rate limiting for MCP Proxy APIs'>
+MCP Proxy APIs now support independent rate limits for each JSON-RPC method and for individual tools, resources, and prompts. Two new fields are available in key and policy access definitions:
+
+- `json_rpc_methods`: rate limits keyed by JSON-RPC method name (e.g., `tools/call`)
+- `mcp_primitives`: rate limits keyed by primitive type and name
+
+Limits are translated into Virtual Endpoint Method (VEM) entries at session load time and enforced by the existing rate limiting middleware with no additional processing overhead. The translation is in-memory only and is never persisted to Redis.
+
+When multiple policies apply to a key, rate limits merge using most-permissive semantics — the highest rate allowed by any policy applies.
+
+For configuration details, see the [MCP proxy policies documentation](/ai-management/mcp-gateway/policies).
+</Accordion>
+
+<Accordion title='Added MCP-specific fields to Gateway access logs'>
+Gateway access logs now include MCP-specific fields for requests handled by MCP Proxy APIs:
+
+- `mcp_method`: the JSON-RPC method name (e.g., `tools/call`)
+- `mcp_primitive_type`: the primitive category (`tool`, `resource`, or `prompt`)
+- `mcp_primitive_name`: the name of the specific tool, resource, or prompt invoked
+
+A new `api_type` field is also added to all access log entries, distinguishing MCP traffic from `classic`, `oas`, and `graphql` API types.
+
+For details, see the [MCP access logs documentation](/ai-management/mcp-gateway/mcp-access-logs).
+</Accordion>
+
+<Accordion title='Added MCP dimensions to OpenTelemetry custom metrics'>
+OpenTelemetry custom metrics now expose four MCP-specific dimensions, enabling observability of MCP proxy traffic through configurable metric instruments:
+
+- `mcp_method`: the JSON-RPC method name
+- `mcp_primitive_type`: the primitive category (tool, resource, or prompt)
+- `mcp_primitive_name`: the name of the specific primitive invoked
+- `mcp_error_code`: the JSON-RPC error code when an error is returned; empty otherwise
+
+The dimensions are aligned with the OpenTelemetry `mcp.*` semantic conventions. MCP context is propagated before access control runs, so rejected requests still carry full MCP dimension data.
+
+For details, see the [MCP metrics documentation](/ai-management/mcp-gateway/mcp-metrics).
+</Accordion>
 
 <Accordion title='Added Rate Limit Header Configuration Option'>
 Added a new Gateway configuration option `rate_limit_response_headers` that allows `X-RateLimit-*` headers to be populated from rate limit data instead of quota data. This addresses industry standard compliance and reduces customer confusion when receiving HTTP 429 responses.
@@ -329,6 +397,10 @@ Resolved an issue where cache hits served by the Redis cache middleware were mis
 
 <Accordion title='Fixed Missing API and Policy Count Metrics When Gateway Fails MDCB Connection'>
 Resolved an issue where the `tyk.gateway.apis.loaded` and `tyk.gateway.policies.loaded` gauge metrics were not emitted when the Gateway failed to connect to MDCB during startup. Previously, if the Gateway could not establish an MDCB connection, these metrics would not be reported at all, making it difficult to detect configuration or connection failures. The Gateway now properly emits these metrics with a value of 0 when no APIs or policies are loaded due to MDCB connection failures, providing a clear indicator of startup issues.
+</Accordion>
+
+<Accordion title='Fixed VEM path preservation for undefined MCP primitives'>
+Resolved an issue where the Virtual Endpoint Method (VEM) path was not preserved during version checking when a request referenced an MCP primitive not defined in the API. The Gateway now correctly retains the path through the version check, preventing requests to undefined primitives from being incorrectly routed or rejected.
 </Accordion>
 
 </AccordionGroup>
