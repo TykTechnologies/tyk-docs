@@ -1,8 +1,108 @@
 ---
-title: "CORS Issues"
-description: "Troubleshoot CORS errors in the Tyk Developer Portal, including endpoint whitelisting interactions, API playground errors, and Portal vs Gateway CORS configuration."
+title: "Troubleshoot CORS Issues"
+description: "Diagnose and fix CORS errors in the Tyk Developer Portal and API Playground."
 ---
 
-<Note>
-This page is a placeholder. Content is being written.
-</Note>
+Cross-origin errors in the Developer Portal arise from two independent layers: the Portal application itself and the Tyk Gateway APIs that the API Playground calls directly. Identify which layer is failing before applying a fix.
+
+<AccordionGroup>
+  <Accordion title="Browser blocks responses from the Portal — Access-Control-Allow-Origin header missing">
+    **Symptom**
+
+    Requests from your application to the Portal Admin API or Live Portal routes fail. The browser console shows:
+
+    ```
+    Access to fetch at 'https://portal.example.com/...' from origin 'https://app.example.com' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.
+    ```
+
+    Preflight `OPTIONS` requests to the Portal return `404 Not Found` or `405 Method Not Allowed`.
+
+    **Cause**
+
+    `PORTAL_CORS_ENABLE` is `false` (the default). The Portal's CORS middleware is disabled, so no `Access-Control-Allow-Origin` header is added to any response and `OPTIONS` preflight requests fall through to the router with no matching handler.
+
+    **Fix**
+
+    Enable Portal CORS and set your allowed origins. See [Configure Portal Application CORS](/portal/how-to-guides/configure-cors#configure-portal-application-cors).
+  </Accordion>
+
+  <Accordion title="API Playground requests fail — 401 Unauthorized or missing CORS headers from Gateway">
+    **Symptom**
+
+    Test requests in the API Playground fail. The browser console shows one of:
+
+    - `401 Unauthorized` on the `OPTIONS` preflight request
+    - `Access to fetch at 'https://api.example.com/...' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.`
+
+    **Cause**
+
+    The API definition in Tyk Gateway has CORS misconfigured:
+
+    - **CORS disabled entirely**: The Gateway routes the `OPTIONS` preflight through the authentication middleware. Because preflight requests carry no `Authorization` header, the Gateway rejects them with `401 Unauthorized`.
+    - **CORS enabled but Portal origin not in the allowed list**: The Gateway intercepts the preflight and returns `200 OK`, but omits the `Access-Control-Allow-Origin` header because the Portal's origin does not match `allowed_origins`. The browser treats this as a CORS failure.
+
+    **Fix**
+
+    Configure CORS on the API definition and add your Portal URL to the allowed origins. See [Configure Gateway CORS for APIs](/portal/how-to-guides/configure-cors#configure-gateway-cors-for-apis).
+  </Accordion>
+
+  <Accordion title="403 Forbidden on OPTIONS preflight — Gateway v5.8.6–v5.8.13 regression (TT-15960)">
+    **Symptom**
+
+    API Playground requests fail on Gateway versions v5.8.6 through v5.8.13, even when CORS is correctly configured and the Portal origin is in `allowed_origins`. The browser console shows:
+
+    ```
+    TypeError: Failed to fetch
+    ```
+
+    The `OPTIONS` preflight returns `403 Forbidden` with one of the following response bodies:
+
+    ```json
+    {"error": "Requested endpoint is forbidden"}
+    ```
+
+    ```json
+    {"error": "Access to this API has been disallowed"}
+    ```
+
+    **Cause**
+
+    A middleware ordering regression (TT-15960) in Gateway versions v5.8.6–v5.8.13 caused the allow-list middleware (`VersionCheck`) to run before the CORS middleware. The allow-list evaluates the `OPTIONS` method against endpoint rules and returns `403 Forbidden` before the CORS middleware can intercept and handle the preflight.
+
+    **Fix**
+
+    Upgrade Tyk Gateway to v5.8.14 or later, where the middleware ordering is corrected.
+  </Accordion>
+
+  <Accordion title="Browser CORS error — credentials rejected with wildcard origin">
+    **Symptom**
+
+    Credentialed cross-origin requests to the Portal fail. The browser console shows:
+
+    ```
+    The value of the 'Access-Control-Allow-Origin' header in the response must not be the wildcard '*' when the request's credentials mode is 'include'.
+    ```
+
+    **Cause**
+
+    `PORTAL_CORS_ALLOW_CREDENTIALS=true` is set alongside `PORTAL_CORS_ALLOWED_ORIGINS=*`. The Portal's CORS library (`rs/cors`) does not reject this combination at startup — it returns both `Access-Control-Allow-Origin: *` and `Access-Control-Allow-Credentials: true` in the response. The CORS specification forbids this combination, so the browser rejects the response.
+
+    **Fix**
+
+    Replace the wildcard with explicit allowed origins:
+
+    ```ini
+    PORTAL_CORS_ALLOWED_ORIGINS=https://admin.example.com,https://app.example.com
+    PORTAL_CORS_ALLOW_CREDENTIALS=true
+    ```
+
+    See [Configure Portal Application CORS](/portal/how-to-guides/configure-cors#configure-portal-application-cors).
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Related
+
+- [Configure CORS](/portal/how-to-guides/configure-cors) — set up Portal application CORS and Gateway API CORS
+- [Portal configuration reference](/product-stack/tyk-enterprise-developer-portal/deploy/configuration) — full list of Portal environment variables
