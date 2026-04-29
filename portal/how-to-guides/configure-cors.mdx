@@ -1,8 +1,194 @@
 ---
-title: "Configure CORS"
-description: "How to configure CORS at the Developer Portal application level and at the Tyk Gateway level for APIs exposed via the portal."
+title: "How to Configure CORS"
+sidebarTitle: "Configure CORS"
+description: "Configure CORS for the Tyk Developer Portal application and for APIs exposed in the Live Portal, enabling consumers to test APIs from the API Playground."
+keywords: "CORS, cross-origin resource sharing, Developer Portal CORS, Gateway CORS, API Playground, PORTAL_CORS_ENABLE"
 ---
 
-<Note>
-This page is a placeholder. Content is being written.
-</Note>
+Cross-origin request configuration in the Developer Portal involves two independent layers: the Portal application itself and the Tyk Gateway APIs that consumers test via the API Playground. Both layers must be configured for a fully functional cross-origin deployment.
+
+## Prerequisites
+
+- Developer Portal is deployed and accessible
+- Tyk Gateway and Dashboard are running
+- At least one [API product](/portal/api-products) is configured and published in the Portal
+- You know the public URL of your Live Portal (for example, `https://portal.example.com`)
+- You know the public URL of your Tyk Gateway (for example, `https://api.example.com`)
+
+## Configure Portal Application CORS
+
+Portal application CORS controls which external origins may call the Portal's own Admin API and Live Portal routes. It is configured via environment variables on the Portal process.
+
+<Warning>
+`PORTAL_CORS_ENABLE` defaults to `false`. All cross-origin requests to the Portal are rejected until you set this to `true`.
+</Warning>
+
+**1. Enable CORS**
+
+Set `PORTAL_CORS_ENABLE=true` on the Portal process.
+
+<Tabs>
+  <Tab title="Environment variable">
+    ```ini
+    PORTAL_CORS_ENABLE=true
+    ```
+  </Tab>
+  <Tab title="Kubernetes (Helm)">
+    ```yaml
+    extraEnvs:
+      - name: PORTAL_CORS_ENABLE
+        value: "true"
+    ```
+  </Tab>
+</Tabs>
+
+**2. Set allowed origins**
+
+Set `PORTAL_CORS_ALLOWED_ORIGINS` to the origins permitted to make cross-origin requests to the Portal. Use the exact scheme and host of each origin, separated by commas. Wildcards are supported.
+
+{/* TODO: Verify the default behavior when PORTAL_CORS_ALLOWED_ORIGINS is unset. Code analysis (rs/cors library) indicates an empty slice allows all origins. The configuration reference states no origins are allowed by default. Confirm with the Portal team before documenting a specific default. */}
+
+<Tabs>
+  <Tab title="Environment variable">
+    ```ini
+    PORTAL_CORS_ALLOWED_ORIGINS=https://admin.example.com,https://developer.example.com
+    ```
+  </Tab>
+  <Tab title="Kubernetes (Helm)">
+    ```yaml
+    extraEnvs:
+      - name: PORTAL_CORS_ALLOWED_ORIGINS
+        value: "https://admin.example.com,https://developer.example.com"
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+Do not set `PORTAL_CORS_ALLOWED_ORIGINS` to `*` when `PORTAL_CORS_ALLOW_CREDENTIALS=true`. The CORS specification does not allow credentialed requests from wildcard origins. Specify each origin explicitly instead.
+</Warning>
+
+**3. Set allowed headers and methods**
+
+Set the HTTP headers and methods that cross-origin requests to the Portal may use. No headers are allowed by default. The default allowed methods are `GET`, `POST`, and `HEAD`.
+
+<Tabs>
+  <Tab title="Environment variable">
+    ```ini
+    PORTAL_CORS_ALLOWED_HEADERS=Authorization,Content-Type,X-Requested-With
+    PORTAL_CORS_ALLOWED_METHODS=GET,POST,PUT,DELETE,OPTIONS
+    ```
+  </Tab>
+  <Tab title="Kubernetes (Helm)">
+    ```yaml
+    extraEnvs:
+      - name: PORTAL_CORS_ALLOWED_HEADERS
+        value: "Authorization,Content-Type,X-Requested-With"
+      - name: PORTAL_CORS_ALLOWED_METHODS
+        value: "GET,POST,PUT,DELETE,OPTIONS"
+    ```
+  </Tab>
+</Tabs>
+
+**4. (Optional) Configure additional CORS settings**
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `PORTAL_CORS_MAX_AGE` | `int` | `0` | How long, in seconds, browsers may cache the preflight response. A positive value reduces preflight round trips. |
+| `PORTAL_CORS_ALLOW_CREDENTIALS` | `bool` | `false` | Whether the Portal includes credentials (cookies, HTTP authentication) in CORS responses. |
+| `PORTAL_CORS_DEBUG` | `bool` | `false` | Logs CORS decisions to the Portal output. Enable temporarily when diagnosing CORS issues. |
+
+**5. Restart the Portal**
+
+Restart the Portal process or pod for the environment variable changes to take effect.
+
+**6. Verify**
+
+Open your browser developer tools and make a cross-origin request to the Portal from an allowed origin. The response headers should include `Access-Control-Allow-Origin` and the request should succeed.
+
+{/* TODO: Screenshot — Portal response headers in browser DevTools Network tab showing Access-Control-Allow-Origin header present */}
+
+---
+
+## Configure Gateway CORS for APIs
+
+When a consumer tests an API using the API Playground on the Live Portal, the browser makes requests directly to the Tyk Gateway. The Portal does not proxy these requests and does not inject CORS headers. You must configure CORS on the API definition for each API exposed through the Portal.
+
+<Warning>
+**Tyk Gateway v5.8.6–v5.8.13:** A middleware ordering issue in these versions causes the allow list to run before CORS processing, returning `403 Forbidden` for OPTIONS preflight requests. Upgrade to Gateway v5.8.14 or later to resolve this. See [Troubleshoot CORS Issues](/portal/troubleshooting/cors-issues) for diagnosis steps.
+</Warning>
+
+### Tyk Classic API definition
+
+**1. Open the API in Tyk Dashboard**
+
+In Tyk Dashboard, go to **APIs** and open the API that belongs to your Portal API product.
+
+**2. Enable CORS**
+
+Go to the **Advanced Options** tab and expand the **CORS** section. Enable the **CORS** toggle.
+
+{/* TODO: Screenshot — Tyk Dashboard API designer, Advanced Options tab, CORS section enabled, showing the fields described in step 3 */}
+
+**3. Set allowed origins, methods, and headers**
+
+- **Allowed Origins**: Add the full URL of your Live Portal, for example `https://portal.example.com`.
+- **Allowed Methods**: Add all HTTP methods the API supports. Include at minimum `GET`, `POST`, and `OPTIONS`.
+- **Allowed Headers**: Add `Origin`, `Content-Type`, and the authentication header your API uses, for example `Authorization`.
+
+**4. Configure options passthrough**
+
+Leave **Options Passthrough** disabled (the default). When disabled, the Gateway intercepts `OPTIONS` preflight requests, adds CORS headers, and returns `200 OK` without forwarding to the upstream or enforcing authentication. Enable Options Passthrough only if your upstream service handles CORS natively.
+
+**5. Save the API**
+
+Click **Update** to save the API definition.
+
+**6. Verify**
+
+Open the API Playground on your Live Portal and send a test request. The request should complete without CORS errors in the browser console.
+
+### Tyk OAS API definition
+
+**1. Locate the CORS block**
+
+In a Tyk OAS API definition, CORS configuration sits under `x-tyk-api-gateway.middleware.global.cors`.
+
+**2. Add the CORS configuration**
+
+```yaml expandable
+x-tyk-api-gateway:
+  middleware:
+    global:
+      cors:
+        enabled: true
+        allowedOrigins:
+          - "https://portal.example.com"
+        allowedMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+        allowedHeaders:
+          - Origin
+          - Content-Type
+          - Authorization
+        optionsPassthrough: false
+```
+
+Set `optionsPassthrough` to `false` (the default). When `false`, the Gateway intercepts OPTIONS preflight requests, responds with CORS headers, and does not forward the request to the upstream.
+
+**3. Import or update the API**
+
+Import the updated definition in Tyk Dashboard or update the API via the Tyk Dashboard API.
+
+**4. Verify**
+
+Open the API Playground on your Live Portal and send a test request. The request should complete without CORS errors in the browser console.
+
+---
+
+## Related
+
+- [Troubleshoot CORS Issues](/portal/troubleshooting/cors-issues) — diagnose and fix common CORS errors in the Developer Portal and API Playground
+- [Portal configuration reference](/product-stack/tyk-enterprise-developer-portal/deploy/configuration) — full list of Portal environment variables
