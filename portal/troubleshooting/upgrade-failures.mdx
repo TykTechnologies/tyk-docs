@@ -1,8 +1,216 @@
 ---
-title: "Upgrade Failures"
+title: "Troubleshoot Developer Portal Upgrade Failures"
 description: "Troubleshoot Admin Portal inaccessibility, broken API sync, SSO login failures, and invalid access tokens after upgrading the Tyk Developer Portal."
+keywords: "Developer Portal, upgrade, troubleshooting, migration, SSO, access tokens, API sync, portal not starting"
+sidebarTitle: "Upgrade Failures"
 ---
 
+Use this page to diagnose and resolve issues that occur after upgrading the Tyk Developer Portal.
+
 <Note>
-This page is a placeholder. Content is being written.
+Before troubleshooting, ensure you have a database backup taken before the upgrade. If the Portal cannot be recovered, see [Rollback](#rollback) to restore service quickly.
 </Note>
+
+## Prerequisites
+
+- Access to Portal container or pod logs
+- A database backup taken before the upgrade
+- Access to the Portal Admin UI or the host where the Portal is deployed
+
+## Symptoms
+
+<AccordionGroup>
+  <Accordion title="Admin Portal is inaccessible after upgrade">
+
+    **1. Check that the database migration completed**
+
+    The Portal runs database migrations automatically on startup. If a migration fails, the Portal may refuse to start or may start in a broken state.
+
+    First, enable debug logging (see [Enable debug logging](#enable-debug-logging)). Then check the Portal logs for migration errors:
+
+    ```bash
+    # Docker
+    docker logs <portal-container-name> 2>&1 | grep -iE "failed to migrate|failed to connect|AutoMigrate|\[error\]|fatal"
+
+    # Kubernetes
+    kubectl logs <portal-pod-name> -n <namespace> | grep -iE "failed to migrate|failed to connect|AutoMigrate|\[error\]|fatal"
+    ```
+
+    Look for any of the following messages, which indicate a migration or connection failure:
+
+    - `failed to migrate database` — the migration ran but encountered an error
+    - `failed to connect to database` — the Portal could not reach the database before the migration could start
+    - `[error]` — a GORM-level database error during the migration
+    - `AutoMigrate` — any log line containing this string indicates the migration step was reached
+
+    If migration errors are present, check that the Portal has write access to the database and that the database user has the permissions required to run schema changes (`CREATE TABLE`, `ALTER TABLE`, `CREATE INDEX`).
+
+    **2. Check the theme version**
+
+    Each Portal version ships with an updated default theme. If the theme is not upgraded after a Portal upgrade, the Admin UI may fail to render correctly.
+
+    Follow the [theme upgrade instructions](/portal/customization/themes#upgrading-themes) to ensure your theme is compatible with the current Portal version.
+
+    **3. Check required environment variables**
+
+    Newer Portal versions may introduce required configuration options. Review the [Portal Configuration reference](/product-stack/tyk-enterprise-developer-portal/deploy/configuration) and verify that all required variables are present in your deployment.
+
+    If you are upgrading to v1.14.0 or later, the following variables are now mandatory. The Portal will fail to start if either is absent or set to `sqlite`:
+
+    | Environment variable | Config key | Required value |
+    |---|---|---|
+    | `PORTAL_DATABASE_DIALECT` | `Database.Dialect` | `mysql` or `postgres` |
+    | `PORTAL_DATABASE_CONNECTIONSTRING` | `Database.ConnectionString` | Connection string for your database |
+
+    SQLite support was removed in v1.14.0. If your deployment used SQLite, migrate to PostgreSQL or MySQL before upgrading.
+
+  </Accordion>
+
+  <Accordion title="API sync is broken after upgrade">
+
+    After an upgrade, the Portal re-establishes connections with each Provider (Tyk Dashboard). If the Provider connection is broken, APIs do not synchronize and API Products may disappear from the Admin UI.
+
+    **1. Verify the Provider connection**
+
+    In the Admin Portal, go to **Providers** and check the status of each configured Provider. A disconnected or failing Provider will display an error status.
+
+    If the Tyk Dashboard API credentials used by the Portal have changed, update them in the Provider settings.
+
+    **2. Trigger a manual sync**
+
+    To force an immediate synchronization with all Providers:
+
+    1. In the Admin Portal, go to **Providers**.
+    2. Click **Synchronize**.
+
+    To sync a specific Provider only:
+
+    1. Click the three-dot menu next to the Provider.
+    2. Select **Synchronize**.
+
+    The Portal reports success or failure on completion. If the sync fails, verify that the Tyk Dashboard API is accessible from the Portal host and that the Portal user account has the [required permissions](/portal/api-provider#tyk-dashboard-api-access-credentials).
+
+    **3. Verify the sync interval**
+
+    The Portal automatically syncs with Providers every 10 minutes by default. This interval is controlled by [`PORTAL_REFRESHINTERVAL`](/product-stack/tyk-enterprise-developer-portal/deploy/configuration#portal_refreshinterval). If automatic sync appears to be stuck, verify this value is set correctly and restart the Portal.
+
+  </Accordion>
+
+  <Accordion title="SSO users cannot log in after upgrade">
+
+    This symptom affects Portal versions earlier than v1.14.1. On login, SSO users could lose their Team assignments or be incorrectly reassigned to the default Organisation and Team, sometimes creating duplicate accounts.
+
+    **Recommended fix: Upgrade to v1.14.1 or later**
+
+    The SSO user assignment issue is resolved in v1.14.1. Upgrading is the recommended fix.
+
+    **If an immediate upgrade is not possible:**
+
+    Check and correct Team assignments manually:
+
+    1. In the Admin Portal, go to **Users** and search for the affected SSO user.
+    2. Check their **Organisation** and **Team** assignments.
+    3. If the user has been moved to the default Organisation or default Team, reassign them to the correct Team.
+
+    Also verify that the SSO profile configuration references Teams that still exist. If a Team referenced in `UserGroupMapping` was deleted, the SSO profile form may fail to load (also fixed in v1.14.1). To check:
+
+    1. Go to **Authentication** > **SSO Profiles**.
+    2. Open the affected SSO profile.
+    3. In the **User Group Mapping** section, confirm that all mapped Teams still exist in the Portal.
+    4. Remove or update any references to deleted Teams.
+
+  </Accordion>
+
+  <Accordion title="Access tokens are invalid after upgrade">
+
+    This symptom occurs when all APIs were removed from an API Product at some point before or during the upgrade. On Portal versions earlier than v1.14.1, removing all API access from a Product deleted the associated access policy, which permanently invalidated all tokens issued under that Product.
+
+    **Recommended fix: Upgrade to v1.14.1 or later**
+
+    This is resolved in v1.14.1. After upgrading, access policies are preserved in draft status when all APIs are removed from a Product. Tokens become valid again when API access is restored to the Product.
+
+    **If tokens remain invalid after upgrading to v1.14.1:**
+
+    1. In the Admin Portal, navigate to the affected API Product.
+    2. Verify that the Product has at least one API associated with it. If not, add the APIs back.
+    3. In Tyk Dashboard, go to the **Policies** list and find the policy associated with the affected Product. If the policy is in an inactive state, it will appear as disabled in the list. You can also check the `is_inactive` flag on the policy via the Tyk Dashboard API.
+
+    Adding APIs back to the Product in the Admin Portal will reactivate the policy and restore token validity.
+
+    <Note>
+    If the authentication method of the APIs in a Product was changed during the upgrade, previously issued tokens remain invalid regardless. In this case, consumers must request new credentials.
+    </Note>
+
+  </Accordion>
+</AccordionGroup>
+
+## Enable Debug Logging
+
+Enable debug logging before investigating to get detailed output from the Portal:
+
+| Environment variable | Config key | Value |
+|---|---|---|
+| `PORTAL_LOG_LEVEL` | `LogLevel` | `debug` |
+| `PORTAL_LOG_FORMAT` | `LogFormat` | `dev` |
+
+Set these in your Docker Compose file, Kubernetes Helm values, or environment configuration and restart the Portal. The `dev` format produces verbose, human-readable log output.
+
+To view Portal logs after enabling debug logging:
+
+```bash
+# Docker
+docker logs <portal-container-name>
+
+# Kubernetes
+kubectl logs <portal-pod-name> -n <namespace>
+```
+
+Disable debug logging after troubleshooting is complete. Verbose logging increases log volume and can impact performance in production environments.
+
+## Rollback
+
+If the Portal cannot be recovered through the steps above, restore the previous version.
+
+<Warning>
+The Portal uses GORM AutoMigrate, which only runs forward (up) migrations. Down-migrations are not supported. You must restore the pre-upgrade database backup before redeploying the old image. Running an older Portal image against a newer database schema may cause startup panics or unpredictable behavior.
+</Warning>
+
+**1. Stop the Portal**
+
+```bash
+# Docker
+docker compose down
+
+# Kubernetes
+kubectl scale deployment <portal-deployment-name> --replicas=0 -n <namespace>
+```
+
+**2. Restore the database backup**
+
+Restore the database to the backup taken before the upgrade. The exact restore command depends on your database:
+
+```bash
+# PostgreSQL
+psql -U <db-user> -d <db-name> < portal-backup.sql
+
+# MySQL
+mysql -u <db-user> -p <db-name> < portal-backup.sql
+```
+
+**3. Redeploy the previous Portal version**
+
+Update the Portal image tag to the previous version and restart:
+
+```bash
+# Docker — update the image tag in docker-compose.yml, then:
+docker compose up -d
+
+# Kubernetes — update the image tag in values.yaml, then:
+helm upgrade <release-name> tyk-charts/portal --values values.yaml -n <namespace>
+```
+
+**4. Verify**
+
+Check the Portal version in the Admin Portal footer or via the Portal API to confirm the rollback was successful. Then verify that consumers can log in and access their credentials.
+
+For information on how to upgrade again when ready, see the [Upgrade Guide](/portal/install/upgrade-guide).
