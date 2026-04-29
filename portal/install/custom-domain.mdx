@@ -1,8 +1,177 @@
 ---
 title: "Custom Domain Configuration"
-description: "How to configure a custom domain for the Tyk Developer Portal."
+description: "Configure a custom domain for the Tyk Developer Portal, with DNS records, TLS certificates, and nginx reverse proxy setup for a branded HTTPS URL."
+sidebarTitle: "Custom Domain"
+keywords: "Developer Portal, custom domain, HTTPS, TLS, DNS, CNAME, A record, nginx, reverse proxy, PORTAL_DOMAIN_DEFAULT, PORTAL_DOMAIN_ENABLE_CUSTOM"
 ---
 
+| Edition    | Deployment Type        |
+| :--------- | :--------------------- |
+| Enterprise | Self-Managed, Hybrid   |
+
 <Note>
-This page is a placeholder. Content is being written.
+**Tyk Cloud users:** Custom domain configuration for Tyk Cloud deployments is managed through the Tyk Cloud UI. See [Custom Domains (Tyk Cloud)](/tyk-cloud/using-custom-domains) for instructions.
 </Note>
+
+By default, the Developer Portal is accessible on the hostname or IP address of the server it runs on. A custom domain lets you expose the Live Portal on a URL you control, such as `developers.mycompany.com`, so API consumers see a branded, professional address.
+
+Configuring a custom domain involves three steps:
+
+- Setting the domain in the Portal configuration
+- Creating a DNS record that points your domain to the Portal
+- Configuring TLS so the Portal is accessible over HTTPS
+
+## Prerequisites
+
+- A running Developer Portal installation: [Docker](/portal/install/docker), [Kubernetes](/portal/install/kubernetes), or [Linux](/portal/install/linux)
+- A registered domain name you control
+- Access to your DNS provider to create records
+- A valid TLS certificate and private key for your domain
+
+## Configure the Portal Domain
+
+Two environment variables control custom domain behavior:
+
+| Environment Variable         | Config Key                    | Description                                                                                    |
+| :--------------------------- | :---------------------------- | :--------------------------------------------------------------------------------------------- |
+| `PORTAL_DOMAIN_ENABLE_CUSTOM` | `Domain.EnableCustomDomains` | Enables custom domain support. Set to `true`.                                                  |
+| `PORTAL_DOMAIN_DEFAULT`       | `Domain.DefaultDomain`       | The domain consumers use to access the Live Portal, for example `developers.mycompany.com`.    |
+
+Add these variables to your Portal configuration. For how to pass environment variables in your deployment type, see the install guide for [Docker](/portal/install/docker), [Kubernetes](/portal/install/kubernetes), or [Linux](/portal/install/linux).
+
+```ini
+PORTAL_DOMAIN_ENABLE_CUSTOM=true
+PORTAL_DOMAIN_DEFAULT=developers.mycompany.com
+```
+
+Restart the Portal after making this change.
+
+## Configure DNS
+
+Create a DNS record at your DNS provider that points your custom domain to the Portal:
+
+- **A record:** Use an A record if your Portal is reachable at a static public IP address.
+
+  ```
+  developers.mycompany.com.  300  IN  A  <portal-public-ip>
+  ```
+
+- **CNAME record:** Use a CNAME record if your Portal sits behind a load balancer or Ingress controller with a hostname.
+
+  ```
+  developers.mycompany.com.  300  IN  CNAME  <load-balancer-hostname>
+  ```
+
+DNS changes can take up to 60 minutes to propagate. Verify resolution with `nslookup developers.mycompany.com` before proceeding.
+
+<Note>
+Wildcard domains such as `*.mycompany.com` are not supported.
+</Note>
+
+## Configure TLS
+
+The Portal supports two approaches for TLS termination.
+
+### Portal-managed TLS
+
+The Portal can terminate TLS connections directly. Set the following environment variables:
+
+```ini
+PORTAL_TLS_ENABLE=true
+PORTAL_TLS_CERTIFICATES=[{"Name":"developers.mycompany.com","CertFile":"/path/to/cert.pem","KeyFile":"/path/to/key.pem"}]
+```
+
+The `Name` field must match your custom domain exactly. You can include multiple certificate objects in the array to support more than one domain.
+
+For the full list of TLS options (minimum version, cipher suites, and more), see the [configuration reference](/product-stack/tyk-enterprise-developer-portal/deploy/configuration).
+
+### TLS termination at a reverse proxy
+
+If you run a reverse proxy such as nginx in front of the Portal to terminate TLS, disable Portal-managed TLS and enable secure session handling:
+
+```ini
+PORTAL_TLS_ENABLE=false
+PORTAL_SESSION_SECURE=true
+```
+
+Your reverse proxy must forward the following headers to the Portal:
+
+| Header               | Value                    | Why it is required                                                    |
+| :------------------- | :----------------------- | :-------------------------------------------------------------------- |
+| `Host`               | Your custom domain       | Fallback for base URL construction                                     |
+| `X-Forwarded-Host`   | Your custom domain       | Determines the base URL host for SSO callbacks and email links        |
+| `X-Forwarded-Proto`  | `https`                  | Determines the base URL scheme; prevents mixed-content browser errors |
+| `X-Forwarded-For`    | Client IP address        | Required for per-client rate limiting and session validation           |
+| `X-Real-IP`          | Client IP address        | Additional client IP header used in session binding                   |
+
+<Warning>
+If `X-Forwarded-For` is missing, the Portal attributes all requests to the proxy IP address. Rate limit counters apply globally against that single IP, locking out all users simultaneously.
+</Warning>
+
+**nginx example:**
+
+```nginx expandable
+server {
+    listen 443 ssl;
+    server_name developers.mycompany.com;
+
+    ssl_certificate     /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+
+    location / {
+        proxy_pass         http://portal:3001;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-Host  $host;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Real-IP         $remote_addr;
+    }
+}
+```
+
+## Verify the Custom Domain
+
+After restarting the Portal with the updated configuration:
+
+1. **Confirm DNS resolution.**
+
+   ```console
+   nslookup developers.mycompany.com
+   ```
+
+   The response should resolve to your Portal's IP address or load balancer hostname.
+
+2. **Open the Live Portal URL in a browser:** `https://developers.mycompany.com`. You should see the Portal home page served over HTTPS with a valid certificate.
+
+   {/* TODO: Screenshot — Live Portal home page loading on the custom domain with a valid padlock in the browser address bar */}
+
+3. **Test SSO (if configured).** Log in through your identity provider and confirm the callback URL resolves correctly on your custom domain.
+
+## Update the Custom Domain on an Existing Installation
+
+To change the custom domain after the initial setup:
+
+1. **Update `PORTAL_DOMAIN_DEFAULT`** to the new domain value.
+2. **Create a DNS record** pointing the new domain to the Portal (A record or CNAME, as described above).
+3. **Update your TLS certificate** to cover the new domain, either in `PORTAL_TLS_CERTIFICATES` or on your reverse proxy.
+4. **Restart the Portal** to apply the changes.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="The browser shows a certificate error">
+    Check that the `Name` field in `PORTAL_TLS_CERTIFICATES` matches the domain exactly, including the subdomain. If you are using a reverse proxy, confirm the proxy certificate covers your custom domain and has not expired.
+  </Accordion>
+  <Accordion title="The Portal still serves on the old hostname">
+    Confirm that `PORTAL_DOMAIN_ENABLE_CUSTOM` is set to `true` and that `PORTAL_DOMAIN_DEFAULT` is set to your custom domain. Restart the Portal after making any changes to environment variables.
+  </Accordion>
+  <Accordion title="SSO callbacks or email links use the wrong host or scheme">
+    The Portal constructs base URLs from the `X-Forwarded-Host` and `X-Forwarded-Proto` headers. If these headers are missing or set incorrectly, callbacks and links will use the wrong host or scheme. Check that your reverse proxy sets both headers on every request.
+  </Accordion>
+  <Accordion title="All users are locked out after login attempts">
+    This occurs when `X-Forwarded-For` is not forwarded by the reverse proxy. Without this header, the Portal treats all requests as coming from the proxy IP address and applies rate limits globally. Add `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` to your proxy configuration and restart nginx.
+  </Accordion>
+  <Accordion title="DNS is not resolving to the correct address">
+    DNS propagation can take up to 60 minutes. Use `nslookup` or `dig` to check the current resolution. If the record still does not resolve after an hour, confirm it was saved correctly in your DNS provider and that no conflicting records exist.
+  </Accordion>
+</AccordionGroup>
