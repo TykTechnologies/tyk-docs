@@ -5,30 +5,21 @@ sidebarTitle: "Tyk Streams (Async APIs)"
 keywords: ["Tyk Streams", "async APIs", "asynchronous APIs", "event-driven", "webhooks", "Developer Portal", "API Products"]
 ---
 
-Tyk Streams lets you expose event-driven APIs alongside traditional REST APIs in the Developer Portal. Instead of issuing credentials for on-demand endpoint calls, a Streams API Product pushes events directly to a webhook URL that each consumer configures in their Developer App.
+A Tyk Streams API Product differs from a REST API Product in how consumers receive data:
 
-This guide covers how to add a Tyk Streams API to an API Product, configure event types, and understand the consumer subscription workflow.
-
-## Overview
-
-A Streams API Product differs from a REST API Product in one fundamental way: delivery is push-based, not pull-based.
-
-- **REST API Product**: Consumers receive credentials (an API key or OAuth token) and call endpoints on demand.
+- **REST API Product**: Consumers receive credentials and call endpoints on demand.
 - **Streams API Product**: Consumers register a webhook URL. When the underlying Tyk Streams API produces an event, Tyk pushes an HTTP POST containing the event payload to that URL.
 
-This model suits scenarios where the provider generates events that consumers need to react to, rather than consumers polling for data.
+This push-based model suits scenarios where the provider generates events that consumers need to react to, such as push notifications, system alerts, or data change events like `order_created` or `inventory_updated`.
 
 ## Prerequisites
 
 - A [Tyk Streams API](/api-management/event-driven-apis) is configured and active in the Tyk Dashboard. Tyk Streams requires Tyk Gateway Enterprise Edition with both settings enabled:
   - `TYK_DB_STREAMING_ENABLED=true`
   - `TYK_GW_STREAMING_ENABLED=true`
+- The Tyk Streams API definition includes the event types you want to expose, using the [`portal_webhook`](/api-management/event-driven-apis#enabling-developers-to-subscribe-to-events-and-streams) output type in the Streams outputs configuration.
 - Developer Portal v1.14.0 or later.
 - You have the [API Owner](/portal/api-owner) role in the Developer Portal.
-
-<Note>
-Event types exposed to consumers are defined in the Streams API definition in the Dashboard, using the `portal_webhook` output type. Confirm that your Streams API definition includes the event types you want to publish before proceeding.
-</Note>
 
 ## Add a Tyk Streams API to an API Product
 
@@ -46,11 +37,11 @@ On the **APIs** tab:
 - Select the *Authentication method* the Streams API uses (for example, Auth Token, JWT, or OAuth 2.0).
 - Select the Tyk Streams API from the API list.
 
+{/* TODO: Screenshot — APIs tab with a Streams API selected, showing the Provider dropdown, authentication method, and API list */}
+
 <Note>
 All APIs within a single product must share the same authentication method. If your Streams API uses a different authentication method from your existing REST APIs, create a separate product for it. You can group related products visually in the Live Portal using Catalog categories or tags.
 </Note>
-
-{/* TODO: Screenshot — APIs tab with a Streams API selected, showing the Provider dropdown, authentication method, and API list */}
 
 **4. Configure event types.**
 Navigate to the **Webhooks** tab. Toggle **Enable Webhooks** and select the event types to expose to consumers.
@@ -62,55 +53,38 @@ Event types are the specific topics or event names defined in the Streams API de
 **5. Complete the product details.**
 On the **Details** tab, enter a product name, description, and [Catalog assignment](/tyk-stack/tyk-developer-portal/enterprise-developer-portal/managing-access/manage-catalogues).
 
+{/* TODO: Screenshot — Details tab showing the product name, description, and Catalog assignment fields */}
+
 **6. Save and publish.**
 Select **Save Changes**. The product appears in the assigned Catalogs in the Live Portal.
 
 ## Consumer Subscription Workflow
 
-After publishing, consumers subscribe through their Developer Apps. Understanding this flow helps you set accurate expectations and support your consumers.
+After publishing, consumers subscribe through their Developer Apps:
 
-**1. Consumer creates a Developer App.**
-The consumer navigates to **My Apps** in the Live Portal, creates an application, and requests access to the Streams API Product.
+1. The consumer creates a Developer App and requests access to the Streams API Product.
+2. Once the access request is approved, the consumer opens the app, selects the **Webhooks** tab, and selects **Add Webhook**. They provide:
+   - **Webhook URL**: The HTTPS endpoint that receives event payloads.
+   - **HMAC Secret** (optional): A shared secret used to verify that payloads originate from Tyk.
+   - **Events**: The specific event types to subscribe to, chosen from the list the product exposes.
+3. When the underlying Streams API produces an event matching a subscribed event type, Tyk Gateway sends an HTTP POST to the consumer's webhook URL with the event payload as JSON.
 
-**2. Consumer configures a webhook.**
-Once their access request is approved, the consumer opens the app, selects the **Webhooks** tab, and selects **Add Webhook**. They provide:
-- **Webhook URL**: The HTTPS endpoint on their server that will receive event payloads.
-- **HMAC Secret** (optional): A shared secret used to verify that payloads originate from Tyk.
-
-{/* TODO: Screenshot — Consumer-facing "Webhooks" tab in a Developer App showing the "Add Webhook" form with the Webhook URL and HMAC Secret fields */}
-
-**3. Tyk pushes events to the consumer.**
-When the underlying Streams API produces an event matching a subscribed event type, Tyk Gateway sends an HTTP POST to the consumer's webhook URL. The request body contains the event payload as JSON.
+{/* TODO: Screenshot — Consumer-facing "Webhooks" tab in a Developer App showing the "Add Webhook" form with Webhook URL, HMAC Secret, and Events fields */}
 
 ## Authentication and Payload Verification
 
 ### Subscription authorization
 
-Consumers authorize their subscription to a Streams API Product using the standard portal credential issued for the product, such as an API key, JWT, or OAuth token, depending on the authentication method configured. This credential is not included in the webhook delivery request.
+Consumers authorize their subscription using the standard portal credential for the product — an API key, JWT, or OAuth token, depending on the authentication method configured. This credential is not included in the webhook delivery request.
 
 ### Payload verification
 
-To verify that an incoming webhook request originates from Tyk, consumers use the HMAC secret they configured in their Developer App:
-
-1. Tyk generates an HMAC-SHA256 signature of the raw request body using the consumer's HMAC secret.
-2. Tyk sends this signature in the `X-Tyk-Signature-256` request header.
-3. The consumer's server computes `HMAC-SHA256(secret, raw_payload)` and compares the result to the header value.
-
-If the values match, the payload is authentic. If no HMAC secret is configured, Tyk skips payload signing and no verification header is sent.
-
-## Use Cases
-
-Tyk Streams API Products suit integration patterns where consumers need to react to events rather than poll for data:
-
-- **Push notifications**: Deliver real-time alerts to consumer systems when specific events occur.
-- **System alerts**: Notify downstream services about application or infrastructure state changes.
-- **Data change events**: Propagate domain events such as `order_created` or `inventory_updated` to consumer applications without polling.
+Consumers can verify that an incoming webhook request originates from Tyk using the HMAC secret they configured in their Developer App. Tyk signs the raw request body using HMAC-SHA256, hex-encodes the resulting hash, and sends it in the `X-Signature-SHA256` request header. The consumer's server computes the same HMAC-SHA256 hash using the shared secret, hex-encodes it, and compares it to the header value to verify authenticity. If no HMAC secret is configured, Tyk skips payload signing and the header is absent.
 
 ## Limitations
 
 Tyk Streams API Products behave differently from REST API Products in the following areas:
 
-- **Rate limits**: Standard request-per-second rate limits do not apply to event streams. Tyk uses message-based throttling and concurrency controls configured in the Streams API definition. A policy rate limit does not cap throughput on a high-volume stream without additional stream-level configuration.
-- **Quotas**: By default, a quota decrements on connection establishment, not per event delivered. Counting per-message against a quota requires additional configuration in the Streams API definition.
-- **Shared policy pool**: If a product contains both Streams and REST APIs, both share the same access policy. A long-running stream and a REST call draw from the same quota pool.
-- **Authentication method restriction**: All APIs in a product must share the same authentication method. A Streams API and a REST API with different authentication methods cannot be combined in the same product.
+- **Rate limits and quotas**: Rate limits and quota consumption apply only to the initial connection or subscription request. Individual events delivered over an established stream do not decrement the quota or count against rate limits.
+- **Shared policy pool**: If a product contains both Streams and REST APIs, both share the same access policy. A long-lived stream connection and REST calls draw from the same quota pool.
+- **Delivery guarantee**: Webhook delivery is best-effort. If the consumer's endpoint is unreachable or returns an error, Tyk does not retry delivery and the event is dropped.
