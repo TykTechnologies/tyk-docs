@@ -1,8 +1,203 @@
 ---
 title: "Configure mTLS Authentication"
-description: "How to configure mutual TLS authentication for APIs in the Tyk Developer Portal, covering both self-serve and managed mTLS workflows."
+description: "Configure mutual TLS authentication for API Products in the Developer Portal using Self-Serve or Managed certificate modes, with optional Certificate-Token Binding."
+keywords: "Developer Portal, mTLS, mutual TLS, client certificate, certificate management, API Product, Certificate-Token Binding, Tyk"
+sidebarTitle: "Configure mTLS Authentication"
 ---
 
+This guide explains how to configure mutual TLS (mTLS) authentication for API Products in the Developer Portal, covering the Self-Serve and Managed certificate modes and the Certificate-Token Binding feature.
+
 <Note>
-This page is a placeholder. Content is being written.
+For background on how mTLS works in the Developer Portal and an explanation of each mode, see [TLS Certificates](/portal/certificates).
 </Note>
+
+## Overview
+
+mTLS in the Developer Portal operates at two layers:
+
+- **Tyk Gateway** enforces the TLS handshake — the API must be configured to require a client certificate.
+- **Developer Portal** manages which certificates are associated with which consumers and their credentials.
+
+The Portal supports two certificate management modes for API Products that use **Auth Token + mTLS** authentication:
+
+| Mode | Available Since | Who provides the certificate |
+|------|----------------|------------------------------|
+| Self-Serve (default) | v1.6 | API Consumer uploads their own certificate when requesting access |
+| Managed | [v1.16](/developer-support/release-notes/portal#1-16-0-release-notes) | Portal Admin pre-configures certificates and associates them with Organisations |
+
+[Certificate-Token Binding](/portal/certificates#certificate-token-binding), introduced in [v1.17](/developer-support/release-notes/portal#1-17-0-release-notes), links each issued access token to a specific certificate. The Gateway rejects requests where the token and certificate do not match.
+
+<Note>
+Self-Serve and Managed modes apply only to APIs secured with **Mutual TLS, Authentication Token**. For APIs secured with **Mutual TLS, JSON Web Token (JWT)**, the certificate-to-token association is managed directly in the Tyk Dashboard, not in the Developer Portal.
+</Note>
+
+## Prerequisites
+
+Before configuring mTLS in the Developer Portal, ensure the following are in place:
+
+- **Gateway TLS termination:** The Tyk Gateway must terminate the TLS connection. If a load balancer or reverse proxy sits in front of the Gateway, configure it for TCP passthrough rather than TLS termination.
+- **Gateway TLS enabled:** Set `http_server_options.use_ssl: true` in `tyk.conf` and configure a server certificate on the Gateway.
+- **Deployment type:** Tyk Cloud hosted Gateways do not support mTLS. Use a Self-Managed or Hybrid deployment.
+- **API configured for Auth Token + mTLS in Tyk Dashboard:** In the API Designer, select **Use multiple auth mechanism** under Authentication, then enable both **Auth Token** and **Mutual TLS**.
+- **Admin access** to the Developer Portal.
+- An [API Product](/portal/api-products) and [API Plan](/portal/api-plans) already exist in the Portal.
+
+---
+
+## Self-Serve mTLS
+
+In Self-Serve mode, API Consumers upload their own client certificate when requesting access. The Portal registers the certificate with the Tyk Certificate Store and adds it to the API allow list when the request is approved.
+
+**1. Create an API Product using an mTLS-enabled API**
+
+1. In the Admin Portal, go to **API Products** and click **Add new product**.
+2. Enter a product name and complete the product details.
+3. On the **APIs** tab, set **Authentication Type** to **Mutual TLS, Authentication Token**.
+4. Select the mTLS-enabled APIs to include in the product.
+5. Confirm **Mutual TLS Certificate Mode** is set to **Self-Serve** (the default).
+6. Complete the remaining product settings and click **Save**.
+
+{/* TODO: Screenshot — API Product edit form, APIs tab, showing "Mutual TLS, Authentication Token" selected in Authentication Type and "Self-Serve" in Mutual TLS Certificate Mode */}
+
+**2. Publish the product to a catalog**
+
+Follow the standard steps to [publish the API Product to a catalog](/portal/publish-api-catalog) so consumers can discover and request access.
+
+**3. Consumer requests access and uploads a certificate**
+
+When a consumer requests access to the product from the Live Portal:
+
+1. The consumer browses the catalog and selects the API Product.
+2. They choose a plan and proceed to the access request form.
+3. A certificate upload section appears with the prompt: *"This product is secured with Mutual TLS. You need to upload a certificate to use it."*
+4. The consumer selects **Upload a new certificate**, enters a certificate name, and clicks **Upload certificate** to select a file.
+5. The consumer submits the access request.
+
+{/* TODO: Screenshot — Live Portal access request form showing the mTLS certificate upload section with the "Upload certificate" button and certificate name field */}
+
+<Note>
+Certificates must be in **PEM format** (`.pem` file extension). The maximum file size is 32 MB. The upload form includes expandable OpenSSL commands to help consumers generate a PEM file if needed.
+</Note>
+
+**4. Admin approves the access request**
+
+When an admin approves the request under **API Consumers > Access Requests**, the Portal:
+
+- Registers the consumer's certificate in the Tyk Certificate Store.
+- Adds the certificate to the allow list for each API in the product.
+- Issues the access token (API key) to the consumer's [Developer App](/portal/developer-app).
+
+The consumer must present both the registered certificate and the access token on every API request.
+
+**5. Verify the setup**
+
+1. In the Admin Portal, go to **API Consumers > Applications** and open the consumer's app.
+2. Confirm the certificate appears under the app's credentials.
+3. Confirm the consumer can make a successful API request using both their API key and client certificate.
+
+A request made without the registered certificate returns `HTTP 403 Forbidden`.
+
+---
+
+## Managed mTLS (v1.16+)
+
+In Managed mode, the Portal Admin pre-configures certificates and associates them with Organisations. When access is approved for a consumer in that Organisation, the Org's certificates are automatically applied to their credentials — consumers are not prompted to upload a certificate.
+
+**1. Upload certificates to the Certificate Store**
+
+1. In the Admin Portal, go to **API Consumers > Certificates**.
+2. Click **Upload certificate** to add a new certificate, or click **Sync from provider** to retrieve certificates already stored in the Tyk Dashboard.
+3. Select an uploaded certificate to open the **Certificate Details** screen.
+4. Assign a recognizable name to the certificate (this name is used only within the Portal).
+5. Associate the certificate with one or more Organisations.
+
+{/* TODO: Screenshot — "API Consumers > Certificates" screen showing the certificate list and the upload/sync buttons */}
+
+{/* TODO: Screenshot — Certificate Details screen showing the name field and Organisation association selector */}
+
+**2. Configure an API Product for Managed mTLS**
+
+1. In the Admin Portal, go to **API Products** and create or edit a product.
+2. On the **APIs** tab, set **Authentication Type** to **Mutual TLS, Authentication Token**.
+3. Select the mTLS-enabled APIs to include.
+4. Set **Mutual TLS Certificate Mode** to **Managed**.
+5. Save the product.
+
+{/* TODO: Screenshot — API Product APIs tab showing "Managed" selected in Mutual TLS Certificate Mode */}
+
+**3. Publish the product to a catalog**
+
+[Publish the product](/portal/publish-api-catalog) so consumers can request access.
+
+**4. Consumer requests access**
+
+Consumers from an Organisation that has associated certificates complete the standard access request form. They are not prompted to upload a certificate.
+
+When an admin approves the request, all certificates associated with the consumer's Organisation are automatically added to the allow list for each API in the product and bound to the consumer's access token.
+
+**5. Verify the setup**
+
+1. In the Admin Portal, go to **API Consumers > Applications** and open the consumer's app.
+2. Confirm the Organisation's certificates are listed under the app's credentials.
+3. Confirm the consumer can make a successful API request using any of the Org's registered certificates.
+
+---
+
+## Certificate-Token Binding (v1.17+)
+
+Certificate-Token Binding links each issued access token to a specific client certificate. The Gateway rejects requests where the certificate and token do not match, preventing misuse of tokens by holders of other valid certificates.
+
+**Enable Certificate-Token Binding on an API Product**
+
+1. In the Admin Portal, go to **API Products** and edit the product.
+2. On the **APIs** tab, confirm **Authentication Type** is set to **Mutual TLS, Authentication Token**.
+3. Enable the **Bind certificate to access token** toggle.
+4. Save the product.
+
+{/* TODO: Screenshot — API Product APIs tab showing the "Bind certificate to access token" toggle in the enabled state */}
+
+<Note>
+The **Bind certificate to access token** toggle is only visible when Authentication Type is set to **Mutual TLS, Authentication Token**.
+</Note>
+
+When access is approved after enabling this setting:
+
+- **Self-Serve mode:** the certificate the consumer uploaded is bound to their access token.
+- **Managed mode:** all certificates associated with the consumer's Organisation are bound to their access token.
+
+---
+
+## Certificate Lifecycle
+
+### Rotating a certificate
+
+An API Consumer in Self-Serve mode can replace their client certificate on an existing [Developer App](/portal/developer-app) without losing access:
+
+1. In the Live Portal, go to **My Apps** and open the application.
+2. Locate the certificate listed under the app's credentials and select the option to update it.
+3. Upload the new `.pem` certificate.
+
+The Portal registers the new certificate and removes the old one atomically, so access is not interrupted during the rotation.
+
+### Revoking access by detaching a certificate
+
+When a certificate is detached from a Developer App — by the consumer or an admin — access is revoked immediately:
+
+1. The Portal removes the certificate from the API allow list via the Tyk Dashboard API.
+2. The Dashboard broadcasts an `API_UPDATED` event to the Gateway via Redis.
+3. The Gateway hot-reloads and rejects any subsequent request using the detached certificate with `HTTP 403 Forbidden`.
+
+Revocation takes effect on the very next request, including on existing keep-alive connections.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---------|-------------|-----|
+| `403 Forbidden` after access is approved | Certificate not registered in the Gateway allow list | Confirm the access request status is **Approved**; open the consumer's app and verify the certificate appears under credentials |
+| `403 Forbidden` after certificate rotation | New certificate not yet propagated to the Gateway | Confirm rotation completed in the Portal and wait for the Gateway hot-reload; retry the request |
+| Consumer cannot upload a certificate during access request | File is not `.pem` format or exceeds 32 MB | Ask the consumer to export the certificate as PEM and verify the file size |
+| API requests fail even with a valid certificate | Load balancer is terminating TLS before the Gateway | Configure the load balancer for TCP passthrough so the client certificate reaches the Gateway |
+| Managed mode: consumer approved but access fails | No certificate associated with the consumer's Organisation | In **API Consumers > Certificates**, open the certificate and associate it with the correct Organisation |
+| `403` after updating a certificate on an approved app | Certificate-Token Binding is enabled and the new certificate is not yet bound | Re-approve the access request to rebind the new certificate to the token |
