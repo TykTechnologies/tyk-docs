@@ -1,0 +1,106 @@
+---
+title: "Synchronize API Providers"
+description: "Learn how to synchronize the Tyk Developer Portal with connected API Providers using automatic scheduling or manual triggers via the Admin Portal or Portal API."
+keywords: "Developer Portal, provider sync, synchronize providers, PORTAL_REFRESHINTERVAL, manual sync, Portal API"
+sidebarTitle: "Synchronize Providers"
+---
+
+Synchronization keeps the Tyk Developer Portal aligned with connected Tyk Dashboard instances. During a sync, the Portal pulls policy updates from each Provider and refreshes the catalog of available API Products and Plans.
+
+## Before You Begin
+
+- At least one Provider must be configured. See [Add a Provider](/portal/api-providers/api-providers-reference#provider-fields) for the required fields.
+
+## What Happens During Synchronization
+
+Synchronization is a one-way pull: the Portal fetches data from each Tyk Dashboard — it does not push data back. For each Provider in sequence, the Portal retrieves all access and rate-limit policies that carry matching [Policy Tags](/portal/api-providers/api-providers-reference#policy-tags).
+
+- **New policies** — the Portal creates placeholder API Products and Plans for any policies not already in its catalog.
+- **Removed or unmatched policies** — the Portal hides the corresponding Products and Plans from the Admin Portal view and unpublishes them from the Live Portal. Their configuration is preserved.
+- **Restored policies** — if a previously removed policy reappears in a future sync, the Portal restores the associated Products and Plans with their original configuration intact.
+
+If sync fails for a specific Provider, the Portal logs the error and continues to the next Provider. The run does not stop on failure.
+
+<Note>
+When you create an API Product or Plan in the Portal, the corresponding policy is created immediately in the Dashboard. You do not need to trigger a sync for this to take effect.
+</Note>
+
+## Automatic Synchronization
+
+The Portal synchronizes with each Provider automatically on the interval defined by [PORTAL_REFRESHINTERVAL](/product-stack/tyk-enterprise-developer-portal/deploy/configuration#portal_refreshinterval). The default is 10 minutes. The first sync runs at Portal startup; subsequent syncs run on the configured interval.
+
+<Warning>
+Do not set `PORTAL_REFRESHINTERVAL` to `0`. The Portal will fail to start.
+</Warning>
+
+## Trigger a Manual Sync
+
+### Via the Admin Portal
+
+1. **Navigate to the Providers section**
+
+   In the Admin Portal, select **Providers** from the left navigation.
+
+   {/* TODO: Screenshot — Admin Portal > Providers list page, showing the Synchronize button and the provider rows with their three-dots menus */}
+
+2. **Start the synchronization**
+
+   Select the **Synchronize** button to sync all Providers in sequence. The Portal reports success or failure for each Provider on completion.
+
+   To sync a single Provider, select **Synchronize** from the three-dots menu on that Provider's row.
+
+### Via the Portal API
+
+Synchronization can also be triggered programmatically.
+
+**Sync all Providers:**
+
+```
+PUT /portal-api/providers/action/Synchronize
+```
+
+**Sync a specific Provider:**
+
+```
+PUT /portal-api/providers/{id}/action/Synchronize
+```
+
+See the [Portal API reference](/product-stack/tyk-enterprise-developer-portal/api-documentation/list-of-endpoints/portal-api-list-of-endpoints) for authentication requirements and response schemas.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Connection failures">
+    - Verify network connectivity between the Portal server and the Dashboard.
+    - Confirm the Connection URL is correct and includes the protocol and port, for example `https://dashboard.example.com:3000`.
+    - Verify the Connection URL points to the **Tyk Dashboard**, not the Tyk Gateway.
+    - Confirm the Tyk Dashboard API is reachable from the Portal server.
+  </Accordion>
+
+  <Accordion title="Authentication errors">
+    - Verify the Secret (API key) is valid and active in the Tyk Dashboard.
+    - Confirm the Dashboard user has the [required permissions](/portal/api-providers/what-are-api-providers#dashboard-user-requirements).
+    - Check for Organisation ID mismatches between the Provider configuration and the Dashboard.
+  </Accordion>
+
+  <Accordion title="Missing Products or Plans after sync">
+    - Verify the corresponding policies exist in the Dashboard.
+    - Verify the policies have the correct [Policy Tags](/portal/api-providers/api-providers-reference#policy-tags) configured on the Provider.
+    - Check that policies are correctly partitioned:
+      - **API Product policies** must have ACL enabled (`acl: true`) with quota and rate limits disabled.
+      - **API Plan policies** must have quota and rate limits enabled with ACL disabled.
+    - Trigger a manual sync and review the result reported for each Provider.
+  </Accordion>
+
+  <Accordion title="Duplicate Products appearing">
+    When automated pipelines (such as GitOps workflows) delete and recreate Dashboard policies, the Portal may create duplicate Products. This happens when a policy is deleted from the Dashboard while its corresponding Portal Product has no APIs attached — the Portal does not automatically delete the Product in this state.
+
+    To resolve: delete the orphaned Product from the Admin Portal before the pipeline recreates the Dashboard policy.
+  </Accordion>
+
+  <Accordion title="JWT scopes disappearing or access denied errors">
+    If consumers receive "Access to this API has been disallowed" errors after a Portal action (such as enabling DCR on a Product or approving an access request), a sync may have stripped JWT scopes from the API definition in the Tyk Dashboard.
+
+    Upgrade the Developer Portal to v1.14.0 or later, where this issue is resolved.
+  </Accordion>
+</AccordionGroup>
