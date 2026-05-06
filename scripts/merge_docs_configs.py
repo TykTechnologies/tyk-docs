@@ -1204,7 +1204,7 @@ class DocsMerger:
             changes_made += 1
             return f'[{text}]({prefix}{path_stripped})'
 
-        content = re.sub(r'\[([^\]]+)\]\((/[^)]*)\)', replace_markdown, content)
+        content = re.sub(r'(?<!!)\[([^\]]+)\]\((/[^)]*)\)', replace_markdown, content)
 
         # 3. Skip data paths - keep them clean, let JSX handle prefixing
         # This prevents double prefixing by not modifying path: "..." declarations
@@ -1280,7 +1280,7 @@ class DocsMerger:
 
         # This regex is too broad and conflicts with the absolute path regex above
         # It should only match relative paths (not starting with /)
-        content = re.sub(r'\[([^\]]+)\]\(([^/)][^)]*)\)', replace_relative_markdown, content)
+        content = re.sub(r'(?<!!)\[([^\]]+)\]\(([^/)][^)]*)\)', replace_relative_markdown, content)
 
         # Note: Snippet imports are now handled by the dedicated rewrite_snippet_imports function
 
