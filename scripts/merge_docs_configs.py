@@ -449,8 +449,11 @@ class DocsMerger:
                             with open(item, 'r', encoding='utf-8') as f:
                                 content = f.read()
 
-                            # Rewrite internal links for this version
-                            modified_content = self.rewrite_internal_links(content, version, is_latest)
+                            # First: Rewrite snippet imports (always uses version)
+                            modified_content = self.rewrite_snippet_imports(content, version)
+
+                            # Then: Rewrite internal links for this version
+                            modified_content = self.rewrite_internal_links(modified_content, version, is_latest)
 
                             # Write modified content
                             with open(target_file, 'w', encoding='utf-8') as f:
@@ -487,6 +490,98 @@ class DocsMerger:
                 copied_count = len([f for f in files.values() if f == "copied"])
                 print(f"   📂 {version}: {len(files)} files ({rewritten_count} rewritten, {copied_count} copied)")
 
+    def copy_swagger_with_version_structure(self, version_configs: Dict[str, Dict],
+                                            source_dir: str = ".", target_dir: str = ".") -> None:
+        """Copy swagger files to version-specific directories."""
+
+        # Build priority order: main -> latest -> others
+        priority_versions = []
+
+        if self.main_version and self.main_version in version_configs:
+            priority_versions.append(self.main_version)
+
+        if self.latest_version and self.latest_version in version_configs and self.latest_version != self.main_version:
+            priority_versions.append(self.latest_version)
+
+        # Add remaining versions in config order
+        for version in self.version_priority:
+            if version in version_configs and version not in priority_versions:
+                priority_versions.append(version)
+
+        if not priority_versions:
+            print("❌ No versions found for swagger processing")
+            return
+
+        print(f"📊 Processing swagger files from {len(priority_versions)} versions...")
+        print(f"🎯 Priority order: {' > '.join(priority_versions)}")
+
+        source_path = Path(source_dir)
+        target_root_path = Path(target_dir)
+        swagger_root = target_root_path / "swagger"
+
+        # Track processed swagger files for reporting
+        processed_swagger = {}  # version -> {filename: status}
+        total_processed = 0
+
+        # Process each version
+        for version in priority_versions:
+            # Get the source folder for this target version
+            source_folder = self.source_folders.get(version, version)
+            version_source = source_path / source_folder / "swagger"
+
+            if not version_source.exists():
+                print(f"  ⚠️ No swagger directory found in {source_folder} (target: {version})")
+                continue
+
+            version_label = self.version_labels.get(version, version)
+
+            # Create version-specific swagger directory
+            version_swagger_dir = swagger_root / version
+            version_swagger_dir.mkdir(parents=True, exist_ok=True)
+
+            print(f"\n  📂 Processing swagger files for {version} ({version_label})...")
+
+            processed_swagger[version] = {}
+            version_count = 0
+
+            # Process all files in the swagger directory
+            for item in version_source.rglob("*"):
+                if item.is_file():
+                    # Get relative path from swagger root
+                    rel_path = item.relative_to(version_source)
+                    target_file = version_swagger_dir / rel_path
+
+                    # Create parent directories if needed
+                    target_file.parent.mkdir(parents=True, exist_ok=True)
+
+                    try:
+                        # Just copy swagger files as-is (no link rewriting needed for swagger files)
+                        shutil.copy2(item, target_file)
+                        processed_swagger[version][str(rel_path)] = "copied"
+                        print(f"    📄 Copied: {rel_path}")
+
+                        version_count += 1
+                        total_processed += 1
+
+                    except Exception as e:
+                        print(f"    ❌ Error processing {rel_path}: {e}")
+                        processed_swagger[version][str(rel_path)] = f"error: {e}"
+
+            if version_count > 0:
+                print(f"    ✅ Processed {version_count} swagger files for {version}")
+            else:
+                print(f"    ⚠️ No swagger files found in {version}")
+
+        # Generate summary
+        print(f"\n✅ Swagger processing complete:")
+        print(f"   📁 Total files processed: {total_processed}")
+        print(f"   📂 Versions processed: {len([v for v in processed_swagger.keys() if processed_swagger[v]])}")
+
+        for version, files in processed_swagger.items():
+            if files:
+                copied_count = len([f for f in files.values() if f == "copied"])
+                print(f"   📂 {version}: {len(files)} files ({copied_count} copied)")
+
     def organize_content_files(self, version_configs: Dict[str, Dict],
                                source_dir: str = ".", target_dir: str = ".") -> None:
         """Copy latest version docs to subfolder and merge assets from all versions."""
@@ -522,6 +617,10 @@ class DocsMerger:
         print(f"\n📝 Step 1.5: Processing snippets with version structure...")
         self.copy_snippets_with_version_structure(version_configs, source_dir, target_dir)
 
+        # Step 1.6: Process swagger files with version structure
+        print(f"\n📊 Step 1.6: Processing swagger files with version structure...")
+        self.copy_swagger_with_version_structure(version_configs, source_dir, target_dir)
+
         # Step 2: Copy documentation content from all versions
         print(f"\n📚 Step 2: Copying documentation content from all versions...")
 
@@ -548,8 +647,8 @@ class DocsMerger:
             else:
                 print(f"\n  📂 Processing older version ({version} - {version_label})...")
 
-            # Define system files to exclude (including snippets since they're processed separately)
-            exclude_items = {"docs.json", ".git", ".gitignore", ".DS_Store", "__pycache__", "snippets"}
+            # Define system files to exclude (including snippets and swagger since they're processed separately)
+            exclude_items = {"docs.json", ".git", ".gitignore", ".DS_Store", "__pycache__", "snippets", "swagger"}
 
             # Get list of items to copy (exclude assets and snippets since they're already processed)
             items_to_process = []
@@ -651,7 +750,7 @@ class DocsMerger:
 
 
     def prefix_navigation_paths(self, navigation: Any, version: str, is_latest: bool = False) -> Any:
-        """Recursively prefix page paths with subfolder and version."""
+        """Recursively prefix page paths with subfolder and version, including openapi field."""
         if isinstance(navigation, str):
             # Build the prefix based on subfolder and version
             prefix_parts = []
@@ -671,8 +770,41 @@ class DocsMerger:
 
         if isinstance(navigation, dict):
             result = navigation.copy()
+            
+            # Handle pages field
             if "pages" in result:
                 result["pages"] = self.prefix_navigation_paths(result["pages"], version, is_latest)
+            
+            # Handle openapi field for swagger files
+            if "openapi" in result:
+                openapi_path = result["openapi"]
+                # Check if openapi path starts with swagger/
+                if isinstance(openapi_path, str) and openapi_path.startswith("swagger/"):
+                    # Extract the path after swagger/
+                    swagger_file = openapi_path[8:]  # Remove 'swagger/' prefix
+
+                    # Check if it already has version by looking for known version patterns
+                    path_parts = swagger_file.split('/')
+                    if len(path_parts) >= 2:
+                        potential_version = path_parts[0]
+                        # Check if it looks like a version (contains digits or is 'nightly')
+                        if potential_version == 'nightly' or any(char.isdigit() for char in potential_version):
+                            # Already has version, keep as-is
+                            pass
+                        else:
+                            # No version, add it
+                            openapi_path = f"swagger/{version}/{swagger_file}"
+                    else:
+                        # No version subdirectory, add it
+                        openapi_path = f"swagger/{version}/{swagger_file}"
+
+                    # Convert to object form with source and directory
+                    if is_latest:
+                        directory = "api-reference"
+                    else:
+                        directory = f"{version}/api-reference"
+                    result["openapi"] = {"source": openapi_path, "directory": directory}
+            
             return result
 
         if isinstance(navigation, list):
@@ -837,8 +969,7 @@ class DocsMerger:
                 seen_sources.add(source)
                 redirects.append({
                     "source": source,
-                    "destination": destination,
-                    "permanent": permanent
+                    "destination": destination
                 })
                 return True
             else:
@@ -1127,7 +1258,6 @@ class DocsMerger:
             changes_made += 1
             return f'<{component}{before_href}href="{new_path}"{after_href}'
 
-        # BadgeCard is not beign used
         content = re.sub(r'<(Card|BadgeCard|Expandable)([^>]*\s+)href="([^"]+)"([^>]*>)', replace_card_href, content)
 
         # 7. Fix relative markdown links without leading slash: [text](path)
