@@ -1,0 +1,89 @@
+---
+title: "Tyk Pump vs OpenTelemetry: Choosing Your Observability Stack"
+description: "Understand when to use Tyk Pump vs OpenTelemetry: how each works, what capabilities are exclusive to each, and how to choose the right tool for your setup."
+sidebarTitle: "Pump vs OpenTelemetry"
+keywords: ["tyk pump", "opentelemetry", "otlp", "analytics", "observability", "dashboard analytics", "otel metrics", "api monitoring", "comparison"]
+---
+
+Tyk provides two observability systems that can both be active simultaneously: **Tyk Pump** and **OpenTelemetry (OTel)**. They are not interchangeable. They solve overlapping but architecturally distinct problems, and the right choice depends on what you need to observe and where you need the data to go.
+
+<Info>
+Tyk Pump and OpenTelemetry can run simultaneously. They are not mutually exclusive, and many production deployments use both.
+</Info>
+
+## How Each System Works
+
+### Tyk Pump
+
+Tyk Pump uses a pull-and-purge architecture. The Gateway writes raw analytics records to Redis after each request. Every 10 seconds, Pump reads those records from Redis, enriches them into structured documents with up to 40 metadata fields (including API key, OAuth ID, geo-data, network stats, and GraphQL query details), and writes them to a persistent backend such as MongoDB or PostgreSQL.
+
+This backend is the data source for the **Tyk Dashboard analytics screens**: Most Used APIs, Status Code Distribution, Activity by Key, and Activity by Location. Pump is the only component that can write data in the format the Dashboard requires.
+
+Enabling Pump analytics adds approximately 13% RPS reduction when tracking all requests. Use the [Do-Not-Track](/api-management/traffic-transformation/do-not-track) middleware to exclude non-critical endpoints and reduce overhead.
+
+### OpenTelemetry
+
+OpenTelemetry instruments the Gateway at the span level. The Gateway emits traces, metrics, and logs via OTLP and sends them to an external collector such as a Prometheus scrape endpoint, Grafana Alloy, or a vendor agent (Datadog, New Relic, Dynatrace). From v5.13, the Gateway exports metrics natively via OTLP, removing the need for Tyk Pump as an intermediary for Prometheus-based observability.
+
+Spans include identity attributes such as the hashed API key (`tyk.api.apikey`) and key alias (`tyk.api.apikey.alias`), which allow you to attribute traces to specific callers in your external observability tooling. OTel does not write to the Tyk Dashboard.
+
+## Capability Comparison
+
+<Warning>
+OpenTelemetry cannot populate the Tyk Dashboard. The Dashboard relies exclusively on data written by Tyk Pump. If you need the built-in analytics screens, Pump is required regardless of your OTel configuration.
+</Warning>
+
+| Capability | Tyk Pump | OpenTelemetry |
+|---|---|---|
+| Tyk Dashboard analytics (Most Used APIs, Status Code Distribution, Activity by Key) | Yes — sole provider | No |
+| Per-request analytics record (up to 40 fields: geo, network stats, GraphQL stats) | Yes | No |
+| Raw request and response payload logging | Yes | No |
+| GraphQL query-level analytics | Yes (Graph Pump) | No |
+| Per-API-key traffic attribution | Yes (Mongo Aggregate Pump) | Partial — spans include hashed key and alias; requires external tooling to aggregate |
+| Quota and billing metrics | Yes | No |
+| Distributed traces (OTLP) | No | Yes |
+| Metrics export to Prometheus, Datadog, Grafana (v5.13+) | No | Yes |
+| Structured log export via OTLP | No | Yes |
+| External collector required | No — writes directly to database | Yes |
+| Custom metric dimensions | No | Yes (self-managed only; 2,000 dimension combinations per instrument) |
+| Performance overhead | ~13% RPS reduction when tracking all requests | Low to medium — configure sampling rate to control cost |
+
+## When to Use Each
+
+<Note>
+These are not mutually exclusive. The recommended production setup is to run both: Pump for Dashboard analytics and audit records, OTel for distributed tracing and metrics.
+</Note>
+
+**Use Tyk Pump when:**
+- You use the Tyk Dashboard and need the built-in analytics screens.
+- You need quota reporting, API monetization, or per-key billing data.
+- You need to log raw request and response payloads for compliance or debugging.
+- You need GraphQL query-level analytics.
+- You are on Tyk Cloud — Pump runs internally and is already active; no action required.
+
+**Use OpenTelemetry when:**
+- You need distributed tracing across multiple upstream services.
+- You are integrating with an existing observability stack (Prometheus, Grafana, Datadog, Jaeger, or similar).
+- You need Prometheus-compatible metrics without an additional analytics pipeline (v5.13+).
+- You are on Tyk Cloud v5.13+ and want to enable metrics export via the Cloud UI toggle.
+- You need configurable sampling to control observability overhead at scale.
+
+## Deployment and Edition Support
+
+| | Open Source Gateway | Self-Managed (Licensed) | Tyk Cloud |
+|---|---|---|---|
+| Tyk Pump | Yes | Yes | Managed by Tyk |
+| OTel Traces | Yes | Yes | Yes (Telemetry entitlement required) |
+| OTel Metrics (v5.13+) | Yes | Yes | Yes — enable via Cloud UI toggle |
+| Custom OTel metric dimensions | No | Yes | Partial — raise a service request to SRE |
+| Tyk Dashboard analytics | No | Yes | Yes (powered by internally managed Pump) |
+
+On Tyk Cloud, Tyk Pump runs internally and is managed by Tyk. You cannot configure Pump outputs directly. Contact Tyk support to adjust analytics storage settings.
+
+## Related Resources
+
+- [Tyk Pump configuration](/api-management/tyk-pump)
+- [OpenTelemetry traces](/api-management/traces)
+- [OpenTelemetry metrics](/api-management/logs-metrics)
+- [Observability best practices](/api-management/observability/guides/best-practices)
+- [Do-Not-Track middleware](/api-management/traffic-transformation/do-not-track)
