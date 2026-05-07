@@ -103,116 +103,99 @@ OTel metric names are translated when Prometheus scrapes them: dots become under
 
 ---
 
-## Step 1: Create the dashboard
+## Instructions
 
-In Grafana, go to **Connections → Data Sources → Add new data source** and select **Prometheus**. Set the URL to your Prometheus server (e.g. `http://prometheus:9090`) and click **Save & test**.
+### Step 1: Create the dashboard
 
-Then go to **Dashboards** → **New** → **New dashboard**.
+1. In Grafana, go to **Connections → Data Sources → Add new data source**, select **Prometheus**, set the URL to your Prometheus server (e.g. `http://prometheus:9090`), and click **Save & test**.
 
-![Grafana new dashboard](/img/ai-management/grafana-new-dashboard.png)
+2. Go to **Dashboards → New → New dashboard**.
 
-Before adding panels, create a datasource variable so you can switch Prometheus datasources without editing every panel individually.
+    ![Grafana new dashboard](/img/ai-management/grafana-new-dashboard.png)
 
-Open **Dashboard settings** → **Variables** → **Add variable**.
+3. Open **Dashboard settings → Variables → Add variable**.
 
-![Grafana dashboard settings](/img/ai-management/grafana-dashboard-settings.png)
+    ![Grafana dashboard settings](/img/ai-management/grafana-dashboard-settings.png)
 
-Set the following:
+4. Set the following fields and click **Save**:
 
-| Field | Value |
-|---|---|
-| **Variable type** | Datasource |
-| **Name** | `datasource` |
-| **Plugin type** | Prometheus |
+    | Field | Value |
+    |---|---|
+    | **Variable type** | Datasource |
+    | **Name** | `datasource` |
+    | **Plugin type** | Prometheus |
 
-![Grafana data source variable](/img/ai-management/grafana-data-source-variable.png)
+    ![Grafana data source variable](/img/ai-management/grafana-data-source-variable.png)
 
-Save the variable. All panels in the steps below use `$datasource` as their datasource, so the variable applies globally.
+### Step 2: Generate traffic
 
----
+1. Make a few tool calls through your MCP proxy to populate the metrics.
 
-## Step 2: Generate traffic
+   If you need a quick way to generate traffic, use MCP Inspector with the Mock MCP Server; the full setup is covered in [How to secure an MCP proxy](/ai-management/mcp-gateway/how-to-proxy-remote-mcp). Once you have traffic flowing, come back here to build the dashboard.
 
-The panels in the following steps need data to display. Make a few tool calls through your MCP proxy to populate the metrics.
+### Step 3: Request rate by method
 
-If you need a quick way to generate traffic, use MCP Inspector with the Mock MCP Server; the full setup is covered in [How to secure an MCP proxy](/ai-management/mcp-gateway/how-to-proxy-remote-mcp). Once you have traffic flowing, come back here to build the dashboard.
+1. Click **Add → Visualization** and select **Time series**. Set the title to `MCP request rate by method`.
 
----
+2. Set the PromQL query to:
 
-## Step 3: Request rate by method
+    ```promql
+    sum by (mcp_method) (rate(tyk_mcp_requests_total[$__rate_interval]))
+    ```
 
-Add a **Time series** panel. Title it `MCP request rate by method`.
+3. Set the **Legend** to `{{mcp_method}}` and click **Apply**.
 
-This panel shows request volume over time broken down by JSON-RPC method. Use it to see the balance between `tools/call`, `resources/read`, and session lifecycle calls such as `initialize`.
-
-**PromQL:**
-
-```promql
-sum by (mcp_method) (rate(tyk_mcp_requests_total[$__rate_interval]))
-```
-
-Set the **Legend** to `{{mcp_method}}`.
+    {/* TODO: Screenshot — Grafana Time series panel showing MCP request rate by method, with multiple series coloured by mcp_method (e.g. tools/call, initialize, tools/list) */}
 
 <Note>
 `$__rate_interval` is a Grafana built-in variable that automatically selects an appropriate rate interval based on the dashboard time range and scrape interval. It produces more accurate rate calculations than a hardcoded interval such as `[5m]` and is the recommended choice for rate and histogram queries.
 </Note>
 
----
+### Step 4: Error rate
 
-## Step 4: Error rate
+1. Click **Add → Visualization** and select **Stat**. Set the title to `MCP error rate`.
 
-Add a **Stat** panel. Title it `MCP error rate`.
+2. Set the PromQL query to:
 
-This panel shows the percentage of requests that resulted in a gateway error: authentication failures, rate limit rejections, or upstream errors. It gives you an at-a-glance signal of proxy health.
+    ```promql
+    sum(rate(tyk_mcp_requests_total{error_code!=""}[$__rate_interval]))
+    /
+    sum(rate(tyk_mcp_requests_total[$__rate_interval]))
+    * 100
+    ```
 
-**PromQL:**
+3. Set the **Unit** to `Percent (0-100)`.
 
-```promql
-sum(rate(tyk_mcp_requests_total{error_code!=""}[$__rate_interval]))
-/
-sum(rate(tyk_mcp_requests_total[$__rate_interval]))
-* 100
-```
+4. Configure thresholds and click **Apply**:
 
-Set the **Unit** to `Percent (0-100)`. Configure thresholds:
+    | Value | Color |
+    |---|---|
+    | 0 | Green |
+    | 1 | Orange |
+    | 5 | Red |
 
-| Value | Color |
-|---|---|
-| 0 | Green |
-| 1 | Orange |
-| 5 | Red |
+    {/* TODO: Screenshot — Grafana Stat panel showing MCP error rate as a percentage, with green/orange/red threshold colouring */}
 
----
+### Step 5: Top tools by call volume
 
-## Step 5: Top tools by call volume
+1. Click **Add → Visualization** and select **Bar chart**. Set the title to `Top tools by call volume`.
 
-Add a **Bar chart** panel. Title it `Top tools by call volume`.
+2. Set the PromQL query to:
 
-This panel shows which tools AI agents are calling most frequently. The query filters to `tools/call` requests only, excluding lifecycle calls that would otherwise inflate counts.
+    ```promql
+    topk(10, sum by (tool_name) (increase(tyk_mcp_requests_total{mcp_method="tools/call"}[$__range])))
+    ```
 
-**PromQL:**
+3. Set the **Legend** to `{{tool_name}}` and click **Apply**.
 
-```promql
-topk(10, sum by (tool_name) (increase(tyk_mcp_requests_total{mcp_method="tools/call"}[$__range])))
-```
-
-Set the **Legend** to `{{tool_name}}`.
+    {/* TODO: Screenshot — Grafana Bar chart panel showing top 10 tools by call volume, with tool names on the x-axis */}
 
 <Note>
 If the panel shows tool names but all counts are zero immediately after generating traffic, this is normal. The `increase()` function requires at least two Prometheus scrapes to return a non-zero result. Wait for the second OTel export cycle (up to two minutes) and refresh the dashboard.
 </Note>
-
----
 
 ![Grafana MCP dashboard](/img/ai-management/grafana.png)
 
 ## Next steps
 
 The [MCP metrics](/ai-management/mcp-gateway/mcp-metrics) reference covers additional instruments you can add to this dashboard, including P95 upstream latency per tool, end-to-end latency, error classification by code, and per-session usage.
-
-## See also
-
-- [MCP metrics](/ai-management/mcp-gateway/mcp-metrics): Full reference for all MCP metric instruments and dimensions
-- [MCP observability](/ai-management/mcp-gateway/mcp-observability): Overview of all MCP observability signals
-- [Observability best practices](/api-management/logs): Cardinality control and export topology guidance
-- [OpenTelemetry in Tyk](/api-management/traces): Enable and configure OTel on the gateway
