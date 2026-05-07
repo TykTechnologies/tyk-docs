@@ -14,11 +14,19 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event.action != 'closed'
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.PROBE_APP_ID }}
+          private-key: ${{ secrets.PROBE_APP_PRIVATE_KEY }}
+          owner: TykTechnologies
+
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.ORG_GH_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Setup GitHub CLI
         run: gh --version
@@ -27,33 +35,13 @@ jobs:
         run: |
           # Check if mirror PR already exists
           MIRROR_PR=$(gh pr list --base production --head ${{ github.head_ref }} --json number --jq '.[0].number // empty')
-          
+
           if [ -z "$MIRROR_PR" ]; then
             # Create new mirror PR
             echo "Creating new mirror PR..."
-          
-            # Write PR body to file via env var to safely handle special characters
-            # (backticks, $, quotes) without shell re-interpretation
-            cat > pr_body.txt << 'ENDBODY'
-**🔗 Auto-generated mirror PR for Mintlify preview**
 
-**Original PR:** #${{ github.event.number }}
-**Author:** @${{ github.event.pull_request.user.login }}
-
-## Purpose
-This PR provides a Mintlify preview link for reviewing documentation changes.
-
-## Preview Link
-The Mintlify preview will be available once this PR is processed.
-
-## ⚠️ Important Notes
-- **Do not merge this PR directly**
-- This PR will be auto-merged when the original PR #${{ github.event.number }} is merged
-- Make all comments and reviews on the original PR #${{ github.event.number }}
-
-## Changes
-ENDBODY
-            printf '%s\n' "$PR_BODY" >> pr_body.txt
+            # Write PR body to file; template passed via env var to keep YAML valid
+            printf '%s\n' "$PR_TEMPLATE" "$PR_BODY" > pr_body.txt
 
             # Escape the title properly to handle special characters and spaces
             ESCAPED_TITLE=$(printf '%s' "🔄 Preview: ${{ github.event.pull_request.title }}" | sed 's/"/\\"/g')
@@ -64,30 +52,56 @@ ENDBODY
               --title "$ESCAPED_TITLE" \
               --body-file pr_body.txt \
               --draft
-          
+
             echo "✅ Mirror PR created successfully"
           else
             echo "🔄 Mirror PR #$MIRROR_PR already exists and will be auto-updated"
           fi
         env:
-          GH_TOKEN: ${{ secrets.ORG_GH_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TEMPLATE: |
+            **🔗 Auto-generated mirror PR for Mintlify preview**
+
+            **Original PR:** #${{ github.event.number }}
+            **Author:** @${{ github.event.pull_request.user.login }}
+
+            ## Purpose
+            This PR provides a Mintlify preview link for reviewing documentation changes.
+
+            ## Preview Link
+            The Mintlify preview will be available once this PR is processed.
+
+            ## ⚠️ Important Notes
+            - **Do not merge this PR directly**
+            - This PR will be auto-merged when the original PR #${{ github.event.number }} is merged
+            - Make all comments and reviews on the original PR #${{ github.event.number }}
+
+            ## Changes
 
   cleanup-mirror-pr:
     runs-on: ubuntu-latest
     if: github.event.action == 'closed'
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.PROBE_APP_ID }}
+          private-key: ${{ secrets.PROBE_APP_PRIVATE_KEY }}
+          owner: TykTechnologies
+
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.ORG_GH_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Handle mirror PR when original is closed
         run: |
           # Find the mirror PR
           MIRROR_PR=$(gh pr list --base production --head ${{ github.head_ref }} --json number --jq '.[0].number // empty')
-          
+
           if [ -n "$MIRROR_PR" ]; then
             if [ "${{ github.event.pull_request.merged }}" = "true" ]; then
               echo "Original PR was merged, closing mirror PR #$MIRROR_PR (no need to merge)..."
@@ -102,4 +116,4 @@ ENDBODY
             echo "No mirror PR found for branch ${{ github.head_ref }}"
           fi
         env:
-          GH_TOKEN: ${{ secrets.ORG_GH_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
