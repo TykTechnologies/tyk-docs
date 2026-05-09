@@ -1,0 +1,150 @@
+---
+title: "GraphQL Subscriptions"
+description: "WebSocket subscriptions on Tyk Gateway: graphql-ws and graphql-transport-ws protocols, federation wiring, and Apollo Router integration."
+keywords: "GraphQL, Subscriptions, WebSocket, graphql-ws, graphql-transport-ws, Apollo Router, Tyk Gateway, depth limit, restricted fields, federation"
+sidebarTitle: "GraphQL Subscriptions"
+---
+
+## Overview
+
+Tyk Gateway supports GraphQL subscriptions over WebSockets through the same engine path that handles queries and mutations. Both standard subprotocols are supported:
+
+- **`graphql-transport-ws`** — the modern protocol from [enisdenjo/graphql-ws](https://github.com/enisdenjo/graphql-ws). Default for V3 APIs when no subprotocol is configured.
+- **`graphql-ws`** — the legacy Apollo subprotocol. Still supported for backward compatibility.
+
+Subscriptions work end-to-end through the [Apollo Federation v2 subgraph](/api-management/graphql/apollo-federation-v2) path as well, allowing federated supergraphs to fan subscription operations out through Tyk-fronted subgraphs.
+
+<Note>
+GraphQL subscriptions require the **GraphQL engine V3** (`graphql.version: "3"`). The HTTP callback subscription protocol (`callback/1.0`) is intentionally not supported — use one of the WebSocket subprotocols above.
+</Note>
+
+## Enabling WebSockets
+
+Subscriptions go through the same WebSocket upgrade path as the rest of Tyk's WebSocket support. Set the following in `tyk.conf`:
+
+```json
+{
+  "http_server_options": {
+    "enable_websockets": true
+  }
+}
+```
+
+The corresponding environment variable is `TYK_GW_HTTPSERVEROPTIONS_ENABLEWEBSOCKETS=true`. See [`http_server_options.enable_websockets`](/tyk-oss-gateway/configuration#http_server_options-enable_websockets) for details.
+
+## V3 default subprotocol
+
+For engine **V3** APIs, Tyk defaults to `graphql-transport-ws` when no upstream subprotocol is configured. Earlier engine versions defaulted to `graphql-ws`. Existing API definitions that explicitly set the subprotocol are unaffected — Tyk only flips the default when the field is left empty.
+
+You can override the default per data source if your upstream insists on the legacy protocol:
+
+```json
+{
+  "kind": "GraphQL",
+  "name": "events-stream",
+  "config": {
+    "url": "wss://events.internal/graphql",
+    "subscription_type": "graphql-ws"
+  }
+}
+```
+
+Acceptable values: `graphql-transport-ws`, `graphql-ws`, `sse`. SSE upstream subscriptions are forwarded but cannot themselves be re-emitted as WebSocket subscriptions to the consumer.
+
+## Depth limit and restricted fields at subscribe-time
+
+Subscription-specific security checks run at the moment a client opens a subscription, not just per message:
+
+- **Depth limit** — the configured maximum query depth applies to the subscription document.
+- **Restricted/allowed fields** — field-based permissions from the consumer's session are evaluated against the subscription selection set. A subscription that touches a restricted field is rejected with a connection error before any messages are streamed.
+
+These checks are wired through the `WebsocketOnBeforeStart` hook on the V3 code path. Operations that violate either policy never reach the upstream; the WebSocket connection itself stays open so the client can retry with a different operation.
+
+## Subscriptions in a federated subgraph
+
+In a federation v2 subgraph, declare the `Subscription` root type alongside your `Query` and entity types. Tyk wires subscriptions through the same federation auto-detect described in [GraphQL upstream patterns](/api-management/graphql/graphql-upstream-patterns).
+
+```graphql
+extend schema
+  @link(url: "https://specs.apollo.dev/federation/v2.5", import: ["@key"])
+
+type Order @key(fields: "id") {
+  id: ID!
+  status: OrderStatus!
+}
+
+type Query {
+  order(id: ID!): Order
+}
+
+type Subscription {
+  orderStatusChanged(orderId: ID!): Order!
+}
+```
+
+Headers from the federated supergraph request are forwarded on the upstream subscription handshake; consumer-supplied authorization survives the federation hop.
+
+## Apollo Router subscription mode
+
+For self-hosted Apollo Router 2.x in front of a Tyk subgraph that exposes subscriptions, configure the `subscription` block in `router.yaml`:
+
+```yaml
+subscription:
+  enabled: true
+  mode:
+    passthrough:
+      all:
+        path: /graphql
+      subgraphs:
+        orders:
+          path: /
+          # Tyk listen path for the orders subgraph
+          # e.g. http://tyk-gateway:8080/orders-subgraph/
+```
+
+The router opens a long-lived `graphql-transport-ws` connection to the Tyk subgraph for each client subscription it serves.
+
+<Warning>
+**License**: Apollo Router's federated subscriptions through GraphOS managed plans require a commercial Apollo Router subscription license (`APOLLO_KEY` / `APOLLO_GRAPH_REF`). The Tyk side of the WebSocket path does not depend on GraphOS; you can run Apollo Router locally in dev mode for evaluation, but a production GraphOS deployment must be appropriately licensed by Apollo.
+</Warning>
+
+## Client connection example
+
+Open a `graphql-transport-ws` connection to a Tyk subscription endpoint:
+
+```javascript
+import { createClient } from 'graphql-ws';
+
+const client = createClient({
+  url: 'wss://gateway.example.com/orders-subgraph/',
+  connectionParams: {
+    Authorization: 'Bearer <api-key>',
+  },
+});
+
+const dispose = client.subscribe(
+  {
+    query: `subscription { orderStatusChanged(orderId: "42") { id status } }`,
+  },
+  {
+    next: ({ data }) => console.log(data),
+    error: (err) => console.error(err),
+    complete: () => console.log('done'),
+  },
+);
+```
+
+For the raw protocol semantics — `connection_init`, `subscribe`, `next`, `complete`, idle timeouts, and duplicate-ID handling — see the [protocol reference in the GraphQL guide](/api-management/graphql#graphql-websockets).
+
+## Known limitations
+
+- **`callback/1.0` subscription protocol** — not supported. Use `graphql-transport-ws` or `graphql-ws`.
+- **SSE → WebSocket bridging** — SSE upstream subscriptions cannot be re-emitted as WebSocket subscriptions to consumers.
+- **Kafka-source subscriptions exposed via federation** — currently a follow-up. Use the [Tyk Streams](/api-management/event-driven-apis) path for Kafka-driven event APIs.
+
+## Related
+
+- [Apollo Federation v2 subgraph](/api-management/graphql/apollo-federation-v2)
+- [GraphQL upstream patterns](/api-management/graphql/graphql-upstream-patterns)
+- [GraphQL WebSockets protocol reference](/api-management/graphql#graphql-websockets)
+- [Tyk Streams](/api-management/event-driven-apis) — Kafka, SSE, webhook event-driven APIs.

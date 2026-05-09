@@ -1,0 +1,95 @@
+---
+title: "GraphQL Upstream Patterns"
+description: "How Tyk Gateway federates non-federation GraphQL backends — auto-introspection, federation passthrough, and operation overrides."
+keywords: "GraphQL, Federation, UDG, Hasura, PostGraphile, auto-detect, operation override, _entities, Tyk Gateway"
+sidebarTitle: "GraphQL Upstream Patterns"
+---
+
+## Overview
+
+When Tyk Gateway exposes a non-federation GraphQL backend as an [Apollo Federation v2 subgraph](/api-management/graphql/apollo-federation-v2), it picks one of three resolution strategies per entity at API-load time, in declared order. The chosen strategy decides how Tyk turns each `_entities` representation into an upstream call and stitches the result back into the federated response.
+
+The strategy is selected automatically; there are no configuration flags required for the auto-detect path. The only opt-in is the **operation override**, which exists for upstreams whose lookup field doesn't match Tyk's heuristic or that need a hand-written GraphQL operation.
+
+## Strategy: auto-introspection (Hasura, PostGraphile, plain GraphQL)
+
+If the upstream is reachable and exposes a single-argument lookup field whose return type matches the entity, Tyk synthesises the lookup at load time. No additional configuration is needed.
+
+For an entity like:
+
+```graphql
+type User @key(fields: "id") {
+  id: ID!
+  email: String!
+}
+```
+
+Tyk introspects the upstream and looks for a query field shaped like:
+
+```graphql
+type Query {
+  user(id: ID!): User      # picked
+  users(id: ID!): [User!]! # filtered out — list types are not eligible
+}
+```
+
+The first non-list match wins. List-returning candidates are excluded because federation `_entities` lookups must return a single object per representation. If the introspection finds **no** eligible field, API load fails with an error pointing at the missing lookup; if it finds **more than one**, the API also fails to load with an "ambiguous lookup field" error and you need to use the operation override below.
+
+This pattern works out of the box for:
+- **Hasura** — auto-generated `<table>(where: ..., limit: 1)` and `<table>_by_pk(id: ...)` fields. The latter is preferred.
+- **PostGraphile** — auto-generated `<table>ById(id: ...)` accessors.
+- **Hand-rolled GraphQL services** that expose a single-row lookup per type.
+
+## Strategy: federation passthrough
+
+If the upstream advertises `_entities` and `@key` directives — i.e. is itself an Apollo federation subgraph — Tyk forwards your federated request directly. This is the same code path used in [proxy mode](/api-management/graphql/apollo-federation-v2#proxy-mode) but invoked from a UDG data source rather than a top-level proxy API.
+
+Tyk detects this by introspecting the upstream and checking for an `_entities` field plus the federation directive set. No extra configuration is required.
+
+## Strategy: operation override
+
+When neither of the auto-detect strategies fits — for example, the upstream lookup field takes multiple required arguments, or you need to project the entity through a custom transformation — provide a GraphQL operation template explicitly. Tyk substitutes the `@key` value into the template variables and forwards.
+
+```json
+{
+  "kind": "GraphQL",
+  "name": "users-graphql",
+  "internal": false,
+  "config": {
+    "url": "https://users.internal.svc.cluster.local/graphql",
+    "method": "POST",
+    "has_operation": true,
+    "operation": "query LookupUser($userId: ID!) { user(by: { id: $userId }) { id email displayName } }",
+    "variables": "{\"userId\": \"{{.object.id}}\"}"
+  },
+  "root_fields": [
+    {"type": "User", "fields": ["id", "email", "displayName"]}
+  ]
+}
+```
+
+Notes on the override:
+- `has_operation: true` is required to take this path. Without it Tyk falls through to auto-introspection.
+- The `operation` body must be a valid GraphQL query document. A malformed template fails the API load with a parse error.
+- `variables` is a JSON object whose values use the standard UDG templating syntax (`{{.object.<field>}}`, `{{.arguments.<name>}}`, `{{.headers.<name>}}`).
+- Tyk applies the same per-entity partial failure handling to operation-override strategies — a failed upstream call yields a `null` for that representation plus a path-tagged error.
+
+## Strategy precedence
+
+Tyk evaluates the three strategies in this order per data source:
+
+1. **Operation override** — if `has_operation: true` is set, this is the only strategy considered.
+2. **Federation passthrough** — if the upstream is itself a federation subgraph.
+3. **Generated lookup** — auto-introspection, with list-returning fields filtered out.
+
+If all three fail to produce a resolver, API load fails with an explicit error. Probe timeout for the auto-detect strategies is 5 seconds.
+
+## Header forwarding
+
+For all three strategies, Tyk applies the configured [UDG header rules](/api-management/data-graph#header-management) to the upstream call. Per-data-source headers, global UDG headers, and the standard request-context variables are all available — including authorization headers passed through from the consumer's request to the federated supergraph.
+
+## Related
+
+- [Apollo Federation v2 subgraph](/api-management/graphql/apollo-federation-v2) — main feature page.
+- [Universal Data Graph](/api-management/data-graph) — UDG concepts, data sources, field mappings.
+- [GraphQL subscriptions](/api-management/graphql/graphql-subscriptions) — subscription auto-detect for GraphQL upstreams.
