@@ -1,0 +1,185 @@
+---
+title: "Apollo Federation v2 Subgraph"
+description: "Expose REST or GraphQL backends as Apollo Federation v2 subgraphs through Tyk Gateway, including subscriptions and proxy-mode passthrough."
+keywords: "Apollo Federation, Federation v2, Subgraph, GraphQL, Tyk Gateway, UDG, Universal Data Graph, Apollo Router, _entities, _service, @key, @link, partial failure, subscriptions"
+sidebarTitle: "Apollo Federation v2"
+---
+
+## Overview
+
+Tyk Gateway can act as a fully spec-compliant **Apollo Federation v2 subgraph** in any federated supergraph. Existing REST or GraphQL backends are exposed through the [Universal Data Graph (UDG)](/api-management/data-graph) without rewriting the upstream service, and Tyk can also be placed transparently in front of an existing federated subgraph or Apollo Router. Subscriptions over WebSockets, per-entity partial failures, and federation v1 versus v2 detection are all handled automatically from the customer's SDL — there are no new configuration flags to learn.
+
+<Note>
+Apollo Federation v2 subgraph behavior is part of [Tyk Enterprise Edition](https://tyk.io/contact/) and is layered exclusively on the **GraphQL engine V3** code path. Set `graphql.version: "3"` in your API definition to opt in. V2 schemas that declare `@key` will emit a startup warning pointing at this requirement.
+</Note>
+
+## What you get
+
+- **REST → subgraph**: Any REST upstream becomes a federation v2 subgraph by adding a `@key` directive to a UDG schema. Tyk resolves entity references for `_entities` using a URL template such as `https://api.example.com/users/{{.object.id}}`.
+- **GraphQL → subgraph**: A non-federated GraphQL upstream (Hasura, PostGraphile, or any introspectable schema) becomes a subgraph automatically. Tyk picks an entity-resolution strategy at API-load time — see [GraphQL upstream patterns](/api-management/graphql/graphql-upstream-patterns).
+- **Proxy mode**: Place Tyk in front of an existing federated subgraph or even another Apollo Router. Tyk forwards `_entities` and `_service { sdl }` queries unchanged and applies your normal middleware on top.
+- **Subscriptions**: WebSocket subscriptions (`graphql-ws` and `graphql-transport-ws`) work end-to-end through the federation path. See [GraphQL subscriptions](/api-management/graphql/graphql-subscriptions).
+- **Partial failure**: When a subset of entity lookups fails, Tyk returns Apollo-spec compliant per-entity `null` values plus path-tagged errors in the same `_entities` response.
+- **Auto-detection**: Federation v1 versus v2 is inferred from the SDL. An explicit `@link(url: "https://specs.apollo.dev/federation/v2.x", ...)` declares federation v2; otherwise, when `@key` is present without a `@link`, Tyk auto-prepends a federation v2 `@link` directive when emitting `_service { sdl }`.
+
+## Requirements
+
+- **Tyk Enterprise Edition** Gateway (`tyk-gateway-ee` image).
+- **GraphQL engine V3** — set `graphql.version: "3"` in the API definition.
+- **Apollo Router 2.x** or any federation v2-compatible router (Cosmo Router, GraphOS, etc.).
+
+## The simplest path: REST upstream
+
+Expose a REST `/users/:id` endpoint as a federation v2 subgraph:
+
+```json
+{
+  "name": "Users Subgraph",
+  "graphql": {
+    "enabled": true,
+    "version": "3",
+    "execution_mode": "executionEngine",
+    "schema": "type Query { _service: _Service! _entities(representations: [_Any!]!): [_Entity]! } scalar _Any union _Entity = User type _Service { sdl: String! } type User @key(fields: \"id\") { id: ID! name: String! email: String! }",
+    "engine": {
+      "data_sources": [
+        {
+          "kind": "REST",
+          "name": "users",
+          "internal": false,
+          "root_fields": [{"type": "User", "fields": ["id", "name", "email"]}],
+          "config": {
+            "url": "https://api.example.com/users/{{.object.id}}",
+            "method": "GET"
+          }
+        }
+      ]
+    }
+  },
+  "proxy": {
+    "listen_path": "/users-subgraph/",
+    "target_url": "",
+    "strip_listen_path": true
+  }
+}
+```
+
+When Apollo Router introspects this subgraph it issues `query { _service { sdl } }`. Tyk responds with the schema augmented for federation v2:
+
+```graphql
+extend schema
+  @link(url: "https://specs.apollo.dev/federation/v2.5", import: ["@key"])
+
+type User @key(fields: "id") {
+  id: ID!
+  name: String!
+  email: String!
+}
+```
+
+The `@link` line is auto-prepended because the customer SDL had `@key` without an explicit `@link`. If your SDL already includes an explicit `@link(url: "https://specs.apollo.dev/federation/v2.x", ...)`, Tyk preserves it verbatim.
+
+<Tip>
+The entity URL template uses `{{.object.<field>}}` to substitute key fields from each `_entities` representation. For composite-source upstreams use the [REST UDG configuration](/api-management/data-graph#using-external-rest-api-as-a-datasource) reference for the full template syntax.
+</Tip>
+
+## GraphQL upstream auto-detect
+
+When the upstream is itself a GraphQL service, Tyk picks one of three resolution strategies per entity at API-load time. Probes have a 5-second timeout and a failed probe causes API load to fail fast — an unreachable upstream blocks API spec acceptance rather than producing a half-broken subgraph.
+
+| Strategy | When it applies | Behaviour |
+| --- | --- | --- |
+| **Operation override** | The customer sets `has_operation: true` and provides a GraphQL `operation` template. | Tyk substitutes the key argument into the template and forwards. |
+| **Federation passthrough** | The upstream advertises `_entities` / `@key` (i.e. is itself a federation subgraph). | Tyk forwards an `_entities` representation directly. |
+| **Generated lookup** | None of the above; Tyk introspects the upstream and finds a single-arg query field such as `user(id: ID!): User`. | Tyk synthesises the lookup at load time. List-returning candidates (e.g. `users(id: ID!): [User!]!`) are filtered out. |
+
+See the [GraphQL upstream patterns deep dive](/api-management/graphql/graphql-upstream-patterns) for full configuration examples.
+
+## Proxy mode
+
+If you already operate a federated subgraph or an Apollo Router upstream, configure Tyk as a proxy in front of it. Tyk re-augments the SDL with the federation v2 `@link` if the upstream returned a federation v1 SDL, and otherwise forwards `_service { sdl }`, `_entities`, and regular operations transparently. Subscriptions are also passthrough — see [Apollo Router subscription configuration](/api-management/graphql/graphql-subscriptions#apollo-router-subscription-mode) for the upstream router config.
+
+```json
+{
+  "name": "Federated Products Proxy",
+  "graphql": {
+    "enabled": true,
+    "version": "3",
+    "execution_mode": "proxyOnly",
+    "proxy": {
+      "feature": "federation"
+    }
+  },
+  "proxy": {
+    "listen_path": "/products/",
+    "target_url": "https://internal-products-subgraph.svc.cluster.local:4001/",
+    "strip_listen_path": true
+  }
+}
+```
+
+In this mode Tyk applies the rest of your middleware (auth, rate-limits, transforms, observability) without changing the GraphQL contract.
+
+## Per-entity partial failure
+
+When a representation in an `_entities` query fails (REST 500, GraphQL error, JSON `null` body), Tyk does **not** abort the whole batch. Instead it returns a per-entity `null` plus a path-tagged error, matching the Apollo specification for `_entities` resolvers.
+
+Example response when one of three lookups fails:
+
+```json
+{
+  "data": {
+    "_entities": [
+      { "__typename": "User", "id": "1", "name": "Ada" },
+      null,
+      { "__typename": "User", "id": "3", "name": "Grace" }
+    ]
+  },
+  "errors": [
+    {
+      "message": "upstream returned status 500",
+      "path": ["_entities", 1]
+    }
+  ]
+}
+```
+
+The Apollo Router treats each null as a partial failure scoped to the corresponding query path, so other unrelated parts of the supergraph response are unaffected.
+
+## Validated against Apollo Router 2.14.0
+
+The following recordings show Tyk acting as a subgraph (and as a router-fronting proxy) against an unmodified Apollo Router 2.14.0 supergraph.
+
+- [Cast 1 — UDG federation, REST upstream](https://asciinema.org/a/ErQPtBSD2Ws9rH3h)
+- [Cast 2 — UDG federation, GraphQL upstream (Hasura), auto-detect](https://asciinema.org/a/aa8yhHC5Dg7cmmsb)
+- [Cast 3 — Partial failure (per-entity `null` + path-tagged error)](https://asciinema.org/a/gBIfFPxrL0hg0Ek5)
+- [Cast 4 — Proxy-mode passthrough in front of an existing federated subgraph](https://asciinema.org/a/2wxZAdB80xkeGZAk)
+- [Cast 5 — Tyk in both subgraph and router-proxy positions in one supergraph](https://asciinema.org/a/5ByUbRoleRnvFzc1)
+
+## How to test locally with `rover dev`
+
+Apollo Rover's `rover dev` works natively against Tyk:
+
+```bash
+# Install Rover (one-time)
+curl -sSL https://rover.apollo.dev/nix/latest | sh
+
+# With your Tyk Gateway running and the federation API loaded (graphql.version: "3"):
+rover dev --url http://localhost:8080/<your-fed-api-listen-path>/ --name tyk-subgraph
+```
+
+For deterministic CI scenarios, use `rover supergraph compose` with a standalone Apollo Router. The asciinema recordings above use this setup.
+
+## Known limitations
+
+- **Composite `@key`** — Single-field keys only. Composite keys such as `@key(fields: "id sku")` are rejected at API load.
+- **HTTP callback subscription protocol** — `callback/1.0` is intentionally deferred. Use `graphql-transport-ws` over WebSockets.
+- **Mixed-source entities** — A single entity cannot have some fields resolved from REST and others from a GraphQL upstream. Pick one source per entity.
+- **Entity batching** — `_entities` issues one upstream call per representation. Batching is a follow-up optimization.
+- **GraphOS subscription cast** — The Apollo Router subscription path requires a GraphOS commercial license. The Tyk side of the WebSocket path is independently verified by integration tests; a router-fronted subscription cast will follow once that license is available.
+
+## Related
+
+- [Universal Data Graph (UDG)](/api-management/data-graph) — schema-level configuration, header management, field mappings.
+- [GraphQL upstream patterns deep dive](/api-management/graphql/graphql-upstream-patterns) — auto-detect strategies and operation overrides.
+- [GraphQL subscriptions](/api-management/graphql/graphql-subscriptions) — WebSocket protocols, depth limits, Apollo Router wiring.
+- [GraphQL Federation v1](/api-management/graphql#graphql-federation) — legacy federation behavior on engine V2.
