@@ -269,17 +269,14 @@ This allows users to fully control error responses to standardize formats, mask 
 This feature integrates seamlessly with existing analytics, logging, and observability systems; all overridden responses are properly captured in access logs, analytics records, and distributed traces. The system is fully backward compatible with no configuration required; existing error responses remain unchanged unless explicitly overridden.
 </Accordion>
 
-<Accordion title='X-ratelimit Response Header Options'>
-We have added a new Gateway configuration option [rate_limit_response_headers](/tyk-oss-gateway/configuration#rate_limit_response_headers) that allows `X-RateLimit-*` headers to be populated from rate limit data instead of quota data. This addresses industry standard compliance and reduces customer confusion when receiving HTTP 429 responses.
+<Accordion title='X-RateLimit response headers can now reflect rate-limit values'>
+When an API exceeded its rate limit and returned an HTTP 429 status code, the `X-RateLimit-Limit` and `X-RateLimit-Remaining` response headers were populated from quota data (e.g. monthly limits) rather than rate-limit data (e.g. per-minute thresholds). This was inconsistent with the RFC conventions for these headers and a common source of confusion.
+This release adds a new Gateway configuration option [rate_limit_response_headers](/tyk-oss-gateway/configuration#rate_limit_response_headers). When set to "rate_limits", the `X-RateLimit-*` headers are populated from rate-limit data instead of quota data:
+- `X-RateLimit-Limit`: the configured rate limit threshold
+- `X-RateLimit-Remaining`: remaining requests in the current rate limit window
+- `X-RateLimit-Reset`: time until the rate limit window resets
 
-Previously, when APIs exceeded their rate limits and returned HTTP 429 status codes, the `X-RateLimit-Limit` and `X-RateLimit-Remaining` headers incorrectly displayed quota information (e.g., monthly limits) rather than rate limit information (e.g., per-minute limits). This violated RFC standards and confused customers who would see remaining quota capacity while receiving rate limit errors.
-
-When [rate_limit_response_headers](/tyk-oss-gateway/configuration#rate_limit_response_headers) is set to `"rate_limits"`, the headers now correctly show:
-- `X-RateLimit-Limit`: The configured rate limit threshold
-- `X-RateLimit-Remaining`: Remaining requests in the current rate limit window
-- `X-RateLimit-Reset`: Time until the rate limit window resets
-
-This change maintains backward compatibility, with the default behavior unchanged when the configuration option is not specified.
+Backward compatibility is preserved: when the option is unset, the headers continue to reflect quota data as before.
 </Accordion>
 
 <Accordion title='Simplified Management of Session Lifetime'>
@@ -295,17 +292,22 @@ The existing Gateway-wide [global session lifetime](/api-management/access-contr
 The [legacy API level controls](/api-management/access-control/sessions-and-keys/session-lifecycle#legacy-controls) can still be used if both new fields are set to `0` (or unset) so **there is no change in behavior for existing Sessions**.
 </Accordion>
 
-<Accordion title='Add TLS Certificate Rotation Support for External Service Config'>
-We have added support for TLS certificate rotation in External Service configurations without requiring Gateway restarts. This enhancement allows organizations with strict certificate rotation policies to update certificates seamlessly during runtime.
+<Accordion title='OAuth mTLS certificates can now be rotated without a Gateway restart using KV store references'>
+Rotating the mTLS certificates used by the Gateway to authenticate with external Identity Providers — for the OAuth external service integration, covering both client and upstream authentication — previously required a Gateway restart. For organizations using short-lived certificates (e.g. 90-day rotation cycles), this added operational overhead, forced infrastructure changes, and in some cases required custom image rebuilds during routine rotation.
+This release extends KV store reference support to the following Gateway configuration fields:
+- `external_services.oauth.mtls.cert_file`
+- `external_services.oauth.mtls.key_file`
+- `external_services.oauth.mtls.ca_file`
 
-Key improvements include:
+These fields now accept KV store references such as vault:// and consul://, in line with how other sensitive Gateway configuration fields already do. After updating the referenced certificate in the KV store, triggering a Gateway hot reload causes the new value to be picked up — no process restart required.
+Backward compatibility is preserved: existing OAuth external service configurations using absolute file paths or certificate IDs from the Tyk Certificate Store continue to work without modification.
+</Accordion>
 
-- Hot-reload capability for TLS certificates in External Service configurations, eliminating the need for Gateway pod restarts during certificate rotation
-- New optional configuration toggle allowing the Gateway to intelligently reuse mTLS certificates already configured for upstream connections when making OAuth external service calls
-- Reduced operational overhead by removing the requirement for infrastructure changes and custom image rebuilds during routine certificate rotation
-- Enhanced certificate management flexibility, supporting scenarios where multiple certificates may be configured for different external service endpoints
-
-This feature is particularly valuable for environments with short certificate validity periods (e.g., 90-day rotation cycles) and maintains full backward compatibility with existing External Service configurations.
+<Accordion title='Optional toggle to reuse upstream mTLS certificates for OAuth external service calls'>
+When configuring mTLS for both upstream authentication and the OAuth external service integration, the same certificate often had to be configured in two places — once for upstream auth, and again in the External Services OAuth configuration. For deployments using the same certificate for both, this created a redundant configuration that needed to be kept in sync.
+This release adds an optional configuration toggle that allows the Gateway to reuse the mTLS certificate configured for upstream connections when making OAuth calls to the external Identity Provider. When the toggle is enabled, the upstream certificate is used for both purposes, removing the need to maintain duplicate configurations.
+The toggle is intentionally optional: deployments may legitimately use different certificates for the two endpoints.
+When the toggle is unset, the OAuth external service continues to use its own dedicated certificate configuration.
 </Accordion>
 
 <Accordion title='Allow Underscores in Vault and Consul Secret Reference Paths'>
