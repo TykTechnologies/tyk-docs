@@ -22,34 +22,54 @@ Health checks verify the status of Tyk components (Gateway, Dashboard, Pump) and
 
 Tyk provides two distinct HTTP endpoints for health checks:
 
-- **Liveness Probe (`/hello` or `/health`)**: Indicates if the Tyk process is running and its web server is responsive. It returns HTTP 200 OK as long as the process is alive, regardless of dependency status like Redis.
-- **Readiness Probe (`/ready`)**: <Badge color="orange">Gateway Only</Badge> Indicates if the Gateway is fully initialized and ready to process traffic. It returns a non-200 status code (e.g., 503 Service Unavailable) if critical dependencies are not available. The Gateway is considered "ready" only when its dependencies are healthy and the API definitions are loaded.
+- **Liveness Probe (`/hello` or `/health`)**: Indicates if the Tyk process is running and its web server is responsive. It returns `200 OK` if the process is alive, regardless of the status of any dependency such as a Redis datastore.
+- **Readiness Probe (`/ready`)**: <Badge color="orange">Gateway Only</Badge> Indicates whether the Gateway is fully initialized and ready to process traffic. It returns a non-200 status code (e.g., `503 Service Unavailable`) if critical dependencies are not available. The Gateway is considered "ready" only when its dependencies are healthy and the API definitions are loaded.
+
+
 
 <Note>
-Health check is implemented as per the [Health Check Response Format for HTTP APIs](https://inadarei.github.io/rfc-healthcheck/) RFC.
+Health check is implemented in accordance with the [Health Check Response Format for HTTP APIs](https://inadarei.github.io/rfc-healthcheck/) RFC.
 </Note>
 
-### Available Endpoints
+### Data accuracy
+
+The Gateway's health is sampled and cached every 10 seconds for both liveness and readiness endpoints.
+
+The Dashboard and Pump liveness endpoints return the live status of the component. 
+
+### Probe Endpoints
+
+The Liveness and Readiness endpoints for each component are summarised here. Tyk provides the option to [customise](#customising-the-endpoint-path) the endpoint paths if required for your integration.
+
 
 | Component | Liveness Endpoint | Readiness Endpoint | Configuration Key | Introduced In |
 |-----------|-------------------|--------------------|-------------------|---------------|
-| **Gateway** | `/hello` | `/ready` | [health_check_endpoint_name](/tyk-oss-gateway/configuration#health_check_endpoint_name) / [readiness_check_endpoint_name](/tyk-oss-gateway/configuration#readiness_check_endpoint_name) | Liveness: v2.7.5<br/>Readiness: v5.8.3+ |
+| **Gateway** | `/hello` | `/ready` | [health_check_endpoint_name](/tyk-oss-gateway/configuration#health_check_endpoint_name) / [readiness_check_endpoint_name](/tyk-oss-gateway/configuration#readiness_check_endpoint_name) | Liveness: v2.7.5<br/>Readiness: v5.8.3 |
 | **Dashboard** | `/health` | N/A | [`health_check_endpoint_name`](/tyk-dashboard/configuration#health_check_endpoint_name) | v3.0.0 |
 | **Pump** | `/health` | N/A | [`health_check_endpoint_name`](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables#health_check_endpoint_name) | Liveness: v2.9.4 |
 
-The default endpoint paths can be changed via the `health_check_endpoint_name` config key (all components) and `readiness_check_endpoint_name` (Gateway only). For example:
+#### Customising the endpoint path
+
+For some integrations, the default endpoint paths are not suitable, so Tyk provides a simple method to customise them as required.
+
+Simply set the required endpoint name using the configuration key for the appropriate probe endpoint:
+
+- **Liveness probe**: `health_check_endpoint_name` (all components)
+- **Readiness probe**:`readiness_check_endpoint_name` (Gateway only)
+
+The equivalent environment variables can be used in place of the config files, for example the Gateway configs are:
+
 
 ```yaml
 health_check_endpoint_name: "status"
 ```
 
-This changes the liveness endpoint to `/status`. For full details, refer to the [Gateway](/tyk-oss-gateway/configuration), [Dashboard](/tyk-dashboard/configuration), and [Pump](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables) configuration references.
 
 ### Response Format
 
-#### Gateway
+#### Tyk Gateway
 
-The Gateway's `/hello` and `/ready` endpoints return a structured JSON response. Health status is cached and refreshed every 10 seconds. Both endpoints reflect the most recent snapshot:
+The Gateway's `/hello` and `/ready` endpoints return a structured JSON response. Both endpoints reflect the [most recently cached](#data-accuracy) status:
 
 ```json
 {
@@ -70,9 +90,9 @@ The `status` field can have the following values:
 | **warn** | 200 | One dependency is down but Gateway continues processing. Medium impact (no quotas, no analytics, no RPC connection to [MDCB](/api-management/mdcb)). |
 | **fail** | 200 (`/hello`) / 503 (`/ready`) | Critical dependencies (Redis and/or the Tyk Dashboard) unavailable. High impact (no configuration changes, no quotas, no analytics). |
 
-#### Dashboard, Pump
+#### Tyk Dashboard and Tyk Pump
 
-Both return a simple live response with no caching:
+Both return the [live status](#data-accuracy) of the component, with no caching:
 
 ```json
 {"status": "ok"}
@@ -84,12 +104,8 @@ HTTP 200 is returned when the service is running.
 
 ### Non-Kubernetes
 
-Point your load balancer or external monitoring system at `/hello` to check Gateway health. The endpoint names can also be set via environment variables instead of the config file:
+Point your load balancer or external monitoring system at the Gateway's liveness endpoint (default: `/hello`) to check that the Gateway is up. You can use the readiness endpoint (default: `/ready`) to check that it is ready to handle API client requests.
 
-```bash
-TYK_GW_HEALTHCHECKENDPOINTNAME=status
-TYK_GW_READINESSCHECKENDPOINTNAME=is-ready
-```
 
 ### Kubernetes (Helm)
 
@@ -116,7 +132,7 @@ gateway:
 ```
 
 <Note>
-Adjust `initialDelaySeconds` based on the number of APIs your Gateway loads and available pod resources. If using the Tyk Operator, probe configuration is still done at the Helm level; the Operator manages API definitions and policies, not the Gateway deployment itself.
+Adjust `initialDelaySeconds` based on the number of APIs your Gateway loads and available pod resources to allow time for it to be ready to serve requests. Note that if you are using the Tyk Operator, probe configuration is still done at the Helm level: the Operator manages API definitions and policies, not the Gateway deployment itself.
 </Note>
 
 ## Health check examples
