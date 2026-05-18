@@ -56,57 +56,116 @@ This will reveal instructions that you can use to connect your hybrid data plane
 
 ## Deploy with Docker
 
-**1. In your terminal, clone the demo application [Tyk Install](https://github.com/TykTechnologies/tyk-install) repository**
+### Step 1: Clone and configure
+
+1. Clone the [tyk-install](https://github.com/TykTechnologies/tyk-install) repository and navigate to the hybrid directory:
+
+    ```bash
+    git clone https://github.com/TykTechnologies/tyk-install.git
+    cd tyk-install/docker/hybrid
+    ```
+
+2. Copy the example environment file:
+
+    ```bash
+    cp .env.example .env
+    ```
+
+### Step 2: Configure the Gateway connection to the control plane
+
+Edit `confs/tyk.env` and set your MDCB credentials:
 
 ```bash
-git clone https://github.com/TykTechnologies/tyk-install.git
-cd tyk-install/docker/hybrid
+TYK_GW_SLAVEOPTIONS_CONNECTIONSTRING=your-mdcb.cloud-ara.tyk.io:443
+TYK_GW_SLAVEOPTIONS_RPCKEY=your-org-id
+TYK_GW_SLAVEOPTIONS_APIKEY=your-dashboard-api-key
+TYK_GW_SLAVEOPTIONS_GROUPID=your-group-id
 ```
 
+| Variable | Description |
+| -------- | ----------- |
+| `TYK_GW_SLAVEOPTIONS_CONNECTIONSTRING` | MDCB endpoint from the control plane |
+| `TYK_GW_SLAVEOPTIONS_RPCKEY` | Organization ID |
+| `TYK_GW_SLAVEOPTIONS_APIKEY` | Dashboard User API Key |
+| `TYK_GW_SLAVEOPTIONS_GROUPID` | Data plane cluster identifier (used when running multiple data planes) |
 
-**2. Configure Tyk Gateway and its connection to Tyk Cloud**
+To enable API sharding (optional), add to `confs/tyk.env`:
 
-You need to modify the following values in `confs/tyk.env` configuration file:
-
-* `TYK_GW_SLAVEOPTIONS_RPCKEY` - Organization ID
-* `TYK_GW_SLAVEOPTIONS_APIKEY` - Tyk Dashboard API Access Credentials of the user created earlier
-* `TYK_GW_SLAVEOPTIONS_CONNECTIONSTRING`: MDCB connection string
-* `TYK_GW_SLAVEOPTIONS_GROUPID`*(optional)* - if you have multiple data planes (e.g. in different regions), specify the data plane group (string) to which the gateway you are deploying belongs. The data planes in the same group share one Redis.
-
-* *(optional)* you can enable sharding to selectively load APIs to specific gateways, using the following:
-
-```env
+```bash
 TYK_GW_DBAPPCONFOPTIONS_NODEISSEGMENTED=true
 TYK_GW_DBAPPCONFOPTIONS_TAGS=qa,uat
 ```
 
-**3. Configure the connection to Redis**
+### Step 3: Configure the Pump connection to the control plane
 
-This example comes with a Redis instance pre-configured and deployed with Docker compose. If you want to use another Redis instance, make sure to update the Redis connection details in `confs/tyk.env`.
+Edit `confs/pump.env` with the same MDCB credentials:
 
-**4. Run docker compose**
+```bash
+TYK_PMP_PUMPS_HYBRID_META_CONNECTIONSTRING=your-mdcb.cloud-ara.tyk.io:443
+TYK_PMP_PUMPS_HYBRID_META_RPCKEY=your-org-id
+TYK_PMP_PUMPS_HYBRID_META_APIKEY=your-dashboard-api-key
+TYK_PMP_PUMPS_HYBRID_META_GROUPID=your-group-id
+```
 
-Run the following:
+### Step 4: Start services
 
 ```bash
 docker compose up -d
 ```
-Call the /hello endpoint using curl from your terminal (or any other HTTP client):
+
+Wait for all health checks to pass (~30 seconds), then verify the containers are running:
 
 ```bash
-curl http://localhost:8080/hello -i
-````
-
-Expected result:
-
-```http
-HTTP/1.1 200 OK
-Content-Type: application/json
-Date: Fri, 17 Mar 2023 12:41:11 GMT
-Content-Length: 59
-
-{"status":"pass","version":"4.3.3","description":"Tyk GW"}
+docker compose ps
 ```
+
+Expected containers:
+
+| Container | Port | Status |
+| --------- | ---- | ------ |
+| `tyk-gateway` | 8080 | Running |
+| `tyk-pump` | N/A | Running |
+| `tyk-redis` | 6379 | Running |
+
+### Step 5: Verify the connection
+
+```bash
+curl http://localhost:8080/hello
+```
+
+Expected response:
+
+```json
+{"status":"pass","version":"5.x.x","description":"Tyk GW"}
+```
+
+Then verify in your control plane:
+
+- **Tyk Cloud**: Navigate to **Deployments** > your Control Plane. Your hybrid data plane should appear under **Hybrid data planes**.
+- **Self-Managed**: Navigate to **System Management** > **Gateway Nodes** in your Tyk Dashboard.
+
+<AccordionGroup>
+  <Accordion title="Gateway not connecting to MDCB">
+    Check the gateway logs for connection errors:
+
+    ```bash
+    docker compose logs tyk-gateway
+    ```
+
+    Common causes:
+    - Incorrect MDCB connection string, Organization ID, or API key
+    - Outbound network/firewall blocking the connection to the MDCB endpoint
+  </Accordion>
+  <Accordion title="APIs not loading (404 responses)">
+    1. Verify the API is published in the control plane Dashboard.
+    2. If using Group IDs, ensure the API is assigned to this data plane's group.
+    3. Check the gateway logs for sync errors:
+
+    ```bash
+    docker compose logs tyk-gateway
+    ```
+  </Accordion>
+</AccordionGroup>
 
 ## Deploy in Kubernetes with Helm Chart
 
