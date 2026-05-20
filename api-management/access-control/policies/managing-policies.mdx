@@ -1,0 +1,105 @@
+---
+title: "Managing Policies"
+description: "Learn how to create, apply, update, and delete Tyk Policies."
+keywords: "Policies, Manage Policies, Create Policy, Apply Policy, Delete Policy"
+sidebarTitle: "Managing Policies"
+canonical: "https://tyk.io/docs/api-management/access-control/policies/managing-policies"
+---
+
+## Introduction
+
+Once you understand how Policies work and how they are dynamically applied to Sessions, the next step is learning how to manage their lifecycle. This page covers how to create, apply, update, and delete Policies across the Tyk ecosystem.
+
+## Creating Policies
+
+You can create Policies using several different methods depending on your workflow:
+
+- **Dashboard UI:** You can create Policies interactively via the Tyk Dashboard by navigating to **System Management > Policies** and clicking **Add Policy**.
+- **Dashboard API:** You can create a Policy by sending a request to the [`POST /api/portal/policies/`](https://tyk.io/docs/api-reference/policies/create-policy-definition) endpoint with the Policy object as the payload.
+- **Developer Portal:** If you are using the Tyk Developer Portal, you use [API Products](/portal/api-products) to configure access to APIs and [API Plans](/portal/api-plans) to set rate and quota limits. These map onto [partitioned policies](/api-management/access-control/policies/applying-policies#partitioned-policies) within the Dashboard that are then linked to the Session created when access credentials are issued to a [Developer App](/portal/developer-app).
+- **Gateway API (Open Source):** If you are using Tyk Open Source, you can create policies by sending a request to the Gateway's [`POST /tyk/policies/`](https://tyk.io/docs/api-reference/policies/create-a-policy) endpoint, or by adding the Policy to the [Policies file](/api-management/access-control/policies/managing-policies#configuring-tyk-open-source-to-use-file-based-policies).
+
+### Configuring Tyk Open Source to use file-based Policies
+
+When using Tyk Open Source Gateway, you can load Policies via the `POST /tyk/policies/` endpoint, or you can store Policies in a file that Gateway will then load.
+
+For the Gateway to expect file-based Policies you will need to add the `policies` section to your configuration file as follows:
+
+```json
+"policies": {
+  "policy_source": "file",
+  "policy_record_name": "./policies/policies.json"
+},
+```
+
+The `policies.json` file should contain a single JSON object that contains a set of policy objects. The key for each object will be used as the Policy ID.
+
+For example:
+
+```json expandable
+{
+  "default": {
+      "rate": 1000,
+      "per": 1,
+      "quota_max": 100,
+      "quota_renewal_rate": 60,
+      "access_rights": {
+        "41433797848f41a558c1573d3e55a410": {
+          "api_name": "My API",
+          "api_id": "41433797848f41a558c1573d3e55a410",
+          "versions": [
+            "Default"
+          ]
+        }
+      },
+      "org_id": "54de205930c55e15bd000001",
+      "hmac_enabled": false
+  }
+}
+```
+
+In this example we have only defined a single policy called `default`.
+
+## Associating Policies with Client Requests
+
+As explained in detail [here](/api-management/access-control/policies/applying-policies) Policies can be associated with client requests by:
+
+- registering the [Policy ID](/api-management/access-control/policies/applying-policies#policy-ids) with the client Session
+- or, for APIs secured using JWT Authentication, with [**scope-to-policy mapping**](/api-management/authentication/jwt-authorization#identifying-the-tyk-policies-to-be-applied) that will be presented in the JWT's claims.
+- or, for APIs secured using Tyk's OAuth 2.0 Authentication method, with the [client app](/api-management/authentication/oauth-2#manage-client-access-policies)
+
+## Updating Policies
+
+Updating a Policy is straightforward and follows the same methods as creation:
+
+- **Dashboard UI:** Navigate to **System Management > Policies**, select the Policy, and modify its settings.
+- **Dashboard API:** Send a request to `PUT /api/portal/policies/{policy_id}` with the updated Policy object as the payload.
+- **Gateway API (Open Source):** Send a request to `PUT /tyk/policies/{policy_id}` or manually edit the policy file on disk.
+- **Developer Portal:** When you make changes to your API Products and Plans, Tyk will automatically make any necessary adjustments to the underlying Policies.
+
+### How Updates Propagate to Gateways
+
+Because Policies are applied dynamically during a request, any updates you make to a Policy are immediately reflected across all existing Sessions linked to it. You do not need to update the individual Sessions.
+
+However, the mechanism Tyk uses to synchronize the updated Policy to the Gateways depends on your deployment:
+
+- **Single Data Plane:** When you update a Policy, the Dashboard publishes a notification to your Redis cluster. The Gateways instantly receive this notification and perform a "hot reload", pulling the updated Policies directly from the Dashboard's internal API.
+- **Multiple Data Planes:** In distributed deployments, the Data Plane Gateways poll the Control Plane via MDCB. When a Policy is updated, the Control Plane publishes a notification. MDCB receives this and flags a reload. The Data Plane Gateways, which continuously poll MDCB, detect the reload flag, pull the updated Policies from MDCB via RPC, load them into memory, and save a backup to the Data Plane Redis.
+- **Open Source:** If you update a Policy via the Gateway API or by editing files on disk, the Gateway **does not** automatically reload. You must explicitly call the Gateway's `/tyk/reload/` endpoint to force it to read the updated Policies into memory.
+
+## Deleting Policies
+
+You can delete a Policy via the Dashboard UI, the Dashboard API, or the Gateway API (for OSS users).
+
+When you delete a Policy, Tyk removes it from the database (or disk) and notifies all connected Gateways to clear it from their memory. However, **Tyk does not automatically clean up existing Sessions** that have the deleted Policy linked to them. The deleted Policy's ID remains orphaned in their `apply_policies` array.
+
+### Implications of Deletion
+
+The Gateway handles these orphaned Policy IDs dynamically during request processing:
+
+- **Single Policy:** If the deleted Policy was the only Policy linked to a Session, the Gateway will reject all requests for that Session and logs a `key has no valid policies to be applied` error.
+- **Multiple Policies:** If the Session has multiple Policies linked, the Gateway simply ignores the missing Policy (logging a `policy not found` warning) and continues to apply the remaining valid Policies. As long as the remaining Policies grant valid access rights, the request is allowed.
+- **All Policies Missing:** If a Session has multiple Policies and all of them have been deleted, the Gateway rejects the request.
+
+Before deleting a Policy, we strongly recommend identifying and migrating any active Sessions that rely exclusively on it to prevent unintended access disruptions.
+```

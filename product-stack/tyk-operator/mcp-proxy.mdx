@@ -1,0 +1,218 @@
+---
+title: "Manage MCP Servers with Tyk Operator"
+description: "Use the TykMcpProxyDefinition CRD in Tyk Operator v1.4.0 to proxy, secure, and apply rate limits to Model Context Protocol (MCP) servers in Kubernetes using a GitOps workflow."
+keywords: "MCP, Model Context Protocol, Tyk Operator, Kubernetes, API Management, Security Policy"
+sidebarTitle: "MCP Proxy"
+canonical: "https://tyk.io/docs/product-stack/tyk-operator/mcp-proxy"
+---
+
+## Overview
+
+From Tyk Operator v1.4.0, you can manage [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers declaratively using the `TykMcpProxyDefinition` custom resource. The Operator reconciles the resource into a Tyk-managed MCP proxy, so the same GitOps workflow you use for `ApiDefinition` and `TykOasApiDefinition` resources also applies to MCP servers.
+
+A `TykMcpProxyDefinition` points at a `ConfigMap` that holds the MCP OAS document. The Operator reads the document from the ConfigMap and synchronizes it to Tyk. Access to tools, resources, prompts, and the underlying JSON-RPC methods is controlled through the existing `SecurityPolicy` resource, extended with MCP-specific fields.
+
+## Prerequisites
+
+- Tyk Operator v1.4.0 or later installed in the cluster.
+- A Tyk Gateway / Dashboard with MCP proxy support enabled.
+- A `ConfigMap` containing the MCP OAS document under a known key (for example `mcp.json`).
+
+## Custom Resource Reference
+
+**Kind:** `TykMcpProxyDefinition`
+
+**Group / Version:** `tyk.tyk.io/v1alpha1`
+
+**Scope:** Namespaced
+
+**Short name:** `tykmcp` (usable as `kubectl get tykmcp`)
+
+### Spec
+
+| Field | Type | Description |
+| :---- | :--- | :---------- |
+| `contextRef` | object (optional) | Reference (`name`, `namespace`) to an [OperatorContext](/api-management/automations/operator#multi-tenancy-in-tyk) used when reconciling this resource. Use this for multi-tenant setups. |
+| `tykMCP.configmapRef.name` | string | Name of the `ConfigMap` that holds the MCP OAS document. |
+| `tykMCP.configmapRef.namespace` | string (optional) | Namespace of the ConfigMap. Defaults to the resource's namespace. |
+| `tykMCP.configmapRef.keyName` | string | Key inside the ConfigMap's `data` map that contains the OAS document. |
+
+### Status
+
+| Field | Description |
+| :---- | :---------- |
+| `id` | Tyk-side API identifier. |
+| `name` | API name as registered in Tyk. |
+| `listenPath` | Base path on Tyk where the MCP proxy is served. |
+| `domain` | Custom domain, if configured in the OAS document. |
+| `enabled` | Whether the API is active. |
+| `latestTransaction.status` | Result of the last reconciliation. |
+| `linkedByPolicies` | Security policies that reference this MCP proxy. |
+
+`kubectl get tykmcp -o wide` surfaces `Domain`, `ListenPath`, `Enabled`, and `SyncStatus` as printed columns.
+
+## Quick Start
+
+The example below proxies a mock MCP server reachable at `http://mock-mcp-server.default.svc.cluster.local:7878`.
+
+### 1. Store the MCP OAS document in a `ConfigMap`
+
+```yaml expandable
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mock-mcp-config
+  namespace: default
+data:
+  mcp.json: |
+    {
+      "info": {
+        "title": "Mock MCP Proxy",
+        "version": "1.0.0"
+      },
+      "openapi": "3.0.3",
+      "components": {},
+      "paths": {},
+      "x-tyk-api-gateway": {
+        "info": {
+          "id": "mock-mcp-api-id-001",
+          "name": "Mock MCP Proxy",
+          "state": {
+            "active": true
+          }
+        },
+        "upstream": {
+          "url": "http://mock-mcp-server.default.svc.cluster.local:7878"
+        },
+        "server": {
+          "listenPath": {
+            "value": "/mock-mcp/",
+            "strip": true
+          }
+        }
+      }
+    }
+```
+
+### 2. Create the `TykMcpProxyDefinition`
+
+```yaml
+apiVersion: tyk.tyk.io/v1alpha1
+kind: TykMcpProxyDefinition
+metadata:
+  name: mock-mcp
+  namespace: default
+spec:
+  tykMCP:
+    configmapRef:
+      name: mock-mcp-config
+      namespace: default
+      keyName: mcp.json
+```
+
+Apply both manifests and verify with:
+
+```bash
+kubectl apply -f mock-mcp-config.yaml -f mock-mcp.yaml
+kubectl get tykmcp -o wide
+```
+
+If you update the `ConfigMap`, the Operator detects the change (via `latestConfigMapHash`) and pushes the new OAS document to Tyk on the next reconciliation.
+
+## Securing an MCP Proxy with a `SecurityPolicy`
+
+The `SecurityPolicy` resource is extended with two MCP-aware blocks inside each entry of `access_rights_array`:
+
+- `mcp_access_rights` — allow/block lists for MCP tools, resources, and prompts.
+- `json_rpc_methods_access_rights` — allow/deny lists keyed by JSON-RPC method.
+- `mcp_primitives` — per-primitive rate limits.
+- `json_rpc_methods` — rate limits keyed by JSON-RPC method (`tools/call`, `tools/list`, `resources/read`, `prompts/get`, ...).
+
+For background on the underlying gateway feature, see the [MCP proxy policies documentation](/ai-management/mcp-gateway/policies).
+
+Reference an MCP proxy by setting `kind: TykMcpProxyDefinition` on the access entry.
+
+### Allow / block lists
+
+```yaml expandable
+apiVersion: tyk.tyk.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: mcp-acl-policy
+  namespace: default
+spec:
+  name: MCP ACL Policy
+  state: active
+  active: true
+  access_rights_array:
+    - name: mock-mcp
+      namespace: default
+      kind: TykMcpProxyDefinition
+      mcp_access_rights:
+        tools:
+          allowed: ["get_users", "get_products", "generate_uuid"]
+          blocked: ["delete_user", "slow_response"]
+        resources:
+          allowed: ["users://list", "products://catalog"]
+        prompts:
+          allowed: ["user_management", "ecommerce_assistant"]
+```
+
+### Per-primitive and JSON-RPC rate limits
+
+```yaml expandable
+apiVersion: tyk.tyk.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: mcp-ratelimit-policy
+  namespace: default
+spec:
+  name: MCP Rate Limit Policy
+  state: active
+  active: true
+  access_rights_array:
+    - name: mock-mcp
+      namespace: default
+      kind: TykMcpProxyDefinition
+      mcp_primitives:
+        - type: tool
+          name: get_users
+          limit:
+            rate: "10"
+            per: "60"
+        - type: resource
+          name: "users://list"
+          limit:
+            rate: "20"
+            per: "60"
+        - type: prompt
+          name: "user_management"
+          limit:
+            rate: "3"
+            per: "60"
+      json_rpc_methods:
+        - name: tools/call
+          limit:
+            rate: "100"
+            per: "60"
+        - name: resources/read
+          limit:
+            rate: "200"
+            per: "60"
+```
+
+<Note>
+`rate` and `per` are declared as `Float64` strings in the CRD schema — quote the values in YAML or `kubectl apply` will reject the manifest.
+</Note>
+
+`type` in `mcp_primitives` accepts `tool`, `resource`, or `prompt`.
+
+## Verifying
+
+```bash
+kubectl get tykmcp -o wide
+kubectl describe tykmcp mock-mcp
+```
+
+The `Status` block reports the reconciled `listenPath`, `domain`, `enabled` flag, and `latestTransaction.status`. Failed reconciliations also surface as Kubernetes events on the resource.
+
