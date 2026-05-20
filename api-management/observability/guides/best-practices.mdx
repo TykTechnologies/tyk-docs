@@ -1,0 +1,182 @@
+---
+title: "Tyk Gateway Observability Best Practices"
+description: "Production-ready guidance for configuring Tyk Gateway observability: OTLP export topology, metrics cardinality control, trace sampling strategy, and log collection."
+keywords: "OpenTelemetry, OTel, Observability, Best Practices, Cardinality, Sampling, Metrics, Traces, Logs, OTLP, Prometheus, Grafana, Jaeger, Performance"
+sidebarTitle: "Observability Best Practices"
+---
+
+Tyk Gateway exports **metrics and traces** via the OpenTelemetry Protocol (OTLP) and writes **logs** to stderr for external collection.
+
+This page covers production-ready configuration for each signal: which export topology to use, how to control metrics cardinality, how to tune trace sampling, and how to correlate logs with traces.
+
+## Exporting Data via OTLP
+
+Use OTLP as the export protocol. It is vendor-neutral and supported by every modern observability backend. The Gateway supports both gRPC (default, more efficient for high throughput) and HTTP transports. Choose gRPC unless your network or backend requires HTTP.
+
+### Export Topology
+
+**Direct to backend**: simpler setup, works well for managed cloud backends (Datadog, Dynatrace, New Relic, Elastic Cloud). Suitable for lower traffic volumes where buffering and retry are handled by the backend.
+
+**Via OTel Collector**: recommended for production. Decouples Tyk from the backend, adds buffering and retry, enables tail-based sampling (see [Trace Sampling](#traces-sampling-strategy)), and fans out to multiple backends simultaneously.
+
+### Open Source Backends
+
+| Backend | Best for | Notes |
+|---------|----------|-------|
+| **Grafana LGTM** (Loki, Grafana, Tempo, Mimir) | All signals | Tempo for traces, Mimir/Prometheus for metrics, Loki for logs |
+| **Jaeger** | Tracing only | Accepts OTLP natively since v1.35; simple to self-host |
+| **Prometheus + Grafana** | Metrics only | Pull model; use OTel Collector's Prometheus exporter or `remote_write` |
+| **ELK / OpenSearch** | Logs + APM | Elastic APM accepts OTLP; Logstash can ingest OTel Collector output |
+
+For vendor-specific configuration (Datadog, Dynatrace, New Relic, Elastic, Jaeger), see the [Traces](/api-management/traces) configuration guide.
+
+## Metrics: Cardinality and Performance
+
+### What Is the Cardinality Problem?
+
+Each unique combination of dimension values for a metric creates a separate time series. Unbounded dimensions, such as one label per user, per IP address, or per request ID, cause exponential growth in series count. This consumes memory in Tyk Gateway, increases storage costs in your backend, and slows query performance.
+
+### Tyk's Built-In Cardinality Limit
+
+Tyk ordinarily caps each metric instrument at **2,000 unique label-value combinations**. A different limit can be set using the [cardinality control](/api-management/logs-metrics#cardinality-control).
+
+If the configured limit is exceeded, the additional combinations are aggregated into an overflow bucket marked with the attribute `otel.metric.overflow=true`. Aggregate counts are preserved in the overflow bucket, but you lose the ability to break down data by the overflowing dimension combination.
+
+Alert on overflow to catch cardinality issues early. The following example uses PromQL:
+
+```promql
+increase(<your_metric_name>{otel_metric_overflow="true"}[5m]) > 0
+```
+
+If you are hitting the cardinality cap then the limit can be raised, but the recommended action is to reduce cardinality in your [custom metrics configuration](/api-management/metrics/custom-metrics).
+
+### Custom Metrics: Stay at 10 Dimensions or Fewer
+
+The OTel SDK processes metrics on a fast path when an instrument has 10 or fewer dimensions. Exceeding this threshold increases memory allocations and slows metric recording. Keep each custom metric instrument to **10 or fewer dimensions**.
+
+### Dimension Safety Guide
+
+When defining [custom metrics](/api-management/metrics/custom-metrics), choose dimension sources based on their cardinality characteristics:
+
+| Cardinality | Sources | Examples |
+|-------------|---------|---------|
+| **Safe** | `metadata`, `config_data` bounded fields | `listen_path`, `endpoint`, `method`, `http.response.status_code` |
+| **Caution** | `session` fields, bounded JWT claims | `api_key`, `oauth_id`, `alias` (bounded per tenant but can be large) |
+| **Avoid** | `header` / `context` with unbounded values | `ip_address`, `user_id` JWT claim, `request_id`, raw `path` |
+| **Never** | Token or bearer values | Unique per request; exhausts the cardinality limit immediately |
+
+## Traces: Sampling Strategy
+
+Trace data is the most expensive observability signal to collect, store, and query. Sampling controls what fraction of traces you keep.
+
+### Head-Based Sampling
+
+With *head-based* sampling, the decision whether to create a trace for a request is made before any span data exists. In other words, the sampling logic is applied in the Gateway. This is controlled using the `TraceIDRatioBased` approach as described in the [trace sampling](/api-management/traces#sampling) section.
+
+```json
+{
+  "opentelemetry": {
+    "traces": {
+      "sampling": {
+        "type": "TraceIDRatioBased",
+        "rate": 0.1
+      }
+    }
+  }
+}
+```
+
+**Characteristics:**
+- Fast: no buffering required, predictable overhead
+- Limitation: cannot guarantee capture of all errors or slow outliers at low sample rates
+- **Recommended default: 10% (`rate: 0.1`)** for most production deployments
+
+### Tail-Based Sampling
+
+With *tail-based* sampling, the sampling decision is made in the OTel Collector after the full trace has been collected. The OTel Collector buffers spans in memory, then applies policies to decide what to keep. This allows you to guarantee 100% retention of error traces and slow requests regardless of the overall sample rate.
+
+To use tail-based sampling, send all traces from Tyk to the Collector using the `AlwaysOn` approach as described in the [trace sampling](/api-management/traces#sampling) section, then apply policies in the Collector. This is the default setting.
+
+```yaml
+# OTel Collector processors section
+processors:
+  tail_sampling:
+    decision_wait: 10s
+    policies:
+      - name: keep-errors
+        type: status_code
+        status_code: {status_codes: [ERROR]}
+      - name: keep-slow
+        type: latency
+        latency: {threshold_ms: 1000}
+      - name: sample-rest
+        type: probabilistic
+        probabilistic: {sampling_percentage: 5}
+```
+
+### Sampling Trade-Offs
+
+| Strategy | Cost | Accuracy | Best for |
+|----------|------|----------|---------|
+| `AlwaysOn` (100%) | High | Perfect | Dev/staging, low-traffic APIs |
+| `TraceIDRatioBased`, `rate: 0.1` (10%) | Low | Good average | Most production deployments |
+| `TraceIDRatioBased`, `rate: 0.01` (1%) | Very low | Poor for rare events | Very high traffic, budget-constrained |
+| Tail-based via OTel Collector | Medium (Collector infra) | Best | When you need all errors and outliers |
+
+## Logs: Collection and Correlation
+
+Tyk Gateway writes logs to stderr, not via OTLP. They must be collected by an external agent.
+
+### Enable Access Logs
+
+Access logs record one line per request: HTTP method, path, upstream latency, status code, response size, and client IP. They are the fastest way to observe Gateway traffic without a full tracing setup and are essential for log-based alerting such as 5xx spike detection.
+
+Access logs are enabled in the Gateway configuration or the equivalent [environment variable](/tyk-oss-gateway/configuration#access_logs-enabled):
+
+```json
+{
+  "access_logs": {
+    "enabled": true
+  }
+}
+```
+
+See [Access Logs](/api-management/logs#access-logs) for the full list of configurable fields and custom template options.
+
+### Use JSON Log Format
+
+JSON format has lower parsing overhead than the default text format and is directly indexable by log backends (Loki, Elasticsearch, CloudWatch). Enable this mode in the Gateway configuration or the equivalent [environment variable](/tyk-oss-gateway/configuration#log_format):
+
+```json
+{
+  "log_format": "json"
+}
+```
+
+JSON log format is recommended for all production deployments.
+
+### Trace Correlation
+
+When OpenTelemetry is enabled, Tyk injects `trace_id` and `span_id` into request-scoped log entries. This lets you pivot from a log line directly to the corresponding trace in Tempo or Jaeger.
+
+<Note>
+`trace_id` and `span_id` are only present on **sampled requests**. At 10% head-based sampling, 90% of log lines will not carry trace IDs.
+</Note>
+
+### Log Collection Options
+
+| Stack | Recommended Approach |
+|-------|---------------------|
+| Grafana LGTM | Promtail or Grafana Alloy → Loki |
+| ELK / OpenSearch | Filebeat or Logstash |
+| Kubernetes | OTel Collector with `filelog` receiver; see [Collecting Gateway Logs with OTel on Kubernetes](/api-management/collecting-gateway-logs-otel-kubernetes) |
+| Cloud (AWS/GCP/Azure) | CloudWatch agent, GCP Logging agent, or Azure Monitor agent |
+
+## Performance Impact Summary
+
+| Signal | Baseline Cost | Main Risk | Mitigation |
+|--------|--------------|-----------|------------|
+| **Metrics** | Low (batched OTLP export) | Cardinality explosion in custom metrics | ≤10 dimensions per instrument; monitor `otel.metric.overflow` |
+| **Traces** | Medium (per-request spans) | High sampling rate at scale | Head-based 10% default; tail-based for error capture |
+| **Logs** | Low (stdout write) | Log volume at debug verbosity | Use `info` level in production; enable JSON format |
+| **Analytics (Tyk Pump)** | Medium–High (Redis writes) | ~13% RPS reduction when tracking all requests | Use [Do-Not-Track](/api-management/traffic-transformation/do-not-track) middleware for non-critical endpoints |
