@@ -1,0 +1,117 @@
+---
+title: "Key Hashing"
+description: "Understand how Tyk secures your API keys using hashing, the available algorithms, and the implications for key management."
+keywords: "Key Hashing, Security, Hash Algorithms, Murmur, SHA256, Redis"
+sidebarTitle: "Key Hashing"
+---
+
+## Introduction
+
+When a client authenticates, Tyk uses a specific identifier (the "Key") to look up their Session in the Redis database. Depending on your authentication method, this Key might be an Auth Token, a Basic Auth username, an HMAC Key ID, or a JWT identity claim.
+
+To enhance security and protect these identifiers in the event that your Redis database is compromised, Tyk supports **Key Hashing**. 
+
+When hashing is in use, Tyk never stores the plaintext Key in Redis. Instead, it runs the Key through a one-way hashing function and stores the resulting hash as the lookup key in Redis. When a client makes a request, Tyk extracts their identifier, hashes it on the fly, and compares it to the hash stored in Redis. The [algorithm](/api-management/access-control/sessions-and-keys/key-hashing#hashing-algorithms) used to perform the hashing is configurable, with both cryptographic and non-cryptographic options.
+
+<Note>
+Key Hashing applies universally at the storage layer. If enabled, the lookup identifier for **every** authentication method is hashed.
+</Note>
+
+### Enabling Key Hashing
+
+Hashing is enabled in the [Gateway](/tyk-oss-gateway/configuration#hash_keys) and [Dashboard](/tyk-dashboard/configuration#hash_keys) configuration using the common setting `hash_keys` (or the equivalent environment variables).
+
+<Note>
+This **must** be enabled in both the Gateway and Dashboard (if used).
+</Note>
+
+<Warning>
+Switching between hashed and non-hashed configuration means that any existing keys can no longer be used, as the Gateway and Dashboard will not be able to correctly validate them. Every existing API client will lose access immediately.
+</Warning>
+
+## Hashing Algorithms
+
+Tyk offers several hashing algorithms, allowing you to choose the right balance between performance and security for your environment.
+
+You can configure the algorithm using the [`hash_key_function`](/tyk-oss-gateway/configuration#hash_key_function) setting in your `tyk.conf` (or the equivalent environment variable). The available options are:
+
+- `murmur32` (Default): A fast, non-cryptographic hash function. It provides excellent performance and basic obfuscation, but is not cryptographically secure.
+- `murmur64` and `murmur128`: Longer variants of the Murmur hash, providing a larger hash space to prevent collisions while maintaining high performance. These are also not cryptographically secure.
+- `sha256`: A cryptographically secure hashing algorithm. This provides the highest level of security but is computationally more expensive and will slightly reduce Gateway performance.
+
+<Note>
+For identifiers that are not standard Tyk tokens, such as Basic Auth usernames, Tyk will always use murmur32 for the lookup hash, regardless of this setting.
+</Note>
+
+
+## Implications of Key Hashing
+
+Enabling key hashing fundamentally changes how you interact with keys via the Tyk APIs and Dashboard. Because hashing is a one-way operation, **Tyk cannot reverse the hash to reveal the original key**.
+
+If you enable key hashing, you must design your workflows around the following constraints:
+
+### 1. Plaintext Keys are Returned Only Once
+
+When you create a new key via the Gateway API or the Dashboard, Tyk will return the plaintext key in the response payload **exactly once**. It is your responsibility to securely transmit this key to the client and store it if necessary. If the client loses the key, it cannot be recovered from Tyk; a new key must be generated.
+
+### 2. Listing Keys Returns Hashes
+
+By default, if key hashing is in use, then requests to the [Gateway API](https://tyk.io/docs/api-reference/keys/list-keys) or [Dashboard API](https://tyk.io/docs/api-reference/keys/list-all-the-keys) to retrieve a list of keys will be rejected - this functionality is disabled for security reasons.
+
+You must explicitly enable these endpoints by setting `enable_hashed_keys_listing: true` in the [Gateway](/tyk-oss-gateway/configuration#enable_hashed_keys_listing) and [Dashboard](/tyk-dashboard/configuration#enable_hashed_keys_listing) configurations respectively.
+
+### 3. Analytics Using Hashed Keys
+
+All analytics records, logs, and quota tracking will use the hashed version of the key. If you need to correlate analytics data with a specific client, you should use the Session's `alias` or `meta_data` [fields](/api-management/access-control/sessions-and-keys/understanding-sessions#metadata-and-context), rather than relying on the key itself.
+
+### 4. Managing Keys by Hash
+
+If you need to retrieve, update, or delete the Session relating to a specific key, you can always do so using the plaintext key (Tyk will hash it on the fly).
+
+If you want to be able to use the key's hashed value instead, then you must set the appropriate configuration as follows:
+
+- **Gateway API**:
+    - Append the `?hashed=true` query parameter to your API calls when passing a hash instead of a plaintext key.
+- **Dashboard**: 
+    - You must *also* append the `?hashed=true` query parameter to your API calls.
+    - You must explicitly set [`enable_update_key_by_hash: true`](/tyk-dashboard/configuration#enable_update_key_by_hash) and [`enable_delete_key_by_hash: true`](/tyk-dashboard/configuration#enable_delete_key_by_hash) in your tyk_analytics.conf to allow modification of keys via their hash.
+
+
+## Migrating Hashing Algorithms
+
+If you decide to change your `hash_key_function` (for example, upgrading from murmur32 to sha256 for better security), Tyk provides a seamless migration path.
+
+It is of course not possible to convert a one-way hashed key to another hashing algorithm, but you do not need to invalidate all your existing keys. Instead, you can use the [`hash_key_function_fallback array`](/tyk-oss-gateway/configuration#hash_key_function_fallback) in your Gateway configuration. 
+
+When a request arrives, Tyk will first attempt to hash the incoming key using your current hashing algorithm (declared in `hash_key_function`). If the resulting hash is not found in Redis, Tyk will then try hashing the key using the algorithms listed in your fallback array. 
+
+For example, given this configuration in `tyk.conf`:
+
+```json
+"hash_key_function": "sha256",
+"hash_key_function_fallback": ["murmur32"]
+```
+
+In this scenario, all new keys will be hashed using sha256, but existing keys hashed with murmur32 will continue to work perfectly. This gives you the opportunity to gradually retire the older keys as they expire.
+
+## Configuration Summary
+
+To ensure key hashing works correctly, your Gateway and Dashboard configurations must be kept in sync.
+
+**Gateway (`tyk.conf` or equivalent environment variable)**
+
+- `hash_keys`: Set to `true` to enable hashing.
+- `hash_key_function`: The algorithm for standard keys (e.g., `murmur64`, `sha256`).
+- `hash_key_function_fallback`: An array of legacy algorithms to support existing keys during a migration.
+- `enable_hashed_keys_listing`: Set to true to allow the `GET /tyk/keys` endpoint to return hashes.
+
+**Dashboard (`tyk_analytics.conf` or equivalent environment variables)**
+
+- `hash_keys`: Must match the Gateway setting (`true`).
+- `enable_hashed_keys_listing`: Must match the Gateway setting (`true`).
+- `enable_update_key_by_hash`: Set to `true` to allow sessions to be updated using the key hash as reference.
+- `enable_delete_key_by_hash`: Set to `true` to allow sessions to be deleted using the key hash as reference.
+
+<Note>
+The Dashboard calls the Gateway API to obtain the list of keys, so it is important to set `enable_hashed_keys_listing: true` in both components.
+</Note>
