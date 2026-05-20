@@ -60,6 +60,51 @@ Application decisions need to be made concerning which endpoints are non critica
 
 Subsequently, it is worthwhile monitoring traffic and system load and using this feature to improve performance. 
 
+## What is the performance impact of OpenTelemetry metrics
+
+Tyk Gateway can emit RED (Rate, Errors, Duration) metrics, Go runtime metrics, and distributed traces via [OpenTelemetry](/nightly/api-management/traces#opentelemetry). Enabling these signals adds a per-request cost that shows up as higher latency and resource usage, not as lost throughput.
+
+For a broader overview of what Tyk exposes, see [Logs and Metrics](/nightly/api-management/logs-metrics).   These numbers go alongside those in [What is the performance impact of analytics](/nightly/api-management/performance-monitoring#what-is-the-performance-impact-of-analytics). Most production deployments run both pipelines, and the costs add up rather than multiply.
+
+### How do OTel metrics impact performance?
+
+The figures below come from internal load tests on Tyk Gateway `v5.13.0` (GCP `c2-standard-4`, 30-minute runs at 15k rps against 10 routes, with a OpenTelemetry collector on a 5s export interval) and Go micro-benchmarks. Horizontal Pod Autoscaler was bounded to 2–12 pods and the fleet sat near the cap in every scenario (~11.8 pods on average), so pod counts were roughly constant across configurations. A higher HPA cap might absorb tracing overhead as extra pods rather than higher per-pod CPU, so treat the figures as an upper bound on per-instance cost.
+
+- **Default RED metrics are cheap.** Compared to a baseline (OTel off) at 0.57 ms p75 and 25,259 rps, enabling default RED metrics raises p75 to 0.78 ms (+37%) and adds +4.6% mean CPU and +2.3% mean memory. Still sub-millisecond.
+- **Tracing is the expensive part.** Adding tracing on top of metrics pushes p99 from 11.16 ms to 29.68 ms at 50% sampling, and to 35.53 ms at 100% sampling. CPU goes up ~27% and memory ~34% over baseline.
+- **Sampling has a floor.** Dropping from 100% to 50% sampling saves about 17% at p99, but CPU and memory are identical at both rates. Most of the tracing cost is fixed: span context propagation and SDK overhead are paid even when a span is dropped.
+- **Runtime metrics are free.** Adding Go runtime metrics on top of RED produces no measurable difference in either load tests or micro-benchmarks.
+- **Cardinality and instrument count scale flat.** Going from 2 to 14 dimensions on a single counter, or from 1 to 6 instruments, keeps per-request overhead inside a +3% to +7% band
+- **Throughput holds.** RPS stayed within ±1.5% of baseline across every configuration. The cost is in latency and resource usage, not in dropped requests.
+
+The table below shows per-configuration overhead against the OTel-off baseline (10 routes, 15k rps, 30-minute runs):
+
+| Configuration | p75 Δ | p99 Δ | CPU mean Δ | Memory mean Δ | RPS Δ |
+|---|---:|---:|---:|---:|---:|
+| Baseline (OTel off, analytics off) — 0.57 ms p75 / 13.0 cores / 13.1 GiB / 25,259 rps | — | — | — | — | — |
+| Analytics only | +28.1% | +78.5% | +6.9% | +1.5% | -1.0% |
+| Metrics only (default RED) | +36.8% | +76.9% | +4.6% | +2.3% | -0.6% |
+| Metrics + runtime | +17.5% | +26.2% | +2.3% | 0% | -0.7% |
+| Metrics + tracing (50% sampling) + runtime | +189.5% | +235.7% | +29.2% | +34.4% | -0.9% |
+| Full OTel: tracing (100%) + metrics + runtime | +173.7% | +301.9% | +30.0% | +34.4% | -1.4% |
+| Metrics + analytics (Pump) | +31.6% | +100.1% | +12.3% | +6.1% | -1.1% |
+
+These are internal benchmark numbers. Absolute figures won't transfer to different hardware or collector setups, but the relative deltas have been verified across both the micro-benchmark suite and the GCP load tests.
+
+### What can be done to address this performance impact?
+
+- **Enable runtime metrics.** They add GC, goroutine, and heap data at no measurable cost. The load test shows CPU +0.5% and memory +0% versus metrics-only. There's no reason to leave them off.
+- **Treat custom metrics as a memory problem, not a CPU one.** In load tests, 3 custom metric definitions across 50 routes pushed mean memory up +28% and peak memory up +32%, with no CPU change. Avoid high-cardinality label values like user IDs, JWT subjects, full URLs, or trace IDs. Each unique combination creates a new time series held in memory until export. Before adding custom metrics, estimate `routes × instruments × dimension cardinality`.
+- **Sample traces aggressively, but don't expect linear savings.** Configure [opentelemetry.sampling.type](/nightly/tyk-oss-gateway/configuration#opentelemetry-sampling-type) as `TraceIDRatioBased` and set [opentelemetry.sampling.rate](/nightly/tyk-oss-gateway/configuration#opentelemetry-sampling-rate) to 0.05–0.1 for high-RPS gateways. Use [opentelemetry.sampling.parent_based](/nightly/tyk-oss-gateway/configuration#opentelemetry-sampling-parent_based) to keep spans coherent. See [Sampling Strategies](/nightly/api-management/traces#sampling-strategies) for all options. Since dropping from 100% to 50% only saves ~17% at p99 and nothing on CPU/memory, the real fix is to disable tracing for APIs that don't need it.
+- **Enable detailed tracing per API, not globally.** The Tyk OAS API [server.detailedTracing](/nightly/api-management/gateway-config-tyk-oas#detailedtracing) field (and its [Tyk Classic equivalent](/nightly/api-management/gateway-config-tyk-classic#opentelemetry)) turns on middleware-level spans for specific APIs only. Use it to limit span volume to where it's useful.
+- **Keep the default 5s export interval.** Gateway-side cost stays under +5% even at 1,000 APIs. Changing the interval doesn't help the gateway; it only shifts pressure to the collector. Tune [opentelemetry.span_batch_config](/nightly/tyk-oss-gateway/configuration#opentelemetry-span_batch_config) (`max_queue_size`, `max_export_batch_size`, `batch_timeout`) only if traces are being dropped because the collector can't keep up.
+- **Don't run both signal pipelines unless you need to.** Running OTel metrics alongside Tyk analytics adds about +3% p75 and +12% p99 over analytics alone. If a Pump-driven Prometheus pipeline already covers your KPIs, the overlap may not be worth it.
+- **Avoid 100% trace sampling on high-RPS gateways.** The worst-case configuration (full OTel at 100% sampling) hit +174% p75, +302% p99, +30% CPU, and +34% memory. Use head-based sampling at a low ratio, or limit tracing to a subset of APIs.
+
+### Conclusion
+
+The default RED instruments and Go runtime metrics are safe to enable in production. The cost is small, throughput barely moves, and adding more dimensions or instruments doesn't compound overhead. Tracing is the expensive part: the cost is largely fixed, and the only real way to eliminate it is to disable tracing, not to sample it low. Keep sample rates low, use per-API detailed tracing where possible, and size pod memory against your API count. For more detail on OTel configuration, see [Distributed Tracing with OpenTelemetry](/nightly/api-management/traces#opentelemetry) and [Sampling Strategies](/nightly/api-management/traces#sampling-strategies).
+
 ## How to reduce CPU usage in a Redis Cluster
 
 ### What does high CPU usage in a Redis node within a Redis Cluster mean ?

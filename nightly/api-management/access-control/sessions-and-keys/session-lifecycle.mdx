@@ -1,0 +1,137 @@
+---
+title: "Session Lifecycle"
+description: "Understand how Tyk manages the lifecycle of Sessions, including expiration, retention, and deletion from Redis."
+keywords: "Session Lifecycle, Session Expiry, Redis TTL, Post Expiry Action, Session Lifetime"
+sidebarTitle: "Session Lifecycle"
+canonical: "https://tyk.io/docs/api-management/access-control/sessions-and-keys/session-lifecycle"
+---
+
+## Introduction
+
+When we talk about the "Key Lifecycle" in Tyk, we are actually referring to the lifecycle of the **Session** stored in Redis. The Key is simply the identifier used to look up that Session.
+
+Keeping an expired Session in Redis for a period of time can be useful for various reasons:
+- **Graceful Renewal & Better UX:** Enables the Gateway to return specific `Token Expired` errors rather than generic `Invalid Token` responses, allowing client applications to trigger silent refresh flows without forcing users to log in again.
+- **Audit & Troubleshooting:** Preserves session data post-expiration to aid in compliance and debugging, making it easier to trace requests and correlate logs for issues occurring near the expiration time.
+- **Asynchronous Analytics & Billing:** Ensures background workers can accurately attribute final requests to the correct user or organization, preventing data loss in asynchronous analytics and billing processes.
+- **Quota Preservation Across Renewals:** Retains quota data for users with long-term limits but short-lived access tokens, allowing renewed tokens to link to existing quota buckets without accidentally resetting usage.
+- **Security & Fraud Detection:** Provides context for security systems to monitor replay attacks, identifying if an expired token is suddenly flooded with requests rather than just logging generic errors.
+
+Managing the Session lifecycle is crucial for security (ensuring access is revoked when it should be) and operational efficiency (ensuring your Redis database doesn't fill up with stale data).
+
+## Expiration vs. Deletion
+
+To understand Tyk's lifecycle controls, you must understand the difference between a Session expiring and a Session being deleted:
+
+1. **Expiration (expires)**: This is a Unix timestamp stored inside the Session. When a request arrives, Tyk checks if the current time is past this timestamp. If it is, Tyk rejects the request. The Session is "expired" and access is denied, even if the data still exists in Redis.
+2. **Deletion (Redis TTL)**: This is the physical removal of the Session data from your Redis database. Tyk calculates a Time-To-Live (TTL) and passes it to Redis. When the TTL reaches zero, Redis automatically deletes the data.
+
+The lifecycle controls dictate how Tyk calculates that Redis TTL.
+
+## Preferred Controls (Tyk 5.13.0+)
+
+Starting in Tyk 5.13.0, Tyk introduced explicit controls that separate the concept of expiration from deletion. This allows you to deny access at a specific time, but retain the Session data in Redis for auditing, analytics, or delayed cleanup.
+
+### 1. Set the Expiration
+
+- `expires`: A Unix timestamp indicating exactly when the Session becomes invalid. If set to `0` or `-1`, the Session never expires.
+
+### 2. Define the Post-Expiry Action
+
+- `post_expiry_action`: Defines what happens to the data in Redis after the expires timestamp is reached.
+    - `delete`: The Redis TTL is set to match the `expires` timestamp. The moment the Session expires, Redis physically deletes it.
+    - `retain`: The Session is kept in Redis after it expires. You must also configure a [grace period](/nightly/api-management/access-control/sessions-and-keys/session-lifecycle#3-configure-the-grace-period).
+
+### 3. Configure the Grace Period
+
+- `post_expiry_grace_period`: If the action is `retain`, this defines how long (in seconds) the Session is kept in Redis after expiration. 
+    - A value of `-1` means the Session is retained in Redis forever (no TTL is set).
+    - If the value is `0` then the [legacy controls](/nightly/api-management/access-control/sessions-and-keys/session-lifecycle#legacy-controls) will be applied to the Session
+
+For example, if `expires` is tomorrow, and `post_expiry_grace_period` is 86400 (24 hours), the Session will be denied access tomorrow, but the Session data will remain in Redis for one additional day before being physically deleted.
+
+## Legacy Controls
+
+If you are using an older version of Tyk (or if you do not configure `post_expiry_action` and `post_expiry_grace_period`), Tyk falls back to the legacy controls.
+
+The Tyk Vendor Extension (`x-tyk-api-gateway`) in the API definition contains an option to set a [`customKeyLifetime`](/nightly/api-management/gateway-config-tyk-oas#customkeylifetime) for all keys (Sessions) created that grant access to the API:
+
+```yaml
+x-tyk-api-gateway:
+    authentication:
+        customKeyLifetime:
+            enabled: true,
+            value: 30d,
+            respectValidity: true
+```
+
+| Parameter | Description |
+|:----------|:------------|
+| `enabled` | Set a custom lifetime for Sessions granting access to the API |
+| `value`   | Human readable duration for the custom lifetime (d, m, s) |
+| `respectValidity` | If the custom lifetime is shorter than the Session `expiry` then retain the Session until it expires and then delete |
+
+If the lifetime (`value`) is set to `0s` then sessions will be assigned a TTL of -1 and will not be automatically deleted from Redis.
+
+<Note>
+If `respectValidity` is set to `false` and the `value` is lower than the value assigned for Session `expiry` then the Session will be deleted before it becomes invalid.
+</Note> 
+
+If using Tyk Classic APIs, the equivalent fields are `session_lifetime` (for `value`) and `session_lifetime_respects_key_expiration` (for `respectValidity`). 
+
+
+## Gateway Level Settings
+In some environments, administrators need to enforce a strict maximum lifetime for all sessions across the entire Gateway, regardless of what individual users or policies configure.
+
+You can enforce this behaviour in your `tyk.conf` file (or by using the equivalent environment variables):
+
+- [`global_session_lifetime`](/nightly/tyk-oss-gateway/configuration#global_session_lifetime): The maximum allowed lifetime (in seconds) for any Session in Redis. If set to `0` then sessions will be assigned a TTL of -1 and will not be automatically deleted from Redis.
+- [`force_global_session_lifetime`](/nightly/tyk-oss-gateway/configuration#force_global_session_lifetime): When set to `true`, the global lifetime will be enforced, taking precedence over all other lifecycle controls (`post_expiry_action`, `customKeyLifetime`, and `expires`). The Redis TTL for every Session will be strictly set to the `global_session_lifetime`.
+- [`session_lifetime_respects_key_expiration`](/nightly/tyk-oss-gateway/configuration#session_lifetime_respects_key_expiration): as for the per-API [respect validity](/nightly/api-management/access-control/sessions-and-keys/session-lifecycle#legacy-controls) configuration, this will ensure that Sessions are not deleted before they have expired; if this is set to `true` then the per-API setting is ignored.
+
+<Note>
+    If the Global Session Lifetime is enforced, this will be applied to all Sessions, even those with no expiry.
+</Note>
+
+## Summary of Session Lifetime Calculation
+
+With the ongoing support for [legacy controls](/nightly/api-management/access-control/sessions-and-keys/session-lifecycle#legacy-controls) it is possible to get confused how best to configure session lifetime to manage your Redis storage. We recommend using the more intuitive post-expiry action and grace period controls.
+
+This table summarises the effect of different combinations of controls.
+
+| `force_global_session_lifetime` | `post_expiry_action` | `post_expiry_grace_period` | `session_lifetime_respects_key_expiration` | Assigned lifetime |
+|:--------:|:--------:|:--------:|:--------:|:---------|
+| `true`   | n/a      | n/a      | n/a      | `global_session_lifetime` |
+| `false`  | `delete` | n/a      | n/a      | `expiry` |
+| `false`  | `retain` | `>0`     | n/a      | `expires+post_expiry_grace_period` |
+| `false`  | `retain` | `-1`     | n/a      | infinite (do not delete) |
+| `false`  | `retain` | `0`      | `true`   | later of `customKeyLifetime.value` or `expires` |
+| `false`  | `retain` | `0`      | `false`  | `customKeyLifetime.value` |
+
+<Warning>
+If using the Legacy Mode and `customKeyLifetime` is set to `0s` (or unset) then sessions will be assigned a TTL of `-1` and will not be automatically deleted from Redis.
+
+Likewise, if using the Global Override, if `global_session_lifetime` is set to `0` (or unset) then sessions will be assigned a TTL of `-1` and will not be automatically deleted from Redis.
+</Warning>
+
+## Temporarily revoking access to a key
+
+If you need to revoke access immediately without waiting for expiration or deletion, you can use the `is_inactive` flag:
+
+- `is_inactive`: A boolean flag on the Session. When set to `true`, Tyk rejects requests using this Session as if it has expired. Setting this back to `false` will reactivate the Session. The Session data remains in Redis until its TTL expires. This is useful for temporarily suspending a user.
+
+## OAuth 2.0 Token Lifecycle
+
+If you are using OAuth 2.0, it is important to understand how OAuth tokens interact with Tyk's session lifecycle controls.
+
+When Tyk generates an OAuth **access token**, it creates a standard Session object. The initial expiration time of this session is controlled by the global [`oauth_token_expire`](/nightly/tyk-oss-gateway/configuration#oauth_token_expire) Gateway configuration. Once this timestamp is reached, the access token's session is subject to the standard session lifecycle controls described [above](/nightly/api-management/access-control/sessions-and-keys/session-lifecycle#preferred-controls-tyk-5-13-0+), which determine its physical retention in Redis.
+
+Conversely, **refresh tokens** are not Session objects. They do not use these session lifecycle controls and are physically deleted from Redis exactly when their [`oauth_refresh_token_expire`](/nightly/tyk-oss-gateway/configuration#oauth_refresh_token_expire) TTL is reached.
+
+<Note>
+**The `oauth_token_expired_retain_period` setting**
+
+You may notice the global Gateway configuration option [`oauth_token_expired_retain_period`](/nightly/tyk-oss-gateway/configuration#oauth_token_expired_retain_period). This setting **does not** control the Redis TTL or the retention of the actual Session data. Instead, it controls a background cleanup job that removes expired tokens from an internal tracking list used by the OAuth client.
+</Note>
+
+For more detailed information on configuring OAuth token expiration, see the [OAuth 2.0 Token Expiration and Retention](/nightly/api-management/authentication/oauth-2#token-expiration-and-retention) documentation.

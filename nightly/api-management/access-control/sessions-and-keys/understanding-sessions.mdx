@@ -1,0 +1,127 @@
+---
+title: "Understanding Sessions"
+description: "Understand the Tyk Session, its purpose, and how it controls API access, limits, and client metadata."
+keywords: "Session, Access Rights, Quotas, Rate Limits, Metadata, Session Lifecycle"
+sidebarTitle: "Understanding Sessions"
+canonical: "https://tyk.io/docs/api-management/access-control/sessions-and-keys/understanding-sessions"
+---
+
+## Introduction
+
+A **Session** is the core concept Tyk uses to manage client access. Whenever a client makes a request to a protected API, Tyk resolves their authentication credentials (the "Key") into a Session.
+
+This Session acts as the ultimate source of truth for that specific client's connection, dictating what they can access, how much they can consume, and carrying any custom metadata associated with them.
+
+## Purpose and Usage
+
+The primary purposes of a Session are:
+1. **Access Control:** Defining exactly which APIs, versions, and paths the client is authorized to access.
+2. **Traffic Management**: Enforcing session-level rate limits (requests per second) to prevent individual "noisy neighbor" clients from monopolizing resources, which complements your global [API-level protections](/nightly/api-management/rate-limit#api-level-rate-limiting).
+3. **Tiered Access (Service Plans)**: Enforcing quotas (requests over a longer period) and custom rate limits to offer different levels of service to your clients (e.g., Free vs. Paid tiers) and support API monetization.
+4. **State Tracking:** Keeping track of real-time quota usage and session expiration.
+5. **Context Propagation:** Storing custom metadata and tags that can be injected into headers, used for routing, or sent to analytics.
+
+When a request arrives, Tyk retrieves the Session and evaluates its fields to determine if the request should be allowed, throttled, or rejected. All Sessions are stored in your Tyk Data Plane's Redis database, ensuring that rate limits and quotas are tracked accurately across all your Gateway nodes.
+
+## Configuration Options
+
+A Session contains several categories of configuration options. While you can configure these directly on individual sessions, it is highly recommended to manage them via [**Policies**](/nightly/api-management/policies).
+
+### Access Control
+
+This field determines what the client is allowed to access:
+
+- `access_rights`: A map defining the specific APIs the client can access. The key is the API ID, and the value contains detailed [access control](/nightly/api-management/access-control/sessions-and-keys/access-rights) rules, such as granular path/method restrictions.
+
+### Rate Limits
+
+Rate limits control the velocity of requests (e.g., 10 requests per second):
+
+- `rate`: The number of requests allowed.
+- `per`: The time window in seconds for the rate limit.
+- `throttle_interval`: The time in seconds to [hold requests before retrying](/nightly/api-management/request-throttling) if the client exceeds the rate limit.
+- `throttle_retry_limit`: The number of times a throttled request will be retried before being rejected with an `HTTP 429` response.
+- `smoothing`: Configuration for [rate limit smoothing](/nightly/api-management/rate-limit#rate-limit-smoothing) (dynamic adjustment of rate limits to mitigate against traffic spikes).
+
+These settings will be applied to all requests made using the Session except where [API](/nightly/api-management/access-control/sessions-and-keys/access-rights#api-level-limits-and-quotas) or [endpoint-level](/nightly/api-management/access-control/sessions-and-keys/access-rights#endpoint-level-rate-limits) limits have been configured in the access rights.
+
+### Quotas
+
+Quotas control the total volume of requests over a longer period (e.g., 1000 requests per month):
+
+- `quota_max`: The maximum number of requests allowed in the quota period.
+- `quota_renewal_rate`: The time in seconds between quota resets (e.g., 2592000 for 30 days).
+
+The real-time status of the session's quota is tracked in these system-managed state fields:
+
+- `quota_renews`: A Unix timestamp indicating when the quota will reset.
+- `quota_remaining`: The number of requests left in the current quota.
+
+These settings will be applied to all requests made using the Session except where [API-level quotas](/nightly/api-management/access-control/sessions-and-keys/access-rights#api-level-limits-and-quotas) have been configured in the access rights.
+
+### Authentication Data
+
+Depending on the authentication method used, the Session may store credentials or validation data:
+
+- `basic_auth_data`: An object containing the `password` and `hash` type (e.g., bcrypt) used for Basic Authentication.
+- `certificate`: The hash of the client's TLS certificate used for Certificate Auth.
+- `hmac_enabled` and `hmac_string`: Flags and secrets used to validate HMAC signatures.
+- `enable_http_signature_validation`: A boolean flag to enable HTTP Signature validation for this specific session.
+- `rsa_certificate_id`: The ID of the RSA certificate (stored in Tyk Certificate Store) used to validate HTTP Signatures when `enable_http_signature_validation` is enabled.
+- `jwt_data`: An object containing the `secret` used to validate JWT signatures.
+- `oauth_client_id` and `oauth_keys`: When a Session is generated via an OAuth flow, Tyk stores the ID of the originating OAuth Client here. This links the dynamically generated Session back to the client application that requested it.
+- `mtls_static_certificate_bindings`: A list of static certificate signatures bound to this session, used when static mTLS is layered on top of another authentication method.
+
+### GraphQL Complexity Limit
+
+If the session grants access to a GraphQL API, you can enforce specific security limits:
+
+- `max_query_depth`: The maximum allowed depth for GraphQL queries, preventing deeply nested queries from overloading your upstream services.
+
+### Analytics & Monitoring
+
+These fields control how Tyk tracks and reports on this specific session:
+
+- `enable_detailed_recording`: A boolean flag to enable detailed analytics recording specifically for this session. When enabled, Tyk logs the raw HTTP request and response payloads.
+- `monitor`: Configuration for the [quota monitor](/nightly/api-management/gateway-events#monitoring-quota-consumption), which Tyk uses to fire webhook events when a session's quota usage reaches those specific thresholds.
+
+### Metadata and Context
+
+These fields store custom information about the client:
+
+- `meta_data`: A key-value map for storing custom data. This data can be injected into headers sent to your upstream API or used in transform middleware. For more details see the [session metadata](/nightly/api-management/access-control/sessions-and-keys/session-metadata) section.
+- `tags`: A list of strings used to categorize the session (often used for analytics filtering).
+- `alias`: A human-readable name or identifier for the session.
+
+### Session Lifecycle
+
+<Note>
+While Tyk's APIs and UI often refer to "Key Expiry", it is actually the Session that has a lifecycle. The Key is just the identifier used to look up the session.
+</Note>
+
+These fields control how long the session remains valid and when it is permanently deleted from Redis. 
+
+- `expires`: A Unix timestamp indicating when the session will become invalid (expire). If set to `0` or `-1`, the session never expires.
+- `is_inactive`: A boolean flag to temporarily disable the session without deleting it.
+
+**Preferred Controls (Tyk 5.13.0+)**
+Starting in Tyk 5.13.0, you can explicitly control what happens to a session *after* it expires using these fields:
+- `post_expiry_action`: Defines the behavior when the session expires. Can be set to `retain` or `delete`.
+- `post_expiry_grace_period`: If the action is `retain`, this is the time (in seconds) the session is kept in Redis after expiration before being deleted. A value of `-1` means retain forever.
+
+**Legacy Controls**
+If you are using an older version of Tyk, or if you do not configure the preferred controls above, Tyk falls back to the legacy lifetime settings:
+- `session_lifetime`: The maximum duration (in seconds) the session is allowed to exist in Redis, regardless of its `expires` value.
+
+## Policies
+
+Instead of configuring access rights and limits directly on the session, you can link the session to one or more [Policies](/nightly/api-management/policies). This is the recommended approach for managing access at scale.
+
+- `apply_policies`: A list of policy IDs to apply to this session. Where multiple policies are listed, they will be combined (e.g., a "Plan" policy for rate limits and a "Product" policy for access rights). Fields set from a Policy will override any configured directly in the Session.
+
+
+## Next Steps
+
+- Learn how to manage the [Session Lifecycle](/nightly/api-management/access-control/sessions-and-keys/session-lifecycle) to control how long a key will be valid.
+- Discover how to use [Policies](/nightly/api-management/policies) to manage Sessions at scale.
+```
