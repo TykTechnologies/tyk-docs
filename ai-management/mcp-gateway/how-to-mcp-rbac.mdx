@@ -1,0 +1,134 @@
+---
+title: "How to implement role-based access control for an MCP proxy"
+description: "Use Tyk policies to give different AI agents different tool access on the same MCP proxy, without creating separate proxy definitions."
+keywords: "MCP, Model Context Protocol, RBAC, role-based access control, mcp_access_rights, MCP policies, tool allowlist, MCP Inspector, AI agent, Tyk Dashboard"
+sidebarTitle: "MCP RBAC"
+canonical: "https://tyk.io/docs/ai-management/mcp-gateway/how-to-mcp-rbac"
+---
+
+After [securing your MCP proxy](/ai-management/mcp-gateway/how-to-proxy-remote-mcp), the next step is controlling what each consumer can do. Role-based access control (RBAC) in Tyk MCP lets you give different agents different views of the same proxy, without creating separate proxy definitions. A policy bound to a key determines which tools that agent can invoke.
+
+This guide creates two roles on the Mock MCP Server:
+
+- **Reader**: can only call `get_users`, `get_posts`, `get_products`, and `get_analytics`
+- **Admin**: can call all 15 tools
+
+You'll create a policy for each role, issue role-specific keys, then use [MCP Inspector](https://github.com/modelcontextprotocol/inspector) to verify that each key sees exactly the tools it is permitted to access.
+
+---
+
+## How it works
+
+Tyk policies control consumer access at two levels relevant to this guide:
+
+**Primitive access**: restricts which specific tools a consumer can invoke. When a key's policy includes an allowed list for tools, Tyk enforces it on both `tools/call` (blocking disallowed tool invocations) and `tools/list` (filtering the response so the agent only sees tools it can use). The upstream server is never reached for blocked calls.
+
+**Proxy access**: determines which MCP proxies the key can reach at all.
+
+Both keys in this guide point at the same proxy URL. The difference in behavior comes entirely from the policies applied to each key.
+
+For the complete policy reference, see [MCP policies](/ai-management/mcp-gateway/policies).
+
+---
+
+## Before you begin
+
+- The Mock MCP Server running on `http://localhost:7878`. Set up in the [quickstart](/ai-management/mcp-gateway/quickstart).
+- An MCP proxy named **Mock MCP Server** with authentication enabled. See [How to secure an MCP proxy](/ai-management/mcp-gateway/how-to-proxy-remote-mcp).
+- [Node.js](https://nodejs.org/) 18 or later (to run [MCP Inspector](https://github.com/modelcontextprotocol/inspector))
+- A Dashboard user account with policy management permissions
+
+---
+
+## Instructions
+
+### Step 1: Create the Reader policy
+
+1. In the Tyk Dashboard sidebar, click **Policies**, then click **Add Policy**.
+
+2. On the **Access Rights** tab, find **Mock MCP Server** in the API list and click it to add it.
+
+    ![Select Mock MCP Server from the API list](/img/ai-management/tyk-how-to-rbac-select-api.png)
+
+3. Scroll to **Primitive based access** within the Mock MCP Server panel and add each permitted tool:
+
+    - Click **Add**, enter `get_users`, set **Type** to **Tool**, and set the status to **Allowed**. Click **Add**.
+    - Repeat for `get_posts`, `get_products`, and `get_analytics`.
+
+    ![Primitive based access configuration](/img/ai-management/mcp-how-to-rbac-primitive.png)
+
+    Once you add any tool with **Allowed** status, Tyk treats the list as an explicit allowlist: any tool not in the list is blocked for keys on this policy.
+
+4. Click the **Configurations** tab and set:
+    - **Policy Name**: `Reader`
+    - **Policy State**: **Active**
+
+5. Click **Create Policy**.
+
+    ![Reader policy configuration](/img/ai-management/mcp-how-to-rbac-reader.png)
+
+### Step 2: Create the Admin policy
+
+The Admin policy grants unrestricted tool access. Omitting the **Primitive based access** entries means all tools are accessible.
+
+1. Click **Add Policy**.
+
+2. On the **Access Rights** tab, add **Mock MCP Server**.
+
+3. Click the **Configurations** tab and set:
+    - **Policy Name**: `Admin`
+    - **Policy State**: **Active**
+
+4. Click **Create Policy**.
+
+    {/* TODO: Screenshot — Admin policy Configurations tab showing Policy Name "Admin" and Active state */}
+
+### Step 3: Issue role-specific keys
+
+1. In the Dashboard sidebar, click **Keys**, then **Add Key**.
+
+2. Under **Access rights**, click **Apply Policy** and select **Reader**.
+
+    ![Apply Reader policy to key](/img/ai-management/mcp-how-to-rbac-keys.png)
+
+3. Click the **Configurations** tab and set an **Alias** such as `reader-agent`.
+
+    ![Set alias and create key](/img/ai-management/mcp-how-to-rbac-set-alias.png)
+
+4. Click **Create Key** and copy the key.
+
+5. Repeat steps 1–4 to issue a second key, selecting **Admin** as the policy and `admin-agent` as the alias.
+
+### Step 4: Verify in MCP Inspector
+
+1. Start MCP Inspector:
+
+    ```bash
+    npx @modelcontextprotocol/inspector
+    ```
+
+2. Open the URL printed in your terminal.
+
+#### Test the Reader key
+
+3. Set **Transport Type** to `Streamable HTTP`.
+
+4. Set **URL** to your MCP endpoint (find it under **MCP Proxy URL** in the proxy designer, then append `/mcp`).
+
+5. Add a header: `Authorization` = `Bearer {reader-api-key}` and click **Connect**.
+
+6. Click the **Tools** tab. You will see exactly four tools: `get_users`, `get_posts`, `get_products`, and `get_analytics`. Tyk has filtered the `tools/list` response based on the Reader policy's allowed list.
+
+7. Select `get_users` and click **Run**. It succeeds.
+
+    {/* TODO: Screenshot — MCP Inspector Tools tab showing only the 4 allowed tools for the Reader key */}
+
+#### Test the Admin key
+
+8. Click **Disconnect**. Replace the key in the `Authorization` header with your Admin key and click **Connect**.
+
+9. Click the **Tools** tab. All 15 Mock MCP Server tools appear. The Admin policy applies no tool restrictions.
+
+    {/* TODO: Screenshot — MCP Inspector Tools tab showing all 15 tools for the Admin key */}
+
+Both keys connect to the same proxy at the same URL. The difference in tool availability is driven entirely by the policy.

@@ -1,0 +1,93 @@
+---
+title: "Access Control Overview"
+description: "Understand how Tyk manages API access, limits consumption, and scales using Sessions, Keys, and Policies."
+keywords: "Access Control, Sessions, Keys, Policies, Rate Limits, Quotas, Plans, Products"
+sidebarTitle: "Overview"
+canonical: "https://tyk.io/docs/api-management/access-control/overview"
+---
+
+## Introduction
+
+When managing APIs, one of the most critical tasks is controlling what access your API clients have to your services. You need to ensure that clients can only access the APIs, paths, and HTTP methods they are authorized for, while also enforcing consumption limits like rate limits and quotas to protect your upstream services.
+
+In Tyk, access control is built on three core concepts: **Sessions**, **Keys**, and **Policies**. Understanding how these three elements interact is the key to managing API access securely and at scale.
+
+## The Foundation: Session
+
+At the heart of Tyk's access control is the **Session**. 
+
+Every authenticated client connection in Tyk is represented by a Session, which is typically stored in the Data Plane's Redis database. This object is the ultimate source of truth for a client's current state. It contains:
+- **Access Rights:** Which APIs, versions, paths, and methods the client is allowed to access.
+- **Consumption Limits:** The client's rate limit (requests per second) and quota (requests per month/week/etc.).
+- **Current Usage:** Real-time tracking of how much of their quota they have consumed.
+- **Metadata:** Custom data associated with the client that can be used for routing, transformations, or analytics.
+
+When a request arrives, Tyk evaluates the Session to determine if the request should be allowed through to your upstream service.
+
+## Identifying the Client: Keys and Authentication
+
+If the Session dictates *what* a client can do, how does Tyk know *who* the client is? This is where **Keys** and Authentication come in.
+
+A "Key" is simply the mechanism used to resolve the Session. While Tyk supports many different authentication methods, they all fall into one of three categories based on how the Session is created:
+
+### 1. Pre-Registered Sessions
+
+For most authentication methods, the client must be pre-registered with Tyk. A Session is created and stored in Redis at the time of registration. When a request arrives, Tyk uses the provided credentials as a lookup key to retrieve this existing session.
+
+This category includes:
+- [**Auth Tokens**](/api-management/authentication/bearer-token): The token itself is the lookup key.
+- [**Basic Authentication**](/api-management/authentication/basic-authentication): The username acts as the lookup key.
+- [**HMAC Signatures**](/basic-config-and-security/security/authentication-authorization/hmac-signatures) The Key ID provided in the request is the lookup key.
+- [**Certificate Auth**](/api-management/authentication/certificate-auth) A hash of the client's TLS certificate acts as the lookup key.
+
+### 2. Dynamically Generated Sessions
+
+For [**JWT Auth**](/api-management/authentication/jwt-authorization), Tyk does not require a pre-existing Session in its database prior to the first request. Instead, Tyk validates the token and dynamically generates the Session on the fly based on the token's claims. This Session is then persisted to Redis, with the [identity](/api-management/authentication/jwt-authorization#identifying-the-session-owner) as the lookup key.
+
+Regardless of the authentication method you choose, the end result is always a Session that Tyk uses to enforce access control.
+
+### 3. OAuth 2.0: Client-Delegated Sessions
+
+For [**OAuth 2.0**](/api-management/authentication/oauth-2), the process is a hybrid. You first register an **OAuth Client** and assign it a Policy. When the client successfully completes an OAuth flow (such as Client Credentials or Authorization Code), Tyk dynamically generates an access token and a corresponding Session based on the Client's Policy. This Session is then persisted to Redis, and for subsequent API requests, the access token acts as a standard lookup key.
+
+### Multiple Authentication
+
+When more than one method is required to authenticate the client request, the Session that Gateway should use to determine access rights and to control and track usage is determined according to [these rules](/basic-config-and-security/security/authentication-authorization/multiple-auth#understanding-authentication-modes).
+
+## Managing at Scale: Policies
+
+While you could configure access rights and limits directly on individual Sessions, this becomes unmanageable at scale. If you have 10,000 clients and you want to grant them access to a newly published API, updating 10,000 individual Sessions in Redis is not practical.
+
+This is where **Policies** come in. A Policy is a templated set of rules that defines access rights and consumption limits. 
+
+Instead of writing these rules directly into the Session, the Session simply references a **Policy ID**. When a client makes a request, Tyk loads the Session, sees the Policy ID, and applies the rules defined in that Policy. If you need to update access for all 10,000 clients, you simply update the Policy once, and the changes take effect whenever a Key using that Policy is presented.
+
+### Partitioned Policies vs. Monolithic Policies
+
+Tyk supports two approaches to policies:
+- **Monolithic Policies:** A single policy that defines both access rights and consumption limits.
+- **Partitioned Policies:** Multiple policies applied to a single session, where one policy might define access rights (e.g., "Product A") and another might define consumption limits (e.g., "Gold Plan").
+
+**We strongly encourage the use of Partitioned Policies.** They offer much greater flexibility and reusability. 
+
+If you are using the **Tyk Developer Portal**, you will see this concept in action. The Portal uses the terminology [**Products**](/portal/api-products) (policies that define API access rights) and [**Plans**](/portal/api-plans) (policies that define rate limits and quotas). Under the hood, these are simply partitioned policies working together to control the client's session.
+
+<Note>
+    There is currently a limitation when using the Dashboard UI to configure partitioned policies that an API must be selected even when the **Enforce Access Rights** option is not selected. The policy that is created will not grant access to that API, so any API can be selected.
+</Note>
+
+## Turning Access On and Off
+
+Managing the lifecycle of client access is straightforward with Tyk:
+
+- **Key Revocation:** You can instantly revoke a client's access by deleting their Session from Redis.
+- **Key Expiry:** Sessions can be configured with a Time-To-Live (TTL), after which they automatically expire and are removed.
+- **Policy Disabling:** You can disable a Policy, which will immediately block access for all clients whose sessions rely on that Policy.
+
+## Next Steps
+
+Now that you understand the core concepts, you can dive deeper into how to implement them:
+
+- [Understanding Sessions](/api-management/access-control/sessions-and-keys/understanding-sessions)
+- [Managing Session Lifecycle](/api-management/access-control/sessions-and-keys/session-lifecycle)
+- [Creating and Managing Policies](/api-management/access-control/policies/managing-policies)
