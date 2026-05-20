@@ -1,103 +1,308 @@
 ---
-title: "Looping"
-description: "Learn how to use looping in Tyk's URL Rewriting to redirect requests internally within the gateway for improved performance and flexibility."
-order: 5
-sidebarTitle: "What is Internal Looping?"
+title: "Internal Routing"
+description: "Learn how to route requests to other endpoints or APIs within Tyk Gateway without network calls, using the tyk:// URL scheme in a URL rewrite target"
+keywords: "internal routing, looping, tyk:// scheme, URL rewrite, self-referential routing, internal API"
+sidebarTitle: "Internal Routing"
 ---
 
-## Overview
+Internal routing redirects a matched request to a different endpoint or API hosted on the same Tyk Gateway instance, without making an outbound network call. Tyk dispatches the request directly to the target API's middleware chain in memory, so the request is processed a second time without any network overhead.
 
-If you need to redirect your URL to *another endpoint* in the api or *another api in the gateway* using [URL Rewriting](/transform-traffic/url-rewriting#url-rewrite-middleware), you can run the request pipeline one more time, internally instead of redirect it to a HTTP endpoint through the network. This is called <b>looping</b>. This is very performant because Tyk will not do another network call when a loop is detected.
+Internal routing is configured through the **URL rewrite** middleware. See [Path Modification](/transform-traffic/url-rewriting) for how to configure rewrite rules.
 
-In order to specify a loop, in the target URL you specify a string in the protocol schema `tyk://` as shown below:
+## How It Works
 
-This syntax of `tyk` in the schema protocol and `self` in the domian will loop the request to another endpoint under the current api:
+When the URL rewrite middleware produces a target beginning with `tyk://`, Tyk resolves the target to an API definition and dispatches the request directly to that API's middleware chain. Listen path matching is bypassed entirely - the request does not re-enter the HTTP router.
+
+**What is re-evaluated on each loop:**
+- The target API's full middleware chain, including endpoint-level middleware for the matched path.
+
+**What is not re-evaluated:**
+- **Listen path matching** is bypassed; the target API is resolved by identifier, not by URL.
+- **Original query parameters** are dropped; only query parameters explicitly included in the rewrite target survive into the loop.
+- **Authentication** depends on the auth method in use and the method used to address the target - see [Authentication](#authentication).
+- **Rate limits and quotas** are skipped by default - see [Rate Limits and Quotas](#rate-limits-and-quotas).
+
+
+## Addressing the Target
+
+A `tyk://` URL takes one of two forms depending on whether the destination is within the same API or on a different API.
+
+### Same API
+
 ```
 tyk://self/<path>
 ```
 
-You can also loop to another API as by specifying the API name or id (instead of `self`): 
-```
-tyk://<API_ID>/<path>
-```
+The hostname `self` resolves to the same API definition handling the current request. Use this when the routing logic and the destination endpoint are in the same API definition.
 
-Combined with our advanced URL rewriter rules, it can be turned into a powerful logical block, replacing the need for writing middleware or virtual endpoints in many cases.
+For example, a rewrite target of `tyk://self/internal/transform` routes to the `/internal/transform` endpoint on the same API, running it through that endpoint's configured middleware.
 
-
-## Example Use Cases 
-
-### Multiple Auth Types for a single API
-
-Imagine you have a legacy API that has existing authentication strategies.  We can pretend it's using basic authentication.  You've decided to bring this API into your APIM ecosystem, and also begin to use OAuth2 for your API.  But also we need to support existing users who have basic auth credentials.  Finally, it's important that we expose a single ingress to our customers for that one API, instead of multiple listen paths for each authentication type.
-
-We can use looping to achieve this.  We can set up triggers in URL Rewrite plugin, where based off a specific header, Tyk will loop the request to a specific API.
-
-For example, let's see the following use case:
-<img src="/img/diagrams/diagram_docs_looping-example-use-cases@2x.png" alt="Looping example" />
-
-#### 1.  A request comes into the ingress API.  This has two rules:
--   If `Header == "Authorization: Bearer"`, loop to the OAuth API
--   If `Header == "Authorization: Basic"`, loop to the Basic Auth API
-
-1. The ingress API is marked "keyless" as Tyk doesn't perform any authentication here.
-2. We add rate limiting option to the loop via `?check_limits=true`
-
-#### 2. The inner APIs perform authentication, and loop to the north-bound API
-
-These APIs are marked internal, can only be accessed from within loop context.
-
-#### 3. The north-bound API, marked open keyless, does transformations, etc, then reverse proxies to the backend API.
-
-1. This API is marked internal, can only be accessed from within loop context.
-2. This API is marked "keyless" as Tyk doesn't perform any authentication here.
-
-## Advanced Configuration
-
-You can add one or more of the following configurations as query parameters to your looping URL.
-
-### Rate Limiting in looping
-
-In looping context, rate limiting (quotas as well) is not checked except when explicitly turned on.  You need to add the following query param:
-```
-?check_limits=true
-```
-
-For example:
+### Different API
 
 ```
-tyk://123/myendpoint?check_limits=true
+tyk://<identifier>/<path>
 ```
 
-### HTTP Method transformation in looping
+Tyk resolves the identifier against each registered API in the following order:
 
-You can tell Tyk to modify the HTTP verb during looping by adding the following query param:
+1. The API ID (`info.id`) - exact match
+2. The API's database ID (`info.dbId`) - exact match
+3. The API's display name (`info.name`), slugified: non-alphanumeric characters are replaced with `-`, match is case-insensitive
+
+For example, an API named `"Books Backend"` can be addressed as `tyk://books-backend/endpoint` or `tyk://Books-Backend/endpoint`. Using the API ID directly - such as `tyk://4e3c8b9f2a1d4f67b8e3c1a2f5d9e0c7/endpoint` - is more robust in automated environments where the API name may change.
+
+<Warning>
+The listen path is not a valid identifier. If the identifier does not match any registered API, Tyk returns `HTTP 500` with the error `"Can't detect loop target"`.
+</Warning>
+
+If using Tyk Classic, the API ID is [`api_id`](/api-management/gateway-config-tyk-classic#param-api-id), the database ID is [`id`](/api-management/gateway-config-tyk-classic#param-id), and the display name is [`name`](/api-management/gateway-config-tyk-classic#param-name) - all in the root of the API definition. In Tyk Classic, API names can include category tags in the form `#tag`; these are stripped before name matching, so an API named `"Books Backend #catalog"` can be addressed as `tyk://books-backend/endpoint`.
+
+## Loop Behavior
+
+### Authentication
+
+Authentication behavior on a looped request depends on the auth method in use and whether the loop targets the same API or a different one. This should be considered carefully when designing an internal routing chain.
+
+**Same API (`tyk://self/...`)**
+
+When looping to an endpoint in the same API, the behavior depends on the API's auth method as follows:
+
+- **[Auth Token](/api-management/authentication/bearer-token)**: the auth check is only performed on the original request.
+- **[Basic Auth](/api-management/authentication/basic-authentication) and [Certificate Auth](/api-management/authentication/certificate-auth)**: the auth check is run on each loop, but will succeed automatically as there is no change to the credential.
+- **[JWT](/basic-config-and-security/security/authentication-authorization/json-web-tokens), [OAuth 2.0](/api-management/authentication/oauth-2), [HMAC](/basic-config-and-security/security/authentication-authorization/hmac-signatures)**: the auth check is run on every loop and must succeed.
+
+For example, an API using JWT authentication that rewrites to `tyk://self/internal-endpoint` will validate the JWT again on the looped request. The token must still be present and valid.
+
+**Different API (`tyk://<identifier>/...`)**
+
+Each API definition is an independent security boundary. Tyk runs the target API's full authentication middleware chain as it would for any other incoming request, validating the request fresh against the target API's own credentials.
+
+The request must carry credentials that are valid for the target API. If those credentials differ from the ones used on the first hop - for example, the target API uses a different API key or a different header - add the required credential to the request with a [request header transformation](/api-management/traffic-transformation/request-headers) before the rewrite target is reached.
+
+<Note>
+APIs secured with [Certificate Auth](/api-management/authentication/certificate-auth) cannot be used as targets for internal looping. The internal transport used for different-API routing does not carry TLS connection state, so when the request is presented to the target API there is no client certificate to validate and Tyk will reject the request with `HTTP 403`.
+</Note>
+
+### Rate Limits and Quotas
+
+The Gateway's Session contains details of access and usage permissions, such as rate limits and quotas, for the requesting client. Tyk's standard rate limiting middleware increments the counters for each API request and applies limits to prevent overuse.
+
+A loop represents an internal leg of a single external client request: if Tyk incremented the counters and applied limits at each hop, a single request would be double-counted and clients could be charged multiple times for one request.
+
+By default, rate limit and quota increments and checks are performed only on the original API, not in the looped requests.
+
+**Same API (`tyk://self/...`)**
+
+Authentication is not re-run on a self-loop, so the originating Session is used throughout the entire chain. There is one set of rate limit and quota counters, decremented once on the original request. All subsequent loop legs within the same API skip rate limit and quota checks by default.
+
+**Different API (`tyk://<identifier>/...`)**
+
+If the target API [performs authentication](#authentication) it loads its own Session from Redis during authentication. That Session may carry rate limit and quota counters independent of the originating API. These are skipped by default for looped requests.
+
+**Checking Rate Limits on Looped APIs**
+
+An [optional control](#loop-controls) can be configured when looping that will run the rate limiting middleware in the target API. If this is enabled for a loop to the same API, this will lead to double counting and is not recommended. If it is enabled for a loop to a different API, the counters in the target API's Session will be incremented and checked against the limits configured for that API.
+
+Rate limit and quota deductions happen in memory during middleware processing. The updated Session is written back to Redis only after the full request chain - including all loop legs - has completed.
+
+### Loop Depth
+
+To guard against infinite loops, Tyk enforces a configurable maximum of five loops per request. When this limit is exceeded, Tyk returns `HTTP 500`:
+
 ```
-?method=GET
-```
-
-For example:
-
-```
-tyk://123/myendpoint?method=GET
-```
-
-### Loop Limiting
-
-In order to avoid endless recursion, there's a default limit loop level of 5 which is set in the request level (i.e. set per request).
-In case the loop level has gone beiod the allowed limit the user will get the error `"Loop level too deep. Found more than %d loops in single request"`.
-You can set the loop level limit with a query param as shown below. Please note that you can only set it once per request. After that, you can't overwrite with a new loop level limit.
-
-
-Tell Tyk to limit the number of loops by adding the following query param:
-```
-?loop_limit={int}
-```
-
-For example:
-
-```
-tyk://123/myendpoint?loop_limit={int}
+Loop level too deep. Found more than 5 loops in single request
 ```
 
 
+## Loop Controls
 
+The behavior of a looped request can be modified by appending control parameters to the `tyk://` URL. These parameters are consumed by Tyk and stripped before the looped request is dispatched, so they do not reach the target upstream.
+
+| Parameter | Description |
+| :--- | :--- |
+| `check_limits=true` | Enforce rate limits and quotas on the looped request. For same API loops, this double-counts the request against the client's allowance and is not recommended. For different API loops, limits are enforced against the target API's own session. |
+| `method=<VERB>` | Override the HTTP method of the looped request, for example `method=POST`. |
+| `loop_limit=<n>` | Set the maximum number of loops permitted in this request chain. Default is `5`. Can only be set in the original loop - subsequent loops in the same request chain cannot change it. |
+
+For example, to loop to the Books Backend API enforcing its rate limits, use the rewrite target `tyk://books-backend/fiction/9780?check_limits=true`.
+
+## Internal-Only APIs
+
+An API or an individual endpoint can be restricted so it is only accessible via internal routing, not from external HTTP requests.
+
+### API-Level
+
+Mark an entire API as internal to exclude it from the HTTP router. External requests return `HTTP 404` - the API is only reachable via `tyk://`.
+
+**Tyk OAS** - set `internal: true` in the `info.state` section of the Tyk Vendor Extension:
+
+```json
+"x-tyk-api-gateway": {
+  "info": {
+    "state": {
+      "active": true,
+      "internal": true
+    }
+  }
+}
+```
+
+If using Tyk Classic, set `"internal": true` at the root of the API definition.
+
+### Endpoint-Level
+
+Mark individual endpoints as internal to allow the rest of the API to remain externally accessible while restricting specific paths to loop context only. External requests to a marked endpoint are rejected with `HTTP 403`.
+
+**Tyk OAS** - add `internal` to the operation in the `middleware.operations` section:
+
+```json
+"operations": {
+  "getContract": {
+    "internal": {
+      "enabled": true
+    }
+  }
+}
+```
+
+If using Tyk Classic, add entries to `extended_paths.internal`:
+
+```json
+"extended_paths": {
+  "internal": [
+    {
+      "path": "/contract",
+      "method": "GET"
+    }
+  ]
+}
+```
+
+## Worked Example
+
+This example demonstrates three internal routing capabilities together: authentication on a looped API, rate limit enforcement via loop controls, and routing to a different upstream service.
+
+Acme Publishing's Books API serves free previews to all clients without authentication. Clients with a download subscription can retrieve the full book by adding `?download=true` and providing a valid access token. Download requests are routed internally to a separate Download API that validates the subscriber's token, enforces their download allowance, and proxies to a dedicated download service.
+
+The setup uses two APIs:
+
+- **Books API** (external, keyless, listen path `/books`, upstream `http://books-service`): Receives all client requests. Default requests are rewritten to the upstream's `preview` path. Requests with `?download=true` are looped internally to the Download API with rate limit enforcement enabled.
+- **Download API** (internal, auth token required, upstream `http://download-service`): Validates the subscriber's access token, enforces their download allowance, and proxies to the download service. Unreachable directly from outside Tyk Gateway.
+
+
+**DIAGRAM PLACEHOLDER: Book Download Example**
+{/*
+  Diagram: Book Download Pipeline
+
+  Purpose: Show two request paths through the Books API - one that loops internally
+  to the Download API for authenticated download, one that proxies directly to the
+  upstream preview path. The key insight is that the same external URL serves two
+  different processing paths based on a query parameter, with the download path
+  enforcing authentication and rate limiting through an internal-only API.
+
+  Structure: Two parallel vertical flows, sharing the same Books API entry point.
+
+  Left flow (default preview):
+  1. Client: GET /books/fiction/9780
+  2. Books API (rounded rectangle)
+  3. URL rewrite: no advanced trigger fires
+  4. Arrow to books-service/preview/fiction/9780 (upstream, grey rectangle)
+  5. Book preview response returned to client
+
+  Right flow (authenticated download):
+  1. Client: GET /books/fiction/9780?download=true + Authorization header
+  2. Books API (same entry box as left flow)
+  3. URL rewrite: advanced trigger fires (download=true); ?download=true dropped
+  4. Dashed arrow labelled "tyk://download-api/fiction/9780?check_limits=true (internal loop)"
+  5. Download API (dashed border, labelled "internal only - HTTP 404 externally"):
+     - Auth token validation shown as a sub-box (HTTP 401 exit if invalid)
+     - Rate limit enforcement shown as a sub-box (check_limits=true)
+  6. Arrow to download-service/fiction/9780 (separate upstream box, distinct from books-service)
+  7. Full book response returned to client
+
+  Key visual elements:
+  - The Download API box must use a dashed border and "internal only" label to
+    reinforce it is not reachable externally
+  - The tyk:// arrow must be labelled as an in-memory dispatch with "?download=true
+    dropped" annotated at the departure point to show the query param is stripped
+  - The two sub-boxes inside the Download API (auth check, rate limit check) are
+    important - they are what justifies having a separate internal API
+  - The two upstream boxes (books-service, download-service) must be visually
+    distinct to show the loop routes to a different backend entirely
+  - Show the HTTP 401 exit path from the auth check sub-box
+
+  Design notes:
+  - Keep the two flows visually parallel so the contrast is obvious at a glance
+  - The decision point (advanced trigger fires / does not fire) should be clearly
+    labelled on the Books API box, not a separate diamond node
+  - Colour scheme suggestion: grey for the default preview flow, blue for the
+    download flow, red for the HTTP 401 rejection exit
+*/}
+
+
+**Tyk OAS Configuration**
+
+Books API - the `GET /{category}/{id}` endpoint with URL rewrite:
+
+```json
+"operations": {
+  "getBook": {
+    "urlRewrite": {
+      "enabled": true,
+      "pattern": "/([^/]+)/([^/]+)",
+      "rewriteTo": "preview/$1/$2",
+      "triggers": [
+        {
+          "condition": "any",
+          "rewriteTo": "tyk://download-api/$1/$2?check_limits=true",
+          "rules": [
+            { "in": "query", "name": "download", "pattern": "true", "negate": false }
+          ]
+        }
+      ]
+    }
+  }
+}
+```
+
+Download API - marked internal at the API level, with auth token authentication and a separate upstream:
+
+```json
+"x-tyk-api-gateway": {
+  "info": {
+    "name": "Download API",
+    "state": { "active": true, "internal": true }
+  },
+  "server": {
+    "authentication": {
+      "enabled": true,
+      "securitySchemes": {
+        "authToken": {
+          "enabled": true
+        }
+      }
+    }
+  },
+  "upstream": { "url": "http://download-service" }
+}
+```
+
+The `securitySchemes` key `authToken` must match a scheme defined in the OpenAPI `components.securitySchemes` section of the Download API's OAS document. See [Auth Token](/api-management/authentication/bearer-token) for full authentication configuration detail.
+
+If using Tyk Classic, mark the Download API internal with `"internal": true` at the root of its API definition. The URL rewrite on the Books API is configured in `extended_paths.url_rewrites` using the same trigger structure described in [Path Modification](/transform-traffic/url-rewriting).
+
+**Outcomes**
+
+| Request | Processed by | Response |
+| :--- | :--- | :--- |
+| `GET /books/fiction/9780` | Books API → `books-service/preview/fiction/9780` | Book preview |
+| `GET /books/fiction/9780?download=true` with valid token | Books API → Download API → `download-service/fiction/9780` | Full book |
+| `GET /books/fiction/9780?download=true` with missing or invalid token | Books API → Download API → rejected | `HTTP 401` |
+
+For the default request, no advanced trigger fires. The basic trigger captures `fiction` as `$1` and `9780` as `$2`, and the request is proxied to `books-service/preview/fiction/9780`.
+
+For the download request with a valid token, the advanced trigger fires on `download=true` and rewrites to `tyk://download-api/fiction/9780?check_limits=true`. The `?download=true` query parameter is dropped at the loop boundary - it is not included in the rewrite target and does not reach the Download API. The loop control parameter `check_limits=true` is consumed by Tyk and stripped before dispatch. The Download API validates the token, decrements the subscriber's download allowance against their Session, and proxies to `download-service/fiction/9780`.
+
+For the download request with a missing or invalid token, the Download API's authentication middleware rejects the request with `HTTP 401` before it reaches the upstream.
+
+A direct external request to the Download API's listen path returns `HTTP 404` - it is excluded from the HTTP router entirely.
