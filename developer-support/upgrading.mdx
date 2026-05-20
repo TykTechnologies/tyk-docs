@@ -408,6 +408,53 @@ issues of the new Gateway using the old MDCB.
 2. Connectivity issues - It's extremely fast to see if there are connectivity issues and gateways (in Hybrid mode) will
 continue to function even if disconnected from their control plane.
 
+###### MCP Gateway (v5.13+)
+<a id="mcp-upgrade-considerations"></a>
+
+Tyk v5.13 introduces MCP Gateway, which adds specific ordering requirements on top of the standard upgrade sequence above. These apply only to deployments that will use MCP Gateway functionality.
+
+**Self-managed (no MDCB)**
+
+No additional ordering requirements. Tyk Pump writes MCP analytics directly to your configured storage backend (MongoDB or SQL). The standard Dashboard → Gateway → Pump upgrade order applies.
+
+**Distributed deployments**
+
+The standard MDCB-first ordering applies with one additional requirement: the `enable_mcp_aggregation` flag on Tyk Pump must remain `false` during the upgrade and only be enabled once all components are on the new version.
+
+This flag tells the Hybrid Pump to send MCP analytics to MDCB using the new `PurgeAnalyticsDataMCPAggregated` RPC. If you enable it before MDCB is running the new version, the RPC calls will fail and MCP analytics records will be silently dropped.
+
+The correct sequence for upgrading distributed deployments is:
+
+1. Upgrade MDCB.
+2. Upgrade Tyk Pump — with `enable_mcp_aggregation` still set to `false`.
+3. Upgrade Tyk Gateway and Tyk Dashboard.
+4. Only now set `enable_mcp_aggregation: true` on every Hybrid Pump and restart.
+
+<Warning>
+Do not set `enable_mcp_aggregation: true` before MDCB is running the new version. Doing so in a distributed deployment will cause RPC failures and silent loss of MCP analytics data.
+</Warning>
+
+The `enable_mcp_aggregation` flag is **not required** for single-DC self-managed deployments (no MDCB in the analytics path) or for Tyk Cloud (no customer-side Pump).
+
+**Tyk Operator**
+
+If you use [Tyk Operator](/tyk-stack/tyk-operator/installing-tyk-operator) to manage API definitions via `TykMCPProxyDefinition` custom resources, deploy the new Operator version only *after* Tyk Dashboard and Tyk Gateway are running the new version. The Operator controller calls the Dashboard `/api/mcps` endpoint, which only exists from v5.13 onwards. Deploying the Operator first will cause reconciliation failures on all MCP custom resources.
+
+**Tyk Developer Portal**
+
+If your deployment includes the [Tyk Developer Portal](/portal/overview/getting-started), upgrade Portal before or at the same time as Tyk Dashboard, and definitely before creating any MCP Proxy policies in the Dashboard. From v1.17.2, Portal prevents MCP Proxy policies from appearing as API Products in the Developer Portal so that they cannot accidentally be exposed in Catalogs. An older Portal version running against a new Dashboard with MCP Proxy policies configured will surface those policies which could then be exposed to API Consumers who will not be able to consume them.
+
+**Tyk Cloud**
+
+Tyk Cloud does not run a customer-side Pump — MCP analytics are written directly by the Gateway and MDCB to the managed store. The deployment order is:
+
+1. MDCB
+2. Tyk Gateway and Tyk Dashboard
+3. Tyk Operator (if used) — after Dashboard is running
+4. Tyk Developer Portal — before MCP Proxy policies are created in Dashboard
+
+There is no `enable_mcp_aggregation` flag to configure in a Cloud deployment.
+
 #### Upgrade guides
 We provide upgrade guides for Linux, Docker, Helm and K8S. To continue the upgrade process, please refer to the relevant installation guide under this section.
 
