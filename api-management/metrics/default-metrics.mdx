@@ -1,0 +1,181 @@
+---
+title: "Default Tyk Gateway Metrics Reference"
+description: "Complete reference of all metrics exported by Tyk Gateway when OpenTelemetry is enabled: request metrics, Go runtime metrics, and configuration state metrics."
+keywords: "OpenTelemetry, Metrics, RED Metrics, Request Duration, Go Runtime, Prometheus, Grafana, API Observability"
+sidebarTitle: "Default Metrics"
+---
+
+## Availability
+
+| Component | Version | Edition |
+| :-------- | :------ | :------- |
+| Tyk Gateway | Available since [v5.13.0](/developer-support/release-notes/gateway#5-13-0-release-notes) | Community & Enterprise |
+
+## Default Gateway Metrics
+
+When `opentelemetry.metrics.enabled` is set to `true`, Tyk Gateway automatically exports three groups of metrics, no additional configuration required:
+
+1. [Request metrics](#request-metrics): Rate, Errors, and Duration (RED) for every API request
+2. [Go runtime metrics](#go-runtime-metrics): Memory, goroutines, and GC health
+3. [Configuration state metrics](#configuration-state-metrics): API/policy load counts and reload events
+
+All metrics are exported as OpenTelemetry-semantic-convention-compliant instruments and include [resource attributes](#resource-attributes) that identify the gateway instance.
+
+### Request Metrics
+
+These four instruments cover the standard RED signals for every API proxied by the Gateway.
+
+| Metric Name | Type | Unit | Description |
+|-------------|------|------|-------------|
+| `http.server.request.duration` | Histogram | seconds | End-to-end request latency (client to Gateway to upstream and back). |
+| `tyk.gateway.request.duration` | Histogram | seconds | Time spent inside the gateway only (middleware processing, routing). Excludes upstream response time. |
+| `tyk.upstream.request.duration` | Histogram | seconds | Time spent waiting for the upstream service to respond. |
+| `tyk.api.requests.total` | Counter | requests | Total number of requests processed. |
+
+The three-way latency breakdown is particularly useful for distinguishing gateway processing overhead from upstream service slowness.
+
+#### Default Dimensions
+
+Default dimensions vary by instrument:
+
+| Instrument | `http.request.method` | `http.response.status_code` | `tyk.api.id` | `tyk.response_flag` |
+|-----------|:---:|:---:|:---:|:---:|
+| `http.server.request.duration` | Yes | Yes | Yes | Yes |
+| `tyk.gateway.request.duration` | Yes | - | Yes | Yes |
+| `tyk.upstream.request.duration` | Yes | - | Yes | Yes |
+| `tyk.api.requests.total` | Yes | Yes | Yes | - |
+
+| Dimension | Description |
+|-----------|-------------|
+| `http.request.method` | HTTP request method (`GET`, `POST`, etc.). |
+| `tyk.api.id` | The Tyk API ID. |
+| `http.response.status_code` | HTTP response status code (`200`, `404`, `500`, etc.). |
+| `tyk.response_flag` | Tyk 3-letter error classification code (e.g., `AKI`, `URS`, `CBO`), or the HTTP status code string (e.g., `"200"`) for successful requests or when error classification is absent. See the [full list of response flags](/api-management/logs#error-classification). |
+
+You can add more dimensions to any instrument using [custom metrics](/api-management/metrics/custom-metrics).
+
+### Go Runtime Metrics
+
+These metrics are exported automatically and reflect the health of the Go runtime inside the Gateway process. They can be disabled by setting `runtime_metrics: false` in the metrics config.
+
+| Metric Name | Type | Unit | Description |
+|-------------|------|------|-------------|
+| `go.memory.used` | Gauge | bytes | Current heap memory in use. |
+| `go.memory.limit` | Gauge | bytes | Soft memory limit set via `GOMEMLIMIT`. |
+| `go.memory.allocated` | Gauge | bytes | Total bytes allocated to the heap. |
+| `go.memory.allocations` | Counter | bytes | Cumulative bytes allocated since startup. |
+| `go.memory.gc.goal` | Gauge | bytes | Target heap size for the next GC cycle. |
+| `go.goroutine.count` | Gauge | goroutines | Number of active goroutines. Useful for detecting goroutine leaks. |
+| `go.processor.limit` | Gauge | threads | Number of OS threads available (`GOMAXPROCS`). |
+| `go.config.gogc` | Gauge | percent | GC target percentage (`GOGC` env var). |
+
+### Configuration State Metrics
+
+These metrics reflect the operational state of the Gateway's loaded configuration. They are useful for detecting silent configuration failures, for example, alerting when the number of loaded APIs drops unexpectedly.
+
+| Metric Name | Type | Unit | Description |
+|-------------|------|------|-------------|
+| `tyk.gateway.apis.loaded` | Gauge | APIs | Number of API definitions currently loaded and active. |
+| `tyk.gateway.policies.loaded` | Gauge | policies | Number of policies currently loaded and active. |
+| `tyk.gateway.config.reload.total` | Counter | reloads | Cumulative number of configuration reload events since startup. |
+| `tyk.gateway.config.reload.duration` | Histogram | seconds | Time taken to complete each configuration reload cycle. |
+
+## Resource Attributes
+
+Every metric exported from a Gateway instance carries resource attributes, metadata that identifies the source. These are set once at startup and attached to all metrics.
+
+### Tyk-Specific Resource Attributes
+
+| Attribute | Always Present | Example | Description |
+|-----------|---------------|---------|-------------|
+| `tyk.gw.id` | Yes | `gw-prod-eu-west-1-a` | Unique Gateway ID. |
+| `tyk.gw.dataplane` | Yes | `true` | Whether the Gateway is running in a distributed Data Plane |
+| `tyk.gw.group.id` | No | `prod-eu-west-1` | Present only for Data Plane Gateways, identifies the group. |
+| `tyk.gw.tags` | No | `["region:eu", "env:prod"]` | Present only when the Gateway has [segment tags](/api-management/multiple-environments#what-is-api-sharding-) configured. |
+
+### Standard OTel Resource Attributes
+
+| Category | Attributes |
+|----------|-----------|
+| Service | `service.name`, `service.version`, `service.instance.id` |
+| Host | `host.name`, `host.arch`, `host.ip` |
+| Process | `process.pid` |
+
+### Using Resource Attributes in Prometheus
+
+When using an OTel Collector to export to Prometheus, enable `resource_to_telemetry_conversion` to expose resource attributes as metric labels:
+
+```yaml
+exporters:
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    resource_to_telemetry_conversion:
+      enabled: true
+```
+
+Alternatively, add a transform processor to metrics pipeline for OTLP exporters:
+
+```yaml
+processors:
+  transform/tyk_gw_resource_attrs:
+    error_mode: ignore
+    metric_statements:
+      - context: datapoint
+        statements:
+          - set(attributes["tyk_gw_group_id"], resource.attributes["tyk.gw.group.id"]) where resource.attributes["tyk.gw.group.id"] != nil
+          - set(attributes["tyk_gw_id"], resource.attributes["tyk.gw.id"]) where resource.attributes["tyk.gw.id"] != nil
+          - set(attributes["tyk_gw_tags"], resource.attributes["tyk.gw.tags"]) where resource.attributes["tyk.gw.tags"] != nil
+          - set(attributes["tyk_gw_dataplane"], resource.attributes["tyk.gw.dataplane"]) where resource.attributes["tyk.gw.dataplane"] != nil
+```
+
+This allows PromQL queries like:
+
+```promql
+# All metrics from a specific gateway node
+{tyk_gw_id="gw-prod-eu-west-1-a"}
+
+# Compare request rates across gateways in an edge group
+sum by (tyk_gw_id) (
+  rate(tyk_api_requests_total{tyk_gw_group_id="edge-eu-west"}[5m])
+)
+```
+
+Without this setting, resource attributes are available via the `target_info` metric and can be joined in PromQL.
+
+## Exemplars
+
+Exemplars are sample observations attached to histogram metric data points that carry the active trace context (specifically the `trace_id` and `span_id` of the request that produced the measurement). They create a direct, clickable link from an aggregated metric to the specific trace that caused an anomaly.
+
+### How they work in Tyk
+
+When OpenTelemetry tracing is enabled and a histogram metric (such as `http.server.request.duration`) is recorded during an active sampled request, the OTel Go SDK automatically attaches the current trace and span IDs to the observation. Exemplars are only attached for sampled requests.
+
+### Infrastructure requirements
+
+Exemplar storage and rendering must be enabled in your observability stack; nothing additional is needed on the Tyk side.
+
+For example, in the following standard OTel pipeline:
+
+```
+Tyk Gateway
+  └─ OTLP/gRPC ──► OTel Collector ──► Prometheus ──► Grafana
+                                       (exemplar storage)   (exemplar markers)
+```
+
+| Component | Requirement |
+|-----------|-------------|
+| OTel Collector | Any version supporting OTLP metrics with exemplar passthrough |
+| Prometheus | v2.26+. Start with `--enable-feature=exemplar-storage` |
+| Grafana | v7.4+. Enable "Exemplars" toggle on the Prometheus data source |
+
+### Querying exemplars in Prometheus
+
+Exemplars are accessible via the Prometheus exemplar API:
+
+```
+GET /api/v1/query_exemplars?query=http_server_request_duration_seconds&start=<start>&end=<end>
+```
+
+### Grafana workflow
+
+When exemplar rendering is enabled, Grafana displays scatter plot markers on histogram panels. Clicking a marker navigates directly to the linked trace in your configured tracing backend (Jaeger, Grafana Tempo, etc.), with no manual trace ID lookup required.
