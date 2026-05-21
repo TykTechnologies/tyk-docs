@@ -96,6 +96,13 @@ For vulnerabilities identified in the base image, refer to the [Vulnerability Ma
 
 Enterprise and FIPS images share the same hardened base. The FIPS images additionally contain binaries with the Go Cryptographic Module enabled.
 
+### Tyk Sync
+
+Tyk Sync does not have a separate FIPS-specific image or tag. It is compiled with standard Go, but since version v2.1.3 it is built using Go 1.24+ and from v2.1.7+ it is built using Go 1.25+, which are FIPS-compatible Go versions.
+
+To use Tyk Sync, use the standard Docker image tag:
+* **Standard Tag**: `tykio/tyk-sync:<version>` (e.g., `v2.1.8`)
+
 ## Configuration
 
 ### Tyk Gateway
@@ -115,8 +122,97 @@ TYK_GW_HASHKEYFUNCTION=sha256
 ```
 
 ### Other Products
-
 Tyk Dashboard, Tyk Pump, and Tyk MDCB do not require additional FIPS-specific configuration. FIPS mode is active by default in FIPS builds.
+
+## Helm Chart Configuration
+
+To deploy Tyk in a FIPS-compliant manner using Helm charts (such as `tyk-stack` or `tyk-control-plane`), you need to configure the chart values to use the FIPS-specific Docker images and enable key hashing.
+
+Below is an example of the Helm values configuration:
+
+```yaml
+global:
+  # Enable key hashing globally
+  hashKeys: true
+
+# Tyk Gateway Configuration
+tyk-gateway:
+  gateway:
+    image:
+      repository: tykio/tyk-gateway-fips
+    # Set the key hashing function to SHA-256
+    hashKeyFunction: sha256
+
+# Tyk Dashboard Configuration
+tyk-dashboard:
+  image:
+    repository: tykio/tyk-dashboard-fips
+
+# Tyk Pump Configuration
+tyk-pump:
+  image:
+    repository: tykio/tyk-pump-fips
+
+# Tyk MDCB Configuration
+tyk-mdcb:
+  image:
+    repository: tykio/tyk-mdcb-docker-fips
+
+# Tyk Bootstrap Jobs Configuration
+tyk-bootstrap:
+  bootstrap:
+    jobs:
+      preInstall:
+        image:
+          repository: tykio/tyk-k8s-bootstrap-pre-install-fips
+      postInstall:
+        image:
+          repository: tykio/tyk-k8s-bootstrap-post-fips
+      preDelete:
+        image:
+          repository: tykio/tyk-k8s-bootstrap-pre-delete-fips
+
+# Tyk Operator Configuration (if deployed via tyk-stack chart)
+tyk-operator:
+  image:
+    repository: tykio/tyk-operator-fips
+```
+
+## Extended Images (Python Support)
+
+To run Python plugins in a FIPS-compliant environment, you can build an extended FIPS image with Python support using a multi-stage Dockerfile. This approach copies the FIPS-compliant Tyk Gateway binary and its assets from the official `tykio/tyk-gateway-fips` image into a Python-enabled base image. Since the Tyk Gateway FIPS binary is compiled with the Go Cryptographic Module embedded, it will continue to run in FIPS mode.
+
+Below is an example Dockerfile for building an extended FIPS image with Python support:
+
+```dockerfile
+ARG BASE_IMAGE=tykio/tyk-gateway-fips:v5.13.0
+FROM ${BASE_IMAGE} AS base
+
+FROM python:3.11-bookworm
+COPY --from=base /opt/tyk-gateway/ /opt/tyk-gateway/
+RUN pip install setuptools && pip install google && pip install 'protobuf==4.24.4'
+
+EXPOSE 8080 80 443
+
+ENV PYTHON_VERSION=3.11
+ENV PORT=8080
+
+WORKDIR /opt/tyk-gateway/
+
+ENTRYPOINT ["/opt/tyk-gateway/tyk" ]
+CMD [ "--conf=/opt/tyk-gateway/tyk.conf" ]
+```
+
+Once you have built and pushed your custom extended FIPS image to your container registry, you can configure your Helm chart to use it by overriding the Gateway image repository and tag:
+
+```yaml
+tyk-gateway:
+  gateway:
+    image:
+      repository: <your-registry>/tyk-gateway-fips-python
+      tag: <your-tag>
+```
+
 
 ## Vulnerability Scanning
 
