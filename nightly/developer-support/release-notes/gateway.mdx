@@ -2076,6 +2076,199 @@ Upgraded to use the latest upstream version of kin-openapi (v0.132.0). This ensu
 
 ## 5.8 Release Notes
 
+### 5.8.14 Release Notes 
+
+#### Release Date 21 May 2026
+
+#### Release Highlights
+
+This patch implements several changes and fixes to improve the stability and correct the behavior of the Gateway.
+
+The default minimum and maximum TLS versions are now inherited directly from the underlying Go library, ensuring that Tyk users will benefit from best practice. If non-standard defaults are required, these must be deliberately configured.
+
+We have fixed an issue that was preventing CORS preflight checks from running properly if an allow list was in use and various other issues in observability, internal looping, and Gateway stability.
+
+For a comprehensive list of changes, please refer to the detailed [changelog](/nightly/#Changelog-v5.8.14) below.
+
+#### Breaking Changes
+
+**Default maximum and minimum TLS versions** are now inherited from the underlying Golang library and so will be TLS 1.3 and TLS 1.2 respectively (previously were both set to TLS 1.2).
+
+You must set [http_server_options.max_version](/nightly/tyk-oss-gateway/configuration#http_server_options-max_version) (or the equivalent environment variable)  to `771` if you require an upper limit of TLS 1.2.
+
+  See [here](/nightly/api-management/implement-tls#controlling-tls-version-&-cipher-suites) for details how to control TLS version and cipher suites.
+
+**Query parameters from original request are no longer automatically preserved when looping using `tyk://` protocol)**
+
+We have fixed an inconsistent behavior when using the URL rewrite middleware to loop requests using the Tyk protocol (`tyk://api-id/path`).
+
+Previously, query parameters added to the `rewrite_to` URL were silently dropped, while original request parameters were automatically preserved in the looped request.
+
+This behavior was inconsistent with standard HTTP URL rewrites and prevented proper parameter transformation during internal API routing.
+
+**Impact**
+- Original request query parameters are no longer automatically forwarded through internal loops
+- Existing URL rewrite configurations may lose query parameters that were previously passed through automatically
+- APIs relying on automatic parameter forwarding will receive incomplete requests
+
+**Migration Required**
+Update your URL rewrite configurations to **explicitly include** any original query parameters you want to preserve. For example:
+- **Before:** `"rewrite_to": "tyk://api-123/endpoint"` (original params auto-forwarded)
+- **After:** `"rewrite_to": "tyk://api-123/endpoint?param1=$tyk_context.request_data.param1"`
+
+
+#### Dependencies
+<a id="dependencies-5.8.14"></a>
+
+##### Compatibility Matrix For Tyk Components
+
+| Gateway Version | Recommended Releases | Backwards Compatibility |
+| :---- | :---- | :---- |
+| 5.8.14   | MDCB v2.11.0     | MDCB v2.11.0 |
+|         | Operator v1.4.0 | Operator v0.17 |
+|         | Sync v2.1.8    | Sync v2.1.0 |
+|         | Helm Chart v5.2.0 | Helm all versions |
+|         | Pump v1.15.0    | Pump all versions |
+
+##### 3rd Party Dependencies & Tools
+<a id="3rdPartyTools-v5.8.14"></a>
+
+| Third Party Dependency                                       | Tested Versions        | Compatible Versions    | Comments | 
+| :------------------------------------------------------------ | :---------------------- | :---------------------- | :-------- | 
+| [Golang](https://go.dev/dl/)                                     | 1.25  |  1.25  | [Go plugins](/nightly/api-management/plugins/golang) must be built using Go 1.25 | 
+| [Redis](https://redis.io/download/)  | 6.2.x, 7.x  | 6.2.x, 7.x  | Used by Tyk Gateway | 
+| [OpenAPI Specification](https://spec.openapis.org/oas/v3.0.3)| v3.0.x                 | v3.0.x                 | Supported by [Tyk OAS](/nightly/api-management/gateway-config-tyk-oas) |
+
+Given the potential time difference between your upgrade and the release of this version, we recommend users verify the ongoing support of third-party dependencies they install, as their status may have changed since the release.
+
+#### Deprecations
+
+There are no deprecations in this release.
+
+#### Upgrade instructions
+<a id="upgrade-5.8.14"></a>
+
+If you are upgrading to 5.8.14, please follow the detailed [upgrade instructions](/nightly/#upgrading-tyk).
+
+#### Downloads
+
+- [Docker Image to pull](https://hub.docker.com/r/tykio/tyk-gateway/tags?page=&page_size=&ordering=&name=v5.8.14)
+  - ```bash
+    docker pull tykio/tyk-gateway:v5.8.14
+    ```
+- Helm charts
+  - [tyk-charts v5.2.0](/nightly/developer-support/release-notes/helm-chart#5-2-0-release-notes)
+
+- [Source code tarball of Tyk Gateway v5.8.14](https://github.com/TykTechnologies/tyk/releases/tag/v5.8.14)
+
+#### Changelog
+<a id="Changelog-v5.8.14" data-scroll-offset></a>
+
+##### Fixed
+
+<AccordionGroup>
+
+<Accordion title='Fixed log level for client TLS certificate requirement errors'>
+We have resolved an issue where "Client TLS certificate is required" errors were logged at `warning` level, creating unnecessary noise in production logs.
+
+Previously, these common client-side authentication failures generated excessive warning-level log entries that could trigger false alerts and obscure more critical issues. The Gateway now logs these authentication failures at `info` level, maintaining security visibility while reducing log noise and alert fatigue for operations teams.
+</Accordion>
+
+<Accordion title='Fixed malformed responses from Go plugins returning error status codes'>
+We have resolved an issue where a Go plugin returning an error status code would result in malformed response bodies that concatenated the original plugin response with additional Gateway error messages.
+
+The Gateway now correctly handles plugin-generated error responses without double-writing headers, ensuring response bodies contain only the payload generated by the plugin and eliminating superfluous warnings in logs.
+</Accordion>
+
+<Accordion title='Fixed query parameter handling when routing requests internally using tyk:// scheme'>
+We have resolved inconsistent query parameter handling in URL rewrites when [internally routing](/nightly/advanced-configuration/transform-traffic/looping) using the `tyk://` scheme. Previously, custom query parameters specified in the `rewrite_to` URL were silently dropped, while original request parameters were unexpectedly preserved.
+
+**What's Fixed:**
+- Query parameters explicitly added to `rewrite_to` URLs are now correctly passed to target APIs
+- Control parameters (`method`, `loop_limit`, `check_limits`) are properly consumed and removed
+- Behavior now matches URL rewrites using `http://` protocol
+
+<Note>
+It is important to note that **query parameters provided with the original request are no longer automatically forwarded**. You must update your [URL rewrite configuration](/nightly/transform-traffic/url-rewriting) to explicitly include any required parameters in the `rewrite_to` URL.
+</Note>
+</Accordion>
+
+<Accordion title='Fixed client mTLS authentication between Tyk Gateways'>
+We have resolved an issue where a Tyk Gateway acting as a client (using upstream mTLS) would fail to authenticate against another Tyk Gateway acting as the mTLS server, resulting in `HTTP 403 Forbidden: Client TLS certificate is required` errors.
+
+The Gateway now reliably presents the configured upstream client certificate whenever requested by the target server, ensuring seamless mTLS communication between APIs hosted on different Tyk Gateways.
+</Accordion>
+
+<Accordion title='Inherit Maximum (1.3) and Minimum (1.2) TLS Versions from Go'>
+We have resolved an issue where the Tyk Gateway default maximum TLS version was incorrectly set to TLS 1.2 instead of TLS 1.3.
+
+Tyk Gateway now follows Go's native TLS defaults (TLS 1.2 minimum, TLS 1.3 maximum), aligning with industry security standards. This maintains full backward compatibility for existing deployments that explicitly configure TLS versions.
+
+To change the maximum TLS version, you must explicitly set [TYK_GW_HTTPSERVEROPTIONS_MAXVERSION](/nightly/tyk-oss-gateway/configuration#http_server_options-max_version) for client-to-Gateway connections or [TYK_GW_PROXYSSLMAXVERSION](/nightly/tyk-oss-gateway/configuration#proxy_ssl-max_version) for Gateway-to-upstream connections.
+
+To change the minimum TLS version, you must explicitly set [TYK_GW_HTTPSERVEROPTIONS_MINVERSION](/nightly/tyk-oss-gateway/configuration#http_server_options-min_version) for client-to-Gateway connections or [TYK_GW_PROXYSSLMINVERSION](/nightly/tyk-oss-gateway/configuration#proxy_ssl-min_version) for Gateway-to-upstream connections.
+
+For full details of TLS version configuration see [here](/nightly/api-management/implement-tls#controlling-tls-version-&-cipher-suites).
+</Accordion>
+
+<Accordion title='Fixed CORS preflight blocking by AllowList middleware'>
+We have resolved an issue where CORS preflight OPTIONS requests were incorrectly blocked by the AllowList middleware when `options_passthrough` was disabled.
+
+Previously, when APIs had CORS enabled with Tyk handling OPTIONS requests internally (`options_passthrough: false`), preflight requests would fail AllowList validation because users typically don't explicitly define OPTIONS endpoints in their AllowList configurations, causing "Requested endpoint is forbidden" errors.
+
+The Tyk Gateway now properly recognizes CORS preflight requests and allows them to bypass AllowList middleware checks when Tyk is configured to handle OPTIONS internally, restoring the expected behavior where CORS preflight handling works automatically without requiring explicit OPTIONS endpoint definitions.
+</Accordion>
+
+<Accordion title='Fixed analytics generation for Tyk OAS API mock endpoints'>
+We have resolved an issue where Tyk OAS APIs with mock endpoints stopped generating analytics data. This functionality was inadvertently broken while fixing an unrelated internal API proxying issue in Tyk Gateway 5.8.6.
+
+Note that analytics are not generated for mock endpoints in Tyk Classic APIs as has always been the case.
+</Accordion>
+
+<Accordion title='Fixed OpenTelemetry configuration file settings being ignored'>
+We have resolved an issue where OpenTelemetry settings could only be set using environment variables and not the Gateway configuration file (`tyk.conf`).
+
+Now OpenTelemetry can be configured via the [`opentelemetry`](/nightly/tyk-oss-gateway/configuration#opentelemetry) section in the Gateway config file (including `enabled`, `exporter`, and `endpoint` fields) or their equivalent environment variables.
+</Accordion>
+
+<Accordion title='Resolved issue with Gateway entering an unresponsive state during startup'>
+We have fixed an issue where the Gateway could fail to load APIs and policies if the Control Plane database was temporarily unavailable during startup (either directly or via MDCB). The Gateway will now automatically retry loading configurations with exponential backoff until successful, restoring self-healing capabilities without requiring a manual restart.
+</Accordion>
+
+<Accordion title='Fixed error response format for SOAP+XML requests'>
+We have resolved an issue where requests with the `application/soap+xml` Content-Type received JSON-formatted error responses instead of the expected XML format. The Gateway now correctly returns XML-formatted errors for SOAP requests.
+</Accordion>
+
+<Accordion title='Resolved Gateway registration failures at scale with Unlimited Node licenses'>
+We have resolved a set of related issues affecting Gateway registration with the Dashboard at scale for deployments using an **unlimited node license**. During mass registrations or rolling upgrades, a combination of lock contention, excessive Redis load, and incorrect handling of `409 Conflict` responses could leave Gateways stuck in registration loops without the credentials needed to serve traffic.
+
+Gateway registration is now significantly more robust at scale: registration requests are no longer serialized across the fleet, Gateways recover cleanly from transient `409 Conflict` responses instead of looping, and the Redis load generated during registration storms is substantially reduced.
+
+A dedicated fix for **limited node license** deployments will be provided in an upcoming release.
+</Accordion>
+
+<Accordion title='Fixed memory issue and unintended rate limit reset in distributed rate limiting'>
+Resolved an issue where the [Distributed Rate Limiter's](/nightly/api-management/rate-limit#distributed-rate-limiter) cache cleanup stopped running after its first execution. This could cause unbounded memory growth on APIs using rate limits with high-cardinality keys (such as per-client-IP rate limiting or custom plugins generating unique keys), and could briefly reset active rate-limit buckets shortly after Gateway startup, allowing requests that should have been blocked to pass through. Memory usage now stays bounded, and rate limits are enforced as configured.
+</Accordion>
+
+</AccordionGroup>
+
+##### Security Fixes
+
+<AccordionGroup>
+
+<Accordion title='Resolved CVEs'>
+We have addressed CVEs reported in dependent libraries, providing increased protection against security vulnerabilities, including, but not limited to:
+
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-39883" target="_blank">CVE-2026-39883</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-39882" target="_blank">CVE-2026-39882</a>
+
+</Accordion>
+
+</AccordionGroup>
+
+---
+
 ### 5.8.13 Release Notes
 
 #### Release Date 22 April 2026
@@ -2190,6 +2383,9 @@ vulnerabilities, including, but not limited to:
 </Accordion>
 
 </AccordionGroup>
+
+
+---
 
 ### 5.8.12 Release Notes
 
