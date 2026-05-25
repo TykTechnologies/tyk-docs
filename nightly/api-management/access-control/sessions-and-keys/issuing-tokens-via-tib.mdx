@@ -1,0 +1,206 @@
+---
+title: "Issue Access Tokens via Identity Broker"
+description: "Learn how to use Tyk Identity Broker (TIB) to authenticate users against external identity providers and issue API tokens for API access."
+keywords: "Tyk Identity Broker, TIB, OAuth, API Tokens, LDAP, Social Provider, Authentication, Access Keys"
+sidebarTitle: "Issue Access Tokens via TIB"
+canonical: "https://tyk.io/docs/api-management/access-control/sessions-and-keys/issuing-tokens-via-tib"
+---
+
+## Introduction
+
+[Tyk Identity Broker](/nightly/api-management/external-service-integration) (TIB) can act as a bridge between external Identity Providers (such as LDAP, Google, or Azure AD) and Tyk Gateway to issue API tokens for client applications (such as Single Page Applications or mobile apps). 
+
+This is distinct from using TIB to log into the [Tyk Dashboard](/nightly/api-management/external-service-integration#single-sign-on-sso) or [Developer Portal](/nightly/tyk-stack/tyk-developer-portal/enterprise-developer-portal/managing-access/enable-sso). Instead, this flow allows a user to authenticate with a third-party provider, and upon success, TIB will grant them a token to access your Tyk-protected APIs.
+
+Depending on how your API is secured, TIB supports two distinct flows for issuing tokens:
+1. **Standard API Tokens (Auth Tokens)**
+2. **OAuth 2.0 Tokens (Tyk as OAuth Provider)**
+
+## Issuing Standard API Tokens (Auth Tokens)
+
+This flow is used when your API is secured with standard [Auth Token](/nightly/api-management/authentication/bearer-token) authentication. TIB authenticates the user against the Identity Provider and directly generates a standard Tyk standard Session and associated Key (auth token), attaching a specific policy to it.
+
+### How it works
+
+TIB uses the `GenerateTemporaryAuthToken` action type, which is configured as follows:
+
+```json
+{
+  "ActionType": "GenerateTemporaryAuthToken",
+  "IdentityHandlerConfig": {
+    "DashboardCredential": "{DASHBOARD-API-CREDENTIAL}",
+    "DisableOneTokenPerAPI": false,
+    "TokenAuth": {
+        "BaseAPIID": "{API-ID-TO-GRANT-ACCESS-TO}"
+    }
+  },
+  "MatchedPolicyID": "{POLICY-ID}",
+  "ProviderConfig": { ... },
+  "Type": "passthrough"
+}
+```
+
+| Key Parameters    | Description                                  |
+|-------------------|----------------------------------------------|
+| `BaseAPIID`       | The API ID to which you are granting access. |
+| `MatchedPolicyID` | The Policy ID for the Policy that should be applied to the generated Session. | 
+
+## Issuing OAuth Tokens
+
+This flow is used when your API is secured using the [Tyk OAuth 2.0](/nightly/api-management/authentication/oauth-2) authentication method. TIB acts as a delegate: it authenticates the user, then uses a pre-configured Tyk OAuth Client's credentials to request an OAuth token from the Tyk Gateway on behalf of the user.
+
+### Prerequisites
+
+You must first create an OAuth Client for the target API (typically done via [Tyk Dashboard](/nightly/api-management/authentication/oauth-2#client-app-registration)).
+
+### How it works
+
+TIB uses the `GenerateOAuthTokenForClient` action type. Requests for tokens go via the base API's listen path (`{listen_path}/oauth/authorize`), so TIB needs to know the listen path and ID of this API to make the correct API calls on your behalf.
+
+For example:
+
+```json
+{
+  "ActionType": "GenerateOAuthTokenForClient",
+  "ID": "3",
+  "IdentityHandlerConfig": {
+    "DashboardCredential": "{DASHBOARD-API-ID}",
+    "DisableOneTokenPerAPI": false,
+    "OAuth": {
+      "APIListenPath": "{API-LISTEN-PATH}",
+      "BaseAPIID": "{BASE-API-ID}",
+      "ClientId": "{TYK-OAUTH-CLIENT-ID}",
+      "RedirectURI": "http://{APP-DOMAIN}:{PORT}/{AUTH-SUCCESS-PATH}",
+      "ResponseType": "token",
+      "Secret": "{TYK-OAUTH-CLIENT-SECRET}"
+    }
+  },
+  "MatchedPolicyID": "567a86f630c55e3256000003",
+  "OrgID": "53ac07777cbb8c2d53000002",
+  "ProviderConfig": { ... },
+  "ProviderName": "SocialProvider",
+  "Type": "redirect"
+}
+```
+
+| Key Parameters    | Description                                        |
+|-------------------|----------------------------------------------------|
+| `BaseAPIID`       | The API ID to which you are granting access.       |
+| `MatchedPolicyID` | The Policy ID for the Policy that should be applied to the generated Session. | 
+| `APIListenPath`   | The listen path of your API; TIB uses this to generate the OAuth token. |
+| `ClientId`        | The client ID for this profile within Tyk Gateway. |
+| `Secret`          | The client secret for this profile in Tyk Gateway. |
+| `RedirectURI`     | The Redirect URL set for this profile in the Tyk Gateway. |
+| `ResponseType`    | Can be `token` or `authorization_code`. For SPAs and Mobile Apps, `token` is recommended. |
+
+### Example: Log into an APP with Github OAuth
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/gqUaDM4aJTw" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+
+## Handling the Token Response
+
+When TIB successfully authorizes the user and generates the token, it needs to deliver it back to the client application.
+
+- **For `redirect` provider types** (such as Social IDPs or SAML): TIB redirects the user back to the application's `RedirectURI` with the token or auth code appended as a URL fragment (e.g., `http://app-domain/callback#access_token=...`). The client app can then decode and use it as needed.
+- **For `passthrough` provider types** (such as LDAP): TIB can return the token directly in the JSON response or redirect, depending on the configuration.
+
+
+## Generate an OAuth token using a Social Provider (e.g., Google)
+
+Assuming we have created a client ID and secret in Google Apps to grant ourselves access to the user's data, we need those details, and some additional ones from Tyk itself.
+
+### 1. Set up an OAuth client with Google Apps
+
+1. Go to the Google Developer Console and create a new app.
+2. Register a new OAuth client. Let's call it WebApp 1 (Select "New Credentials -> OAuth Client ID").
+3. Select Web App.
+4. Add the following URL (modify for your domain) to the "Authorized redirect URIs" section: `http://tib-hostname:TIB-PORT/auth/{PROFILE-ID}/gplus/callback`
+
+### 2. Create an OAuth Client in Tyk Dashboard
+
+TIB will use the OAuth credentials for Google to access and authenticate the user, and then use another set of client credentials to make the request to Tyk to generate a token response. We need to create an OAuth client in Tyk Dashboard before we can proceed.
+
+Requests for tokens go via the base API's listen path ({listen_path}/toauth/authorize), so we will need to know the listen path and ID of this API so TIB can make the correct API calls on your behalf.
+
+```json
+{
+  "ActionType": "GenerateOAuthTokenForClient",
+  "ID": "3",
+  "IdentityHandlerConfig": {
+    "DashboardCredential": "{DASHBOARD-API-ID}",
+    "DisableOneTokenPerAPI": false,
+    "OAuth": {
+      "APIListenPath": "{API-LISTEN-PATH}",
+      "BaseAPIID": "{BASE-API-ID}",
+      "ClientId": "{TYK-OAUTH-CLIENT-ID}",
+      "RedirectURI": "http://{APP-DOMAIN}:{PORT}/{AUTH-SUCCESS-PATH}",
+      "ResponseType": "token",
+      "Secret": "{TYK-OAUTH-CLIENT-SECRET}"
+    }
+  },
+  "MatchedPolicyID": "567a86f630c55e3256000003",
+  "OrgID": "53ac07777cbb8c2d53000002",
+  "ProviderConfig": {
+    "CallbackBaseURL": "http://{TIB-DOMAIN}:{TIB-PORT}",
+    "FailureRedirect": "http://{PORTAL-DOMAIN}:{PORTAL-PORT}/portal/login/?fail=true",
+    "UseProviders": [
+      {
+        "Key": "GOOGLE-OAUTH-CLIENT-KEY",
+        "Name": "gplus",
+        "Secret": "GOOGLE-OAUTH-CLIENT-SECRET"
+      }
+    ]
+  },
+  "ProviderName": "SocialProvider",
+  "Type": "redirect"
+}
+```
+
+| Key Parameters    | Description                                        |
+|-------------------|----------------------------------------------------|
+| `APIListenPath`   | The listen path of your API; TIB uses this to generate the OAuth token. |
+| `BaseAPIID`       | The base API ID for the listen path (forms the basic access grant for the token). |
+| `ClientId`        | The client ID for this profile within Tyk Gateway. |
+| `Secret`          | The client secret for this profile in Tyk Gateway. |
+| `RedirectURI`     | The Redirect URL set for this profile in the Tyk Gateway. |
+| `ResponseType`    | Can be `token` or `authorization_code`. For SPAs and Mobile Apps, `token` is recommended. |
+
+When TIB successfully authorizes the user, it generates the token and redirects the user to the relevant redirect URI with their token or auth code as a fragment in the URL.
+
+
+## Generate an OAuth token using LDAP
+
+The configuration below will take a request that is posted to TIB, authenticate it against LDAP, and if valid, redirect to the Tyk Gateway OAuth clients' `Redirect URI` with the token as a URL fragment:
+
+```json
+{
+  "ActionType": "GenerateOAuthTokenForClient",
+  "ID": "6",
+  "IdentityHandlerConfig": {
+    "DashboardCredential": "{DASHBOARD-API-ID}",
+    "DisableOneTokenPerAPI": false,
+    "OAuth": {
+      "APIListenPath": "{API-LISTEN-PATH}",
+      "BaseAPIID": "{BASE-API-ID}",
+      "ClientId": "{TYK-OAUTH-CLIENT-ID}",
+      "RedirectURI": "http://{APP-DOMAIN}:{PORT}/{AUTH-SUCCESS-PATH}",
+      "ResponseType": "token",
+      "Secret": "{TYK-OAUTH-CLIENT-SECRET}"
+    }
+  },
+  "MatchedPolicyID": "POLICY-ID",
+  "OrgID": "53ac07777cbb8c2d53000002",
+  "ProviderConfig": {
+    "FailureRedirect": "http://{APP-DOMAIN}:{PORT}/failure",
+    "LDAPAttributes": [],
+    "LDAPPort": "389",
+    "LDAPServer": "localhost",
+    "LDAPUserDN": "cn=*USERNAME*,cn=dashboard,ou=Group,dc=ldap,dc=tyk-ldap-test,dc=com"
+  },
+  "ProviderName": "ADProvider",
+  "Type": "passthrough"
+}
+```
+
+This configuration is useful for internal APIs that require valid OAuth tokens (e.g., a webapp or mobile app) but need validation by an LDAP provider.
