@@ -24,6 +24,8 @@ WHAT THIS SCRIPT VALIDATES:
      * GFM-slugified headings (Mintlify's default anchor format)
      * Custom heading IDs via {#id} syntax
      * HTML <a id="..."> and <a name="..."> elements
+     * <Tab title="..."> elements (slugified title)
+     * <ParamField path="..."> elements → #param-{path} (underscores/dots → hyphens)
    - Reports links whose anchor does not exist in the target file
 
 4. EXTERNAL LINK VALIDATION (--external-links flag):
@@ -146,6 +148,9 @@ def extract_file_anchors(content: str) -> Set[str]:
     - Custom heading IDs: ## Heading {#custom-id} → custom-id (overrides slug,
       no disambiguation applied)
     - HTML <a id="..."> and <a name="..."> elements
+    - <Tab title="..."> elements → slugified title
+    - <ParamField path="..."> elements → "param-" + path lowercased with _ and . → -
+      e.g. path="api_id" → #param-api-id, path="auth.header_name" → #param-auth-header-name
     """
     anchors: Set[str] = set()
     # Track how many times each base slug has appeared for disambiguation
@@ -182,6 +187,13 @@ def extract_file_anchors(content: str) -> Set[str]:
         slug = slugify_heading(m.group(1))
         if slug:
             anchors.add(slug)
+
+    # <ParamField path="..."> elements generate anchors as #param-{path}
+    # Mintlify lowercases the path and converts underscores and dots to hyphens.
+    # e.g. path="api_id" → #param-api-id, path="auth.header_name" → #param-auth-header-name
+    for m in re.finditer(r'<ParamField\b[^>]+\bpath=["\']([^"\']+)["\']', content, re.IGNORECASE):
+        path = m.group(1).lower().replace('_', '-').replace('.', '-')
+        anchors.add('param-' + path)
 
     return anchors
 
