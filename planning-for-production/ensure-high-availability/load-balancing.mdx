@@ -1,82 +1,131 @@
 ---
-title: "Load Balancing"
-description: "How to set up round-robin load balancing in Tyk Gateway and Dashboard, including dynamic load balancing with service discovery."
-sidebarTitle: "Load Balancing"
+title: "Request Forwarding"
+description: "Learn how Tyk Gateway forwards matched requests to upstream services, including load balancing, service discovery, and protocol-specific configuration"
+keywords: "upstream target, target URL, load balancing, service discovery, gRPC, TCP, HTTP/2, strip listen path, request forwarding"
+sidebarTitle: "Request Forwarding"
 canonical: "https://tyk.io/docs/planning-for-production/ensure-high-availability/load-balancing"
 ---
 
-## Introduction
+Once Tyk Gateway has [matched](/getting-started/key-concepts/url-matching) an incoming request to an API definition and endpoint, it passes the request through the configured middleware chain before forwarding it to the upstream service. This page covers how Tyk resolves the upstream target, how it handles the request path, and how forwarding behavior differs by protocol.
 
-Tyk supports native round-robin load-balancing in its proxy. This means that Tyk will rotate requests through a list of target hosts as requests come in. This can be very useful in microservice architectures where clusters of specialized services are launched for high availability.
+## The Upstream Target
 
-Setting up load balancing is done on a per API basis, and is defined in the API Definition file/object:
+Each API definition includes an upstream *target URL*. Tyk Gateway replaces its own hostname with this URL when forwarding the request.
 
-*   `proxy.enable_load_balancing`: Set this value to `true` to have a Tyk node distribute traffic across a list of servers.
+- **Tyk OAS:** the upstream target is configured in the `upstream` section of the Tyk Vendor Extension. See [Upstream](/api-management/gateway-config-tyk-oas#upstream).
+- **Tyk Classic:** the upstream target is the `proxy.target_url` field in the API definition.
 
-*   `proxy.target_list`: A list of upstream targets (can be one or many hosts):
+By default, Tyk appends the full request path to the upstream URL. The [strip listen path](/api-management/gateway-config-tyk-oas#listenpath) option removes the listen path prefix from the forwarded path, so the upstream receives only the endpoint path. This is the most common configuration when Tyk presents a different URL structure to clients than the upstream expects - for example, when placing a clean public facade over a legacy service.
+
+For example, given a *Users API* configured with:
+- [`upstream.url`](/api-management/gateway-config-tyk-oas#upstream): `http://acme.service.com/user-service`
+- [`server.listenPath.value`](/api-management/gateway-config-tyk-oas#listenpath): `/users`
+- an endpoint `GET /{id}/profile`
+- hosted on a Tyk Gateway with the domain `acme-gateway.com`
+
+A client request to `GET http://acme-gateway.com/users/1234/profile` is matched to the *Users API* and forwarded to the upstream depending on [`server.listenPath.strip`](/api-management/gateway-config-tyk-oas#listenpath):
+- `true`: forwarded to `http://acme.service.com/user-service/1234/profile`
+- `false`: forwarded to `http://acme.service.com/user-service/users/1234/profile`
+
+## Load Balancing
+
+Tyk supports round-robin load balancing across multiple upstream targets. When load balancing is enabled, Tyk rotates requests through the configured target list on each incoming request. Targets can be weighted so that traffic is distributed in a controlled ratio - for example, directing 90% of traffic to a production environment and 10% to a beta environment.
+
+### Configuration
+
+Configure targets and set weights in the `upstream.loadBalancing` section of the Tyk Vendor Extension:
 
 ```yaml
-"target_list": [
-  "http://10.0.0.1",
-  "http://10.0.0.2",
-  "http://10.0.0.3",
-  "http://10.0.0.4"
-]
+x-tyk-api-gateway:
+  upstream:
+    loadBalancing:
+      enabled: true
+      targets:
+        - url: "http://10.0.0.1"
+          weight: 9
+        - url: "http://10.0.0.2"
+          weight: 1
 ```
 
-<Note>
-You must fill in the `target_list` section.
-</Note>
-
-
-
-See [Service Discovery](/planning-for-production/ensure-high-availability/service-discovery) to see how you can integrate a service discovery system such as Consul or etcd with Tyk and enable dynamic load balancing support.
-
-## Configure load balancing and weighting via the Dashboard
-
-To set up load balancing via the Dashboard, from the **Core Settings** tab in the **API Designer** select **Enable round-robin load balancing** from the **API Settings** options:
-
-<img src="/img/2.10/round_robin.png" alt="Dashboard load balancing configuration" />
-
-You can now add your Load Balancing **Upstream targets** and apply weighting to it. For example, for testing purposes, you can send 10% (set weighting to `1`) of traffic to a beta environment, and 90% (set weighting to `9`)to the production environment.
-
+Weight values are relative: a target with weight `9` receives nine times as many requests as a target with weight `1`. There is no upper limit on weight values. Weight must be specified for each target - if omitted it defaults to `0`, which excludes the target from the rotation.
 
 <Note>
-Weighting is new from v1.10 of the Dashboard
+Setting a weight of `0` will skip that target; this is useful if you need to remove a target from the load balancing temporarily.
 </Note>
 
+If using Tyk Classic, enable load balancing with `proxy.enable_load_balancing: true` and list the target URLs in `proxy.target_list`:
 
-## Configure load balancing via Tyk Operator
-
-Load balancing is configured within Tyk Operator, using the following configuration parameters within the proxy configuration block:
-
-- `enable_load_balancing`: Set to `true` to activate load balancing
-- `target_list`: Specifies a list of upstream targets
-
-An example is shown below:
-
-```yaml {linenos=table,hl_lines=["14-17"],linenostart=1}
-apiVersion: tyk.tyk.io/v1alpha1
-kind: ApiDefinition
-metadata:
-  name: enable-load-balancing-rr
-spec:
-  name: enable-load-balancing-rr
-  use_keyless: true
-  protocol: http
-  active: true
-  proxy:
-    target_url: httpbin.org
-    listen_path: /httpbin
-    strip_listen_path: true
-    enable_load_balancing: true
-    target_list: 
-        - "httpbin.org"
-        - "httpbingo.org"
+```json
+"proxy": {
+  "enable_load_balancing": true,
+  "target_list": [
+    "http://10.0.0.1",
+    "http://10.0.0.2",
+    "http://10.0.0.3"
+  ]
+}
 ```
 
-## gRPC load balancing
+Each entry in the `proxy.target_list` will be addressed in turn. To increase the weighting for a target, you must include it multiple times in the list.
 
-You can also perform [gRPC Load balancing](/key-concepts/grpc-proxy#grpc-load-balancing).
+### Skipping Unavailable Hosts
 
+Tyk Gateway's uptime tests periodically probe each upstream target and automatically remove failing hosts from the load balancing rotation, so requests are only sent to healthy targets.
 
+Set `upstream.loadBalancing.skipUnavailableHosts: true` in Tyk OAS, or `proxy.check_host_against_uptime_tests: true` in Tyk Classic.
+
+See [Uptime Tests](/planning-for-production/ensure-high-availability/uptime-tests) for more details and how to configure the probes.
+
+## Service Discovery
+
+Rather than a static upstream URL, Tyk can query a service discovery endpoint - such as Consul, etcd, or Eureka - to resolve the current upstream target at request time. This is useful when upstream services are scaled dynamically and their addresses change. The service discovery endpoint returns a list of addresses that Tyk uses as its load balancing target list.
+
+The static upstream URL (`upstream.url` in Tyk OAS, `proxy.target_url` in Tyk Classic) is still required in the API definition. If the service discovery query fails, Tyk falls back to the static URL.
+
+See [Service Discovery](/planning-for-production/ensure-high-availability/service-discovery) for details of how to configure the service discovery feature.
+
+## Upstream TLS
+
+When forwarding to an HTTPS upstream, Tyk Gateway verifies the server's certificate against the system trust store on the host running the Gateway. For upstreams using self-signed or internally issued certificates, add the issuing CA certificate to that trust store.
+
+When the upstream requires mutual TLS (mTLS), Tyk must also present a client certificate during the TLS handshake. Certificates are mapped to upstream domains in the API definition or at the Gateway level, so different client certificates can be used for different upstream hosts within the same API.
+
+For defense against compromised certificate authorities, [certificate pinning](/api-management/upstream-authentication/mtls#certificate-pinning) restricts which public keys Tyk will accept from a given upstream domain, regardless of what a CA has signed.
+
+For non-production environments where the upstream certificate cannot be trusted (such as local development), the `upstream.tlsTransport.insecureSkipVerify` option in the API definition (Tyk Classic: `proxy.transport.ssl_insecure_skip_verify`) disables upstream certificate verification for that API. This should never be enabled in production.
+
+See [Upstream Mutual TLS](/api-management/upstream-authentication/mtls) for full configuration detail.
+
+## gRPC Forwarding
+
+gRPC is an RPC framework that uses HTTP/2 as its transport protocol. Tyk supports gRPC passthrough proxying, including all streaming modes.
+
+gRPC requests follow the path format `/{ServiceName}/{MethodName}`. This path must reach the upstream unchanged, so **strip listen path must be set to `false`** in the API definition.
+
+The upstream target URL format depends on whether the upstream gRPC server requires TLS.
+
+**Secure gRPC (TLS)**
+
+Set the upstream target to an `https://` URL:
+
+```
+upstream.url: "https://my-grpc-server:50051"
+```
+
+**Insecure gRPC (H2C)**
+
+H2C is the non-TLS form of HTTP/2. Prefix the upstream target URL with `h2c://`:
+
+```
+upstream.url: "h2c://my-grpc-server:50051"
+```
+
+The same URL scheme applies when configuring multiple targets for gRPC load balancing.
+
+Tyk Gateway's load balancing, service discovery, and mutual TLS all work with gRPC APIs in the same way as for HTTP APIs. See [gRPC Proxy](/key-concepts/grpc-proxy) for full details on how to configure this feature.
+
+## TCP Forwarding
+
+Tyk can forward raw TCP traffic, acting as a transparent proxy for non-HTTP services such as databases or services using custom binary protocols. Set the upstream target URL scheme to `tcp://` for a plain TCP upstream or `tls://` for a TLS-secured upstream.
+
+See [TCP Proxy](/key-concepts/tcp-proxy) for full configuration detail, including port assignment, SNI-based routing, and health checks.
