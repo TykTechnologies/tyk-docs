@@ -1032,6 +1032,73 @@ def check_insecure_links(base_dir: str) -> Dict[str, List[Tuple[str, str]]]:
     return results
 
 
+_FENCE_OPEN = re.compile(r'^\s*(`{3,}|~{3,})(.*)$')
+_FENCE_CLOSE = re.compile(r'^\s*(`{3,}|~{3,})\s*$')
+
+
+def find_content_h1s(mdx_content: str) -> List[str]:
+    """Return in-content H1s (markdown '# ' and raw <h1>) that render outside code and comments.
+
+    Uses CommonMark fence rules (a closing fence is bare, same char, length >= opening) so
+    that '#' shell comments and <h1> examples inside code blocks - including blocks that show
+    other ``` fences - are not miscounted. Inline code spans are also stripped.
+    """
+    text = re.sub(r'\{/\*.*?\*/\}', '', mdx_content, flags=re.DOTALL)
+    text = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
+
+    found: List[str] = []
+    in_fence = False
+    fence_char = ''
+    fence_len = 0
+    for line in text.splitlines():
+        if in_fence:
+            close = _FENCE_CLOSE.match(line)
+            if close and close.group(1)[0] == fence_char and len(close.group(1)) >= fence_len:
+                in_fence = False
+            continue
+        opener = _FENCE_OPEN.match(line)
+        if opener:
+            in_fence = True
+            fence_char = opener.group(1)[0]
+            fence_len = len(opener.group(1))
+            continue
+        if re.match(r'^# \S', line):
+            found.append(line.strip())
+        if re.search(r'<h1[ >]', re.sub(r'`[^`]*`', '', line), re.IGNORECASE):
+            found.append('<h1>')
+    return found
+
+
+def has_frontmatter_title(mdx_content: str) -> bool:
+    """True if the MDX frontmatter defines a non-empty title (which Mintlify renders as the H1)."""
+    m = re.match(r'^---\n(.*?)\n---', mdx_content, re.DOTALL)
+    return bool(m and re.search(r'^title:\s*\S', m.group(1), re.MULTILINE))
+
+
+def check_multiple_h1(base_dir: str) -> Dict[str, Tuple[int, List[str]]]:
+    """Flag pages that render more than one H1.
+
+    In Mintlify the frontmatter title is the page H1, so any in-content H1 (or two or more
+    when there is no title) means the page has multiple H1s. Snippet fragments are skipped.
+    Returns {file_path: (total_h1_count, [in_content_h1s])}.
+    """
+    results: Dict[str, Tuple[int, List[str]]] = {}
+    for file_path in glob.glob(os.path.join(base_dir, '**', '*.mdx'), recursive=True):
+        norm = file_path.replace(os.sep, '/')
+        if norm.startswith('snippets/') or '/snippets/' in norm:
+            continue
+        try:
+            with open(file_path, 'r', encoding='utf-8') as fh:
+                content = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        h1s = find_content_h1s(content)
+        total = len(h1s) + (1 if has_frontmatter_title(content) else 0)
+        if total > 1:
+            results[file_path] = (total, h1s)
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(description='Check for broken links in converted documentation')
     parser.add_argument('directory', nargs='?', default='converted', help='Directory to scan (default: converted)')
@@ -1051,6 +1118,8 @@ def main():
                         help='Flag internal links that hit a 3xx redirect (trailing slashes and links to docs.json redirect sources)')
     parser.add_argument('--check-insecure-links', action='store_true',
                         help='Flag insecure http:// links to first-party (tyk.io) domains that should use https')
+    parser.add_argument('--check-multiple-h1', action='store_true',
+                        help='Flag pages that render more than one H1 (frontmatter title + in-content # / <h1>)')
 
     args = parser.parse_args()
 
@@ -1082,6 +1151,11 @@ def main():
     insecure_links = None
     if args.check_insecure_links:
         insecure_links = check_insecure_links(args.directory)
+
+    # Check for pages with multiple H1 tags
+    multiple_h1 = None
+    if args.check_multiple_h1:
+        multiple_h1 = check_multiple_h1(args.directory)
     
     # Report results
     print(f"\n{'='*60}")
@@ -1272,6 +1346,17 @@ def main():
         else:
             print("✅ No insecure first-party http:// links found!")
 
+    if args.check_multiple_h1:
+        if multiple_h1:
+            print(f"\n🔠 PAGES WITH MULTIPLE H1 TAGS ({len(multiple_h1)}):")
+            for file_path, (total, h1s) in sorted(multiple_h1.items()):
+                print(f"\n  📄 {file_path}  (H1 count: {total})")
+                for h in h1s:
+                    print(f"    - {h}")
+            print("\n  Fix: the frontmatter title is the page H1 - demote in-content '# ' headings to '##' (or wrap example <h1> in a code block).")
+        else:
+            print("✅ No pages with multiple H1 tags found!")
+
     if validation_results and 'error' not in validation_results:
         total_issues = (len(validation_results['self_referencing_redirects']) +
                        len(validation_results['navigation_redirect_conflicts']) +
@@ -1291,6 +1376,7 @@ def main():
     has_broken_anchors = bool(broken_anchors) and args.check_anchors
     has_redirecting_links = bool(redirecting_links) and args.check_redirecting_links
     has_insecure_links = bool(insecure_links) and args.check_insecure_links
+    has_multiple_h1 = bool(multiple_h1) and args.check_multiple_h1
     has_broken_external = bool(external_results) and any(
         not result['accessible']
         for results in external_results.values()
@@ -1303,7 +1389,7 @@ def main():
                             validation_results['missing_navigation_files'] or
                             validation_results['missing_redirect_destinations']))
 
-    return 1 if (has_broken_links or has_broken_images or has_broken_anchors or has_broken_external or has_validation_issues or has_redirecting_links or has_insecure_links) else 0
+    return 1 if (has_broken_links or has_broken_images or has_broken_anchors or has_broken_external or has_validation_issues or has_redirecting_links or has_insecure_links or has_multiple_h1) else 0
 
 if __name__ == '__main__':
     exit(main())
