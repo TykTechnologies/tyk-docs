@@ -986,6 +986,52 @@ def check_redirecting_links(base_dir: str, redirects: Dict[str, str]) -> Dict[st
     return results
 
 
+def find_absolute_links(mdx_content: str) -> Set[str]:
+    """Extract absolute http(s):// link targets (markdown, <a>, <Card>), excluding comments/code."""
+    clean_content = remove_comments_and_code(mdx_content)
+    links: Set[str] = set()
+    patterns = [
+        r'\[[^\]]*\]\((https?://[^)\s]+)\)',       # markdown [text](http://...)
+        r'<a[^>]+href=["\'](https?://[^"\']+)["\']',
+        r'<Card[^>]+href=["\'](https?://[^"\']+)["\']',
+    ]
+    for pattern in patterns:
+        for url in re.findall(pattern, clean_content, re.IGNORECASE):
+            links.add(url.strip())
+    return links
+
+
+# First-party hosts that must always be served over https.
+INSECURE_FIRST_PARTY_RE = re.compile(r'^http://(?:[a-z0-9-]+\.)*tyk\.io(?:[:/?#]|$)', re.IGNORECASE)
+
+
+def check_insecure_links(base_dir: str) -> Dict[str, List[Tuple[str, str]]]:
+    """Find insecure http:// links to first-party (tyk.io) domains.
+
+    An https page linking to http://...tyk.io triggers a 30x upgrade and is a
+    mixed-signal / security smell. Only first-party hosts are flagged so that
+    legitimately http-only third-party links are not false-positives. Links in
+    comments and code blocks are ignored.
+
+    Returns {file_path: [(insecure_link, https_suggestion), ...]}.
+    """
+    results: Dict[str, List[Tuple[str, str]]] = {}
+    for file_path in glob.glob(os.path.join(base_dir, '**', '*.mdx'), recursive=True):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as fh:
+                content = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        findings = sorted({
+            (url, 'https://' + url[len('http://'):])
+            for url in find_absolute_links(content)
+            if INSECURE_FIRST_PARTY_RE.match(url)
+        })
+        if findings:
+            results[file_path] = findings
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(description='Check for broken links in converted documentation')
     parser.add_argument('directory', nargs='?', default='converted', help='Directory to scan (default: converted)')
@@ -1003,6 +1049,8 @@ def main():
                         help='Relative file paths whose anchors should not be validated (e.g. auto-generated files that use MDX imports)')
     parser.add_argument('--check-redirecting-links', action='store_true',
                         help='Flag internal links that hit a 3xx redirect (trailing slashes and links to docs.json redirect sources)')
+    parser.add_argument('--check-insecure-links', action='store_true',
+                        help='Flag insecure http:// links to first-party (tyk.io) domains that should use https')
 
     args = parser.parse_args()
 
@@ -1029,6 +1077,11 @@ def main():
     redirecting_links = None
     if args.check_redirecting_links:
         redirecting_links = check_redirecting_links(args.directory, redirects)
+
+    # Check for insecure http:// links to first-party domains
+    insecure_links = None
+    if args.check_insecure_links:
+        insecure_links = check_insecure_links(args.directory)
     
     # Report results
     print(f"\n{'='*60}")
@@ -1207,6 +1260,18 @@ def main():
         else:
             print("✅ No internal links pointing to redirects found!")
 
+    if args.check_insecure_links:
+        if insecure_links:
+            total_insecure = sum(len(v) for v in insecure_links.values())
+            print(f"\n🔒 INSECURE (http://) FIRST-PARTY LINKS ({total_insecure} in {len(insecure_links)} files):")
+            for file_path, items in sorted(insecure_links.items()):
+                print(f"\n  📄 {file_path}")
+                for link, suggestion in items:
+                    print(f"    - {link}  ->  use {suggestion}")
+            print("\n  Fix: use https:// for tyk.io links.")
+        else:
+            print("✅ No insecure first-party http:// links found!")
+
     if validation_results and 'error' not in validation_results:
         total_issues = (len(validation_results['self_referencing_redirects']) +
                        len(validation_results['navigation_redirect_conflicts']) +
@@ -1225,6 +1290,7 @@ def main():
     has_broken_images = broken_images and not args.links_only
     has_broken_anchors = bool(broken_anchors) and args.check_anchors
     has_redirecting_links = bool(redirecting_links) and args.check_redirecting_links
+    has_insecure_links = bool(insecure_links) and args.check_insecure_links
     has_broken_external = bool(external_results) and any(
         not result['accessible']
         for results in external_results.values()
@@ -1237,7 +1303,7 @@ def main():
                             validation_results['missing_navigation_files'] or
                             validation_results['missing_redirect_destinations']))
 
-    return 1 if (has_broken_links or has_broken_images or has_broken_anchors or has_broken_external or has_validation_issues or has_redirecting_links) else 0
+    return 1 if (has_broken_links or has_broken_images or has_broken_anchors or has_broken_external or has_validation_issues or has_redirecting_links or has_insecure_links) else 0
 
 if __name__ == '__main__':
     exit(main())
