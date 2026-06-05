@@ -909,6 +909,83 @@ def validate_docs_json(directory: str) -> Dict[str, Any]:
     }
 
 
+def find_internal_link_targets_raw(mdx_content: str) -> Set[str]:
+    """Extract internal link targets WITHOUT normalising trailing slashes.
+
+    Unlike find_internal_links(), this keeps the trailing slash so we can detect
+    links that Mintlify will 308-redirect. Comments and code blocks are stripped
+    so example/illustrative links are not flagged.
+    """
+    clean_content = remove_comments_and_code(mdx_content)
+    targets: Set[str] = set()
+    patterns = [
+        r'\[([^\]]*)\]\(([^)]+)\)',             # markdown [text](path)
+        r'<a[^>]+href=["\']([^"\']+)["\']',      # <a href="path">
+        r'<Card[^>]+href=["\']([^"\']+)["\']',   # <Card href="path">
+    ]
+    for pattern in patterns:
+        for match in re.findall(pattern, clean_content, re.IGNORECASE):
+            url = match[1] if isinstance(match, tuple) and len(match) > 1 else match
+            url = url.strip().strip('"\'')
+            # internal absolute paths only
+            if not url.startswith('/'):
+                continue
+            # drop anchor/query but KEEP any trailing slash
+            path = url.split('#', 1)[0].split('?', 1)[0]
+            if path:
+                targets.add(path)
+    return targets
+
+
+def resolve_redirect_chain(path: str, redirects: Dict[str, str]) -> str:
+    """Follow a redirect chain to its final, non-redirecting target (slash-stripped)."""
+    key = path.strip('/')
+    seen: Set[str] = set()
+    while key in redirects and key not in seen:
+        seen.add(key)
+        key = redirects[key].strip('/')
+    return key
+
+
+def check_redirecting_links(base_dir: str, redirects: Dict[str, str]) -> Dict[str, List[Tuple[str, str, str]]]:
+    """Find internal links that hit a 3xx redirect instead of resolving directly.
+
+    Two cases are flagged:
+      1. Trailing slash: Mintlify serves canonical URLs without a trailing slash
+         and 308-redirects '/foo/' -> '/foo'.
+      2. Redirect source: the link target is the 'source' of a docs.json redirect,
+         so it 30x-redirects to the configured destination.
+
+    Returns {file_path: [(offending_link, reason, suggested_target), ...]}.
+    Links inside comments and code blocks are ignored.
+    """
+    results: Dict[str, List[Tuple[str, str, str]]] = {}
+    mdx_files = glob.glob(os.path.join(base_dir, '**', '*.mdx'), recursive=True)
+    for file_path in mdx_files:
+        try:
+            with open(file_path, 'r', encoding='utf-8') as fh:
+                content = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+
+        findings: Set[Tuple[str, str, str]] = set()
+        for target in find_internal_link_targets_raw(content):
+            if target == '/':
+                continue
+            key = target.strip('/')
+            is_trailing = target.endswith('/')
+            is_redirect_source = key in redirects
+            if not (is_trailing or is_redirect_source):
+                continue
+            suggestion = '/' + resolve_redirect_chain(key, redirects)
+            reason = ('links to a redirect source (3xx)' if is_redirect_source
+                      else 'trailing slash (308 redirect)')
+            findings.add((target, reason, suggestion))
+        if findings:
+            results[file_path] = sorted(findings)
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(description='Check for broken links in converted documentation')
     parser.add_argument('directory', nargs='?', default='converted', help='Directory to scan (default: converted)')
@@ -924,6 +1001,8 @@ def main():
     parser.add_argument('--check-anchors', action='store_true', help='Validate anchor fragments in internal links')
     parser.add_argument('--anchor-target-excludes', nargs='*', default=[], metavar='PATH',
                         help='Relative file paths whose anchors should not be validated (e.g. auto-generated files that use MDX imports)')
+    parser.add_argument('--check-redirecting-links', action='store_true',
+                        help='Flag internal links that hit a 3xx redirect (trailing slashes and links to docs.json redirect sources)')
 
     args = parser.parse_args()
 
@@ -945,6 +1024,11 @@ def main():
     validation_results = None
     if args.validate_redirects:
         validation_results = validate_docs_json(args.directory)
+
+    # Check for internal links that resolve via a 3xx redirect
+    redirecting_links = None
+    if args.check_redirecting_links:
+        redirecting_links = check_redirecting_links(args.directory, redirects)
     
     # Report results
     print(f"\n{'='*60}")
@@ -1111,6 +1195,18 @@ def main():
         else:
             print("✅ No broken anchor fragments found!")
 
+    if args.check_redirecting_links:
+        if redirecting_links:
+            total_redirecting = sum(len(v) for v in redirecting_links.values())
+            print(f"\n↪️  INTERNAL LINKS THAT REDIRECT ({total_redirecting} in {len(redirecting_links)} files):")
+            for file_path, items in sorted(redirecting_links.items()):
+                print(f"\n  📄 {file_path}")
+                for link, reason, suggestion in items:
+                    print(f"    - {link}  [{reason}]  ->  use {suggestion}")
+            print("\n  Fix: point each link directly at the suggested target (no trailing slash).")
+        else:
+            print("✅ No internal links pointing to redirects found!")
+
     if validation_results and 'error' not in validation_results:
         total_issues = (len(validation_results['self_referencing_redirects']) +
                        len(validation_results['navigation_redirect_conflicts']) +
@@ -1128,6 +1224,7 @@ def main():
     has_broken_links = broken_links and not args.images_only
     has_broken_images = broken_images and not args.links_only
     has_broken_anchors = bool(broken_anchors) and args.check_anchors
+    has_redirecting_links = bool(redirecting_links) and args.check_redirecting_links
     has_broken_external = bool(external_results) and any(
         not result['accessible']
         for results in external_results.values()
@@ -1140,7 +1237,7 @@ def main():
                             validation_results['missing_navigation_files'] or
                             validation_results['missing_redirect_destinations']))
 
-    return 1 if (has_broken_links or has_broken_images or has_broken_anchors or has_broken_external or has_validation_issues) else 0
+    return 1 if (has_broken_links or has_broken_images or has_broken_anchors or has_broken_external or has_validation_issues or has_redirecting_links) else 0
 
 if __name__ == '__main__':
     exit(main())
