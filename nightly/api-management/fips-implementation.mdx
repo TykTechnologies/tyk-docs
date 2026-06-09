@@ -1,0 +1,170 @@
+---
+title: "FIPS Implementation"
+description: "Configuring and Verifying FIPS Deployments"
+keywords: "FIPS, FIPS 140-3, compliance, cryptography, security, federal, government, regulated"
+sidebarTitle: "FIPS Implementation"
+canonical: "https://tyk.io/docs/api-management/fips-implementation"
+---
+
+This page covers the practical steps for deploying Tyk in FIPS mode: configuring cryptographic settings, choosing a delivery format, deploying via Helm, verifying image integrity, scanning for vulnerabilities, and understanding what is and is not covered by Tyk's FIPS compliance attestation.
+
+---
+
+## Cryptographic Configuration
+
+Regardless of delivery format or version, your environment must be configured to use only FIPS-approved cryptographic primitives. Legacy algorithms such as MD5 are not compliant with FIPS 140-3 and must not be used.
+
+When running Tyk Gateway in FIPS mode, you must configure key hashing to use SHA-256 or higher.
+
+**In** `tyk.conf`**:**
+
+```json
+"hash_key_function": "sha256"
+```
+
+**Via environment variable:**
+
+```bash
+TYK_GW_HASHKEYFUNCTION=sha256
+```
+
+This setting is not required when using FIPS mode for Tyk Pump.
+
+---
+
+## Choosing a Delivery Format
+
+From version 5.13.x, Tyk FIPS components are available in two formats. Both deliver the same FIPS 140-3 compliant application-layer cryptography. The right choice depends on your infrastructure and compliance requirements.
+
+|  | Docker Hardened Images (DHI) | Native OS Packages (RPM/DEB) |
+| --- | --- | --- |
+| FIPS 140-3 application-layer cryptography | ✅ | ✅ |
+| Built on FIPS-certified base image | ✅ | ❌ |
+| SLSA Level 3 build provenance | ✅ | ❌ |
+| Signed SBOMs (CycloneDX/SPDX) | ✅ | ❌ |
+| Cryptographic image signatures | ✅ | ❌ |
+| STIG-compliant | ✅ | ❌ |
+| VEX statements for vulnerability scanning | ✅ | ❌ |
+| Supported platforms | Container environments | Ubuntu, Debian, RHEL, CentOS, CentOS Stream |
+
+> If your organization requires a certified base image, supply chain attestations, or STIG compliance, you must use Docker Hardened Images.
+
+Version 5.8.x (LTS-1) is available as RPM/DEB packages only, targeting FIPS 140-2. See the [FIPS Policy](/nightly/developer-support/release-types/fips-release#fips-standard-by-version) page for a full breakdown of compliance posture by version.
+
+---
+
+## Deploying with Docker Hardened Images
+
+### Helm
+
+Tyk's Helm charts support FIPS deployments by allowing you to override the default image references with FIPS-compliant image tags. The charts themselves are not FIPS-specific — FIPS readiness is achieved through the image override for each component you are deploying (Gateway, Dashboard, Pump, MDCB, Enterprise Developer Portal).
+
+The override follows the same pattern for each component: set the image repository to the `-fips` suffixed equivalent and pin the tag to your target version. Full per-component key paths are documented in the [Tyk Helm chart reference](/nightly/product-stack/tyk-charts/overview).
+
+---
+
+### Verifying Image Integrity
+
+All Tyk DHI FIPS images are cryptographically signed using [Sigstore](https://www.sigstore.dev/). Each image ships with a signed SBOM in both CycloneDX and SPDX formats and SLSA Level 3 build provenance, which can be inspected using `cosign` or any compatible attestation tooling.
+
+To verify signatures and attestations, you will need the Tyk signing identity and OIDC issuer values. These are available from your account manager or via [Tyk support](https://support.tyk.io/). Once you have those values, verification follows the standard `cosign verify` workflow for image signatures, SBOM attestations, and build provenance.
+
+---
+
+### Vulnerability Scanning
+
+Tyk's DHI images are published with **Vulnerability Exploitability eXchange (VEX)** statements. VEX statements communicate which reported CVEs are not exploitable in the context of a given image. Compatible scanners consume these statements automatically to suppress non-exploitable findings and reduce false positives.
+
+Without VEX filtering applied, scanners will report CVEs that are present in the image but not exploitable in this context. This is expected behavior, not a signal that the image is insecure. We strongly recommend configuring VEX filtering before running compliance scans.
+
+VEX documents for Tyk DHI images are available through your account manager.
+
+#### Using Grype
+
+[Grype](https://github.com/anchore/grype) supports VEX filtering natively. To scan with VEX applied:
+
+```bash
+grype tykio/tyk-gateway-fips:v5.13.x --vex <path-to-vex-document>
+```
+
+To generate a full vulnerability report in table format:
+
+```bash
+grype tykio/tyk-gateway-fips:v5.13.x --vex <path-to-vex-document> -o table
+```
+
+#### Using Trivy
+
+[Trivy](https://github.com/aquasecurity/trivy) supports VEX filtering and also consumes Docker-published VEX statements for the DHI base image layer:
+
+```bash
+trivy image \
+--vex <path-to-vex-document> \
+tykio/tyk-gateway-fips:v5.13.x
+```
+
+To output results in a format suitable for compliance reporting:
+
+```bash
+trivy image \
+--vex <path-to-vex-document> \
+--format cyclonedx \
+--output report.json \
+tykio/tyk-gateway-fips:v5.13.x
+```
+
+#### Using Docker Scout
+
+If you are already using Docker Scout as part of your DHI workflow, it natively understands VEX statements published alongside DHI images without requiring a separate `--vex` flag:
+
+```bash
+docker scout cves tykio/tyk-gateway-fips:v5.13.x
+```
+
+---
+
+## Deploying with Native OS Packages
+
+Native packages are available for Ubuntu, Debian, RHEL, CentOS, and CentOS Stream. They deliver the same FIPS 140-3 application-layer cryptography as DHI builds, but do not include a certified base image or supply chain attestations.
+
+Ensure you install the `-fips` suffixed package for your distribution:
+
+```bash
+# RHEL/CentOS
+sudo yum install tyk-gateway-fips
+# Ubuntu/Debian
+sudo apt-get install tyk-gateway-fips
+```
+
+Apply the cryptographic configuration described above before starting the service.
+
+> If you are running 5.8.x packages and have regulatory requirements that mandate FIPS 140-3, a certified base image, or supply chain attestations, contact your account team to plan migration to 5.13.x.
+
+---
+
+## What Is Not Covered
+
+Tyk's FIPS compliance attestation covers the Tyk components listed on the [FIPS Policy](/nightly/developer-support/release-types/fips-release#tyk-fips-offering) page when deployed and configured as described in this documentation. It does not extend to:
+
+* **The surrounding infrastructure** — operating system configuration, network controls, load balancers, service meshes, or cloud provider services are outside Tyk's attestation boundary
+* **Third-party plugins or custom middleware** — any code you introduce into the Tyk pipeline is your responsibility to assess for FIPS compliance
+* **Data stores** — Redis, MongoDB, PostgreSQL, and any other backing services must be independently assessed and configured for FIPS compliance
+* **Native OS packages (5.13.x)** — while these deliver FIPS 140-3 application-layer cryptography, they are not built on a FIPS-certified base image and do not carry supply chain attestations; if your audit requires these, use DHI
+* **Version 5.8.x** — targets FIPS 140-2 only; does not meet FIPS 140-3 requirements
+* **Non-FIPS suffixed builds** — standard Tyk releases do not operate in FIPS mode regardless of configuration
+
+Customers are responsible for ensuring their complete deployment meets applicable regulatory requirements. If you have questions about your specific compliance boundary, contact your account manager.
+
+---
+
+## Responsibility Boundaries for CVEs
+
+Understanding who is responsible for remediating a CVE helps you assess risk accurately and set appropriate expectations.
+
+| CVE source | Responsible for fix | Tyk's role |
+| --- | --- | --- |
+| DHI base OS | Docker | Publishes updated base image and VEX statements. Tyk ships updated container images once the patch is available. |
+| Third-party dependencies (Go stdlib, packages) | The upstream maintainer | Tyk applies the fix, recompiles, tests, and releases an updated version once the upstream patch is published. |
+| Tyk-owned code | Tyk | Tyk is fully responsible for authoring and releasing the fix. |
+
+If you hold a *
