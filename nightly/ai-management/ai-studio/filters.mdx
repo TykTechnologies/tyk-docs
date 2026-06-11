@@ -605,6 +605,77 @@ output := {
 
 ---
 
+## Compliance Event Reporting
+
+Available from Tyk AI Studio v2.1.0 (Enterprise edition).
+
+Filter scripts can emit structured [Compliance Events](/nightly/ai-management/ai-studio/compliance-events) to record governance-relevant activity, such as PII redactions, content rewrites, or guardrail triggers, without affecting the block/allow decision. Events flow through the analytics pipeline into the Compliance dashboard, where they appear in the Filter Events tab with severity filters, drill-down, and CSV export.
+
+To emit events, set the optional `compliance_events` field on the script output:
+
+```tengo
+tyk := import("tyk")
+
+modified_payload := tyk.redact_pattern(
+    input,
+    "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}",
+    "[EMAIL_REDACTED]"
+)
+
+output := {
+    block: false,
+    payload: modified_payload,
+    message: "",
+    compliance_events: [
+        {
+            event_type: "pii_redacted",
+            severity: "info",
+            description: "Email addresses redacted from request",
+            metadata: { "redacted_types": ["email"] }
+        }
+    ]
+}
+```
+
+Each event accepts:
+
+| Field | Required | Description |
+|---|---|---|
+| `event_type` | Yes | Free-form type, for example `pii_redacted`, `content_rewritten`, `policy_violation`, `silent_failure`. Events without an `event_type` are skipped. |
+| `severity` | No | `info`, `warning`, or `critical`. Defaults to `info`. |
+| `description` | No | Human-readable description shown in the dashboard. |
+| `metadata` | No | Arbitrary key-value data. Use `matched_pattern` (string) and `redacted_types` (array) for consistency with the bundled scripts. |
+
+**Conditional Emission.** Most filters should only emit events when a condition actually fires. Build the list dynamically:
+
+```tengo
+events := []
+if redaction_count > 0 {
+    events = append(events, {
+        event_type: "pii_redacted",
+        severity: "info",
+        description: fmt.sprintf("%d PII values redacted", redaction_count),
+        metadata: { "redacted_types": redacted_types }
+    })
+}
+
+output := {
+    block: false,
+    payload: modified_payload,
+    message: "",
+    compliance_events: events
+}
+```
+
+Key behaviors:
+
+- Recording is asynchronous, so filter latency is unaffected.
+- Events never change the block/allow decision. Redact-and-allow with a `critical` event is a legitimate pattern.
+- Events work in every filter scope: proxy request/response, chat request/response, file reference, and tool response filters.
+- On Edge Gateways, events are batched and forwarded to the control plane on the analytics pulse.
+
+The platform enriches each event with the app, user, LLM, vendor, model, filter name, and filter scope at recording time. For the event schema, querying via API, dashboard surfaces, and suggested event-type conventions, see [Compliance Events](/nightly/ai-management/ai-studio/compliance-events).
+
 ---
 
 ## Tool Response Filters
