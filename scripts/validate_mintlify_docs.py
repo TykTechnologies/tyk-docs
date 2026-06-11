@@ -909,6 +909,196 @@ def validate_docs_json(directory: str) -> Dict[str, Any]:
     }
 
 
+def find_internal_link_targets_raw(mdx_content: str) -> Set[str]:
+    """Extract internal link targets WITHOUT normalising trailing slashes.
+
+    Unlike find_internal_links(), this keeps the trailing slash so we can detect
+    links that Mintlify will 308-redirect. Comments and code blocks are stripped
+    so example/illustrative links are not flagged.
+    """
+    clean_content = remove_comments_and_code(mdx_content)
+    targets: Set[str] = set()
+    patterns = [
+        r'\[([^\]]*)\]\(([^)]+)\)',             # markdown [text](path)
+        r'<a[^>]+href=["\']([^"\']+)["\']',      # <a href="path">
+        r'<Card[^>]+href=["\']([^"\']+)["\']',   # <Card href="path">
+    ]
+    for pattern in patterns:
+        for match in re.findall(pattern, clean_content, re.IGNORECASE):
+            url = match[1] if isinstance(match, tuple) and len(match) > 1 else match
+            url = url.strip().strip('"\'')
+            # internal absolute paths only
+            if not url.startswith('/'):
+                continue
+            # drop anchor/query but KEEP any trailing slash
+            path = url.split('#', 1)[0].split('?', 1)[0]
+            if path:
+                targets.add(path)
+    return targets
+
+
+def resolve_redirect_chain(path: str, redirects: Dict[str, str]) -> str:
+    """Follow a redirect chain to its final, non-redirecting target (slash-stripped)."""
+    key = path.strip('/')
+    seen: Set[str] = set()
+    while key in redirects and key not in seen:
+        seen.add(key)
+        key = redirects[key].strip('/')
+    return key
+
+
+def check_redirecting_links(base_dir: str, redirects: Dict[str, str]) -> Dict[str, List[Tuple[str, str, str]]]:
+    """Find internal links that hit a 3xx redirect instead of resolving directly.
+
+    Two cases are flagged:
+      1. Trailing slash: Mintlify serves canonical URLs without a trailing slash
+         and 308-redirects '/foo/' -> '/foo'.
+      2. Redirect source: the link target is the 'source' of a docs.json redirect,
+         so it 30x-redirects to the configured destination.
+
+    Returns {file_path: [(offending_link, reason, suggested_target), ...]}.
+    Links inside comments and code blocks are ignored.
+    """
+    results: Dict[str, List[Tuple[str, str, str]]] = {}
+    mdx_files = glob.glob(os.path.join(base_dir, '**', '*.mdx'), recursive=True)
+    for file_path in mdx_files:
+        try:
+            with open(file_path, 'r', encoding='utf-8') as fh:
+                content = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+
+        findings: Set[Tuple[str, str, str]] = set()
+        for target in find_internal_link_targets_raw(content):
+            if target == '/':
+                continue
+            key = target.strip('/')
+            is_trailing = target.endswith('/')
+            is_redirect_source = key in redirects
+            if not (is_trailing or is_redirect_source):
+                continue
+            suggestion = '/' + resolve_redirect_chain(key, redirects)
+            reason = ('links to a redirect source (3xx)' if is_redirect_source
+                      else 'trailing slash (308 redirect)')
+            findings.add((target, reason, suggestion))
+        if findings:
+            results[file_path] = sorted(findings)
+    return results
+
+
+def find_absolute_links(mdx_content: str) -> Set[str]:
+    """Extract absolute http(s):// link targets (markdown, <a>, <Card>), excluding comments/code."""
+    clean_content = remove_comments_and_code(mdx_content)
+    links: Set[str] = set()
+    patterns = [
+        r'\[[^\]]*\]\((https?://[^)\s]+)\)',       # markdown [text](http://...)
+        r'<a[^>]+href=["\'](https?://[^"\']+)["\']',
+        r'<Card[^>]+href=["\'](https?://[^"\']+)["\']',
+    ]
+    for pattern in patterns:
+        for url in re.findall(pattern, clean_content, re.IGNORECASE):
+            links.add(url.strip())
+    return links
+
+
+# First-party hosts that must always be served over https.
+INSECURE_FIRST_PARTY_RE = re.compile(r'^http://(?:[a-z0-9-]+\.)*tyk\.io(?:[:/?#]|$)', re.IGNORECASE)
+
+
+def check_insecure_links(base_dir: str) -> Dict[str, List[Tuple[str, str]]]:
+    """Find insecure http:// links to first-party (tyk.io) domains.
+
+    An https page linking to http://...tyk.io triggers a 30x upgrade and is a
+    mixed-signal / security smell. Only first-party hosts are flagged so that
+    legitimately http-only third-party links are not false-positives. Links in
+    comments and code blocks are ignored.
+
+    Returns {file_path: [(insecure_link, https_suggestion), ...]}.
+    """
+    results: Dict[str, List[Tuple[str, str]]] = {}
+    for file_path in glob.glob(os.path.join(base_dir, '**', '*.mdx'), recursive=True):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as fh:
+                content = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        findings = sorted({
+            (url, 'https://' + url[len('http://'):])
+            for url in find_absolute_links(content)
+            if INSECURE_FIRST_PARTY_RE.match(url)
+        })
+        if findings:
+            results[file_path] = findings
+    return results
+
+
+_FENCE_OPEN = re.compile(r'^\s*(`{3,}|~{3,})(.*)$')
+_FENCE_CLOSE = re.compile(r'^\s*(`{3,}|~{3,})\s*$')
+
+
+def find_content_h1s(mdx_content: str) -> List[str]:
+    """Return in-content H1s (markdown '# ' and raw <h1>) that render outside code and comments.
+
+    Uses CommonMark fence rules (a closing fence is bare, same char, length >= opening) so
+    that '#' shell comments and <h1> examples inside code blocks - including blocks that show
+    other ``` fences - are not miscounted. Inline code spans are also stripped.
+    """
+    text = re.sub(r'\{/\*.*?\*/\}', '', mdx_content, flags=re.DOTALL)
+    text = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
+
+    found: List[str] = []
+    in_fence = False
+    fence_char = ''
+    fence_len = 0
+    for line in text.splitlines():
+        if in_fence:
+            close = _FENCE_CLOSE.match(line)
+            if close and close.group(1)[0] == fence_char and len(close.group(1)) >= fence_len:
+                in_fence = False
+            continue
+        opener = _FENCE_OPEN.match(line)
+        if opener:
+            in_fence = True
+            fence_char = opener.group(1)[0]
+            fence_len = len(opener.group(1))
+            continue
+        if re.match(r'^# \S', line):
+            found.append(line.strip())
+        if re.search(r'<h1[ >]', re.sub(r'`[^`]*`', '', line), re.IGNORECASE):
+            found.append('<h1>')
+    return found
+
+
+def has_frontmatter_title(mdx_content: str) -> bool:
+    """True if the MDX frontmatter defines a non-empty title (which Mintlify renders as the H1)."""
+    m = re.match(r'^---\n(.*?)\n---', mdx_content, re.DOTALL)
+    return bool(m and re.search(r'^title:\s*\S', m.group(1), re.MULTILINE))
+
+
+def check_multiple_h1(base_dir: str) -> Dict[str, Tuple[int, List[str]]]:
+    """Flag pages that render more than one H1.
+
+    In Mintlify the frontmatter title is the page H1, so any in-content H1 (or two or more
+    when there is no title) means the page has multiple H1s. Snippet fragments are skipped.
+    Returns {file_path: (total_h1_count, [in_content_h1s])}.
+    """
+    results: Dict[str, Tuple[int, List[str]]] = {}
+    for file_path in glob.glob(os.path.join(base_dir, '**', '*.mdx'), recursive=True):
+        norm = file_path.replace(os.sep, '/')
+        if norm.startswith('snippets/') or '/snippets/' in norm:
+            continue
+        try:
+            with open(file_path, 'r', encoding='utf-8') as fh:
+                content = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        h1s = find_content_h1s(content)
+        total = len(h1s) + (1 if has_frontmatter_title(content) else 0)
+        if total > 1:
+            results[file_path] = (total, h1s)
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(description='Check for broken links in converted documentation')
     parser.add_argument('directory', nargs='?', default='converted', help='Directory to scan (default: converted)')
@@ -924,6 +1114,12 @@ def main():
     parser.add_argument('--check-anchors', action='store_true', help='Validate anchor fragments in internal links')
     parser.add_argument('--anchor-target-excludes', nargs='*', default=[], metavar='PATH',
                         help='Relative file paths whose anchors should not be validated (e.g. auto-generated files that use MDX imports)')
+    parser.add_argument('--check-redirecting-links', action='store_true',
+                        help='Flag internal links that hit a 3xx redirect (trailing slashes and links to docs.json redirect sources)')
+    parser.add_argument('--check-insecure-links', action='store_true',
+                        help='Flag insecure http:// links to first-party (tyk.io) domains that should use https')
+    parser.add_argument('--check-multiple-h1', action='store_true',
+                        help='Flag pages that render more than one H1 (frontmatter title + in-content # / <h1>)')
 
     args = parser.parse_args()
 
@@ -945,6 +1141,21 @@ def main():
     validation_results = None
     if args.validate_redirects:
         validation_results = validate_docs_json(args.directory)
+
+    # Check for internal links that resolve via a 3xx redirect
+    redirecting_links = None
+    if args.check_redirecting_links:
+        redirecting_links = check_redirecting_links(args.directory, redirects)
+
+    # Check for insecure http:// links to first-party domains
+    insecure_links = None
+    if args.check_insecure_links:
+        insecure_links = check_insecure_links(args.directory)
+
+    # Check for pages with multiple H1 tags
+    multiple_h1 = None
+    if args.check_multiple_h1:
+        multiple_h1 = check_multiple_h1(args.directory)
     
     # Report results
     print(f"\n{'='*60}")
@@ -1111,6 +1322,41 @@ def main():
         else:
             print("✅ No broken anchor fragments found!")
 
+    if args.check_redirecting_links:
+        if redirecting_links:
+            total_redirecting = sum(len(v) for v in redirecting_links.values())
+            print(f"\n↪️  INTERNAL LINKS THAT REDIRECT ({total_redirecting} in {len(redirecting_links)} files):")
+            for file_path, items in sorted(redirecting_links.items()):
+                print(f"\n  📄 {file_path}")
+                for link, reason, suggestion in items:
+                    print(f"    - {link}  [{reason}]  ->  use {suggestion}")
+            print("\n  Fix: point each link directly at the suggested target (no trailing slash).")
+        else:
+            print("✅ No internal links pointing to redirects found!")
+
+    if args.check_insecure_links:
+        if insecure_links:
+            total_insecure = sum(len(v) for v in insecure_links.values())
+            print(f"\n🔒 INSECURE (http://) FIRST-PARTY LINKS ({total_insecure} in {len(insecure_links)} files):")
+            for file_path, items in sorted(insecure_links.items()):
+                print(f"\n  📄 {file_path}")
+                for link, suggestion in items:
+                    print(f"    - {link}  ->  use {suggestion}")
+            print("\n  Fix: use https:// for tyk.io links.")
+        else:
+            print("✅ No insecure first-party http:// links found!")
+
+    if args.check_multiple_h1:
+        if multiple_h1:
+            print(f"\n🔠 PAGES WITH MULTIPLE H1 TAGS ({len(multiple_h1)}):")
+            for file_path, (total, h1s) in sorted(multiple_h1.items()):
+                print(f"\n  📄 {file_path}  (H1 count: {total})")
+                for h in h1s:
+                    print(f"    - {h}")
+            print("\n  Fix: the frontmatter title is the page H1 - demote in-content '# ' headings to '##' (or wrap example <h1> in a code block).")
+        else:
+            print("✅ No pages with multiple H1 tags found!")
+
     if validation_results and 'error' not in validation_results:
         total_issues = (len(validation_results['self_referencing_redirects']) +
                        len(validation_results['navigation_redirect_conflicts']) +
@@ -1128,6 +1374,9 @@ def main():
     has_broken_links = broken_links and not args.images_only
     has_broken_images = broken_images and not args.links_only
     has_broken_anchors = bool(broken_anchors) and args.check_anchors
+    has_redirecting_links = bool(redirecting_links) and args.check_redirecting_links
+    has_insecure_links = bool(insecure_links) and args.check_insecure_links
+    has_multiple_h1 = bool(multiple_h1) and args.check_multiple_h1
     has_broken_external = bool(external_results) and any(
         not result['accessible']
         for results in external_results.values()
@@ -1140,7 +1389,7 @@ def main():
                             validation_results['missing_navigation_files'] or
                             validation_results['missing_redirect_destinations']))
 
-    return 1 if (has_broken_links or has_broken_images or has_broken_anchors or has_broken_external or has_validation_issues) else 0
+    return 1 if (has_broken_links or has_broken_images or has_broken_anchors or has_broken_external or has_validation_issues or has_redirecting_links or has_insecure_links or has_multiple_h1) else 0
 
 if __name__ == '__main__':
     exit(main())
