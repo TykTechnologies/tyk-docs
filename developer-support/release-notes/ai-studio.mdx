@@ -1,0 +1,162 @@
+---
+title: "Tyk AI Studio Release Notes"
+description: "Release notes documenting updates, enhancements, and changes for Tyk AI Studio and its Edge Gateway (Microgateway)."
+keywords: "Tyk AI Studio, AI Management, Release notes, changelog, Microgateway, Edge Gateway"
+sidebarTitle: "Release Notes"
+---
+
+**This page contains all release notes for Tyk AI Studio, displayed in reverse chronological order.** Each release covers the AI Studio control plane, the Edge Gateway (Microgateway), and the bundled enterprise and community plugin submodules.
+
+Tyk AI Studio is available as a [Community edition](/ai-management/ai-studio/overview#community-edition) (open source) and an [Enterprise edition](/ai-management/ai-studio/overview#enterprise-edition).
+
+---
+
+## 2.1 Release Notes
+
+### 2.1.0 Release Notes
+
+#### Release Date 14 May 2026
+
+#### Release Highlights
+
+Tyk AI Studio 2.1.0 is the first feature release on the 2.x line.
+
+**AWS Bedrock as a first-class LLM vendor**
+
+AI Studio now supports [AWS Bedrock](/ai-management/ai-studio/llm-management) end-to-end: a native AWS SDK driver with OpenAI-compatible translation, full streaming support, and native protocol pass-through on the Edge Gateway so that unmodified AWS SDK clients (such as boto3) work transparently. The LLM form gains Bedrock-aware credential fields, stored encrypted at rest via `$SECRET/` references.
+
+**Compliance events from filter scripts**
+
+Filter scripts can now emit structured [Compliance Events](/ai-management/ai-studio/compliance-events) (PII redactions, content rewrites, guardrail triggers) that flow through the analytics pipeline into a new Filter Events dashboard tab with severity filters, drill-down, and CSV export. See [Filters](/ai-management/ai-studio/filters#compliance-event-reporting) for the script syntax.
+
+**Prometheus / OpenTelemetry metrics**
+
+Both AI Studio and the Edge Gateway expose an operational [`/metrics` endpoint](/ai-management/ai-studio/analytics#prometheus-and-opentelemetry-metrics) covering request counts, token usage, cost, tool calls, policy blocks, latency histograms, and in-flight requests.
+
+**Privacy and governance controls**
+
+A new per-LLM [Disable Request/Response Body Logging](/ai-management/ai-studio/llm-management) toggle clears request and response bodies before storage, for privacy or compliance-sensitive providers.
+
+**New plugins**
+
+An OAuth2 client-credentials enterprise plugin validates JWTs from external IdPs (Auth0, Microsoft Entra ID, Okta) and auto-provisions Apps from templates. The community submodule adds a sliding-window rate-limiter plugin and an LLM price sync plugin.
+
+**Plugin SDK additions**
+
+`StoreApp`, model-price wrappers, and UTF-8 sanitization helpers. Plugin authors should review [Plugin SDK Changes in v2.1](/ai-management/ai-studio/plugins/sdk-changes-v2-1).
+
+#### Breaking Changes
+
+**`AnalyticsHandler` interface signature change.** The analytics handler interface now takes `context.Context` as the first argument on every recording method and adds a `RecordComplianceEvents` method. If you implement a custom analytics handler, update your method signatures; `RecordComplianceEvents` can be a no-op if you do not consume compliance events. See [Plugin SDK Changes in v2.1](/ai-management/ai-studio/plugins/sdk-changes-v2-1#changed-analyticshandler-interface) for the migration.
+
+#### Upgrade Instructions
+
+- **Database migration.** GORM auto-migration on startup adds the `llm_id` column to `proxy_logs` (with a composite `(llm_id, time_stamp)` index) and creates the `compliance_events` table. No manual step is required. Historical proxy log rows have `llm_id = 0` and will not appear in per-LLM detail views; this is intentional, as they pre-date the column.
+- **Bedrock credentials.** AWS credentials for Bedrock LLMs are stored in the `metadata` map (`aws_access_key_id`, `aws_secret_access_key`, `aws_session_token`) rather than `APIKey`. The LLM form handles packing and unpacking transparently. Use `$SECRET/NAME` references for credentials at rest.
+- **Quickstart users.** If you were running the v2.0.0 quickstart compose files with `tykio/microgateway:*` image references and failing healthchecks, pull the v2.1.0 quickstart compose and the corrected `tykio/tyk-microgateway` (Community) or `tykio/tyk-microgateway-ent` (Enterprise) images.
+
+#### Changelog
+
+##### Added
+
+<AccordionGroup>
+
+<Accordion title='AWS Bedrock LLM vendor'>
+A native AWS Bedrock driver for the LLM proxy, using the AWS SDK v2 `Converse` and `ConverseStream` APIs for universal model support. OpenAI-to-Converse translation serves `/ai/v1/chat/completions`, SDK-mediated streaming serves `/llm/stream/`, and a SigV4-signed reverse proxy serves `/llm/rest/`. Token usage is extracted on-the-fly from streaming metadata events, with per-LLM client caching.
+
+The Edge Gateway additionally supports the Bedrock native protocol: AWS SDK clients (such as boto3) can call Bedrock through the gateway transparently, with responses re-encoded as a binary event stream, SigV4 auth extraction, and cross-region endpoint support.
+
+The LLM form gains a Bedrock vendor entry with labelled AWS credential fields that pack into the LLM `metadata` map on save. See [LLM Management](/ai-management/ai-studio/llm-management).
+</Accordion>
+
+<Accordion title='Compliance event reporting from filter scripts'>
+Filter scripts can set `compliance_events` in their Tengo output to record redactions, rewrites, PII detection, or silent failures with severity (`info` / `warning` / `critical`) and structured metadata. Events flow through an asynchronous analytics pipeline, are stored in a new `compliance_events` table, propagate from edge to control plane via the gRPC analytics pulse, and are exposed through `GET /api/v1/compliance/events` with filtering and aggregation support.
+
+The Compliance dashboard surfaces the events with Critical/Warning summary cards, a Blocked vs Flagged split in Policy Violations, severity-weighted per-app risk scores, and a new Filter Events tab with filters, a timeline chart, expandable metadata, and CSV export.
+
+The bundled filter script library (PII redaction, content blocking, response guardrails) was updated to demonstrate compliance event reporting. See [Compliance Events](/ai-management/ai-studio/compliance-events).
+</Accordion>
+
+<Accordion title='Prometheus / OpenTelemetry metrics endpoint'>
+A new `/metrics` endpoint on both AI Studio and the Edge Gateway exposes counters for requests, tokens, cost, tool calls, policy blocks, and compliance events, plus latency histograms and an in-flight requests gauge. Enabled by default; see [Analytics & Monitoring](/ai-management/ai-studio/analytics#prometheus-and-opentelemetry-metrics) for the metric catalog and configuration.
+</Accordion>
+
+<Accordion title='Per-LLM body capture toggle'>
+A new **Disable Request/Response Body Logging** flag (`dont_log_bodies`) on the LLM model clears request and response bodies before storage in proxy logs, chat logs, and analytics events, on both the embedded gateway and the Edge Gateway. Defaults to off for backward compatibility.
+</Accordion>
+
+<Accordion title='Plugin SDK: StoreApp, model price wrappers, UTF-8 sanitization'>
+Gateway plugins can write Apps directly into the local Edge Gateway database via `StoreApp`, with upsert semantics and transactional associations (requires the `apps.write` scope). Studio plugins gain `ListModelPrices` and `GetModelPricesByVendor` wrappers (requires `pricing.read`). New `SanitizeUTF8` helpers protect all plugins from invalid UTF-8 gRPC marshaling errors, applied automatically in `Call()` and `PortalCall()`. See [Plugin SDK Changes in v2.1](/ai-management/ai-studio/plugins/sdk-changes-v2-1).
+</Accordion>
+
+<Accordion title='OAuth2 client-credentials enterprise plugin'>
+A new enterprise auth plugin validates JWT access tokens from external IdPs (Auth0, Microsoft Entra ID, Okta) and maps them to AI Studio Apps for gateway access control. It features JWKS caching with OIDC auto-discovery, multi-provider configuration with claim mappings, template-based App auto-provisioning mapped to IdP permission tags, and a Studio admin UI for provider management.
+</Accordion>
+
+<Accordion title='Community plugins: rate limiter and LLM price sync'>
+The community submodule adds a sliding-window rate-limiter plugin for LLM requests, with composable key dimensions, request/token/concurrent counters, shadow mode, fail-open behavior, match conditions for entity-specific targeting, and Redis backend support. A scheduled LLM price sync plugin fetches model pricing from llm-prices.com into the control plane's `model_prices` table, with vendor filtering, dry-run mode, and a dashboard UI.
+</Accordion>
+
+<Accordion title='Export chat conversations to PDF'>
+A print button on both the standard chat view and agent chats exports the conversation to PDF. See [Chat Interface](/ai-management/ai-studio/chat-interface).
+</Accordion>
+
+</AccordionGroup>
+
+##### Changed
+
+<AccordionGroup>
+
+<Accordion title='Proxy logs attributed to the specific LLM'>
+Proxy logs are now attributed by `llm_id` instead of the vendor string, so two LLM entries sharing a vendor no longer cross-pollinate in the LLM detail page. The LLM ID also propagates through the analytics pulse, so edge-recorded logs appear in the per-LLM view. Historical rows pre-dating the new column remain unattributed.
+</Accordion>
+
+<Accordion title='Secret interpolation extended'>
+`$SECRET/` and `$ENV/` references are now resolved in the LLM `Metadata` map (enabling encrypted Bedrock credentials), in all gRPC datasource operations, in chat session resume, and during Edge Gateway config sync.
+</Accordion>
+
+<Accordion title='Plugin reliability improvements'>
+Plugins now reload when their configuration changes, so no stale plugin state persists after config updates. Soft-delete conflicts on plugin resources are fixed. API responses redact sensitive LLM metadata values for keys containing `secret`, `token`, or `key`.
+</Accordion>
+
+</AccordionGroup>
+
+##### Fixed
+
+<AccordionGroup>
+
+<Accordion title='Bedrock endpoint authentication and analytics'>
+Credential validation middleware is now applied to `/ai/` routes so the direct AWS SDK path gets app context for auth, budget, and logging. Proxy logs are recorded for both Bedrock streaming paths, `ModelName` is populated for all Bedrock paths, and asynchronous analytics no longer lose records when the HTTP context is canceled after the response is sent.
+</Accordion>
+
+<Accordion title='Tool AuthKey redacted in API responses'>
+The tool `AuthKey` was previously returned in plaintext on read and mutation responses, visible in browser devtools. It now follows the same `[redacted]` pattern as LLM and Datasource handlers, and an echoed `[redacted]` value on update is ignored so the stored key is preserved.
+</Accordion>
+
+<Accordion title='CSRF and quickstart fixes'>
+CSRF middleware now properly aborts the handler chain on failure, and `localhost:3000` is a trusted origin in dev mode. Quickstart Docker Compose files now reference the published image names (`tykio/tyk-microgateway`, `tykio/tyk-microgateway-ent`, `tykio/tyk-ai-studio-ent`), and shell-based healthchecks that always failed on distroless images were removed.
+</Accordion>
+
+<Accordion title='Community submodule fixes'>
+The RAG simple chunker no longer splits multi-byte UTF-8 characters, file processing sanitizes non-UTF-8 bytes before chunking, and the rate-limiter plugin gains atomic concurrent counters, optimistic locking, full-length API key hashes, and consistent JSON storage across Redis and KV backends.
+</Accordion>
+
+<Accordion title='Manual marketplace sync cache-busting'>
+User-triggered marketplace syncs now bypass the GitHub CDN cache with a cache-busting query parameter, while background and scheduled syncs continue to use efficient conditional requests.
+</Accordion>
+
+</AccordionGroup>
+
+##### Security
+
+<AccordionGroup>
+
+<Accordion title='Dependency CVE fixes'>
+Six Go dependency advisories patched, including `go.opentelemetry.io/otel/sdk` v1.34.0 to v1.40.0 (GO-2026-4394, arbitrary code execution), `gorilla/csrf` v1.7.2 to v1.7.3 (GO-2025-3607, CSRF bypass), `redis/go-redis/v9` v9.5.3 to v9.6.3 (GO-2025-3540), `eclipse/paho.mqtt.golang` v1.2.0 to v1.5.1 (GO-2025-4173), `filippo.io/edwards25519` v1.1.0 to v1.1.1 (GO-2026-4503), and `golang.org/x/crypto` v0.43.0 to v0.45.0 (GO-2025-4134, GO-2025-4135).
+</Accordion>
+
+<Accordion title='Supply-chain hardening'>
+All GitHub Actions pinned to full commit SHAs, Docker base images pinned by digest, `npm ci --ignore-scripts` and `pip install --no-deps` enforced, `go install` tool versions pinned to release tags, `go mod verify` added to CI, and CI authentication migrated from a personal access token to GitHub App tokens.
+</Accordion>
+
+</AccordionGroup>
