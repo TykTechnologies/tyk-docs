@@ -1,94 +1,238 @@
 ---
-title: "Single Sign-On (SSO) with Proxy Provider"
-description: "Use the Proxy Identity Provider in Tyk Identity Broker to authenticate requests against legacy systems or custom endpoints by proxying and analyzing the response."
-keywords: "Custom Authentication, Proxy Identity Provider, Identity Broker, TIB, Legacy Authentication, Basic Auth, OAuth Password Grant"
-sidebarTitle: "SSO with Proxy Provider"
+title: "SSO with Proxy Provider"
+description: "Use Tyk Identity Broker's Proxy Provider to authenticate users against a custom or legacy HTTP endpoint."
+keywords: "Tyk Identity Broker, TIB, SSO, Proxy Provider, Custom Authentication, Legacy Authentication, Basic Auth"
+sidebarTitle: "Proxy Provider"
 canonical: "https://tyk.io/docs/api-management/custom-auth-with-proxy-identity-provider"
 ---
 
 ## Introduction
 
-The Proxy Identity Provider is a generic solution built into [Tyk Identity Broker](/nightly/api-management/external-service-integration) (TIB) designed to handle custom or legacy authentication flows. It is particularly useful for scenarios such as basic auth access with third-party providers or OAuth password grants, where the authentication request can simply be passed through to a providing endpoint to return a direct response.
+The Proxy Provider (`ProxyProvider`) is a passthrough authentication method that forwards the user's request to a custom or legacy HTTP endpoint and evaluates the response to determine whether authentication succeeded. No browser redirect to an external IdP is involved.
 
-Unlike standard Single Sign-On (SSO) protocols (like SAML or OIDC), the Proxy Provider operates on a straightforward "proxy and evaluate" model.
+This is useful for integrating with systems that do not support standard protocols such as OIDC, SAML, or LDAP, for example a legacy authentication service that accepts Basic Auth and returns a JSON response.
 
-### How it works
+Before configuring your TIB profile, read [Dashboard SSO](/nightly/tyk-identity-broker/dashboard-sso) or [Portal SSO](/nightly/tyk-stack/tyk-developer-portal/enterprise-developer-portal/managing-access/enable-sso) to understand the `ActionType`, `ReturnURL`, and `IdentityHandlerConfig` fields required for your use case.
 
-The following diagram illustrates the user authentication flow when using the Proxy Identity Provider:
+## How It Works
+
+TIB proxies the incoming authentication request to the configured `TargetHost` and evaluates the response:
 
 ```mermaid
 sequenceDiagram
-    participant Client as Client Application
-    participant TIB as "Tyk Identity Broker (TIB)"
-    participant Upstream as "Legacy/Custom Upstream (TargetHost)"
-    participant Handler as TIB Identity Handler
+    actor User
+    participant TIB as Tyk Identity Broker
+    participant Upstream as Target Host
 
-    Client->>TIB: GET/POST /auth/{PROFILE-ID}/{PROVIDER-NAME}
-    TIB->>Upstream: Proxy request to TargetHost
-    Upstream-->>TIB: Response (e.g., 200 OK, JSON body)
-    
-    Note over TIB: Evaluate Success (OKCode, OKRegex, OKResponse)
-    
-    alt Authentication Failed
-        TIB-->>Client: 401 Unauthorized / Error
-    else Authentication Successful
-        Note over TIB: Extract Data (UsernameField, AccessTokenField)
-        TIB->>Handler: Handover extracted data
-        Note over Handler: Perform Action (e.g., GenerateOrLoginUserProfile)
-        Handler-->>Client: Redirect to ReturnURL or return Token
-    end
+    User->>TIB: POST /auth/{profile-id}/ProxyProvider
+    TIB->>Upstream: Proxy request
+    Upstream->>TIB: Response
+    TIB->>TIB: Evaluate success (OKCode / OKResponse / OKRegex)
+    TIB->>User: Redirect to ReturnURL or return token
 ```
 
-1. **Triggering the Flow:** The client application initiates the process by calling the TIB authentication endpoint: `/auth/{PROFILE-ID}/{PROVIDER-NAME}` (e.g., `/auth/7/ProxyProvider`). Any credentials (such as Basic Auth headers or form data) should be included in this request.
-2. **Proxying:** TIB receives the request and proxies it directly to the configured upstream host (`TargetHost`).
-3. **Evaluation:** TIB captures the response from the upstream host and evaluates it to determine if the authentication was successful based on your configured triggers.
-4. **Data Extraction & Handover:** If successful, TIB extracts the required user data and hands it over to the Identity Handler to perform the configured action (e.g., logging the user into the Tyk Dashboard or issuing an API token).
+1. The user submits credentials to the TIB endpoint (typically via a form `POST` or HTTP Basic Auth header).
+2. TIB proxies the request to `TargetHost`.
+3. TIB evaluates the response against the configured success criteria.
+4. If successful, TIB extracts the user identity and executes the configured action.
 
 ## Evaluating Success
 
-When TIB proxies the request to the upstream host, it evaluates the response to determine if authentication was successful. It does this in a specific order:
+TIB evaluates the upstream response in order. At least one of `OKCode`, `OKResponse`, or `OKRegex` must be configured.
 
-1. **Hard Failure:** If the upstream returns an HTTP status code of `400` or greater, authentication fails immediately, regardless of any other settings.
-2. **Response Code (`OKCode`):** If configured (not `0`), the response status code must exactly match this value (e.g., a simple `200` response).
-3. **Exact Match (`OKResponse`):** If configured, TIB reads the raw response body, **base64 encodes it**, and compares it to the `OKResponse` string. This means the `OKResponse` value in your configuration **must** be a base64 encoded string.
-4. **Regex (`OKRegex`):** If the response is dynamic (e.g., returning a changing timestamp), you can configure a regular expression. TIB will compile the regex and check if it matches the raw response body string.
+1. **Hard failure**: if the upstream returns HTTP `400` or above, authentication fails immediately.
+2. **`OKCode`**: if set (non-zero), the response status code must exactly match this value.
+3. **`OKResponse`**: if set, TIB base64-encodes the raw response body and compares it to this value. The configured value must therefore be a base64-encoded string.
+4. **`OKRegex`**: if set, TIB applies this regular expression against the raw response body.
 
-These triggers can be used in conjunction as gates. For example, a response must be `200 OK` and match the regex in order to be marked as successful.
+All configured criteria must pass for authentication to succeed.
 
-## Extracting Data and Fallback Behavior
+## Extracting User Identity
 
-If the response is deemed successful, the Proxy Provider attempts to extract user data to pass to the Identity Handler:
+If authentication succeeds, TIB extracts the user identity to pass to the identity handler:
 
-- **JSON Parsing (`ResponseIsJson`):** If set to `true`, TIB parses the response body as JSON. It then uses the `AccessTokenField` and `UsernameField` values as JSON paths to extract the respective data.
-- **Basic Auth Header:** It can extract the username from the original request's Basic Auth header. (See the critical warning below regarding a known typo). 
-- **Fallback Behavior:** If no username can be extracted from the response or headers, TIB generates a random 12-character string. Finally, if the resulting username does not contain an `@` symbol, TIB automatically appends `@soSession.com` to create a dummy email address for the user profile.
-
-
-## Example: Log into the Dashboard with the Proxy Provider
-
-The configuration below will proxy a request made to `/auth/7/ProxyProvider` to `http://{TARGET-HOSTNAME}:{PORT}/` and evaluate the response status code. If the status code returned is `200`, TIB will assume the response is JSON (`"ResponseIsJson": true`) and will attempt to extract an access token and find an identity to bind the Dashboard user to in the `user_name` JSON field of the response object (`"UsernameField": "user_name"`).
+- If `ResponseIsJson` is `true`, TIB parses the response body as JSON and extracts values using `AccessTokenField` and `UsernameField` as JSON field names.
+- If `ExrtactUserNameFromBasicAuthHeader` is `true`, TIB extracts the username from the incoming request's Basic Auth header.
+- If no username can be extracted, TIB generates a random identifier and appends `@soSession.com` to form a placeholder email address.
 
 <Warning>
-Due to a known typo in the TIB codebase, the configuration key for extracting the username from the Basic Auth header must be misspelled as `ExrtactUserNameFromBasicAuthHeader` (with the 'r' and 't' swapped). Ensure that you use this misspelling, otherwise TIB will silently ignore the setting.
+The field name `ExrtactUserNameFromBasicAuthHeader` contains a known typo that is preserved in the TIB codebase to avoid a breaking change. You must spell it exactly as shown.
 </Warning>
+
+## TIB Profile
+
+The Proxy Provider configuration goes in the `ProviderConfig` block of the TIB profile. Set `ProviderName` to `ProxyProvider` and `Type` to `passthrough`.
+
+```json expandable
+{
+  "ProviderName": "ProxyProvider",
+  "Type": "passthrough",
+  "ProviderConfig": {
+    "TargetHost": "http://{upstream-host}/{path}",
+    "OKCode": 200,
+    "OKResponse": "",
+    "OKRegex": "",
+    "ResponseIsJson": false,
+    "AccessTokenField": "",
+    "UsernameField": "",
+    "ExrtactUserNameFromBasicAuthHeader": false
+  }
+}
+```
+
+The `ProviderConfig` fields are:
+
+| Field | Description |
+|---|---|
+| `TargetHost` | URL of the upstream authentication endpoint. |
+| `OKCode` | HTTP status code that indicates a successful response. Set to `0` to disable this check. |
+| `OKResponse` | Base64-encoded string that the response body must exactly match. Leave empty to disable. |
+| `OKRegex` | Regular expression that must match the raw response body. Leave empty to disable. |
+| `ResponseIsJson` | Set to `true` if the upstream response body is JSON, enabling field extraction via `AccessTokenField` and `UsernameField`. |
+| `AccessTokenField` | JSON field name in the upstream response containing an access token. |
+| `UsernameField` | JSON field name in the upstream response containing the username. |
+| `ExrtactUserNameFromBasicAuthHeader` | Set to `true` to extract the username from the incoming request's Basic Auth header. See the warning above for the intentional field name typo. |
+
+## Login Page
+
+Since `ProxyProvider` is a passthrough flow, users submit credentials directly to TIB. Create a login page with a form that posts to the TIB authentication endpoint:
+
+```html
+<form method="POST" action="http://{tib-host}/auth/{profile-id}/ProxyProvider">
+  <input type="text" name="username" />
+  <input type="password" name="password" />
+  <button type="submit">Log in</button>
+</form>
+```
+
+Alternatively, credentials can be passed via an HTTP Basic Auth header if `ExrtactUserNameFromBasicAuthHeader` is set to `true`.
+
+## Worked Example
+
+This example proxies a Basic Auth request to an upstream service. TIB evaluates the HTTP `200` response code and extracts the username from the JSON response body.
+
+<Tabs>
+<Tab title="Dashboard SSO">
+
+In this example, Tyk Dashboard is running at `http://dashboard.example.com` on port `3000`; replace the example values with your own.
+
+**Tyk Dashboard configuration**
 
 ```json
 {
-  "ActionType": "GenerateOrLoginUserProfile",
-  "ID": "7",
-  "OrgID": "{YOUR-ORG-ID}",
-  "ProviderConfig": {
-    "AccessTokenField": "access_token",
-    "ExrtactUserNameFromBasicAuthHeader": false,
-    "OKCode": 200,
-    "OKRegex": "",
-    "OKResponse": "",
-    "ResponseIsJson": true,
-    "TargetHost": "http://{TARGET-HOSTNAME}:{PORT}/",
-    "UsernameField": "user_name"
+  "sso_enable_user_lookup": true,
+  "sso_permission_defaults": {
+    "apis": "write",
+    "keys": "write",
+    "policies": "write"
   },
-  "ProviderName": "ProxyProvider",
-  "ReturnURL": "http://{DASH-DOMAIN}:{DASH-PORT}/tap",
-  "Type": "redirect"
+  "sso_default_group_id": "{tyk-user-group-id}"
 }
 ```
+
+With this configuration, registered users (with a Tyk Dashboard user account) get their own permissions; unregistered users fall back to the group specified in `sso_default_group_id`. See [Dashboard SSO](/nightly/tyk-identity-broker/dashboard-sso) for full details.
+
+**TIB profile**
+
+The TIB profile is created via the [Tyk Identity Broker API](/nightly/tyk-identity-broker/tib-rest-api) or the [Tyk Dashboard UI](/nightly/tyk-identity-broker/dashboard-sso#create-a-tib-profile-using-dashboard-ui).
+
+```json expandable
+{
+  "ID": "proxy-dashboard",
+  "Name": "Proxy Provider Dashboard SSO",
+  "OrgID": "{tyk-org-id}",
+  "ActionType": "GenerateOrLoginUserProfile",
+  "Type": "passthrough",
+  "ProviderName": "ProxyProvider",
+  "ReturnURL": "http://dashboard.example.com:3000/tap",
+  "IdentityHandlerConfig": {
+    "DashboardCredential": "{tib-service-user-api-key}"
+  },
+  "ProviderConfig": {
+    "TargetHost": "http://{upstream-host}/{auth-path}",
+    "OKCode": 200,
+    "OKResponse": "",
+    "OKRegex": "",
+    "ResponseIsJson": true,
+    "AccessTokenField": "access_token",
+    "UsernameField": "username",
+    "ExrtactUserNameFromBasicAuthHeader": false
+  }
+}
+```
+
+- set `DashboardCredential` to the [TIB service account's](/nightly/tyk-identity-broker/dashboard-sso#tib-service-account) Dashboard credentials
+
+**Login page form action**
+
+Your login page form should `POST` to:
+
+```
+http://dashboard.example.com:3000/auth/proxy-dashboard/ProxyProvider
+```
+
+See [Dashboard SSO](/nightly/tyk-identity-broker/dashboard-sso) for details on session behavior, permissions, and user group mapping.
+
+</Tab>
+<Tab title="Portal SSO">
+
+In this example, Tyk Developer Portal is running at `http://portal.example.com` on port `3001`; replace the example values with your own.
+
+**Tyk Developer Portal configuration**
+
+Enable embedded TIB in the Portal configuration:
+
+```json
+{
+  "TIB": {
+    "Enable": true
+  }
+}
+```
+
+**TIB profile**
+
+The TIB profile is created via the Tyk Developer Portal UI under **Settings > SSO Profiles**.
+
+```json expandable
+{
+  "ID": "proxy-portal",
+  "Name": "Proxy Provider Portal SSO",
+  "OrgID": "{tyk-org-id}",
+  "ActionType": "GenerateOrLoginDeveloperProfile",
+  "Type": "passthrough",
+  "ProviderName": "ProxyProvider",
+  "ReturnURL": "http://portal.example.com:3001/sso",
+  "IdentityHandlerConfig": {
+    "DashboardCredential": "{portal-api-secret}"
+  },
+  "ProviderConfig": {
+    "TargetHost": "http://{upstream-host}/{auth-path}",
+    "OKCode": 200,
+    "OKResponse": "",
+    "OKRegex": "",
+    "ResponseIsJson": true,
+    "AccessTokenField": "access_token",
+    "UsernameField": "username",
+    "ExrtactUserNameFromBasicAuthHeader": false
+  }
+}
+```
+
+- set `ActionType` and `OrgID` based on the audience:
+    - Admin Portal (API owners): `ActionType: "GenerateOrLoginUserProfile"`, `OrgID: "0"`
+    - Live Portal (API consumers): `ActionType: "GenerateOrLoginDeveloperProfile"`, `OrgID` is not required
+- set `DashboardCredential` to the [`PortalAPISecret`](/nightly/product-stack/tyk-enterprise-developer-portal/deploy/configuration#portal_api_secret) used to authenticate with the Portal's management API
+
+**Login page form action**
+
+Your login page form should `POST` to:
+
+```
+http://portal.example.com:3001/tib/auth/proxy-portal/ProxyProvider
+```
+
+For details on user group mapping and admin vs developer profiles, see [Portal SSO](/nightly/tyk-stack/tyk-developer-portal/enterprise-developer-portal/managing-access/enable-sso).
+
+</Tab>
+</Tabs>
