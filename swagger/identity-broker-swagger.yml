@@ -1,0 +1,872 @@
+openapi: "3.0.3"
+
+info:
+  title: Tyk Identity Broker (TIB) API
+  description: |
+    The Tyk Identity Broker (TIB) acts as a delegated authentication gateway between
+    external identity providers (OAuth/Social, SAML, LDAP, Reverse Proxy) and the
+    Tyk ecosystem.
+
+    ## Authentication
+
+    Profile management endpoints (`/api/*`) require an `Authorization` header whose
+    value must exactly match the `Secret` field in `tib.conf`.
+
+    Auth flow endpoints (`/auth/*`) are public — they are the entry points for
+    end-user authentication and are called by browsers or API clients, not by
+    back-end services.
+  version: "v1.7.2"
+  contact:
+    email: support@tyk.io
+    name: Tyk Technologies
+    url: https://tyk.io/contact
+
+servers:
+  - url: http://localhost:3010
+    description: Default local TIB instance
+
+tags:
+  - name: Auth
+    description: Entry points for identity-provider authentication flows (public)
+  - name: Profiles
+    description: CRUD management of TIB profiles (requires Authorization header)
+  - name: Health
+    description: Health check
+
+# ---------------------------------------------------------------------------
+# Reusable components
+# ---------------------------------------------------------------------------
+components:
+
+  schemas:
+
+    # --- Enums ---------------------------------------------------------------
+
+    Action:
+      type: string
+      description: |
+        Determines what TIB does with the confirmed identity.
+        - `GenerateOrLoginDeveloperProfile` – create/log in a Tyk Developer Portal API Consumer
+        - `GenerateOrLoginUserProfile` – create/log in a Tyk Dashboard user or Tyk Developer Portal API Owner
+        - `GenerateOAuthTokenForClient` – generate an OAuth token for an API client (also used for the OAuth password flow)
+        - `GenerateTemporaryAuthToken` – generate a short-lived Tyk access token
+      enum:
+        - GenerateOrLoginDeveloperProfile
+        - GenerateOrLoginUserProfile
+        - GenerateOAuthTokenForClient
+        - GenerateTemporaryAuthToken
+
+    ProviderType:
+      type: string
+      description: |
+        - `redirect` – the user is redirected to an external IdP (OAuth, SAML)
+        - `passthrough` – credentials are validated inline without a redirect (LDAP, Proxy)
+      enum:
+        - redirect
+        - passthrough
+
+    ProviderName:
+      type: string
+      description: Identifier for the concrete provider implementation.
+      enum:
+        - SocialProvider
+        - ADProvider
+        - SAMLProvider
+        - ProxyProvider
+
+    # --- Nested objects ------------------------------------------------------
+
+    ProfileConstraint:
+      type: object
+      description: |
+        Optional constraints that restrict which users may authenticate via this profile.
+      properties:
+        Domain:
+          type: string
+          description: |
+            Restrict logins to email addresses on this domain (e.g. `tyk.io`).
+            Empty string means no domain restriction.
+          example: "tyk.io"
+        Group:
+          type: string
+          description: |
+            Restrict logins to members of this group (provider-specific semantics).
+          example: "engineering"
+
+    # --- Provider-specific config objects (polymorphic via ProviderConfig) ---
+
+    GothConfig:
+      type: object
+      description: |
+        ProviderConfig for `SocialProvider` (OAuth/OIDC).
+        Also supports an optional `JWE` object for encrypted token handling (omitted here — see TIB documentation for JWE configuration).
+      properties:
+        CallbackBaseURL:
+          type: string
+          description: Base URL used to build the OAuth callback URL.
+          example: "https://tib.example.com"
+        FailureRedirect:
+          type: string
+          description: URL to redirect to when authentication or constraint checks fail.
+          example: "https://app.example.com/login?error=1"
+        UseProviders:
+          type: array
+          description: List of OAuth provider configurations to enable.
+          items:
+            type: object
+            properties:
+              Name:
+                type: string
+                description: Goth provider name (e.g. `linkedin`, `github`, `openid-connect`).
+                example: "openid-connect"
+              Key:
+                type: string
+                description: OAuth client ID / application key.
+                example: "my-client-id"
+              Secret:
+                type: string
+                description: OAuth client secret.
+                example: "my-client-secret"
+              DiscoverURL:
+                type: string
+                description: OIDC discovery URL (required for `openid-connect` provider).
+                example: "https://accounts.identity-provider.com/.well-known/openid-configuration"
+              DisableAuthHeaderProviderDomain:
+                type: string
+                description: Disable the auth header for a specific provider domain.
+                example: ""
+              Scopes:
+                type: array
+                items:
+                  type: string
+                description: Additional OAuth scopes to request.
+                example: ["email", "profile"]
+              SkipUserInfoRequest:
+                type: boolean
+                description: Skip the userinfo endpoint request after token exchange.
+                example: false
+
+    ADConfig:
+      type: object
+      description: ProviderConfig for `ADProvider` (LDAP / Active Directory).
+      properties:
+        LDAPServer:
+          type: string
+          example: "ldap.example.com"
+        LDAPPort:
+          type: string
+          description: LDAP server port as a string.
+          example: "389"
+        LDAPUserDN:
+          type: string
+          description: DN template for the authenticating user. Use `{username}` as a placeholder.
+          example: "uid={username},ou=users,dc=example,dc=com"
+        LDAPBaseDN:
+          type: string
+          example: "dc=example,dc=com"
+        LDAPFilter:
+          type: string
+          description: LDAP search filter applied when looking up users.
+          example: "(objectClass=person)"
+        LDAPAttributes:
+          type: array
+          items:
+            type: string
+          description: LDAP attributes to retrieve for the user.
+          example: ["mail", "givenName", "sn"]
+        LDAPEmailAttribute:
+          type: string
+          example: "mail"
+        LDAPFirstNameAttribute:
+          type: string
+          example: "givenName"
+        LDAPLastNameAttribute:
+          type: string
+          example: "sn"
+        LDAPUseSSL:
+          type: boolean
+          example: false
+        LDAPAdminUser:
+          type: string
+          description: DN of an admin user for performing user-lookup searches.
+          example: "cn=admin,dc=example,dc=com"
+        LDAPAdminPassword:
+          type: string
+          example: "s3cr3t"
+        LDAPSearchScope:
+          type: integer
+          description: LDAP search scope (0=Base, 1=SingleLevel, 2=WholeSubtree).
+          example: 2
+        DefaultDomain:
+          type: string
+          description: Default domain to append to usernames that have no domain component.
+          example: "example.com"
+        GetAuthFromBAHeader:
+          type: boolean
+          description: Extract username and password from the HTTP Basic Auth header.
+          example: true
+        SlugifyUserName:
+          type: boolean
+          description: Normalise the username to a URL-safe slug before use.
+          example: false
+        FailureRedirect:
+          type: string
+          example: "https://app.example.com/login?error=1"
+
+    SAMLConfig:
+      type: object
+      description: ProviderConfig for `SAMLProvider`.
+      properties:
+        IDPMetadataURL:
+          type: string
+          description: URL to the IdP's SAML metadata XML.
+          example: "https://idp.example.com/metadata"
+        CertLocation:
+          type: string
+          description: Filesystem path to the SP certificate file (PEM).
+          example: "/etc/tib/certs/sp.crt"
+        SAMLBaseURL:
+          type: string
+          description: Base URL of TIB, used to build SAML ACS and metadata URLs.
+          example: "https://tib.example.com"
+        ForceAuthentication:
+          type: boolean
+          description: Force the IdP to re-authenticate the user on every request.
+          example: false
+        SAMLBinding:
+          type: string
+          description: SAML binding type (e.g. `urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST`).
+          example: "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+        SAMLEmailClaim:
+          type: string
+          description: SAML assertion attribute name containing the user's email.
+          example: "urn:oid:0.9.2342.19200300.100.1.3"
+        SAMLForenameClaim:
+          type: string
+          example: "urn:oid:2.5.4.42"
+        SAMLSurnameClaim:
+          type: string
+          example: "urn:oid:2.5.4.4"
+        FailureRedirect:
+          type: string
+          description: URL to redirect to on authentication failure.
+          example: "https://app.example.com/login?error=1"
+        EntityId:
+          type: string
+          description: SAML SP entity ID (defaults to SAMLBaseURL if empty).
+          example: "https://tib.example.com/saml/metadata"
+
+    ProxyConfig:
+      type: object
+      description: ProviderConfig for `ProxyProvider` (delegates auth to an external HTTP endpoint).
+      properties:
+        TargetHost:
+          type: string
+          description: The URL of the upstream service that validates credentials.
+          example: "https://auth.example.com/validate"
+        OKCode:
+          type: integer
+          description: HTTP status code that signals a successful authentication.
+          example: 200
+        OKRegex:
+          type: string
+          description: Optional regex that must match the response body for auth to succeed.
+          example: ""
+        OKResponse:
+          type: string
+          description: Optional literal string that must appear in the response body.
+          example: ""
+        ResponseIsJson:
+          type: boolean
+          description: Set to true if the upstream response body is JSON.
+          example: true
+        AccessTokenField:
+          type: string
+          description: JSON field name in the upstream response that contains an access token.
+          example: "access_token"
+        UsernameField:
+          type: string
+          description: JSON field name in the upstream response that contains the username.
+          example: "username"
+        ExrtactUserNameFromBasicAuthHeader:
+          type: boolean
+          description: |
+            Extract the username from the HTTP Basic Auth header instead of the
+            upstream response. Note: field name contains a typo (`Exrtact`) which
+            matches the Go struct exactly.
+          example: false
+
+    # --- Core Profile --------------------------------------------------------
+
+    Profile:
+      type: object
+      required:
+        - ID
+        - ActionType
+        - ProviderName
+        - Type
+      properties:
+        ID:
+          type: string
+          description: |
+            Unique identifier for this profile. Must match the `{id}` path parameter
+            when creating or updating.
+          example: "github-sso-dashboard"
+        Name:
+          type: string
+          description: Human-readable display name for this profile.
+          example: "GitHub SSO - Dashboard Login"
+        OrgID:
+          type: string
+          description: Tyk organisation ID this profile belongs to.
+          example: "5e9d9544a1dcd60001d0ed20"
+        ActionType:
+          $ref: "#/components/schemas/Action"
+        MatchedPolicyID:
+          type: string
+          description: |
+            Tyk policy ID to attach to tokens or sessions generated by this profile.
+          example: "5f8f9e3c1b5e4a0001b3c4d5"
+        Type:
+          $ref: "#/components/schemas/ProviderType"
+        ProviderName:
+          $ref: "#/components/schemas/ProviderName"
+        CustomEmailField:
+          type: string
+          description: |
+            Override the claim/attribute used to extract the user's email address.
+            Leave empty to use the provider default.
+          example: "email"
+        CustomUserIDField:
+          type: string
+          description: |
+            Override the claim/attribute used to extract the user's unique identifier.
+          example: "sub"
+        ProviderConfig:
+          type: object
+          description: |
+            Provider-specific configuration object. The shape depends on `ProviderName`:
+            - `SocialProvider` → see `GothConfig` schema
+            - `ADProvider` → see `ADConfig` schema
+            - `SAMLProvider` → see `SAMLConfig` schema
+            - `ProxyProvider` → see `ProxyConfig` schema
+          additionalProperties: true
+        IdentityHandlerConfig:
+          type: object
+          description: |
+            Additional key/value settings passed to the identity handler
+            (e.g. OAuth client credentials, token TTL).
+          additionalProperties: true
+          example:
+            oauth-client-id: "tyk-portal-client"
+            oauth-client-secret: "s3cr3t"
+            oauth-client-base-url: "http://gateway:8080"
+        ProviderConstraints:
+          $ref: "#/components/schemas/ProfileConstraint"
+        ReturnURL:
+          type: string
+          description: URL the user is redirected to after successful authentication.
+          example: "https://dashboard.example.com/tap"
+        DefaultUserGroupID:
+          type: string
+          description: |
+            Tyk user-group ID assigned to users that do not match any entry in
+            `UserGroupMapping`.
+          example: "5f8f9e3c1b5e4a0001b3c4d6"
+        CustomUserGroupField:
+          type: string
+          description: Claim/attribute name that carries the user's group membership.
+          example: "groups"
+        UserGroupMapping:
+          type: object
+          description: |
+            Maps IdP group names to Tyk user-group IDs.
+          additionalProperties:
+            type: string
+          example:
+            admins: "5f8f9e3c1b5e4a0001b3c4d7"
+            developers: "5f8f9e3c1b5e4a0001b3c4d8"
+        UserGroupSeparator:
+          type: string
+          description: |
+            Separator used when a single claim contains multiple group values
+            (e.g. `","` or `" "`).
+          example: ","
+        SSOOnlyForRegisteredUsers:
+          type: boolean
+          description: |
+            When `true`, only pre-existing Tyk users may log in via SSO.
+            New users will be rejected rather than auto-created.
+          example: false
+
+    # --- API response wrappers -----------------------------------------------
+
+    APIOKMessage:
+      type: object
+      properties:
+        Status:
+          type: string
+          enum: [ok]
+          example: "ok"
+        ID:
+          type: string
+          description: The profile ID the operation was performed on.
+          example: "github-sso-dashboard"
+        Data:
+          description: Payload — a single Profile object, a list of Profiles, or an empty object.
+          oneOf:
+            - $ref: "#/components/schemas/Profile"
+            - type: array
+              items:
+                $ref: "#/components/schemas/Profile"
+            - type: object
+
+    APIErrorMessage:
+      type: object
+      properties:
+        Status:
+          type: string
+          enum: [error]
+          example: "error"
+        Error:
+          type: string
+          description: Human-readable error message.
+          example: "Profile not found"
+
+  parameters:
+    profileId:
+      name: id
+      in: path
+      required: true
+      description: The unique identifier of the authentication profile.
+      schema:
+        type: string
+      example: "github-sso-dashboard"
+
+    providerName:
+      name: provider
+      in: path
+      required: true
+      description: |
+        The provider sub-path. For Social/OIDC providers this is the Goth provider
+        name (e.g. `github`, `linkedin`, `openid-connect`). For SAML it is `saml`.
+        For LDAP/Proxy it matches the configured provider identifier.
+      schema:
+        type: string
+      example: "github"
+
+  responses:
+    Unauthorized:
+      description: Missing or incorrect `Authorization` header.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIErrorMessage"
+          example:
+            Status: "error"
+            Error: "Authorization failed"
+
+    NotFound:
+      description: The requested profile does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIErrorMessage"
+          example:
+            Status: "error"
+            Error: "Profile not found"
+
+    BadRequest:
+      description: The request body is malformed or the ID fields do not match.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIErrorMessage"
+          example:
+            Status: "error"
+            Error: "Object ID and URI resource ID do not match"
+
+  securitySchemes:
+    ApiSecret:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: |
+        Must equal the `Secret` value in `tib.conf`.
+        Example: `Authorization: your-tib-secret`
+
+# ---------------------------------------------------------------------------
+# Security applied globally to /api/* paths
+# ---------------------------------------------------------------------------
+security: []   # default: no security — overridden per-operation below
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+paths:
+
+  # --------------------------------------------------------------------------
+  # Health check
+  # --------------------------------------------------------------------------
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      description: Returns HTTP 200 when TIB is running and ready to serve requests.
+      operationId: healthCheck
+      responses:
+        "200":
+          description: Service is healthy.
+
+  # --------------------------------------------------------------------------
+  # Auth flows (public — no Authorization header required)
+  # --------------------------------------------------------------------------
+  /auth/{id}/{provider}:
+    get:
+      tags: [Auth]
+      summary: Initiate authentication
+      description: |
+        Entry point for an authentication flow. For **redirect** providers (Social, SAML)
+        this responds with an HTTP redirect to the external IdP. For **passthrough**
+        providers (LDAP, Proxy) this validates credentials inline.
+
+        The `{provider}` segment must match one of the Goth provider names configured
+        in the profile's `ProviderConfig.UseProviders` list (e.g. `github`, `linkedin`,
+        `openid-connect`) or `saml`, `ldap`, `proxy` for the respective provider types.
+      operationId: initiateAuth
+      parameters:
+        - $ref: "#/components/parameters/profileId"
+        - $ref: "#/components/parameters/providerName"
+      responses:
+        "302":
+          description: |
+            Redirect to the external identity provider (redirect providers only).
+        "200":
+          description: |
+            Authentication completed inline (passthrough providers).
+            The response body and any redirect depend on the configured `ActionType`.
+        "400":
+          description: Missing or invalid profile ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIErrorMessage"
+
+    post:
+      tags: [Auth]
+      summary: Initiate authentication (POST)
+      description: |
+        Identical to the GET variant. Provided for passthrough providers that receive
+        credentials as a form POST or via a Basic Auth header.
+      operationId: initiateAuthPost
+      parameters:
+        - $ref: "#/components/parameters/profileId"
+        - $ref: "#/components/parameters/providerName"
+      requestBody:
+        description: |
+          Optional form body or JSON body carrying credentials (provider-dependent).
+          LDAP and Proxy providers typically read a `Basic` `Authorization` header
+          rather than a request body.
+        required: false
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "302":
+          description: Redirect to the external identity provider.
+        "200":
+          description: Authentication completed inline.
+        "400":
+          description: Missing or invalid profile ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIErrorMessage"
+
+  /auth/{id}/{provider}/callback:
+    get:
+      tags: [Auth]
+      summary: OAuth / SAML callback
+      description: |
+        The redirect URI registered with the external OAuth/OIDC provider or the SAML
+        Assertion Consumer Service (ACS) endpoint. TIB uses this to exchange the
+        authorization code (or process the SAML response) and complete the login action.
+
+        After a successful callback, TIB executes the profile's `ActionType` and
+        redirects the user to `ReturnURL`.
+      operationId: handleAuthCallback
+      parameters:
+        - $ref: "#/components/parameters/profileId"
+        - $ref: "#/components/parameters/providerName"
+        - name: code
+          in: query
+          description: OAuth 2.0 authorization code (OAuth flows only).
+          schema:
+            type: string
+        - name: state
+          in: query
+          description: OAuth 2.0 state parameter for CSRF protection.
+          schema:
+            type: string
+      responses:
+        "302":
+          description: Redirect to `ReturnURL` after successful authentication and action.
+        "400":
+          description: Missing profile ID or callback processing error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIErrorMessage"
+        "500":
+          description: Internal error completing the identity action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIErrorMessage"
+
+    post:
+      tags: [Auth]
+      summary: OAuth / SAML callback (POST)
+      description: |
+        Same as the GET callback but accepts a POST body — required for SAML HTTP-POST
+        binding where the IdP POSTs the `SAMLResponse` form field to the ACS URL.
+      operationId: handleAuthCallbackPost
+      parameters:
+        - $ref: "#/components/parameters/profileId"
+        - $ref: "#/components/parameters/providerName"
+      requestBody:
+        required: false
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                SAMLResponse:
+                  type: string
+                  description: Base64-encoded SAML assertion (SAML POST binding).
+                RelayState:
+                  type: string
+                  description: SAML relay state value.
+              additionalProperties: true
+      responses:
+        "302":
+          description: Redirect to `ReturnURL` after successful authentication.
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIErrorMessage"
+
+  /auth/{id}/saml/metadata:
+    get:
+      tags: [Auth]
+      summary: SAML SP metadata
+      description: |
+        Returns the SAML Service Provider (SP) metadata XML for the specified profile.
+        Register this URL as the SP metadata endpoint in your SAML IdP configuration.
+      operationId: samlMetadata
+      parameters:
+        - $ref: "#/components/parameters/profileId"
+      responses:
+        "200":
+          description: SAML SP metadata XML.
+          content:
+            application/xml:
+              schema:
+                type: string
+        "400":
+          description: Missing or invalid profile ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIErrorMessage"
+
+  # --------------------------------------------------------------------------
+  # Profile management (all require Authorization header)
+  # --------------------------------------------------------------------------
+  /api/profiles:
+    get:
+      tags: [Profiles]
+      summary: List all profiles
+      description: Returns every authentication profile stored in the active backend.
+      operationId: listProfiles
+      security:
+        - ApiSecret: []
+      responses:
+        "200":
+          description: Array of profiles (may be empty).
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/APIOKMessage"
+                  - type: object
+                    properties:
+                      Data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Profile"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/profiles/{id}:
+    get:
+      tags: [Profiles]
+      summary: Get a profile
+      description: Retrieves a single authentication profile by its ID.
+      operationId: getProfile
+      security:
+        - ApiSecret: []
+      parameters:
+        - $ref: "#/components/parameters/profileId"
+      responses:
+        "200":
+          description: The requested profile.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/APIOKMessage"
+                  - type: object
+                    properties:
+                      Data:
+                        $ref: "#/components/schemas/Profile"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    post:
+      tags: [Profiles]
+      summary: Create a profile
+      description: |
+        Creates a new authentication profile. The `ID` field in the request body must
+        match the `{id}` path parameter, otherwise a 400 is returned.
+      operationId: createProfile
+      security:
+        - ApiSecret: []
+      parameters:
+        - $ref: "#/components/parameters/profileId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Profile"
+            examples:
+              GitHubSSODashboard:
+                summary: GitHub OAuth → Dashboard login
+                value:
+                  ID: "github-sso-dashboard"
+                  Name: "GitHub SSO - Dashboard"
+                  OrgID: "5e9d9544a1dcd60001d0ed20"
+                  ActionType: "GenerateOrLoginUserProfile"
+                  Type: "redirect"
+                  ProviderName: "SocialProvider"
+                  ReturnURL: "https://dashboard.example.com/tap"
+                  ProviderConstraints:
+                    Domain: ""
+                    Group: ""
+                  ProviderConfig:
+                    CallbackBaseURL: "https://tib.example.com"
+                    FailureRedirect: "https://dashboard.example.com/login?error=1"
+                    UseProviders:
+                      - Name: "github"
+                        Key: "my-github-client-id"
+                        Secret: "my-github-client-secret"
+              LDAPDashboard:
+                summary: LDAP / Active Directory → Dashboard login
+                value:
+                  ID: "ldap-dashboard"
+                  Name: "LDAP – Dashboard"
+                  OrgID: "5e9d9544a1dcd60001d0ed20"
+                  ActionType: "GenerateOrLoginUserProfile"
+                  Type: "passthrough"
+                  ProviderName: "ADProvider"
+                  ReturnURL: "https://dashboard.example.com/tap"
+                  ProviderConfig:
+                    LDAPServer: "ldap.example.com"
+                    LDAPPort: "389"
+                    LDAPUserDN: "uid={username},ou=users,dc=example,dc=com"
+                    LDAPBaseDN: "dc=example,dc=com"
+                    LDAPFilter: "(objectClass=person)"
+                    LDAPEmailAttribute: "mail"
+                    LDAPUseSSL: false
+                    GetAuthFromBAHeader: true
+      responses:
+        "201":
+          description: Profile created successfully.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/APIOKMessage"
+                  - type: object
+                    properties:
+                      Data:
+                        $ref: "#/components/schemas/Profile"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    put:
+      tags: [Profiles]
+      summary: Update a profile
+      description: |
+        Replaces an existing authentication profile. The entire profile object is
+        overwritten with the request body.
+      operationId: updateProfile
+      security:
+        - ApiSecret: []
+      parameters:
+        - $ref: "#/components/parameters/profileId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Profile"
+      responses:
+        "200":
+          description: Profile updated successfully.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/APIOKMessage"
+                  - type: object
+                    properties:
+                      Data:
+                        $ref: "#/components/schemas/Profile"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      tags: [Profiles]
+      summary: Delete a profile
+      description: Permanently removes the specified authentication profile.
+      operationId: deleteProfile
+      security:
+        - ApiSecret: []
+      parameters:
+        - $ref: "#/components/parameters/profileId"
+      responses:
+        "200":
+          description: Profile deleted successfully. `Data` will be an empty object.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIOKMessage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
