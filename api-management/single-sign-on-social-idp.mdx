@@ -1,80 +1,454 @@
 ---
 title: "SSO with Social Identity Providers"
-description: "Configure Single Sign-On (SSO) for the Tyk Dashboard and Developer Portal using social identity providers such as Google, GitHub, Twitter, and LinkedIn via Tyk Identity Broker."
-keywords: "SSO, Single Sign-On, Social Provider, Identity Broker, TIB, Google, GitHub, Twitter, LinkedIn, Authentication"
-sidebarTitle: "SSO with Social IDP"
+description: "Learn how to configure Single Sign-On (SSO) for Tyk Dashboard or Tyk Developer Portal using OAuth-based social identity providers such as Google, GitHub, and LinkedIn."
+keywords: "Tyk Identity Broker, TIB, SSO, Single Sign-On, Google, GitHub, LinkedIn, OAuth, Social Login, Authentication"
+sidebarTitle: "Social Login"
 ---
 
 ## Introduction
 
-The social provider for the Tyk Identity Broker is a thin wrapper around the excellent `goth` social auth library, modified slightly to work with a multi-tenant structure. The social provider should provide seamless integration with:
+TIB supports OAuth 2.0-based social identity providers using `SocialProvider`. Each supported provider requires an OAuth application registered with that provider, from which you obtain a Client ID and Client Secret.
 
-*   Bitbucket
-*   Digital Ocean
-*   Dropbox
-*   GitHub
-*   Google+
-*   Linkedin
-*   Twitter
-*   Salesforce
+The following provider names are supported in `UseProviders[].Name`:
 
-The social provider is ideal for SSO-style logins for the Dashboard or for the Portal. For certain providers (mainly Google+), where email addresses are returned as part of the user data, a constraint can be added to validate the users domain. This is useful for Google For Business Apps users that want to grant access to their domain users for the Dashboard.
-
-For more social provider examples see the Tyk Identity Broker (TIB) v0.2 Repo [Readme](https://github.com/TykTechnologies/tyk-identity-broker/blob/master/README.md#social).
-<br />
-
+| Provider | `Name` value |
+|---|---|
+| GitHub | `github` |
+| LinkedIn | `linkedin` |
+| Twitter / X | `twitter` |
+| Bitbucket | `bitbucket` |
+| DigitalOcean | `digitalocean` |
+| Dropbox | `dropbox` |
+| Salesforce | `salesforce` |
 
 <Note>
-To activate SSO on the Dashboard or Developer portal, there’s no requirement to install TIB separately; it is integrated into the Dashboard and Developer Portal. You have two configurations for SSO within the dashboard:
-1. **Using Embedded TIB**: No need to install it separately.
-2. **Using External TIB**: If you are using a previous version of the Dashboard or Portal, you can still use SSO with TIB installed as a separate application.
+The legacy `gplus` provider for Google no longer works following the Google+ shutdown in 2019. Use the `openid-connect` provider name instead, as shown in the [Google example](#worked-example-google) below.
 </Note>
 
+Before configuring your TIB profile, read [Dashboard SSO](/tyk-identity-broker/dashboard-sso) or [Portal SSO](/tyk-stack/tyk-developer-portal/enterprise-developer-portal/managing-access/enable-sso) to understand the `ActionType`, `ReturnURL`, and `IdentityHandlerConfig` fields required for your use case.
 
+## TIB Profile
 
-## Log into an APP with Github OAuth
+The social provider configuration goes in the `ProviderConfig` block of the TIB profile. Set `ProviderName` to `SocialProvider` and `Type` to `redirect`.
 
-<iframe width="560" height="315" src="https://www.youtube.com/embed/gqUaDM4aJTw" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-
-
-## Log into Dashboard with Google 
-
-Similarly to logging into an app using Tyk, OAuth and Google Plus, if we have our callback URL and client IDs set up with Google, we can use the following profile setup to access our Dashboard using a social provider:
-
-```{.copyWrapper}
+```json expandable
 {
-  "ActionType": "GenerateOrLoginUserProfile",
-  "ID": "2",
-  "IdentityHandlerConfig": null,
-  "MatchedPolicyID": "1C",
-  "OrgID": "53ac07777cbb8c2d53000002",
-  "ProviderConfig": {
-    "CallbackBaseURL": "http://:{TIB-PORT}",
-    "FailureRedirect": "http://{DASH-DOMAIN}:{DASH-PORT}/?fail=true",
-    "UseProviders": [{
-      "Name": "gplus",
-      "Key": "GOOGLE-OAUTH-CLIENT-KEY",
-      "Secret": "GOOGLE-OAUTH-CLIENT-SECRET"
-    }]
-  },
-  "ProviderConstraints": {
-    "Domain": "yourdomain.com",
-    "Group": ""
-  },
   "ProviderName": "SocialProvider",
-  "ReturnURL": "http://{DASH-DOMAIN}:{DASH-PORT}/tap",
-  "Type": "redirect"
+  "Type": "redirect",
+  "ProviderConfig": {
+    "CallbackBaseURL": "http://{tib-host}",
+    "FailureRedirect": "http://{failure-redirect-url}",
+    "UseProviders": [
+      {
+        "Name": "{provider-name}",
+        "Key": "{client-id}",
+        "Secret": "{client-secret}"
+      }
+    ]
+  }
 }
 ```
 
-The login to the Dashboard makes use of a one-time nonce to log the user in to the session. The nonce is only accessible for a few seconds. It is recommended that in production use, all of these transactions happen over SSL connections to avoid MITM snooping.
+| Field | Description |
+|---|---|
+| `CallbackBaseURL` | The base URL of your TIB instance. TIB appends the callback path automatically. |
+| `FailureRedirect` | URL to redirect the user to on authentication failure. |
+| `UseProviders.Name` | The provider name (for example, `github`, `linkedin`). See the table above. |
+| `UseProviders.Key` | The OAuth Client ID from your social provider application. |
+| `UseProviders.Secret` | The OAuth Client Secret from your social provider application. |
 
-`Domain` constraint ensures that only users from `yourdomain.com` domain-based email accounts are allowed to login. 
- Replace it with correct domain or remove this section if you don't want to set this constraint.
+### Domain Constraint
+
+For providers that return the user's email address (such as Google), you can restrict access to users from a specific email domain by adding a `ProviderConstraints` block to the profile:
+
+```json
+{
+  "ProviderConstraints": {
+    "Domain": "your-company.com",
+    "Group": ""
+  }
+}
+```
+
+Users whose email address does not match the configured domain will be redirected to `FailureRedirect`.
+
+### JSON Web Encryption (JWE)
+
+`SocialProvider` supports JSON Web Encryption (JWE), which allows TIB to decrypt encrypted ID tokens returned by the IdP. This is useful when your IdP is configured to encrypt tokens for additional security.
+
+JWE requires Tyk Identity Broker v1.6.1+ and Tyk Dashboard v5.7.0+.
+
+To enable JWE, add a `JWE` block to `ProviderConfig`:
+
+```json
+{
+  "ProviderConfig": {
+    "UseProviders": [...],
+    "JWE": {
+      "Enabled": true,
+      "PrivateKeyLocation": "{certificate-id-or-path}"
+    }
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `Enabled` | Set to `true` to enable JWE decryption. |
+| `PrivateKeyLocation` | For embedded TIB in Tyk Dashboard, use the certificate ID from the Tyk Dashboard certificate manager. For standalone TIB, use the file path to a PEM file containing the private key. |
+
+The private key must correspond to the public key registered with your IdP for token encryption. Configure your IdP to encrypt ID tokens using the matching public key before enabling this setting.
 
 
-When TIB successfully authorizes the user, and generates the token using the relevant OAuth credentials, it will redirect the user to the relevant redirect with their token or auth code as a fragment in the URL for the app to decode and use as needed.
+## Configure Your Provider
 
-There is a simplified flow, which does not require a corresponding OAuth client in Tyk Gateway, and can just generate a standard token with the same flow.
+Register an OAuth application with your chosen social provider and note the Client ID and Client Secret. The callback URL to register with the provider is shown below. The `{profile-id}` in the registered URL must exactly match the `ID` in your TIB profile; a mismatch will result in a `400 Bad Request` error:
+
+```
+http://{tib-host}/auth/{profile-id}/{provider-name}/callback
+```
+
+For example, for GitHub with a profile ID of `github-dashboard` and TIB running at `http://dashboard.example.com:3000`:
+
+```
+http://dashboard.example.com:3000/auth/github-dashboard/github/callback
+```
+
+## Worked Example: GitHub
+
+This example configures GitHub OAuth for Dashboard SSO. The same pattern applies to all other social providers; only the `Name`, `Key`, `Secret`, and the callback URL registered with the provider differ.
+
+<Tabs>
+<Tab title="Dashboard SSO">
+
+In this example, Tyk Dashboard is running at `http://dashboard.example.com` on port `3000`; replace the example values with your own.
+
+**GitHub OAuth application**
+
+Register an OAuth application at [github.com/settings/applications/new](https://github.com/settings/applications/new). Set the **Authorization callback URL** to:
+
+```
+http://dashboard.example.com:3000/auth/github-dashboard/github/callback
+```
+
+Note the **Client ID** and **Client Secret**.
+
+**Tyk Dashboard configuration**
+
+```json
+{
+  "sso_enable_user_lookup": true,
+  "sso_permission_defaults": {
+    "apis": "write",
+    "keys": "write",
+    "policies": "write"
+  },
+  "sso_default_group_id": "{tyk-user-group-id}"
+}
+```
+
+With this configuration, registered users (with a Tyk Dashboard user account) get their own permissions; unregistered users fall back to the group specified in `sso_default_group_id`. See [Dashboard SSO](/tyk-identity-broker/dashboard-sso) for full details.
+
+**TIB profile**
+
+The TIB profile is created via the [Tyk Identity Broker API](/tyk-identity-broker/tib-rest-api) or the [Tyk Dashboard UI](/tyk-identity-broker/dashboard-sso#create-a-tib-profile-using-dashboard-ui).
+
+```json expandable
+{
+  "ID": "github-dashboard",
+  "Name": "GitHub Dashboard SSO",
+  "OrgID": "{tyk-org-id}",
+  "ActionType": "GenerateOrLoginUserProfile",
+  "Type": "redirect",
+  "ProviderName": "SocialProvider",
+  "ReturnURL": "http://dashboard.example.com:3000/tap",
+  "IdentityHandlerConfig": {
+    "DashboardCredential": "{tib-service-user-api-key}"
+  },
+  "ProviderConfig": {
+    "CallbackBaseURL": "http://dashboard.example.com:3000",
+    "FailureRedirect": "http://dashboard.example.com:3000/?fail=true",
+    "UseProviders": [
+      {
+        "Name": "github",
+        "Key": "{github-client-id}",
+        "Secret": "{github-client-secret}"
+      }
+    ]
+  }
+}
+```
+
+- set `Key` to the GitHub **Client ID**
+- set `Secret` to the GitHub **Client Secret**
+- set `DashboardCredential` to the [TIB service account's](/tyk-identity-broker/dashboard-sso#tib-service-account) Dashboard credentials
+
+**Login URL**
+
+This URL initiates the SSO login flow:
+
+```
+http://dashboard.example.com:3000/auth/github-dashboard/github
+```
+
+In production, present this as a "Log in with GitHub" button or link on a custom login page, rather than expecting users to navigate to it directly.
+
+See [Dashboard SSO](/tyk-identity-broker/dashboard-sso) for details on session behavior, permissions, and user group mapping.
+
+</Tab>
+<Tab title="Portal SSO">
+
+In this example, Tyk Developer Portal is running at `http://portal.example.com` on port `3001`; replace the example values with your own.
+
+**GitHub OAuth application**
+
+Register an OAuth application at [github.com/settings/applications/new](https://github.com/settings/applications/new). Set the **Authorization callback URL** to:
+
+```
+http://portal.example.com:3001/tib/auth/github-portal/github/callback
+```
+
+Note the **Client ID** and **Client Secret**.
+
+**Tyk Developer Portal configuration**
+
+Enable embedded TIB in the Portal configuration:
+
+```json
+{
+  "TIB": {
+    "Enable": true
+  }
+}
+```
+
+**TIB profile**
+
+The TIB profile is created via the Tyk Developer Portal UI under **Settings > SSO Profiles**.
+
+```json expandable
+{
+  "ID": "github-portal",
+  "Name": "GitHub Portal SSO",
+  "OrgID": "{tyk-org-id}",
+  "ActionType": "GenerateOrLoginDeveloperProfile",
+  "Type": "redirect",
+  "ProviderName": "SocialProvider",
+  "ReturnURL": "http://portal.example.com:3001/sso",
+  "IdentityHandlerConfig": {
+    "DashboardCredential": "{portal-api-secret}"
+  },
+  "ProviderConfig": {
+    "CallbackBaseURL": "http://portal.example.com:3001",
+    "FailureRedirect": "http://portal.example.com:3001/?fail=true",
+    "UseProviders": [
+      {
+        "Name": "github",
+        "Key": "{github-client-id}",
+        "Secret": "{github-client-secret}"
+      }
+    ]
+  }
+}
+```
+
+- set `ActionType` and `OrgID` based on the audience:
+    - Admin Portal (API owners): `ActionType: "GenerateOrLoginUserProfile"`, `OrgID: "0"`
+    - Live Portal (API consumers): `ActionType: "GenerateOrLoginDeveloperProfile"`, `OrgID` is not required
+- set `Key` to the GitHub **Client ID**
+- set `Secret` to the GitHub **Client Secret**
+- set `DashboardCredential` to the [`PortalAPISecret`](/product-stack/tyk-enterprise-developer-portal/deploy/configuration#portal_api_secret) used to authenticate with the Portal's management API
+
+**Login URL**
+
+This URL initiates the SSO login flow:
+
+```
+http://portal.example.com:3001/tib/auth/github-portal/github
+```
+
+In production, present this as a "Log in with GitHub" button or link on the Portal login page.
+
+For details on user group mapping and admin vs developer profiles, see [Portal SSO](/tyk-stack/tyk-developer-portal/enterprise-developer-portal/managing-access/enable-sso).
+
+</Tab>
+</Tabs>
+
+## Worked Example: Google
+
+Google authentication uses the `openid-connect` provider name rather than a named OAuth provider, since the `gplus` provider was retired in 2019. The setup follows the same pattern as any OIDC provider.
+
+**Configure Google**
+
+1. Go to the [Google Cloud Console](https://console.cloud.google.com/) and navigate to **APIs and Services > Credentials**.
+2. Click **Create Credentials** and select **OAuth client ID**.
+3. Select **Web application** as the application type.
+4. Under **Authorized redirect URIs**, add the TIB callback URL:
+   ```
+   http://{tib-host}/auth/{profile-id}/openid-connect/callback
+   ```
+5. Click **Create** and note the **Client ID** and **Client Secret**.
+
+Google's OIDC discovery URL is:
+```
+https://accounts.google.com/.well-known/openid-configuration
+```
 
 
+These examples use embedded TIB, so the `CallbackBaseURL` is the same as the Dashboard or Portal respectively; TIB handles requests on the same host and port.
+
+<Tabs>
+<Tab title="Dashboard SSO">
+
+In this example, Tyk Dashboard is running at `http://dashboard.example.com` on port `3000`; replace the example values with your own.
+
+**Tyk Dashboard configuration**
+
+```json
+{
+  "sso_enable_user_lookup": true,
+  "sso_permission_defaults": {
+    "apis": "write",
+    "keys": "write",
+    "policies": "write"
+  },
+  "sso_default_group_id": "{tyk-user-group-id}"
+}
+```
+
+With this configuration, registered users (with a Tyk Dashboard user account) get their own permissions; unregistered users fall back to the group specified in `sso_default_group_id`. See [Dashboard SSO](/tyk-identity-broker/dashboard-sso) for full details.
+
+**TIB profile**
+
+The TIB profile is created via the [Tyk Identity Broker API](/tyk-identity-broker/tib-rest-api) or the [Tyk Dashboard UI](/tyk-identity-broker/dashboard-sso#create-a-tib-profile-using-dashboard-ui).
+
+```json expandable
+{
+  "ID": "google-dashboard-oidc",
+  "Name": "Google Dashboard SSO",
+  "OrgID": "{tyk-org-id}",
+  "ActionType": "GenerateOrLoginUserProfile",
+  "Type": "redirect",
+  "ProviderName": "SocialProvider",
+  "ReturnURL": "http://dashboard.example.com:3000/tap",
+  "IdentityHandlerConfig": {
+    "DashboardCredential": "{tib-service-user-api-key}"
+  },
+  "ProviderConfig": {
+    "CallbackBaseURL": "http://dashboard.example.com:3000",
+    "FailureRedirect": "http://dashboard.example.com:3000/?fail=true",
+    "UseProviders": [
+      {
+        "Name": "openid-connect",
+        "Key": "{google-client-id}",
+        "Secret": "{google-client-secret}",
+        "Scopes": ["openid", "email", "profile"],
+        "DiscoverURL": "https://accounts.google.com/.well-known/openid-configuration"
+      }
+    ]
+  }
+}
+```
+
+- set `Key` to the Google **Client ID**
+- set `Secret` to the Google **Client Secret**
+- set `DashboardCredential` to the [TIB service account's](/tyk-identity-broker/dashboard-sso#tib-service-account) Dashboard credentials
+
+**Google redirect URI**
+
+Ensure the following URL is listed in **Authorized redirect URIs** in your Google Cloud Console credentials. The `ID` in the registered URL must exactly match the `ID` in your TIB profile; a mismatch will result in a `400 Bad Request` error:
+
+```
+http://dashboard.example.com:3000/auth/google-dashboard-oidc/openid-connect/callback
+```
+
+**Login URL**
+
+This URL initiates the SSO login flow:
+
+```
+http://dashboard.example.com:3000/auth/google-dashboard-oidc/openid-connect
+```
+
+In production, present this as a "Log in with Google" button or link on a custom login page, rather than expecting users to navigate to it directly.
+
+See [Dashboard SSO](/tyk-identity-broker/dashboard-sso) for details on session behavior, permissions, and user group mapping.
+
+</Tab>
+<Tab title="Portal SSO">
+
+In this example, Tyk Developer Portal is running at `http://portal.example.com` on port `3001`; replace the example values with your own.
+
+**Tyk Developer Portal configuration**
+
+Enable embedded TIB in the Portal configuration:
+
+```json
+{
+  "TIB": {
+    "Enable": true
+  }
+}
+```
+
+**TIB profile**
+
+The TIB profile is created via the Tyk Developer Portal UI under **Settings > SSO Profiles**.
+
+```json expandable
+{
+  "ID": "google-portal-oidc",
+  "Name": "Google Portal SSO",
+  "OrgID": "{tyk-org-id}",
+  "ActionType": "GenerateOrLoginDeveloperProfile",
+  "Type": "redirect",
+  "ProviderName": "SocialProvider",
+  "ReturnURL": "http://portal.example.com:3001/sso",
+  "IdentityHandlerConfig": {
+    "DashboardCredential": "{portal-api-secret}"
+  },
+  "ProviderConfig": {
+    "CallbackBaseURL": "http://portal.example.com:3001",
+    "FailureRedirect": "http://portal.example.com:3001/?fail=true",
+    "UseProviders": [
+      {
+        "Name": "openid-connect",
+        "Key": "{google-client-id}",
+        "Secret": "{google-client-secret}",
+        "Scopes": ["openid", "email", "profile"],
+        "DiscoverURL": "https://accounts.google.com/.well-known/openid-configuration"
+      }
+    ]
+  }
+}
+```
+
+- set `ActionType` and `OrgID` based on the audience:
+    - Admin Portal (API owners): `ActionType: "GenerateOrLoginUserProfile"`, `OrgID: "0"`
+    - Live Portal (API consumers): `ActionType: "GenerateOrLoginDeveloperProfile"`, `OrgID` is not required
+- set `Key` to the Google **Client ID**
+- set `Secret` to the Google **Client Secret**
+- set `DashboardCredential` to the [`PortalAPISecret`](/product-stack/tyk-enterprise-developer-portal/deploy/configuration#portal_api_secret) used to authenticate with the Portal's management API
+
+**Google redirect URI**
+
+Ensure the following URL is listed in **Authorized redirect URIs** in your Google Cloud Console credentials. The `ID` in the registered URL must exactly match the `ID` in your TIB profile; a mismatch will result in a `400 Bad Request` error:
+
+```
+http://portal.example.com:3001/tib/auth/google-portal-oidc/openid-connect/callback
+```
+
+**Login URL**
+
+This URL initiates the SSO login flow:
+
+```
+http://portal.example.com:3001/tib/auth/google-portal-oidc/openid-connect
+```
+
+In production, present this as a "Log in with Google" button or link on the Portal login page.
+
+For details on user group mapping and admin vs developer profiles, see [Portal SSO](/tyk-stack/tyk-developer-portal/enterprise-developer-portal/managing-access/enable-sso).
+
+</Tab>
+</Tabs>
