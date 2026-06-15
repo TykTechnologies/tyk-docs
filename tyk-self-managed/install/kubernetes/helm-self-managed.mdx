@@ -1,0 +1,167 @@
+---
+title: "Install Tyk Self-Managed on Kubernetes"
+description: "Installation guide for Tyk Self-Managed on Kubernetes using Helm charts"
+sidebarTitle: "Helm Self-Managed"
+---
+
+| Edition | Deployment Type |
+| :------ | :-------------- |
+| Enterprise | Self-Managed |
+
+<Note>
+Running on Podman, containerd, or another container runtime? See [Container Runtimes](/deployment-and-operations/container-runtimes).
+</Note>
+
+## Prerequisites
+
+- [Kubernetes](https://kubernetes.io/docs/setup/) 1.33.x, 1.34.x, 1.35.x
+- [Helm 3+](https://helm.sh/docs/intro/install/)
+- Tyk license keys — Dashboard license and Portal license (optional). Get a free trial at [tyk.io/self-managed-trial](https://tyk.io/self-managed-trial/).
+
+## Instructions
+
+### Step 1: Clone and configure
+
+1. Clone the [tyk-install](https://github.com/TykTechnologies/tyk-install) repository and navigate to the Kubernetes self-managed directory:
+
+    ```bash
+    git clone https://github.com/TykTechnologies/tyk-install
+    cd tyk-install/kubernetes/helm-self-managed
+    ```
+
+2. Copy the example environment file and add your license keys:
+
+    ```bash
+    cp .env.example .env
+    ```
+
+3. Open `.env` and set your license keys:
+
+    ```bash
+    TYK_LICENSE_KEY=<your-dashboard-license>
+    TYK_PORTAL_LICENSE=<your-portal-license>
+    ```
+
+4. Load environment variables:
+
+    ```bash
+    source .env
+    ```
+
+### Step 2: Create Namespace and Secrets
+
+```bash
+kubectl create namespace tyk
+
+kubectl create secret generic tyk-conf \
+  --namespace tyk \
+  --from-literal=APISecret=$TYK_API_SECRET \
+  --from-literal=AdminSecret=$TYK_ADMIN_SECRET \
+  --from-literal=DashLicense=$TYK_LICENSE_KEY \
+  --from-literal=OperatorLicense=$TYK_OPERATOR_LICENSE \
+  --from-literal=DevPortalLicense=$TYK_PORTAL_LICENSE \
+  --from-literal=adminUserFirstName=$ADMIN_FIRST_NAME \
+  --from-literal=adminUserLastName=$ADMIN_LAST_NAME \
+  --from-literal=adminUserEmail=$ADMIN_EMAIL \
+  --from-literal=adminUserPassword=$ADMIN_PASSWORD \
+  --from-literal=DashDatabaseConnectionString="$DashDatabaseConnectionString" \
+  --from-literal=DevPortalDatabaseConnectionString="$DevPortalDatabaseConnectionString"
+
+kubectl create secret generic secrets-tyk-tyk-dev-portal \
+  -n tyk \
+  --from-literal=adminUserPassword=$ADMIN_PASSWORD \
+  --from-literal=adminUserEmail=$ADMIN_EMAIL
+```
+
+### Step 3: Install Dependencies (PostgreSQL & Redis)
+
+```bash
+helm repo add bitnami https://charts.bitnami.com/bitnami
+helm repo update
+
+# Install PostgreSQL
+helm install tyk-postgres bitnami/postgresql \
+  --namespace tyk \
+  --set auth.username=$POSTGRES_USER \
+  --set auth.password=$POSTGRES_PASSWORD \
+  --set auth.database=$POSTGRES_DB \
+  --set primary.initdb.scripts."init\.sql"="CREATE DATABASE portal;" \
+  --set primary.persistence.size=20Gi \
+  --version 18.7.3
+
+# Install Redis
+helm install tyk-redis bitnami/redis \
+  --namespace tyk \
+  --set auth.enabled=false \
+  --version 27.0.8
+
+# Wait for databases to be ready
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=postgresql -n tyk --timeout=300s
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=redis -n tyk --timeout=300s
+```
+
+### Step 4: Install Tyk Stack
+
+```bash
+helm repo add tyk-helm https://helm.tyk.io/public/helm/charts/
+helm repo update
+
+# Install Tyk Stack
+helm install tyk tyk-helm/tyk-stack \
+  --namespace tyk \
+  --values values.yaml \
+  --set tyk-dashboard.dashboard.forbidAdminViewAccessToken=false \
+  --set tyk-dashboard.dashboard.forbidAdminResetAccessToken=false \
+  --set tyk-dashboard.dashboard.auditLogs.enabled=true \
+  --set global.adminUser.useSecretName=tyk-conf
+```
+
+Wait for all pods to be running:
+
+```bash
+kubectl get pods -n tyk -w
+```
+
+### Step 5: Verify the installation
+
+```bash
+# Forward services
+kubectl port-forward -n tyk svc/dashboard-svc-tyk-tyk-dashboard 3000:3000 &
+kubectl port-forward -n tyk svc/gateway-svc-tyk-tyk-gateway 8080:8080 &
+
+# Gateway
+curl http://localhost:8080/hello
+
+# Dashboard
+curl http://localhost:3000/hello
+```
+
+## Access URLs
+
+| Service | URL | Description |
+| ------- | --- | ----------- |
+| Dashboard | `http://localhost:3000` | Admin UI |
+| Gateway | `http://localhost:8080` | API Gateway |
+| Developer Portal | `http://localhost:3001` | Developer Portal |
+
+## Configuration
+
+The following environment files control each component's settings:
+
+| File | Purpose |
+| ---- | ------- |
+| `.env` | License keys and component versions |
+| `values.yaml` | Helm chart configuration |
+
+For production deployments, review the [Planning for Production](/planning-for-production) guide and apply the recommendations noted in the config file comments.
+
+## Cleanup
+
+Remove the Tyk stack and dependencies:
+
+```bash
+helm uninstall tyk -n tyk
+helm uninstall tyk-postgres -n tyk
+helm uninstall tyk-redis -n tyk
+kubectl delete namespace tyk
+```
