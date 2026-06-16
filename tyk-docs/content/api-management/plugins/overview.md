@@ -1134,7 +1134,7 @@ What are the limitations to using this programming Language?
 |   | GoLang |   JavaScript     | gRPC      | Python    |  Lua   
 |---|--------|------------------|-----------|-----------|-----------|
 | Runs in Gateway process | ✅<br>Runs<br>natively | ✅<br>Built-In JSVM Interpreter | ❌<br>Standalone server	| ✅<br>Tyk talks with Python interpreter	|✅
-| Built-in SDK | ✅<br>All Gateway Functionality | ✅<br>[Yes]({{< ref "api-management/plugins/javascript#javascript-api" >}})	| ❌	| ✅<br>[Yes]({{< ref "api-management/plugins/rich-plugins#tyk-python-api-methods" >}})	| ❌
+| Built-in SDK | ✅<br>All Gateway Functionality | ✅<br>[Yes]({{< ref "api-management/plugins/javascript#the-javascript-api" >}})	| ❌	| ✅<br>[Yes]({{< ref "api-management/plugins/rich-plugins#tyk-python-api-methods" >}})	| ❌
 | TCP Connections<p>(DBs, Redis, etc)</p> | ✅ | ❌<br>Very Limited | ✅ | ✅ | ✅ | 
 
 ### Custom Plugin Table

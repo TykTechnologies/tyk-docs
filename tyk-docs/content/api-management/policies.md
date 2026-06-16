@@ -989,7 +989,7 @@ The metadata field is important, because it can be used in various ways:
 
 - to inform an admin of the provenance of a token
 - values can be injected into headers for upstream services to consume (e.g. a user ID or an email address provided at the time of creation)
-- values can be used in dynamic [JavaScript]({{< ref "api-management/plugins/javascript#accessing-external-and-dynamic-data" >}}) middleware and Virtual Endpoints for further validation or request modification
+- values can be used in dynamic [JavaScript]({{< ref "api-management/plugins/javascript#the-request-object" >}}) middleware and Virtual Endpoints for further validation or request modification
 
 Metadata is also injected by other Tyk Components when keys are created using "generative" methods, such as JSON Web Token and OIDC session creation and via the Developer Portal, to include information about the underlying identity of the token when it comes from a third-party such as an OAuth IDP (e.g. OIDC).
 

@@ -171,7 +171,7 @@ In the previous example, we can see that the first two requests were successful,
 
 ## Invoking Batch Requests from Custom JavaScript Middleware
 
-You can make requests to the logical batch request endpoint from within [custom JavaScript middleware]({{< ref "api-management/plugins/javascript" >}}) via the `TykBatchRequest` function that is included in Tyk's  [JavaScript API]({{< ref "api-management/plugins/javascript#javascript-api" >}}).
+You can make requests to the logical batch request endpoint from within [custom JavaScript middleware]({{< ref "api-management/plugins/javascript" >}}) via the `TykBatchRequest` function that is included in Tyk's  [JavaScript API]({{< ref "api-management/plugins/javascript#the-javascript-api" >}}).
 
 This integration enables you to:
 

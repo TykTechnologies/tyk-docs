@@ -3503,7 +3503,7 @@ The LuaJIT required modules are as follows:
 
 #### How to write LuaJIT Plugins
 
-We have a demo plugin hosted in the repo [tyk-plugin-demo-lua](https://github.com/TykTechnologies/tyk-plugin-demo-lua). The project implements a simple middleware for header injection, using a Pre hook (see [Tyk custom middleware hooks]({{< ref "api-management/plugins/javascript#using-javascript-with-tyk" >}})) and [mymiddleware.lua](https://github.com/TykTechnologies/tyk-plugin-demo-lua/blob/master/mymiddleware.lua).
+We have a demo plugin hosted in the repo [tyk-plugin-demo-lua](https://github.com/TykTechnologies/tyk-plugin-demo-lua). The project implements a simple middleware for header injection, using a Pre hook (see [Tyk custom middleware hooks]({{< ref "api-management/plugins/javascript#the-plugin-contract" >}})) and [mymiddleware.lua](https://github.com/TykTechnologies/tyk-plugin-demo-lua/blob/master/mymiddleware.lua).
 #### Lua Performance
 Lua support is currently in beta stage. We are planning performance optimizations for future releases.
 #### Tyk Lua API Methods
