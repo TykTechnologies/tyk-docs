@@ -1,137 +1,161 @@
 ---
-title: "Javascript Plugins"
-description: "Learn how to script custom middleware, dynamic event handlers, and virtual endpoints in Tyk using JavaScript"
+title: "JavaScript Plugins"
 sidebarTitle: "JavaScript Plugins"
+description: "Write, test and deploy JavaScript plugins for Tyk Gateway — the goja engine, hook types, the request/session/config objects, the JavaScript API, and inline, bundle and file-mount deployment."
 ---
 
-## Introduction
+## Overview
 
-There are three middleware components that can be scripted with Tyk:
+JavaScript plugins let you run custom logic directly inside Tyk Gateway, without an external process or a separate runtime. There are three components that can be scripted with JavaScript:
 
-1. **Custom JavaScript plugins**: These execute either *pre* or *post* validation. A *pre* middleware component will execute before any session validation or token validation has taken place, while a *post* middleware component will execute after the request has been passed through all checks and is ready to be proxied upstream.
+1. **Custom JavaScript plugins**: middleware that executes either *pre* or *post* request processing. A *pre* plugin runs before any session or token validation; a *post* plugin runs after the request has passed all checks and is ready to be proxied upstream.
+2. **Dynamic event handlers**: components that fire on API events. They run asynchronously and are documented in [Gateway events](/api-management/gateway-events#set-up-a-webhook-event-handler-in-the-tyk-oas-api-definition).
+3. **Virtual endpoints**: programmable middleware invoked towards the end of the request chain. Unlike custom plugins, a [virtual endpoint](/api-management/traffic-transformation/virtual-endpoints) *terminates* the request and returns its own response.
 
-2. **Dynamic event handlers**: These components fire on certain API events (see the event handlers section), these are fired Async and do not have a cooldown timer. These are documented [here](/api-management/gateway-events#set-up-a-webhook-event-handler-in-the-tyk-oas-api-definition).
-
-3. **Virtual endpoints**: These are powerful programmable middleware invoked towards the end of the request processing chain. Unlike the custom JavaScript plugins, the virtual endpoint terminates the request. These are documented [here](/api-management/traffic-transformation/virtual-endpoints).
-
-The JavaScript (JS) [scripting guide](/api-management/plugins/javascript#using-javascript-with-tyk) provides details of how to access dynamic data (such as the key session object) from your JS functions. Combining these resources provides you with a powerful set of tools for shaping and structuring inbound traffic to your API.
-
-### Declared plugin functions
-
-JavaScript functions are available globally in the same namespace. So, if you include two or more JSVM plugins that call the same function, the last declared plugin implementation of the function will be returned.
-
-### Enabling the JavaScript Virtual Machine (JSVM)
-
-The JavaScript Virtual Machine (JSVM) provided in the Gateway is a traditional ECMAScript5 compatible environment.
-
-Before you can use JavaScript customization in any component you will need to enable the JSVM.
-
-You do this by setting `enable_jsvm` to `true` in your `tyk.conf` [file](/tyk-oss-gateway/configuration#enable_jsvm).
-
-### Installing JavaScript middleware
-
-Installing middleware is different for different Tyk deployments, for example, in Tyk OSS it is possible to directly specify a path to a file in the API Definition, while in Tyk Self-Managed, we recommend using a directory-based loader.
-
-We've provided the following guides:
-
-- [Tyk OSS](/api-management/plugins/javascript#installing-middleware-on-tyk-oss)
-- [Tyk Self-Managed](/api-management/plugins/javascript#installing-middleware-on-tyk-self-managed)
-- [Tyk Hybrid](/api-management/plugins/javascript#installing-middleware-on-tyk-hybrid)
-
-
-
-
-## Using JavaScript with Tyk
-
-Tyk's JavaScript Virtual Machine (JSVM) provides a serverless compute function that allows for the execution of custom logic directly within the gateway itself. This can be accessed from [multiple locations](/api-management/plugins/javascript#) in the API processing chain and allows significant customization and optimization of your request handling.
-
-In this guide we will cover the features and resources available to you when creating custom functions, highlighting where there are limitations for the different middleware stages.
-
-### Scripting basics
-
-Here we cover various facets that you need to be aware of when creating custom functions for Tyk.
-
-#### Accessing external and dynamic data
-
-JS functions can be given access to external data objects relating to the API request. These allow for the modification of both the request itself and the session:
-
-- `request`: an [object](/api-management/plugins/javascript#the-request-object) describing the API request that invoked the middleware
-- `session`: the key session [object](/api-management/plugins/javascript#the-session-object) provided by the client when making the API request
-- `config`: an [object](/api-management/plugins/javascript#the-config-object) containing fields from the API definition
-
-
-
-    <Note>
-    There are other ways of accessing and editing a session object using the [Tyk JavaScript API functions](/api-management/plugins/javascript#working-with-the-key-session-object).
-    </Note>
-
-
-#### Creating a middleware component
-
-Tyk injects a `TykJS` namespace into the JSVM, which can be used to initialise a new middleware component. The JS for each middleware component should be in its own `*.js` file.
-
-You create a middleware object by calling the `TykJS.TykMiddleware.NewMiddleware({})` constructor with an empty object and then initialising it with your function using the `NewProcessRequest()` closure syntax. This is where you expose the [external data objects](/api-management/plugins/javascript#accessing-external-and-dynamic-data) to your custom function.
-
+This page is the reference for the JavaScript runtime, the plugin contract, the objects and API available to your code, and how to deploy a plugin. To author and test a plugin end to end, use the [tyk-plugin-starter](https://github.com/TykTechnologies/tyk-plugin-starter) repository (see [Writing a plugin](#writing-a-plugin)).
 
 <Note>
-- For Custom JS plugins and Dynamic Event Handlers, the source code filename must match the function name
-- Virtual Endpoints do not have this limitation
+**Each plugin runs in its own scope**
+
+On the goja engine, every custom-middleware plugin is compiled in an isolated scope and its handler is exposed under a unique internal alias. Plugins on the same API can therefore reuse the same handler name (such as `var handler`) without clobbering each other — across files, bundles and inline code alike. The legacy otto engine does not isolate plugins: there, all functions share one global namespace and the last one loaded wins, so distinct names are required.
 </Note>
 
+## The goja engine
 
-#### Returning from the middleware
+Tyk Gateway runs JavaScript on [goja](https://github.com/dop251/goja), a pure-Go ECMAScript engine embedded in the gateway binary. goja is **ES5.1-complete and supports much of ES6+** — including `let`/`const`, arrow functions, template literals, destructuring and default parameters. (Earlier gateway releases ran JavaScript on [otto](https://github.com/robertkrimen/otto), which was limited to ES5; otto is still selectable for backward compatibility — see [Selecting the engine](#selecting-the-engine).)
 
-When returning from the middleware, you provide specific return data depending upon the type of middleware.
+<Note>
+**Availability**
 
-##### Returning from Custom JS plugin
+The goja engine was released in Tyk Gateway v5.14. On earlier versions, JavaScript runs on the otto engine only.
+</Note>
 
-A custom JS plugin can modify fields in the API request and the session metadata, however this is not performed directly within the JSVM so the required updates must be passed out of the JSVM for Tyk to apply the changes. This is a requirement and omitting them can cause the middleware to fail.
+Two properties of the runtime are worth knowing up front:
 
-The JS function must provide the `request` and `session.meta_data` objects in the `ReturnData` as follows:
+- **One virtual machine per API.** Each managed API gets its own isolated VM, so plugins on different APIs cannot share globals or call each other's functions. Cross-API data sharing is only possible through the [session object](#the-session-object) when a key is shared across APIs.
+- **A fresh runtime per request.** Each request executes on a new runtime, so global state does not leak between concurrent requests. Treat the VM as stateless between invocations; persist anything durable through `session.meta_data` or the [key session API](#working-with-the-key-session-object).
 
-```js
-return sampleMiddleware.ReturnData(request, session.meta_data);
+goja is **not** Node.js. There is no `require`/`import`, no `async`/`await`, no `setTimeout`, and no Node standard library. For the full list of runtime constraints, available globals and the libraries that bundle cleanly, see [`AGENTS.md`](https://github.com/TykTechnologies/tyk-plugin-starter/blob/main/AGENTS.md) in the starter repo.
+
+### Enabling the JSVM
+
+The JavaScript Virtual Machine (JSVM) is disabled by default. Enable it by setting [`enable_jsvm`](/tyk-oss-gateway/configuration#enable_jsvm) to `true` in `tyk.conf`. This single flag enables JavaScript for custom middleware, event handlers and virtual endpoints alike.
+
+### Selecting the engine
+
+The engine is chosen per API by the plugin **driver**:
+
+- `javascript` selects the goja engine. In OAS this is `x-tyk-api-gateway.middleware.global.pluginConfig.driver`; in a Tyk Classic API definition it is `custom_middleware.driver`.
+- `otto` selects the legacy engine, retained for backward compatibility.
+
+The same driver flag governs [virtual endpoints](#virtual-endpoints-and-the-driver): a virtual endpoint runs on goja only when its API sets the driver to `javascript`. With no driver set, virtual endpoints default to the legacy otto engine, so set `javascript` explicitly to run them on goja.
+
+### Migrating from otto
+
+goja is API-definition compatible with otto — the same hooks, the same `request`/`session`/`config` objects and the same `TykJS` middleware contract — so most plugins run unchanged on the `javascript` driver. One difference catches plugins that relied on it:
+
+**The `underscore` library is no longer a global.** The otto engine auto-loaded [underscore.js](https://underscorejs.org) and exposed it as `_`. goja does not bundle it, so a plugin that calls `_.map`, `_.template` and similar will fail. Most underscore helpers have native equivalents in goja's fuller ES5.1+/ES6 runtime (`Array.prototype.map`/`filter`/`reduce`, `Object.keys`/`values`/`entries`); where you need more, bundle a utility library such as `lodash` into your `plugin.js` with the [starter](https://github.com/TykTechnologies/tyk-plugin-starter) rather than relying on a gateway-provided global.
+
+## Hook types
+
+A JavaScript plugin attaches to one point in the request lifecycle. The hook you choose determines when it runs and what it can do:
+
+| Hook | Tyk Classic field | OAS field | Runs |
+| --- | --- | --- | --- |
+| Pre | `custom_middleware.pre` | `prePlugins` | Before authentication — no session available yet |
+| Authentication | `custom_middleware.auth_check` | `server.authentication.custom` | Replaces Tyk's built-in authentication |
+| Post-authentication | `custom_middleware.post_key_auth` | `postAuthenticationPlugins` | After authentication, before other checks |
+| Post | `custom_middleware.post` | `postPlugins` | After all checks, just before proxying upstream |
+| Response | `custom_middleware.response` | `responsePlugins` | After the upstream responds, before the client receives it |
+
+Each plugin entry attaches to exactly one hook. For a fuller treatment of the request chain and what each stage can do, see [Plugin types](/api-management/plugins/plugin-types). Virtual endpoints are documented separately under [Virtual endpoints](/api-management/traffic-transformation/virtual-endpoints).
+
+## Writing a plugin
+
+The [tyk-plugin-starter](https://github.com/TykTechnologies/tyk-plugin-starter) repository is the supported way to author JavaScript plugins. It is designed for both humans and AI agents and provides:
+
+- A TypeScript project with the published [`@tyk-technologies/tyk-plugin-types`](https://www.npmjs.com/package/@tyk-technologies/tyk-plugin-types) typings, so the request/session/config objects and the Tyk globals autocomplete.
+- A **local test harness** that mocks the goja runtime, so you can unit-test a plugin in plain Node without running a gateway.
+- A webpack build that emits a single `plugin.js`, and a script that packages it into a deployable bundle.
+- Six runnable, tested examples covering every hook type (pre, auth_check, post_key_auth, post, response).
+
+The typical loop is:
+
+```bash
+npx degit TykTechnologies/tyk-plugin-starter my-plugin
+cd my-plugin
+npm install
+# edit src/plugin.ts
+npm test          # unit-test against the mock JSVM
+npm run build     # emit dist/plugin.js
 ```
 
-Custom JS plugins sit in the [middleware processing chain](/api-management/traffic-transformation#request-middleware-chain) and pass the request onto the next middleware before it is proxied to the upstream. If required, however, a custom JS plugin can terminate the request and provide a custom response to the client if you configure the `ReturnOverrides` in the `request` object, as described [here](/api-management/plugins/javascript#using-returnoverrides).
+Once you have a built `plugin.js`, deploy it using one of the methods in [Deploying JavaScript plugins](#deploying-javascript-plugins).
 
-##### Returning from Virtual Endpoint
+## The plugin contract
 
-Unlike custom JS plugins, Virtual Endpoints always [terminate the request](/api-management/traffic-transformation/virtual-endpoints#working) so have a different method of returning from the JS function.
+### Creating a middleware component
 
-The function must return a `responseObject`. This is crucial as it determines the HTTP response that will be sent back to the client. The structure of this object is defined to ensure that the virtual endpoint can communicate the necessary response details back to the Tyk Gateway, which then forwards it to the client.
+Tyk injects a `TykJS` namespace into the VM. You create a middleware object with the `NewMiddleware({})` constructor and register your function with `NewProcessRequest()`. This closure receives the three Tyk data objects — [`request`](#the-request-object), [`session`](#the-session-object) and [`config`](#the-config-object):
 
-The `responseObject` has the following structure:
+```js
+var handler = new TykJS.TykMiddleware.NewMiddleware({});
 
-- `code`: an integer representing the HTTP status code of the response
-- `headers`: an object containing key-value pairs representing the HTTP headers of the response
-- `body`: a string that represents the body of the response which can be plain text, JSON, or XML, depending on what your API client expects to receive
+handler.NewProcessRequest(function (request, session, config) {
+  // ... inspect or modify the request ...
+  return handler.ReturnData(request, session.meta_data);
+});
 
-You must provide the `responseObject` together with the `session.meta_data` as parameters in a call to `TykJsResponse` as follows:
+// Required when building with a bundler: expose the handler as a global.
+globalThis.handler = handler;
+```
+
+<Note>
+**Two rules to remember**
+
+- For custom plugins and event handlers loaded from a file, the source filename must match the function name. Virtual endpoints have no such restriction.
+- If you build with a bundler (such as the webpack setup in the starter), the bundler scopes your `var handler` locally, so the gateway cannot see it. Assign `globalThis.handler = handler` to expose it. The starter's test harness asserts this for you.
+</Note>
+
+### Returning from a plugin
+
+How you return depends on the plugin type.
+
+**Custom plugins** modify the `request` and `session.meta_data` objects, but those changes are applied by the gateway *after* the function returns — so you must pass them back. Omitting the return causes the plugin to fail:
+
+```js
+return handler.ReturnData(request, session.meta_data);
+```
+
+A custom plugin normally passes the request on to the next middleware. It can instead **terminate** the request and return a custom response to the client by setting `request.ReturnOverrides` — see [Using ReturnOverrides](#using-returnoverrides).
+
+**Virtual endpoints** always terminate the request, so they return differently. Build a response object and pass it, with the session metadata, to `TykJsResponse`:
 
 ```js
 return TykJsResponse(responseObject, session.meta_data);
 ```
 
-You can find some examples of how this works [here](/api-management/traffic-transformation/virtual-endpoints#examples).
+The `responseObject` has the structure:
 
-### JavaScript resources
+- `Code`: integer HTTP status code
+- `Headers`: object of header key/value pairs
+- `Body`: response body string (plain text, JSON or XML)
 
-JavaScript (JS) functions have access to a [system API](/api-management/plugins/javascript#javascript-api) and [library of functions](/api-management/plugins/javascript#underscore-js-library). They can also be given access to certain Tyk data objects relating to the API request.
+See the [virtual endpoint examples](/api-management/traffic-transformation/virtual-endpoints#examples) for complete handlers.
 
-The system API provides access to resources outside of the JavaScript Virtual Machine sandbox, the ability to make outbound HTTP requests and access to the key management REST API functions.
+## The request, session and config objects
 
-#### The `request` object
+Your function receives three Tyk data objects. This section covers their behaviour and the fields you'll use most; for the full struct shapes, see the [data structures in Rich Plugins](/api-management/plugins/rich-plugins#rich-plugins-data-structures).
 
-The `request` object provides a set of arrays that describe the API request. These can be manipulated and, when changed, will affect the request as it passes through the middleware pipeline. For [virtual endpoints](/api-management/traffic-transformation/virtual-endpoints) the request object has a [different structure](#VirtualEndpoint-Request).
+### The `request` object
 
-The structure of the `request` object is:
+The `request` object exposes the API request as a set of fields you can read and modify. Changes take effect as the request continues through the middleware chain. (Virtual endpoints receive a [different request shape](#the-virtual-endpoint-request-object).)
 
-```typesecript
+```typescript
 class ReturnOverrides {
   ResponseCode: number = 200;
   ResponseBody: string = "";
-  ResponseHeaders: string[] = [];
+  ResponseHeaders: { [key: string]: string } = {};
 }
 
 class Request {
@@ -150,72 +174,39 @@ class Request {
 }
 ```
 
-{/* ```go
-struct {
-  Headers       map[string][]string
-  SetHeaders    map[string]string
-  DeleteHeaders []string
-  Body          string
-  URL           string
-  AddParams     map[string]string
-  DeleteParams  []string
-  ReturnOverrides {
-    ResponseCode: int
-    ResponseBody: string
-    ResponseHeaders []string
-  }
-  IgnoreBody    bool
-  Method        string
-  RequestURI    string
-  Scheme        string
-}
-``` */}
+- `Headers`: current request headers, as string arrays. Read-only; modify headers through `SetHeaders`/`DeleteHeaders`.
+- `SetHeaders`: headers to set when the function returns. Existing headers are overwritten; new ones are added.
+- `DeleteHeaders`: header names to delete from the outgoing request. `DeleteHeaders` is applied before `SetHeaders`.
+- `Body`: the request body. Assigning to it overwrites the body.
+- `URL`: the path portion of the outbound URL. Modify it to route to a different upstream path.
+- `AddParams`: query parameters to add to the request.
+- `DeleteParams`: query parameters to remove. `DeleteParams` is applied before `AddParams`.
+- `ReturnOverrides`: set these to terminate the request and return a response (see below).
+- `IgnoreBody`: if `true`, the original request body is used; if `false` (default) the `Body` field is used.
+- `Method`: the HTTP method (`GET`, `POST`, …).
+- `RequestURI`: the request URI including query string, e.g. `/path?key=value`.
+- `Scheme`: the URL scheme, e.g. `http` or `https`.
 
-- `Headers`: this is an object of string arrays, and represents the current state of the request header; this object cannot be modified directly, but can be used to read header data
-- `SetHeaders`: this is a key-value map that will be set in the header when the middleware returns the object; existing headers will be overwritten and new headers will be added
-- `DeleteHeaders`: any header name that is in this list will be deleted from the outgoing request; note that `DeleteHeaders` happens before `SetHeaders`
-- `Body`: this represents the body of the request, if you modify this field it will overwrite the request
-- `URL`: this represents the path portion of the outbound URL, you can modify this to redirect a URL to a different upstream path
-- `AddParams`: you can add parameters to your request here, for example internal data headers that are only relevant to your network setup
-- `DeleteParams`: these parameters will be removed from the request as they pass through the middleware; note `DeleteParams` happens before `AddParams`
-- `ReturnOverrides`: values stored here are used to stop or halt middleware execution and return an error code
-- `IgnoreBody`: if this parameter is set to `true`, the original request body will be used; if set to `false` the `Body` field will be used (`false` is the default behavior)
-- `Method`: contains the HTTP method (`GET`, `POST`, etc.)
-- `RequestURI`: contains the request URI, including the query string, e.g. `/path?key=value`
-- `Scheme`: contains the URL scheme, e.g. `http`, `https`
+#### Using `ReturnOverrides`
 
-
-##### Using `ReturnOverrides`
-
-If you configure values in `request.ReturnOverrides` then Tyk will terminate the request and provide a response to the client when the function completes. The request will not be proxied to the upstream.
-
-The response will use the parameters configured in `ReturnOverrides`:
-
-- `ResponseCode`
-- `ResponseBody`
-- `ResponseHeaders`
-
-In this example, if the condition is met, Tyk will return `HTTP 403 Access Denied` with the custom header `"X-Error":"the-condition"`:
+Set values in `request.ReturnOverrides` to terminate the request and respond to the client directly — the request is not proxied upstream. In this example, when a condition is met the gateway returns `HTTP 403` with a custom header:
 
 ```js
-var testJSVMData = new TykJS.TykMiddleware.NewMiddleware({});
+var handler = new TykJS.TykMiddleware.NewMiddleware({});
 
-testJSVMData.NewProcessRequest(function(request, session, config) {
-  // Logic to determine if the request should be overridden
+handler.NewProcessRequest(function (request, session, config) {
   if (someCondition) {
-      request.ReturnOverrides.ResponseCode = 403;
-      request.ReturnOverrides.ResponseBody = "Access Denied";
-      request.ReturnOverrides.headers = {"X-Error": "the-condition"};
-      // This stops the request from proceeding to the upstream
+    request.ReturnOverrides.ResponseCode = 403;
+    request.ReturnOverrides.ResponseBody = "Access Denied";
+    request.ReturnOverrides.ResponseHeaders = { "X-Error": "the-condition" };
   }
-    return testJSVMData.ReturnData(request, session.meta_data);
+  return handler.ReturnData(request, session.meta_data);
 });
 ```
 
-##### The virtual endpoint `request` object
-<a id="VirtualEndpoint-Request"></a>
+#### The virtual endpoint `request` object
 
-For [virtual endpoint](/api-management/traffic-transformation/virtual-endpoints) functions the structure of a Javascript `request` object is:
+[Virtual endpoint](/api-management/traffic-transformation/virtual-endpoints) functions receive this request shape instead:
 
 ```typescript
 class VirtualEndpointRequest {
@@ -227,105 +218,50 @@ class VirtualEndpointRequest {
 }
 ```
 
-- `Body`: HTTP request body, e.g. `""`
-- `Headers`: HTTP request headers, e.g. `"Accept": ["*/*"]`
-- `Params`: Decoded query and form parameters, e.g. `{ "confirm": ["true"], "userId": ["123"] }`
-- `Scheme`: The scheme of the URL ( e.g. `http` or `https`)
-- `URL`: The full URL of the request, e.g `/vendpoint/anything?user_id=123\u0026confirm=true`
-
-<br />
-
+- `Body`: HTTP request body.
+- `Headers`: request headers, e.g. `"Accept": ["*/*"]`.
+- `Params`: decoded query and form parameters, e.g. `{ "userId": ["123"] }`.
+- `Scheme`: URL scheme (`http` or `https`).
+- `URL`: full request URL, e.g. `/vendpoint/anything?user_id=123&confirm=true`.
 
 <Note>
-Each query and form parameter within the request is stored as an array field in the `Params` field of the request object.
+**Note**
 
-Repeated parameter assignments are appended to the corresponding array. For example, a request against `/vendpoint/anything?user_id[]=123&user_id[]=234` would result in a Javascript request object similar to that shown below:
-
-```javascript
-const httpRequest = {
-  Headers: {
-    "Accept": ["*/*"],
-    "User-Agent": ["curl/8.1.2"]
-  },
-  Body: "",
-  URL: "/vendpoint/anything?user_id[]=123\u0026user_id[]=234",
-  Params: {
-    "user_id[]": ["123", "234"]
-  },
-  Scheme: "http"
-};
-```
+Each query and form parameter is stored as an array. Repeated assignments append to the array — a request to `/vendpoint/anything?user_id[]=123&user_id[]=234` produces `Params: { "user_id[]": ["123", "234"] }`.
 </Note>
 
+### The `session` object
 
-#### The `session` object
+Tyk uses an internal [session object](/api-management/policies#what-is-a-session-object) to track quota, rate limits, access rights and auth data for a key. A plugin can read the session, but — other than `meta_data` — it cannot be modified directly, because the gateway relies on it. Deserialising the session into the VM is relatively expensive, so it can be disabled where it isn't needed.
 
-Tyk uses an internal [session object](/api-management/access-control/sessions-and-keys/understanding-sessions) to handle the quota, rate limits, access allowances and auth data of a specific key. JS middleware can be granted access to the session object but there is also the option to disable it as deserialising it into the JSVM is computationally expensive and can add latency. Other than the `meta_data` field, the session object itself cannot be directly edited as it is crucial to the correct functioning of Tyk.
+**Availability**
 
-##### Limitations
+- Pre-stage plugins have **no** session object — authentication hasn't run yet.
+- Virtual endpoints receive the session only if it is enabled in the middleware configuration.
 
-- Custom JS plugins at the [pre-](/api-management/plugins/plugin-types#request-plugins) stage do not have access to the session object (as it has not been created yet)
-- When scripting for Virtual Endpoints, the `session` data will only be available to the JS function if enabled in the middleware configuration. To enable this, set `requireSession` to `true` in the `virtualEndpoint` object of your Tyk OAS API definition (or `use_session` to `true` in the `virtual` object for Tyk Classic APIs).
+**Sharing data between plugins**
 
-###### Tyk OAS API Definition example:
-```
-"virtualEndpoint": {
-  "enabled": true,
-  "functionName": "myVirtualEndpoint",
-  "path": "my_script.js",
-  "requireSession": true
-}
-```
-###### Tyk Classic API Definition example:
-```
-"extended_paths": {
-  "virtual": [
-    {
-      "path": "/my-endpoint",
-      "method": "GET",
-      "response_function_name": "myVirtualEndpoint",
-      "function_source_type": "file",
-      "function_source_uri": "my_script.js",
-      "use_session": true
-    }
-  ]
-}
-```
+The `meta_data` key/value field is written back to the session store, so later middleware can read what an earlier plugin wrote. This data is persistent and is also accessible through the `/tyk/keys/` REST API. Because each API has its own VM, sharing data *across* APIs is only possible through the session object when a key is shared between them.
 
+### The `config` object
 
-##### Sharing data between middleware using the `session` object
+The read-only `config` object carries data from the API definition:
 
-For different middleware to be able to transfer data between each other, the session object makes available a `meta_data` key/value field that is written back to the session store (and can be retrieved by the middleware down the line) - this data is permanent, and can also be retrieved by the REST API from outside of Tyk using the `/tyk/keys/` method.
-
-
-<Note>
-A new JSVM instance is created for *each* API that is managed. Consequently, inter-API communication is not possible via shared methods, since they have different bounds. However, it *is* possible using the session object if a key is shared across APIs.
-</Note>
-
-
-#### The `config` object
-
-The third Tyk data object that is made available to the script running in the JSVM contains data from the API Definition. This is read-only and cannot be modified by the JS function. The structure of this object is:
-
-- `APIID`: the unique identifier for the API
+- `APIID`: the API's unique identifier
 - `OrgID`: the organization identifier
-- `config_data`: custom attributes defined in the API description
+- `config_data`: custom attributes from the API definition
 
-##### Adding custom attributes to the API Definition
+**Adding custom attributes.** For Tyk OAS APIs, add them under `x-tyk-api-gateway.middleware.global.pluginConfig.data`:
 
-When working with Tyk OAS APIs, you can add custom attributes in the `data` object in the `x-tyk-api-gateway.middleware.global.pluginConfig` section of the API definition, for example:
-
-```json {linenos=true, linenostart=1}
+```json
 {
-  "x-tyk-api-gateway": {  
+  "x-tyk-api-gateway": {
     "middleware": {
       "global": {
         "pluginConfig": {
           "data": {
             "enabled": true,
-            "value": {
-              "foo": "bar"
-            }
+            "value": { "foo": "bar" }
           }
         }
       }
@@ -334,9 +270,9 @@ When working with Tyk OAS APIs, you can add custom attributes in the `data` obje
 }
 ```
 
-When working with Tyk Classic APIs, you simply add the attributes in the `config_data` object in the root of the API definition:
+For Tyk Classic APIs, add them under `config_data` at the root of the API definition:
 
-```json {linenos=true, linenostart=1}
+```json
 {
   "config_data": {
     "foo": "bar"
@@ -344,220 +280,174 @@ When working with Tyk Classic APIs, you simply add the attributes in the `config
 }
 ```
 
-#### Underscore.js Library
+## The JavaScript API
 
-In addition to our Tyk JavaScript API functions, you also have access to all the functions from the [underscore](http://underscorejs.org) library.
+The gateway adds a set of global functions to the VM, giving your script the ability to log, make outbound HTTP requests and read or write key session data:
 
-Underscore.js is a JavaScript library that provides a lot of useful functional programming helpers without extending any built-in objects. Underscore provides over 100 functions that support your favorite functional helpers:
+- `log(string)`: logs the string to the gateway's logger as an INFO line prefixed with `JSVM Log:`. Useful for debugging.
+- `rawlog(string)`: logs the string with no prefix or timestamp, for custom log formats.
+- `b64enc(string)` / `b64dec(string)`: standard base64 encode/decode.
+- `rawb64enc(string)` / `rawb64dec(string)`: raw (unpadded) base64 encode/decode.
+- `TykMakeHttpRequest(JSON.stringify(requestObject))`: make an outbound HTTP request (see below).
+- `TykBatchRequest(...)`: like `TykMakeHttpRequest` but uses Tyk's [batch request feature](/api-management/batch-processing).
+- `TykGetKeyData` / `TykSetKeyData`: read and write key session data (see [Working with the key session object](#working-with-the-key-session-object)).
 
-- map
-- filter
-- invoke
+### Making HTTP requests
 
-There are also more specialized goodies, including:
-
-- function binding
-- JavaScript templating
-- creating quick indexes
-- deep equality testing
-
-### Example
-
-In this basic example, we show the creation and initialisation of a middleware object. Note how the three Tyk data objects (`request`, `session`, `config`) are made available to the function and the two objects that are returned from the function (in case the external objects need to be updated).
-
-```js {linenos=true, linenostart=1}
-/* --- sampleMiddleware.js --- */
-
-// Create new middleware object
-var sampleMiddleware = new TykJS.TykMiddleware.NewMiddleware({});
-
-// Initialise the object with your functionality by passing a closure that accepts
-// two objects into the NewProcessRequest() function:
-sampleMiddleware.NewProcessRequest(function(request, session, config) {
-    log("This middleware does nothing, but will print this to your terminal.")
-
-    // You MUST return both the request and session metadata
-    return sampleMiddleware.ReturnData(request, session.meta_data);
-});
-```
-
-## JavaScript API
-
-This system API provides access to resources outside of the JavaScript Virtual Machine sandbox, the ability to make outbound HTTP requests and access to the key management REST API functions.
-
-Embedded JavaScript interpreters offer the bare bones of a scripting language, but not necessarily the functions that you would expect, especially with JavaScript, where objects such as `XMLHttpRequest()` are a given. However, those interfaces are actually provided by the browser / DOM that the script engine are executing in. In a similar vein, we have included a series of functions to the JSVM for convenience and give the interpreter more capability.
-
-This list is regularly revised and any new suggestions should be made in our [Github issue tracker](https://github.com/TykTechnologies/tyk/issues).
-
-Below is the list of functions currently provided by Tyk.
-
-- `log(string)`: Calling `log("this message")` will cause Tyk to log the string to Tyk's default logger output in the form `JSVM Log: this message` as an INFO statement. This function is especially useful for debugging your scripts. It is recommended to put a `log()` call at the end of your middleware and event handler module definitions to indicate on load that they have been loaded successfully - see the [example scripts](https://github.com/TykTechnologies/tyk/tree/master/middleware) in your Tyk installation `middleware` directory for more details.
-- `rawlog(string)`: Calling `rawlog("this message")` will cause Tyk to log the string to Tyk's default logger output without any additional formatting, like adding prefix or date. This function can be used if you want to have own log format, and parse it later with custom tooling.
-- `b64enc` - Encode string to base64
-- `b64dec` - Decode base64 string
-- `TykBatchRequest` this function is similar to `TykMakeHttpRequest` but makes use of Tyk's [batch request feature](/api-management/batch-processing).
-- `TykMakeHttpRequest(JSON.stringify(requestObject))`: This method is used to make an HTTP request, requests are encoded as JSON for deserialisation in the min binary and translation to a system HTTP call. The request object has the following structure:
+`TykMakeHttpRequest` encodes the request as JSON, which the gateway deserialises in the main binary and translates into a system HTTP call. The request object has the structure:
 
 ```js
-newRequest = {
+var newRequest = {
   "Method": "POST",
   "Body": JSON.stringify(event),
   "Headers": {},
   "Domain": "http://foo.com",
   "Resource": "/event/quotas",
-  "FormData": {"field": "value"}
+  "FormData": { "field": "value" }
 };
 ```
 
-
 <Note>
-If you want to include querystring values, add them as part of the `Domain` property.
+**Note**
+
+To include query-string values, append them to the `Domain` property.
 </Note>
 
-
-Tyk passes a simplified response back which looks like this:
-
-```go
-type TykJSHttpResponse struct {
-	Code    int
-	Body    string
-	Headers map[string][]string
-}
-```
-
-The response is JSON string encoded, and so will need to be decoded again before it is usable:
+Tyk returns a simplified, JSON-encoded response that you decode before use:
 
 ```js
-usableResponse = JSON.parse(response);
+var usableResponse = JSON.parse(response);
 log("Response code: " + usableResponse.Code);
 log("Response body: " + usableResponse.Body);
 ```
 
-This method does not execute asynchronously, so execution will block until a response is received.
+The response shape is `{ Code: int, Body: string, Headers: map[string][]string }`. The call is synchronous — execution blocks until the response is received.
 
 ### Working with the key session object
 
-To work with the key session object, two functions are provided: `TykGetKeyData` and `TykSetKeyData`:
+Two functions read and write the [session object](/api-management/policies#what-is-a-session-object) for a key:
 
-- `TykGetKeyData(api_key, api_id)`: Use this method to retrieve a [session object](/api-management/access-control/sessions-and-keys/understanding-sessions) for the key and the API provided:
+- `TykGetKeyData(key, apiID)`: retrieve a session object.
 
   ```js
-  // In an event handler, we can get the key idea from the event, and the API ID from the context variable.
-  var thisSession = JSON.parse(TykGetKeyData(event.EventMetaData.Key, context.APIID))
-  log("Expires: " + thisSession.expires)
+  // In an event handler: key from the event, API ID from the context variable.
+  var thisSession = JSON.parse(TykGetKeyData(event.EventMetaData.Key, context.APIID));
+  log("Expires: " + thisSession.expires);
   ```
 
-- `TykSetKeyData(api_key, api_id)`: Use this method to write data back into the Tyk session store:
+- `TykSetKeyData(key, value, ...)`: write data back into the session store.
 
   ```js
-  // You can modify the object just like with the REST API
   thisSession.expires = thisSession.expires + 1000;
-
-  // Use TykSetKeyData to set the key data back in the session store
   TykSetKeyData(event.EventMetaData.Key, JSON.stringify(thisSession));
   ```
 
-All of these methods are described in functional examples in the Tyk `middleware/` and `event_handlers/` folders.
+For worked examples of these and the other globals, see the [examples in the starter repo](https://github.com/TykTechnologies/tyk-plugin-starter/tree/main/examples).
 
-## Installing Middleware on Tyk Self-Managed
+## Deploying JavaScript plugins
 
-In some cases middleware references can't be directly embedded in API Definitions (for example, when using the Tyk Dashboard in an Self-Managed installation). However, there is an easy way to distribute and enable custom middleware for an API in a Tyk node by adding them as a directory structure.
+A built `plugin.js` reaches the gateway one of three ways. They differ in **how the plugin artifact is distributed to your gateway nodes** — not in capability or environment. All three are production-grade, and all require the [JSVM to be enabled](#enabling-the-jsvm) (`enable_jsvm: true`).
 
-Tyk will load the middleware plugins dynamically on host-reload without needing a direct reference to them in the API Definition.
+| Method | What it is | How it reaches the node |
+| --- | --- | --- |
+| [Inline `code`](#inline-code) | JS source base64-encoded into the API definition | Travels with the API definition — no separate artifact. Suits GitOps with `tyk-sync` or pushing through the API. |
+| [Bundle](#bundles) | A zip (`plugin.js` + `manifest.json`) on a bundle server | Downloaded at runtime over HTTP. Supports signing and sharing one plugin across many APIs. |
+| [File mount](#file-mount) | A `.js` file referenced by `path` on the gateway filesystem | You place the file on each node — baked into the image, mounted as a volume, or shipped by config management (the same model as Go plugins). |
 
-The directory structure should look like this:
+Inline `code` and file `path` can be **combined on a single API** — they're loaded by independent passes, so some hooks can be inline while others are file-mounted. A **bundle** is the exception: it replaces an API's entire middleware section, so it can't be mixed with `code` or `path` entries (see [Bundles](#bundles)).
 
-```text
-middleware
-  / {API Id}
-    / pre
-    / {middlewareObject1Name}.js
-    /  {middlewareObject2Name}.js
-    / post
-      / {middlewareObject1Name}_with_session.js
-      / {middlewareObject2Name}.js
+### Inline code
+
+Inline code embeds the plugin source directly in the API definition, so a single document carries both the API configuration and its custom logic — no bundle server and no separate artifact. The source is supplied base64-encoded in the `code` field of a plugin entry, and the plugin driver is set to `javascript`.
+
+The following minimal Tyk OAS document attaches a pre-plugin that renames a header:
+
+```yaml
+openapi: 3.0.3
+info:
+  title: header-rename
+  version: 1.0.0
+paths: {}
+x-tyk-api-gateway:
+  info:
+    name: header-rename
+    state:
+      active: true
+  upstream:
+    url: http://httpbin.org/
+  server:
+    listenPath:
+      value: /header-rename/
+      strip: true
+    authentication:
+      enabled: false
+  middleware:
+    global:
+      pluginConfig:
+        driver: javascript
+      prePlugins:
+        - enabled: true
+          functionName: handler
+          code: dmFyIGhhbmRsZXIgPSBuZXcgVHlrSlMuVHlrTWlkZGxld2FyZS5OZXdNaWRkbGV3YXJlKHt9KTsK # base64 of your plugin.js
+          rawBodyOnly: false
+          requireSession: false
 ```
 
-Tyk will check for a folder that matches the `API Id` being loaded, and then load the `pre` and `post` middleware from the respective directories.
+Each entry under `prePlugins` / `postAuthenticationPlugins` / `postPlugins` / `responsePlugins` accepts:
 
+| Field | Type | Notes |
+| --- | --- | --- |
+| `enabled` | bool | Required. Set `false` to disable without removing the entry. |
+| `functionName` | string | The handler identifier (e.g. `handler`). |
+| `code` | string | Base64-encoded JS source. When set, `path` is ignored for this entry. |
+| `path` | string | Path to a JS file. Mutually exclusive with `code`. |
+| `requireSession` | bool | Make the session available to the hook. |
+| `rawBodyOnly` | bool | Skip request-body decoding (useful for large or binary payloads). |
 
-<Note>
-The filename MUST match the object to be loaded exactly.
-</Note>
+The `code` field must be base64; the gateway decodes it unconditionally, so raw JavaScript in this field will fail to load. Produce the value from your built plugin with:
 
-
-If your middleware requires session injection, then append `_with_session` to the filename.
-
-### Enable the JSVM
-
-Before you can use Javascript Middleware you will need to enable the JSVM.
-
-You can do this by setting `enable_jsvm` to `true` in your `tyk.conf` file.
-
-## Installing Middleware on Tyk Hybrid
-
-In some cases middleware references can't be directly embedded in API Definitions (for example, when using the dashboard in a Hybrid install). However, there is an easy way to distribute and enable custom middleware for an API on a Tyk node.
-
-A second method of loading API Definitions in Tyk nodes is to add them as a directory structure in the Tyk node. Tyk will load the middleware plugins dynamically on host-reload without needing a direct reference to them in the API Definition.
-
-The directory structure looks as follows:
-
-```text
-middleware
-  / {API Id}
-    / pre
-    / {middlewareObject1Name}.js
-    /  {middlewareObject2Name}.js
-    / post
-      / {middlewareObject1Name}_with_session.js
-      / {middlewareObject2Name}.js
+```bash
+base64 < dist/plugin.js | tr -d '\n'
 ```
 
-Tyk will check for a folder that matches the `{API Id}` being loaded, and then load the `pre` and `post` middleware from the respective folders.
+Because inline plugins live in the API definition, updating one is an ordinary API update — `PUT` the document and reload. The gateway re-decodes and re-compiles the `code` field on reload; there is no on-disk cache to invalidate:
 
-
-<Note>
-The filename MUST match the object to be loaded exactly.
-</Note>
-
-
-If your middleware requires session injection, then append `_with_session` to the filename.
-
-### Enable the JSVM
-
-Before you can use Javascript Middleware you will need to enable the JSVM
-
-You can do this by setting `enable_jsvm` to `true` in your `tyk.conf` file.
-
-## Installing Middleware on Tyk OSS
-
-In order to activate middleware when using Tyk OSS or when using a file-based setup, the middleware needs to be registered as part of your API Definition. Registration of middleware components is relatively simple.
-
+```bash
+curl -X PUT \
+  -H "x-tyk-authorization: $TYK_SECRET" \
+  -H "Content-Type: application/yaml" \
+  --data-binary @api.yaml \
+  http://gateway:8080/tyk/apis/oas/header-rename
+curl -H "x-tyk-authorization: $TYK_SECRET" http://gateway:8080/tyk/reload/group
+```
 
 <Note>
-It is important that your object names are unique.
+**The source is visible**
+
+Inline `code` is plain text in the API definition to anyone with read access. Don't embed secrets, and remember to rebuild before re-encoding — the gateway will happily run stale code.
 </Note>
 
+### Bundles
 
+A bundle packages `plugin.js` with a `manifest.json` (declaring the driver and hook entries) into a zip that the gateway downloads from a bundle server. Bundles are the right choice when one plugin is shared across many APIs or when you want to version plugin artifacts independently of API definitions. The starter repo's `npm run build:bundle` produces a valid bundle without a gateway binary.
+
+An API references its bundle through `custom_middleware_bundle` (Classic) and requires the bundle downloader to be enabled on the gateway. That single field also accepts a **comma-separated list** of bundle names — for example `"auth.zip,logging.zip"` — which fetches each and merges their manifests in declaration order.
 
 <Note>
-This functionality may change in subsequent releases.
+**Bundles replace inline and file-mounted middleware**
+
+When an API references a bundle, the bundle's manifest **replaces** the API's `custom_middleware` section entirely — any inline `code` or file `path` entries on the definition are ignored. Ship all of an API's middleware in the bundle, or define it on the API with `code`/`path` and leave the bundle field unset.
 </Note>
 
+### File mount
 
-### Enable the JSVM
+Reference a `.js` file from the API definition with the `path` field. This is a first-class alternative to inline `code` — the only difference is that you distribute the file to your gateway nodes yourself, the same way you would a Go plugin: bake it into the gateway image, mount it as a volume, or ship it with your configuration management. Every node that serves the API must have the file at the referenced path.
 
-Before you can use Javascript Middleware you will need to enable the JSVM
-
-You can do this by setting `enable_jsvm` to `true` in your `tyk.conf` file.
-
-Adding the middleware plugin is as simple as adding it to your definition file in the middleware sections:
+**By path in the API definition.** Register the plugin in the `custom_middleware` block, pointing `path` at the file. The path is resolved relative to the gateway's working directory (or given as an absolute path):
 
 ```json
-...
-"event_handlers": {},
 "custom_middleware": {
-  "driver": "otto",
+  "driver": "javascript",
   "pre": [
     {
       "name": "sampleMiddleware",
@@ -572,172 +462,35 @@ Adding the middleware plugin is as simple as adding it to your definition file i
       "require_session": false
     }
   ]
-},
-"enable_batch_request_support": false,
-...
+}
 ```
 
-As you can see, the parameters are all dynamic, so you will need to ensure that the path to your middleware is correct. The configuration sections are as follows:
+- `pre` / `post`: lists of plugins run in order, before authentication (`pre`) or after all checks and before proxying upstream (`post`).
+- `name`: the handler name. Case-sensitive; must match the name your script registers with `NewMiddleware`.
+- `path`: the JS file, loaded into the VM when the API initialises. Reloading the API hot-swaps the plugin with no interruption.
+- `require_session`: irrelevant for `pre` (no session yet); for `post`, set `true` to receive the `session` object.
 
-- `pre`: Defines a list of custom middleware objects to run *in order* from top to bottom. That will be executed *before* any authentication information is extracted from the header or parameter list of the request. Use middleware in this section to pre-process a request before feeding it through the Tyk middleware.
+**By directory structure (auto-loader).** As a convenience — useful when you can't edit the API definition directly, for example a Dashboard-managed Self-Managed or Hybrid deployment — Tyk can auto-load plugins from a directory named after the API ID, with no `path` reference in the API definition:
 
-- `pre[].name`: The name of the middleware object to call. This is case sensitive, and **must** match the name of the middleware object that was created, so in our example - we created `sampleMiddleware` by calling:
+```text
+middleware
+  / {API Id}
+    / pre
+      / {middlewareObjectName}.js
+    / post
+      / {middlewareObjectName}_with_session.js
+```
 
-  `var sampleMiddleware = new TykJS.TykMiddleware.NewMiddleware({});`
+Tyk matches a folder to the API ID being loaded and loads the `pre` and `post` plugins from the respective directories. The filename must match the registered object name exactly. Append `_with_session` to a `post` plugin's filename to inject the session object.
 
-- `pre[].path`: The path to the middleware component, this will be loaded into the JSVM when the API is initialised. This means that if you reload an API configuration, the middleware will also be re-loaded. You can hot-swap middleware on reload with no service interruption.
+### Virtual endpoints and the driver
 
-- `pre[].require_session`: Irrelevant for pre-processor middleware, since no auth data has been extracted by the authentication middleware, it cannot be made available to the middleware.
+Virtual endpoints honour the same `driver` flag as custom middleware. A virtual endpoint runs on goja when its API sets the driver to `javascript`; with no driver set it runs on the legacy otto engine. Set the driver explicitly to move virtual endpoints onto goja. See [Virtual endpoints](/api-management/traffic-transformation/virtual-endpoints) for configuration.
 
-- `post`: Defines a list of custom middleware objects to run *in order* from top to bottom. That will be executed *after* the authentication, validation, throttling, and quota-limiting middleware has been executed, just before the request is proxied upstream. Use middleware in this section to post-process a request before sending it to your upstream API.
+## See also
 
-- `post[].name`: The name of the middleware object to call. This is case sensitive, and **must** match the name of the middleware object that was created, so in our example - we created `sampleMiddleware` by calling:
-
-  `var sampleMiddleware = new TykJS.TykMiddleware.NewMiddleware({});`
-
-- `post[].path`: The path to the middleware component, this will be loaded into the JSVM when the API is initialised. This means that if you reload an API configuration, the middleware will also be re-loaded. You can hot-swap middleware on reload with no service interruption.
-
-- `post[].require_session`: Defaults to `false`, if you require access to the session object, it will be supplied as a `session` variable to your middleware processor function.
-
-## WAF (OSS) ModSecurity Plugin example
-
-Traditionally, a Web Application Firewall (WAF) would be the first layer requests would hit, before reaching the API  gateway.  This is not possible if the Gateway has to terminate SSL, for things such as mTLS.
-
-So what do you do if you still want to run your requests through a WAF to automatically scan for malicious action?  We incorporate a WAF as part of the request lifecycle by using Tyk's plugin architecture.
-
-### Prerequisites
-
-* Already running Tyk -  Community Edition or Pro
-* Docker, to run the WAF
-
-### Disclaimer
-
-This is NOT a production ready plugin because 
-
-* The JavaScript plugin creates a new connection with the WAF for every request
-* The request is not sent over SSL
-* The WAF is only sent the query params for inspection.
-
-For higher performance, the plugin could be written in Golang, and a connection pool would be opened and maintained over SSL
-
-### Steps for Configuration
-
-1. **Turn JSVM on your `tyk.conf` at the root level:**
-
-    Turn on JSVM interpreter to allow Tyk to run JavaScript plugins.
-
-    ```
-    "enable_jsvm": true
-    ```
-
-2. **Place the JavaScript plugin on Tyk file system**
-
-    Copy the JS Plugin as a local .js file to the Gateway's file system.  
-
-    From the Gateway root, this will download the plugin called `waf.js` into the `middleware` directory:
-    ```
-    curl https://raw.githubusercontent.com/TykTechnologies/custom-plugins/master/plugins/js-pre-post-waf/waf.js | cat > middleware/waf.js
-    ```
-
-    (Instructions)
-    If you are running Tyk in Docker, you can get into Tyk Gateway with `docker exec`
-    ```
-    $ docker ps | grep gateway
-    670039a3e0b8        tykio/tyk-gateway:latest           "./entrypoint.sh"        14 minutes ago      Up 14 minutes       0.0.0.0:8080->8080/tcp             tyk-demo_tyk-gateway_1
-
-    ## copy container name or ID 
-    $ docker exec -it 670039a3e0b8 bash
-
-    ## Now SSH'd into Tyk Gateway container and can perform curl
-    root@670039a3e0b8:/opt/tyk-gateway# ls
-
-    apps	   entrypoint.sh   install  middleware	templates  tyk-gateway.pid  tyk.conf.example
-    coprocess  event_handlers  js	    policies	tyk	   tyk.conf	    utils
-
-    ## Download the plugin
-    root@670039a3e0b8:/opt/tyk-gateway# curl https://raw.githubusercontent.com/TykTechnologies/custom-plugins/master/plugins/js-pre-post-waf/waf.js | cat > middleware/waf.js
-
-    % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
-                                    Dload  Upload   Total   Spent    Left  Speed
-    100  1125  100  1125    0     0   3906      0 --:--:-- --:--:-- --:--:--  3975
-
-    ```
-
-    [waf.js source](https://raw.githubusercontent.com/TykTechnologies/custom-plugins/master/plugins/js-pre-post-waf/waf.js)
-
-3. **Import API definition into Tyk**
-
-    Copy the following Tyk API definition and import it into your environment.
-
-    [API Definition JSON](https://raw.githubusercontent.com/TykTechnologies/custom-plugins/master/plugins/js-pre-post-waf/apidef.json)
-
-    Here's the important section which adds the plugin to the request lifecycle for this API:
-    ```{.json}
-    "custom_middleware": {
-        "pre": [
-            {
-            "name": "Waf",
-            "path": "./middleware/waf.js"
-            }
-        ],
-    ```
-
-    ##### How to Import?
-    [Tyk Self-Managed](/api-management/gateway-config-managing-classic#import-an-api)
-
-    [Tyk OSS](/api-management/gateway-config-managing-classic#create-an-api)
-
-4. **Run WAF ModSecurity Using Docker**
-
-    First run ModSecurity with the popular [Core RuleSet](https://coreruleset.org/) in Docker
-    ```
-    $ docker run -ti -p 80:80 -e PARANOIA=1 --rm owasp/modsecurity-crs:v3.0
-    ```
-
-    Open a second terminal and curl it
-    ```
-    $ curl localhost
-
-    hello world
-    ```
-
-    We should see the request show in the WAF server:
-
-    ```
-    172.17.0.1 - - [30/Jun/2020:00:56:42 +0000] "GET / HTTP/1.1" 200 12
-    ```
-
-    Now try a dirty payload:
-    ```
-    $ curl 'localhost/?param="><script>alert(1);</script>'
-
-    <!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
-    <html><head>
-    <title>403 Forbidden</title>
-    </head><body>
-    <h1>Forbidden</h1>
-    <p>You don't have permission to access /
-    on this server.<br />
-    </p>
-    </body></html>
-    ```
-
-    Our WAF catches the response and returns a `403`.
-
-
-    Now we try through Tyk.
-
-    ```
-    ## Clean requests, should get response from upstream's IP endpoint
-    $ curl localhost:8080/waf/ip
-
-    {
-    "origin": "172.30.0.1, 147.253.129.30"
-    }
-
-    ## WAF will detect malicious payload and instruct Tyk to deny
-    $ curl 'localhost:8080/waf/ip?param="><script>alert(1);</script>
-    {
-        "error": "Bad request!"
-    }
-    ```
+- [tyk-plugin-starter](https://github.com/TykTechnologies/tyk-plugin-starter) — author, test and build JavaScript plugins, with runnable examples
+- [Plugin types](/api-management/plugins/plugin-types) — hook stages and capabilities
+- [Rich plugins](/api-management/plugins/rich-plugins) — plugin data structures and bundles
+- [Virtual endpoints](/api-management/traffic-transformation/virtual-endpoints) — programmable terminating middleware
+- [Go plugins](/api-management/plugins/golang) — native plugins for higher performance
