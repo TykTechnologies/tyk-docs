@@ -1,36 +1,130 @@
 ---
-title: "Configure Redis Cluster and Sentinel"
-description: "This page provides guidance on configuring Tyk to work with Redis Cluster and Sentinel, including TLS encryption and troubleshooting tips."
+title: "Configure Redis"
+description: "Learn how to configure Redis for use with Tyk Gateway, Tyk Dashboard and Tyk Pump, including single-node, Redis Cluster, Redis Sentinel, TLS, and connection pool tuning."
 keywords: "configuration, redis, cluster, sentinel, tyk-gateway, tyk-dashboard, tyk-pump"
-sidebarTitle: "Redis"
+sidebarTitle: "Configure Redis"
 ---
+
+Tyk Gateway, Tyk Dashboard and Tyk Pump all connect to Redis. The configuration approach depends on how your Redis infrastructure is deployed:
+
+| Deployment mode | When to use |
+|---|---|
+| [Single node](#single-node-configuration) | Development, small deployments, or where Redis is managed externally as a single endpoint |
+| [Redis Cluster](#configure-redis-cluster) | High throughput or large datasets; data is automatically sharded across multiple nodes |
+| [Redis Sentinel](#configure-redis-sentinel) | High availability with automatic failover; a primary and replicas, with Sentinel nodes managing promotion |
+
+All three modes share the same set of configuration fields. The sections below explain those fields, then show how to apply them for each mode.
+
+<Warning>
+All Tyk components that connect to the same Redis instance must use identical Redis configuration. In a standard deployment, this means Tyk Gateway, Tyk Dashboard and Tyk Pump must all be configured consistently. In a distributed deployment, the Control Plane and each Data Plane have separate Redis instances, so their configurations are independent, but within each plane, all components must still match.
+</Warning>
+
+## Supported Versions
+
+- Tyk 5.3 and later supports Redis 6.2.x, 7.0.x, and 7.2.x.
+- Tyk 5.2.x and earlier supports Redis 6.0.x and Redis 6.2.x only.
+
+## Configuration Reference
+
+Tyk Gateway and Tyk Pump configure Redis inside a named object (`storage` for Tyk Gateway, `analytics_storage_config` for Tyk Pump). Tyk Dashboard uses top-level fields prefixed with `redis_`. The underlying options are equivalent.
+
+The table below covers all common configuration fields. TLS-specific fields are covered separately in [TLS Encryption](#tls-encryption).
+
+| Purpose | Tyk Gateway / Tyk Pump field | Tyk Dashboard field |
+|---|---|---|
+| Single host address | `host` | `redis_host` |
+| Port | `port` | `redis_port` |
+| Multiple hosts (Cluster or Sentinel) | `addrs` | `redis_addrs` |
+| Username | `username` | `redis_username` |
+| Password | `password` | `redis_password` |
+| Database index | `database` | `redis_database` |
+| Enable Cluster mode | `enable_cluster` | `enable_cluster` |
+| Sentinel primary name | `master_name` | `redis_master_name` |
+| [Sentinel password](https://redis.io/docs/latest/operate/oss_and_stack/management/sentinel/#sentinel-password-only-authentication) | `sentinel_password` | `redis_sentinel_password` |
+| [Max active connections](#connection-pool) | `optimisation_max_active` | `redis_max_active` |
+| Connection timeout (seconds) | `timeout` | `redis_timeout` |
+
+### Address Configuration
+- For a single-node connection, use `host` and `port`.
+- For Redis Cluster, use `addrs` with the addresses of all cluster nodes (both primary and replica).
+- For Redis Sentinel, use `addrs` with the addresses of your Sentinel nodes, not the Redis data nodes directly.
+- When `addrs` is set, `host` and `port` are ignored.
+
+### Connection Pool
+
+Each Tyk component maintains a pool of connections to Redis. Two settings control this pool: the maximum number of active connections (`optimisation_max_active`) and the connection timeout (`timeout`), after which an attempt to connect to Redis is abandoned.
+
+The defaults (`optimisation_max_active: 500`, `timeout: 5` seconds) are suitable for most deployments. If you are running Tyk under high load and see connection pool timeouts, raise `optimisation_max_active` (or `redis_max_active` for Tyk Dashboard) incrementally until the timeouts stop. Avoid setting it excessively high, as opening too many connections can place unnecessary load on Redis. Keep `timeout` low so that failures are detected quickly rather than queuing behind slow connections.
+
+## Single Node Configuration
+
+Use these settings when connecting to a standalone Redis instance. This is the simplest configuration and is appropriate for development or where your Redis provider exposes a single endpoint.
+
+### Tyk Gateway
+
+In `tyk.conf` (or via environment variables), Redis is configured inside the `storage` block:
+
+```json
+"storage": {
+  "type": "redis",
+  "host": "redis-server",
+  "port": 6379,
+  "username": "",
+  "password": "",
+  "database": 0,
+  "optimisation_max_active": 500
+}
+```
+
+### Tyk Dashboard
+
+In `tyk_analytics.conf` (or via environment variables), Redis settings are top-level fields:
+
+```json
+"redis_host": "redis-server",
+"redis_port": 6379,
+"redis_username": "",
+"redis_password": "",
+"redis_database": 0,
+"redis_max_active": 500
+```
+
+### Tyk Pump
+
+In `pump.conf` (or via environment variables), Redis is configured inside the `analytics_storage_config` block:
+
+```json
+"analytics_storage_config": {
+  "type": "redis",
+  "host": "redis-server",
+  "port": 6379,
+  "username": "",
+  "password": "",
+  "database": 0,
+  "optimisation_max_active": 500
+}
+```
 
 ## Configure Redis Cluster
 
-Our Gateway, Dashboard and Pump all support integration with Redis Cluster. Redis Cluster allows data to be automatically sharded across multiple Redis Nodes. To setup Redis Cluster correctly, we recommend you read the [Redis Cluster Tutorial](https://redis.io/topics/cluster-tutorial). You must use the same settings across the Gateway, Dashboard and Pump.
+[Redis Cluster](https://redis.io/technology/redis-enterprise-cluster-architecture/) automatically shards data across multiple nodes, providing horizontal scalability. It is suited to high-throughput deployments or where the dataset is too large for a single node.
 
+Redis Cluster is not the same as a primary/replica setup. In a primary/replica setup, all nodes hold the full dataset and replicas serve as failover targets. In Redis Cluster, the dataset is split across shards, and each shard has its own primary and optional replicas.
 
-<Note>
-Redis Cluster operates differently from a Redis setup where one instance serves as the primary and others as replicas.
-</Note>
+We recommend reviewing [this tutorial](https://redis.io/tutorials/operate/redis-at-scale/scalability/) to learn more about Redis Cluster.
 
+The key differences from a single-node configuration are:
 
-### Supported Versions
-- Tyk 5.3 supports Redis 6.2.x, 7.0.x, and 7.2.x
-- Tyk 5.2.x and earlier supports Redis 6.0.x and Redis 6.2.x only.
-
-
-### Redis Cluster and Tyk Gateway 
-
-To configure the Tyk Gateway to work with your Redis Cluster, set `enable_cluster` to `true` and list your servers under `addrs` in your `tyk.conf` file.
-
+- Set `enable_cluster` to `true`.
+- Replace `host`/`port` with `addrs`, listing **all** cluster node addresses. Tyk needs visibility of the full cluster to route correctly. Do not list only the primary nodes.
 
 <Note>
-`addrs` is new in v2.9.3, and replaces `hosts` which is now deprecated.
+When connecting to Amazon ElastiCache in cluster mode, you can use the [configuration endpoint](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/Endpoints.html) in `addrs` instead of listing individual nodes. The configuration endpoint handles routing automatically and supports both read and write operations.
 </Note>
 
+### Tyk Gateway
 
-If you are using TLS for Redis connections, set `use_ssl` to `true`.
+In `tyk.conf` (or via environment variables), Redis is configured inside the `storage` block. Set `enable_cluster` to `true` and list all cluster nodes under `addrs`:
 
 ```json
 "storage": {
@@ -44,43 +138,34 @@ If you are using TLS for Redis connections, set `use_ssl` to `true`.
   "username": "",
   "password": "",
   "database": 0,
-  "optimisation_max_idle": 2000,
-  "optimisation_max_active": 4000,
-  "use_ssl": false
-},
+  "optimisation_max_active": 4000
+}
 ```
 
-### Redis Cluster and Tyk Dashboard
+### Tyk Dashboard
 
-
-<Note>
-`redis_addrs` is new in v1.9.3 for the Dashboard, and replaces `hosts` which is now deprecated.
-</Note>
-
-
+In `tyk_analytics.conf` (or via environment variables), Redis settings are top-level fields. Set `enable_cluster` to `true` and list all cluster nodes under `redis_addrs`:
 
 ```json
 "redis_addrs": [
-    "server1:6379",
-    "server2:6380",
-    "server3:6381"
-  ],
-"redis_use_ssl": true,
-"enable_cluster": true
+  "server1:6379",
+  "server2:6380",
+  "server3:6381"
+],
+"enable_cluster": true,
+"redis_username": "",
+"redis_password": "",
+"redis_database": 0,
+"redis_max_active": 4000
 ```
-To configure the Tyk Dashboard to work with your Redis Cluster, add the Redis address information to your `tyk_analytics.conf` file:
-
-
-### Redis Cluster and Tyk Pump
-
-To configure the Tyk Pump to work with your Redis Cluster, set `enable_cluster` to `true` and list your servers under `addrs` in your `pump.conf` file.
-
 
 <Note>
-`addrs` is new in v2.9.3, and replaces `hosts` which is now deprecated.
+The `enable_cluster` field does not have the `redis_` prefix.
 </Note>
 
+### Tyk Pump
 
+In `pump.conf` (or via environment variables), Redis is configured inside the `analytics_storage_config` block. Set `enable_cluster` to `true` and list all cluster nodes under `addrs`:
 
 ```json
 "analytics_storage_config": {
@@ -94,237 +179,170 @@ To configure the Tyk Pump to work with your Redis Cluster, set `enable_cluster` 
   "username": "",
   "password": "",
   "database": 0,
-  "optimisation_max_idle": 100,
-  "use_ssl": false
-},
-```
-
-### Redis Cluster with Docker
-
-For Redis clustered mode to work with Tyk using Docker and Amazon ElastiCache, follow these two steps:
-
-1. **Make sure cluster mode is enabled**
-
-Set the environment variable `TYK_GW_STORAGE_ENABLECLUSTER` to `true`.
-
-2. **Add all cluster endpoints to the config**
-
-Add all the Redis Cluster endpoints into Tyk, not just the primary. If Tyk can't see the whole cluster, then it will not work.
-
-For ElastiCache Redis, you can bypass having to list all your nodes, and instead just use the *configuration endpoint*,
-this allows read and write operations and the endpoint will determine the correct node to target.
-
-If this does not work, you can still list out the hosts using an environment variable. To do so, set the environment variable:
-
-```{.copyWrapper}
-TYK_GW_STORAGE_ADDRS="redis_primary1:port,redis_replica1:port,redis_primary2:port,redis_replica2:port,redis_primary3:port,redis_replica3:port"
-```
-
-It is important that Tyk can connect to all primary and replica instances.
-
-It is recommended to ensure that the connection pool is big enough. To do so, set the following environment variables:
-
-```{.copyWrapper}
-TYK_GW_STORAGE_MAXIDLE=6000
-TYK_GW_STORAGE_MAXACTIVE=10000
-```
-
-<Note>
-These are suggested settings, please verify them by load testing.
-</Note>
-
-
-#### Redis Cluster with TLS
-
-If you are using TLS for Redis connections, set `use_ssl` to `true` for Gateway and Pump, and `redis_use_ssl` to `true` for the dashboard.
-Redis supports [SSL/TLS encryption](https://redis.io/topics/encryption) from version 6 as an optional feature, enhancing the security of data in transit. Similarly, Amazon ElastiCache offers encryption in transit and at rest. To configure TLS or mTLS connections between an application and Redis, consider the following settings in Tyk's configuration files:
-
-- `storage.use_ssl`: Set this to true to enable TLS encryption for the connection.
-
-- `storage.ssl_insecure_skip_verify`: A flag that, when set to true, instructs the application not to verify the Redis server's TLS certificate. This is not recommended for production due to the risk of `man-in-the-middle` attacks.
-
-From **Tyk 5.3**, additional options are available for more granular control:
-
-- `storage.ca_file`: Path to the Certificate Authority (CA) file for verifying the Redis server's certificate.
-
-- `storage.cert_file` and `storage.key_file`: Paths to your application's certificate and private key files, necessary for mTLS where both parties verify each other's identity.
-
-- `storage.max_version` and `storage.min_version`: Define the acceptable range of TLS versions, enhancing security by restricting connections to secure TLS protocols (1.2 or 1.3).
-
-**Setting up an Insecure TLS Connection**
-- **Enable TLS**: By setting `"use_ssl": true`, you encrypt the connection.
-- **Skip Certificate Verification**: Setting `"ssl_insecure_skip_verify": true` bypasses the server's certificate verification, suitable only for non-production environments.
-
-**Setting up a Secure TLS Connection**
-- Ensure `use_ssl` is set to `true`.
-- Set `ssl_insecure_skip_verify` to `false` to enforce certificate verification against the CA specified in `ca_file`.
-- Specify the path to the CA file in `ca_file` for server certificate verification.
-- Adjust `min_version` and `max_version` to secure TLS versions, ideally 1.2 and 1.3.
-
-**Setting up a Mutual TLS (mTLS) Connection**
-- Follow the steps for a secure TLS connection.
-- Provide paths for `cert_file` and `key_file` for your application's TLS certificate and private key, enabling Redis server to verify your application's identity.
-
-**Example Gateway Configuration**
-```json
-"storage": {
-  "type": "redis",
-  "addrs": [
-    "server1:6379",
-    "server2:6380",
-    "server3:6381"
-  ],
-  "use_ssl": true,
-  "ssl_insecure_skip_verify": false,
-  "ca_file": "/path/to/ca.crt",
-  "cert_file": "/path/to/client.crt",
-  "key_file": "/path/to/client.key",
-  "max_version": "1.3",
-  "min_version": "1.2",
-  "enable_cluster": true,
-  "optimisation_max_idle": 2000,
   "optimisation_max_active": 4000
 }
 ```
-
-#### Troubleshooting Redis Cluster
-
-If you find that Tyk components fail to initialise when using Redis clustering, for example the application does not start and the last log file entry shows a message such as `Using clustered mode`, try setting the environment variable `REDIGOCLUSTER_SHARDCOUNT` to `128` on all hosts which connect to the Redis Cluster i.e. Gateway, Dashboard, Pump, MDCB. E.g.
-
-`REDIGOCLUSTER_SHARDCOUNT=128`
-
-If setting to `128` does not resolve the issue, try `256` instead.
-
 
 ## Configure Redis Sentinel
 
-From v2.9.3 Redis Sentinel is supported.
+[Redis Sentinel](https://redis.io/docs/latest/operate/oss_and_stack/management/sentinel/) provides high availability for a primary/replica Redis setup. Sentinel nodes monitor the primary, and if it becomes unavailable they coordinate promotion of a replica to primary. No change to Tyk's configuration is required when a failover occurs.
 
-Similar to Redis Cluster, our Gateway, Dashboard and Pump all support integration with Redis Sentinel.
+Sentinel is the right choice when you need automatic failover but do not need the horizontal sharding that Redis Cluster provides.
 
-To configure Tyk to work with Redis Sentinel, list your servers under `addrs` and set the master name in your Gateway, Dashboard, Pump and MDCB config. Unlike Redis Cluster, `enable_cluster` should **not** be set.  Indicative config snippets as follows:
+We recommend reviewing [this tutorial](https://redis.io/tutorials/operate/redis-at-scale/high-availability/) to learn more about Redis Sentinel.
 
-### Supported Versions
-- Tyk 5.3 supports Redis 6.2.x, 7.0.x, and 7.2.x
-- Tyk 5.2.x and earlier supports Redis 6.0.x and Redis 6.2.x only.
+The key differences from a single-node configuration are:
 
+- List your Sentinel node addresses under `addrs` (not the Redis data nodes directly).
+- Set `master_name` to the name of the monitored primary, as configured in your Sentinel setup.
 
-### Redis Sentinel and Gateway
+<Note>
+Do not set `enable_cluster`: Sentinel and Cluster are mutually exclusive modes.
+</Note>
+
+<Warning>
+When using Bitnami charts to install Redis Sentinel in Kubernetes, a Redis *service* is exposed rather than the Sentinel nodes directly. In this case, use a standard [single-node configuration](/tyk-configuration-reference/redis-cluster-sentinel#single-node-configuration) pointing at that service address, and do not set `master_name`.
+</Warning>
+
+### Tyk Gateway
+
+In `tyk.conf` (or via environment variables), Redis is configured inside the `storage` block. Point `addrs` at your Sentinel nodes and set `master_name` to the name of the monitored primary:
 
 ```json
 "storage": {
   "type": "redis",
   "addrs": [
-    "server1:26379",
-    "server2:26379",
-    "server3:26379"
+    "sentinel1:26379",
+    "sentinel2:26379",
+    "sentinel3:26379"
   ],
   "master_name": "mymaster",
   "username": "",
   "password": "",
   "database": 0,
-  "optimisation_max_idle": 2000,
   "optimisation_max_active": 4000,
-  "use_ssl": false
-},
+  "sentinel_password": ""
+}
 ```
 
-### Redis Sentinel and Dashboard
+- If your Sentinel nodes require a password, set `sentinel_password`.
+
+### Tyk Dashboard
+
+In `tyk_analytics.conf` (or via environment variables), Redis settings are top-level fields. Point `redis_addrs` at your Sentinel nodes and set `redis_master_name` to the name of the monitored primary:
 
 ```json
 "redis_addrs": [
-  "server1:26379",
-  "server2:26379",
-  "server3:26379"
+  "sentinel1:26379",
+  "sentinel2:26379",
+  "sentinel3:26379"
 ],
-"redis_master_name": "mymaster"
+"redis_master_name": "mymaster",
+"redis_username": "",
+"redis_password": "",
+"redis_database": 0,
+"redis_max_active": 4000,
+"redis_sentinel_password": ""
 ```
 
-### Redis Sentinel and Pump
+- If your Sentinel nodes require a password, set `redis_sentinel_password`.
+
+### Tyk Pump
+
+In `pump.conf` (or via environment variables), Redis is configured inside the `analytics_storage_config` block. Point `addrs` at your Sentinel nodes and set `master_name` to the name of the monitored primary:
 
 ```json
 "analytics_storage_config": {
   "type": "redis",
   "addrs": [
-    "server1:26379",
-    "server2:26379",
-    "server3:26379"
+    "sentinel1:26379",
+    "sentinel2:26379",
+    "sentinel3:26379"
   ],
   "master_name": "mymaster",
   "username": "",
   "password": "",
   "database": 0,
-  "optimisation_max_idle": 100,
-  "use_ssl": false
-},
-```
-
-
-<Warning>
-When using Bitnami charts to install Redis Sentinel in k8s, a Redis service is exposed, which means that standard Redis config is required instead of the above setup, i.e. a single server in `addrs` and `master_name` is not required.
-</Warning>
-
-
-### Support for Redis Sentinel AUTH
-
-To support the use of Redis Sentinel AUTH (introduced in Redis 5.0.1) we have added the following global config settings in Tyk v3.0.2:
-
-* In the Tyk Gateway config file - `sentinel_password`
-* In the Tyk Dashboard config file - `redis_sentinel_password`
-* In the Tyk Pump config file - `sentinel_password`
-* In the Tyk Identity Broker config file - `SentinelPassword`
-* In the Tyk Synk config file - `sentinel_password`
-
-These settings allow you to support Sentinel password-only authentication in Redis version 5.0.1 and above.
-
-See the Redis and Sentinel authentication section of the [Redis Sentinel docs](https://redis.io/topics/sentinel) for more details.
-
-### Configure Redis TLS Encryption
-Redis supports [SSL/TLS encryption](https://redis.io/topics/encryption) from version 6 as an optional feature, enhancing the security of data in transit. To configure TLS or mTLS connections between an application and Redis, consider the following settings in Tyk's configuration files:
-
-- `storage.use_ssl`: Set this to true to enable TLS encryption for the connection.
-
-- `storage.ssl_insecure_skip_verify`: A flag that, when set to true, instructs the application not to verify the Redis server's TLS certificate. This is not recommended for production due to the risk of `man-in-the-middle` attacks.
-
-From **Tyk 5.3**, additional options are available for more granular control:
-
-- `storage.ca_file`: Path to the Certificate Authority (CA) file for verifying the Redis server's certificate.
-
-- `storage.cert_file` and `storage.key_file`: Paths to your application's certificate and private key files, necessary for mTLS where both parties verify each other's identity.
-
-- `storage.max_version` and `storage.min_version`: Define the acceptable range of TLS versions, enhancing security by restricting connections to secure TLS protocols (1.2 or 1.3).
-
-**Setting up an Insecure TLS Connection**
-- **Enable TLS**: By setting `"use_ssl": true`, you encrypt the connection.
-- **Skip Certificate Verification**: Setting `"ssl_insecure_skip_verify": true` bypasses the server's certificate verification, suitable only for non-production environments.
-
-**Setting up a Secure TLS Connection**
-- Ensure `use_ssl` is set to `true`.
-- Set `ssl_insecure_skip_verify` to `false` to enforce certificate verification against the CA specified in `ca_file`.
-- Specify the path to the CA file in `ca_file` for server certificate verification.
-- Adjust `min_version` and `max_version` to secure TLS versions, ideally 1.2 and 1.3.
-
-**Setting up a Mutual TLS (mTLS) Connection**
-- Follow the steps for a secure TLS connection.
-- Provide paths for `cert_file` and `key_file` for your application's TLS certificate and private key, enabling Redis server to verify your application's identity.
-
-**Example Gateway Configuration**
-```json
-"storage": {
-  "type": "redis",
-  "addrs": [
-    "server1:6379",
-    "server2:6380",
-    "server3:6381"
-  ],
-  "use_ssl": true,
-  "ssl_insecure_skip_verify": false,
-  "ca_file": "/path/to/ca.crt",
-  "cert_file": "/path/to/client.crt",
-  "key_file": "/path/to/client.key",
-  "max_version": "1.3",
-  "min_version": "1.2",
-  "optimisation_max_idle": 2000,
-  "optimisation_max_active": 4000
+  "optimisation_max_active": 4000,
+  "sentinel_password": ""
 }
 ```
+
+- If your Sentinel nodes require a password, set `sentinel_password`.
+
+## TLS Encryption
+
+Redis supports TLS encryption from version 6. TLS configuration uses the same fields regardless of whether you are using single-node, Cluster, or Sentinel mode.
+
+### Configuration Fields
+
+TLS fields are configured inside the `storage` block for Tyk Gateway, the `analytics_storage_config` block for Tyk Pump, and as top-level fields prefixed with `redis_` for Tyk Dashboard. Note that Tyk Pump uses different field names from Tyk Gateway for most TLS settings.
+
+| Purpose | Tyk Gateway field | Tyk Pump field | Tyk Dashboard field |
+|---|---|---|---|
+| Enable TLS | `use_ssl` | `use_ssl` | `redis_use_ssl` |
+| Skip server certificate verification | `ssl_insecure_skip_verify` | `ssl_insecure_skip_verify` | `redis_ssl_insecure_skip_verify` |
+| Certificate Authority file | `ca_file` | `ssl_ca_file` | `redis_ca_file` |
+| Client certificate file (mTLS) | `cert_file` | `ssl_cert_file` | `redis_cert_file` |
+| Client private key file (mTLS) | `key_file` | `ssl_key_file` | `redis_key_file` |
+| Minimum TLS version | `tls_min_version` | `ssl_min_version` | `redis_tls_min_version` |
+| Maximum TLS version | `tls_max_version` | `ssl_max_version` | `redis_tls_max_version` |
+
+- Valid values for min/max version: `"1.0"`, `"1.1"`, `"1.2"`, `"1.3"`. Defaults: minimum `"1.2"`, maximum `"1.3"`.
+- Setting `ssl_insecure_skip_verify` to `true` is not recommended for production.
+
+### Example: Mutual TLS
+
+The following example configures Tyk Gateway to use mutual TLS (mTLS) when connecting to Redis:
+
+```json
+"storage": {
+  "use_ssl": true,
+  "ca_file": "/path/to/ca.crt",
+  "cert_file": "/path/to/client.crt",
+  "key_file": "/path/to/client.key"
+}
+```
+
+- TLS is enabled with `use_ssl`.
+- The Redis server's certificate is verified against the provided CA with `ca_file`.
+- Tyk Gateway's client certificate (`cert_file`) and private key (`key_file`) are used to satisfy Redis's client authentication requirement.
+
+For Tyk Dashboard, the equivalent fields are prefixed with `redis_` (for example, `redis_use_ssl`, `redis_ca_file`). For Tyk Pump, these fields sit inside the `analytics_storage_config` block, but use different field names: for example, `ssl_ca_file` instead of `ca_file`. See the table above for the full field mapping.
+
+For background on TLS and mTLS concepts, see [TLS and Certificate Management](/api-management/certificates).
+
+
+## Troubleshooting
+
+Before adjusting Tyk configuration, verify that Redis itself is healthy. The commands below help diagnose problems across all deployment modes.
+
+**Check Redis Is Reachable**
+
+```bash
+redis-cli -h <host> -p <port> PING
+```
+
+A healthy Redis instance responds with `PONG`. If this fails, the connection problem is at the network or Redis level, not in Tyk configuration.
+
+**Monitor Key Redis Metrics**
+
+```bash
+redis-cli -h <host> -p <port> INFO
+```
+
+Watch the following metrics:
+
+| Metric | Section | What to look for |
+|---|---|---|
+| `connected_clients` | `clients` | Approaching the `maxclients` limit |
+| `blocked_clients` | `clients` | Non-zero values indicate connection pool pressure |
+| `rejected_connections` | `stats` | Any value above 0 means clients were refused. Set up alerting on this metric. |
+| `instantaneous_ops_per_sec` | `stats` | Sudden drops may indicate a problem with the Redis instance |
+| `used_memory_rss` | `memory` | Growing unboundedly suggests a key eviction or retention issue |
+
+For further troubleshooting guidance, see the Redis documentation:
+
+- [Troubleshooting Redis](https://redis.io/docs/latest/operate/oss_and_stack/management/troubleshooting/): general Redis problems including latency and memory
+- [Redis Sentinel](https://redis.io/docs/latest/operate/oss_and_stack/management/sentinel/): inspecting primary and replica state, quorum, and failover
+- [Redis Cluster](https://redis.io/docs/latest/operate/oss_and_stack/management/scaling/): checking cluster state, node reachability, and slot distribution
