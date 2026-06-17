@@ -18,17 +18,27 @@ WHAT THIS SCRIPT VALIDATES:
    - Missing navigation files (navigation entries pointing to non-existent files)
    - Missing redirect destinations (redirect destinations pointing to non-existent files)
 
-3. COMPREHENSIVE CHECKS:
-   - Validates all navigation links point to existing files
-   - Ensures all redirect destinations are valid and exist
-   - Skips external URLs, anchors, and special protocols appropriately
-   - Handles anchor fragments and query parameters correctly
+3. ANCHOR VALIDATION (--check-anchors flag):
+   - Scans all internal links that contain fragment identifiers (e.g. /page#section)
+   - Resolves the target file and extracts all valid anchors from it:
+     * GFM-slugified headings (Mintlify's default anchor format)
+     * Custom heading IDs via {#id} syntax
+     * HTML <a id="..."> and <a name="..."> elements
+     * <Tab title="..."> elements (slugified title)
+     * <ParamField path="..."> elements → #param-{path} (underscores/dots → hyphens)
+   - Reports links whose anchor does not exist in the target file
+
+4. EXTERNAL LINK VALIDATION (--external-links flag):
+   - Checks all external HTTP/HTTPS URLs return a non-4xx/5xx response
+   - Uses HEAD requests with a GET fallback
+   - Configurable timeout and per-request delay for rate limiting
 
 USAGE:
    python validate_mintlify_docs.py [directory] [options]
    make check-redirects    # Validate redirects and navigation only
    make validate-all       # Full validation with verbose output
    python scripts/validate_mintlify_docs.py . --external-links --external-timeout 5 --external-delay 0.5
+   python scripts/validate_mintlify_docs.py . --check-anchors
 """
 
 import os
@@ -40,7 +50,7 @@ import urllib.parse
 import requests
 import time
 from pathlib import Path
-from typing import Set, List, Tuple, Dict, Any
+from typing import Optional, Set, List, Tuple, Dict, Any
 
 def remove_comments_and_code(content: str) -> str:
     """Remove JSX comments, HTML comments, and code blocks from content."""
@@ -61,6 +71,285 @@ def remove_comments_and_code(content: str) -> str:
     content = re.sub(inline_code_pattern, '', content)
     
     return content
+
+def slugify_heading(text: str) -> str:
+    """Convert a heading string to a Mintlify-compatible anchor slug.
+
+    Empirically verified Mintlify slugify rules:
+      1. Lowercase and strip whitespace
+      2. Remove HTML tags; strip markdown formatting (* ` ~) — underscore is kept
+      3. ' - ' (space-hyphen-space) collapses to a single '-'
+         e.g. "Dispatcher - Hooks" -> "dispatcher-hooks"
+      4. Context-dependent character processing (char by char):
+         - ( [ ] ! : ?  -> always omitted
+         - )             -> omitted before space/end; '-' before non-space
+                            e.g. "(mTLS):" -> "mtls-"  (')' before ':' -> '-', ':' omitted)
+         - /             -> URL-encoded as '%2F'  (NOT removed)
+                            e.g. "A / B"  -> "a-%2F-b"
+         - .             -> omitted before space/end; '-' between non-space chars
+                            e.g. "2. Auth" -> "2-auth"   (omitted before space)
+                            e.g. "5.3.0"  -> "5-3-0"    (converted between digits)
+         - ,             -> omitted before space/end
+                            e.g. "Orgs, APIs" -> "orgs-apis"
+         - _ and -       -> kept as-is
+      5. Each remaining space -> '-'  (no collapsing of runs)
+      6. Strip leading hyphens only (keep trailing)
+    """
+    slug = text.strip().lower()
+    # Remove inline HTML tags
+    slug = re.sub(r'<[^>]+>', '', slug)
+    # Remove markdown formatting (* ` ~) — underscore is kept (verified: snake_case -> snake_case)
+    slug = re.sub(r'[*`~]', '', slug)
+    # Collapse ' - ' (space-hyphen-space) to a single '-' before space conversion
+    # e.g. "Dispatcher - Hooks" -> "dispatcher-hooks" (NOT "dispatcher---hooks")
+    slug = re.sub(r' - ', '-', slug)
+
+    result = []
+    for i, c in enumerate(slug):
+        next_c = slug[i + 1] if i + 1 < len(slug) else None
+
+        if c in ('(', '[', ']', '!', ':', '?'):
+            pass  # always omit
+        elif c == ')':
+            # omit before space or end; '-' before non-space
+            if next_c is not None and next_c != ' ':
+                result.append('-')
+        elif c == '/':
+            result.append('%2F')
+        elif c == '.':
+            # omit before space or end; also omit when preceded by a space-derived
+            # '-' (e.g. "Sample .env" → "sample-env", not "sample--env")
+            prev_result = result[-1] if result else None
+            if next_c is not None and next_c != ' ' and prev_result != '-':
+                result.append('-')
+        elif c == ',':
+            # omit before space or end
+            if next_c is not None and next_c != ' ':
+                result.append('-')  # unverified edge case
+        elif c == ' ':
+            result.append('-')
+        elif c.isalnum() or c in ('-', '_'):
+            result.append(c)
+        else:
+            result.append('-')  # fallback for any other punctuation
+
+    slug = ''.join(result)
+    # Strip leading hyphens only (keep trailing — they are meaningful in Mintlify)
+    return slug.lstrip('-')
+
+
+def extract_file_anchors(content: str) -> Set[str]:
+    """Return all valid anchor IDs defined within an MDX file.
+
+    Sources considered:
+    - ATX headings (## Heading) → GFM slug, with Mintlify-style duplicate
+      disambiguation: the second occurrence of a slug gets a '-1' suffix,
+      the third gets '-2', etc.
+    - Custom heading IDs: ## Heading {#custom-id} → custom-id (overrides slug,
+      no disambiguation applied)
+    - HTML <a id="..."> and <a name="..."> elements
+    - <Tab title="..."> elements → slugified title
+    - <ParamField path="..."> elements → "param-" + path lowercased with _ and . → -
+      e.g. path="api_id" → #param-api-id, path="auth.header_name" → #param-auth-header-name
+    """
+    anchors: Set[str] = set()
+    # Track how many times each base slug has appeared for disambiguation
+    slug_count: Dict[str, int] = {}
+
+    heading_re = re.compile(
+        r'^[ \t]*(?:\d+\.\s+|[-*+]\s+)?#{1,6}\s+(.+?)(?:\s+\{#([^}]+)\})?\s*$',
+        re.MULTILINE,
+    )
+    for m in heading_re.finditer(content):
+        custom_id = m.group(2)
+        if custom_id:
+            anchors.add(custom_id.strip())
+        else:
+            slug = slugify_heading(m.group(1))
+            if not slug:
+                continue
+            count = slug_count.get(slug, 0)
+            slug_count[slug] = count + 1
+            anchors.add(slug)
+            if count > 0:
+                # Mintlify disambiguates: 2nd occurrence → slug-1, 3rd → slug-2 …
+                anchors.add(f"{slug}-{count}")
+
+    # <a id="..."> and <a name="...">
+    for attr in ('id', 'name'):
+        for m in re.finditer(
+            rf'<a[^>]+{attr}=["\']([^"\']+)["\']', content, re.IGNORECASE
+        ):
+            anchors.add(m.group(1))
+
+    # <Tab title="..."> elements generate anchors from their slugified title
+    for m in re.finditer(r'<Tab\s+title=["\']([^"\']+)["\']', content, re.IGNORECASE):
+        slug = slugify_heading(m.group(1))
+        if slug:
+            anchors.add(slug)
+
+    # <ParamField path="..."> elements generate anchors as #param-{path}
+    # Mintlify lowercases the path and converts underscores and dots to hyphens.
+    # e.g. path="api_id" → #param-api-id, path="auth.header_name" → #param-auth-header-name
+    for m in re.finditer(r'<ParamField\b[^>]+\bpath=["\']([^"\']+)["\']', content, re.IGNORECASE):
+        path = m.group(1).lower().replace('_', '-').replace('.', '-')
+        anchors.add('param-' + path)
+
+    return anchors
+
+
+def build_anchor_map(directory: str) -> Dict[str, Set[str]]:
+    """Build a mapping of normalised file path → set of anchors for every MDX file.
+
+    Also resolves MDX import statements (e.g. ``import X from '/snippets/foo.mdx'``)
+    so that anchors defined inside an imported snippet are visible from the
+    importing file.  Only absolute-path imports rooted at the docs directory are
+    resolved; relative imports are silently ignored.
+    """
+    anchor_map: Dict[str, Set[str]] = {}
+
+    # First pass: extract each file's own anchors.
+    file_contents: Dict[str, str] = {}
+    for mdx_file in glob.glob(os.path.join(directory, '**/*.mdx'), recursive=True):
+        try:
+            with open(mdx_file, encoding='utf-8') as fh:
+                content = fh.read()
+            rel = os.path.relpath(mdx_file, directory)
+            file_contents[rel] = content
+            anchor_map[rel] = extract_file_anchors(content)
+        except Exception as e:
+            print(f"Warning: could not read {mdx_file} for anchor extraction: {e}")
+
+    # Second pass: merge in anchors from imported snippet files.
+    import_re = re.compile(
+        r"^import\s+\w+\s+from\s+['\"](/[^'\"]+\.mdx)['\"]",
+        re.MULTILINE,
+    )
+    for rel, content in file_contents.items():
+        for m in import_re.finditer(content):
+            # Absolute import path is relative to the docs root (starts with /).
+            imported_path = m.group(1).lstrip('/')
+            if imported_path in anchor_map:
+                anchor_map[rel] |= anchor_map[imported_path]
+
+    return anchor_map
+
+
+def find_internal_links_with_anchors(mdx_content: str) -> Set[Tuple[str, str]]:
+    """Extract internal links that contain an anchor fragment.
+
+    Returns a set of (normalised_path, anchor) tuples.  Only links that have
+    a non-empty fragment are included; links without fragments are handled by
+    the existing find_internal_links() function.
+    """
+    clean = remove_comments_and_code(mdx_content)
+    results: Set[Tuple[str, str]] = set()
+
+    patterns = [
+        r'\[[^\]]*\]\(([^)]+)\)',           # [text](url)
+        r'<a[^>]+href=["\']([^"\']+)["\']', # <a href="url">
+        r'<Card[^>]+href=["\']([^"\']+)["\']',  # <Card href="url">
+    ]
+
+    for pattern in patterns:
+        for m in re.finditer(pattern, clean, re.IGNORECASE):
+            raw = m.group(1).strip().strip('"\'')
+
+            # Skip external URLs and pure-anchor links
+            if raw.startswith(('http://', 'https://', 'mailto:', 'tel:', 'ftp://', '#', '<mailto:')):
+                continue
+
+            if '#' not in raw:
+                continue
+
+            path_part, anchor = raw.split('#', 1)
+            if not anchor:
+                continue
+
+            # Normalise the path the same way find_internal_links does
+            path_part = path_part.split('?')[0]  # strip query params
+            if path_part.startswith('/'):
+                path_part = path_part[1:]
+            path_part = path_part.rstrip('/')
+
+            if path_part:  # skip anchor-only refs on the current page
+                results.add((path_part, anchor))
+
+    return results
+
+
+def resolve_file_path(
+    path: str,
+    existing_files: Set[str],
+    redirects: Dict[str, str],
+) -> Optional[str]:
+    """Resolve a normalised link path to a relative file path (with .mdx extension).
+
+    Returns the relative path (e.g. 'api-management/rate-limit.mdx') or None
+    if the file cannot be found even after following redirects.
+    """
+    candidates = [
+        f"{path}.mdx",
+        path,
+        f"{path}/index.mdx",
+        f"{path}/index",
+    ]
+    for c in candidates:
+        if c in existing_files:
+            # Return with .mdx extension if it's a known file
+            return c if c.endswith('.mdx') else f"{c}.mdx"
+
+    # Try redirect
+    for key in (path, f"/{path}"):
+        if key in redirects:
+            dest = redirects[key].lstrip('/')
+            if dest != path:
+                return resolve_file_path(dest, existing_files, redirects)
+
+    return None
+
+
+def check_broken_anchors(
+    base_dir: str,
+    file_anchor_links: Dict[str, Set[Tuple[str, str]]],
+    anchor_map: Dict[str, Set[str]],
+    existing_files: Set[str],
+    redirects: Dict[str, str],
+    anchor_target_excludes: List[str],
+) -> Dict[str, List[Tuple[str, str]]]:
+    """Check that every anchor fragment in internal links resolves in the target file.
+
+    Returns a dict mapping source file → list of (link_with_anchor, reason) tuples.
+    anchor_target_excludes: list of relative file paths (with or without .mdx) whose
+    anchors should not be validated (e.g. files that pull content via MDX imports).
+    """
+    # Normalise excludes to bare paths without extension for comparison
+    excluded = {p.removesuffix('.mdx') for p in anchor_target_excludes}
+
+    broken: Dict[str, List[Tuple[str, str]]] = {}
+
+    for source_file, links in file_anchor_links.items():
+        file_broken: List[Tuple[str, str]] = []
+        for path, anchor in sorted(links):
+            # Skip if the target file is in the exclude list
+            if path.removesuffix('.mdx') in excluded:
+                continue
+
+            rel_file = resolve_file_path(path, existing_files, redirects)
+
+            if rel_file is None:
+                # File itself doesn't exist — already caught by broken-link check
+                continue
+
+            file_anchors = anchor_map.get(rel_file, set())
+            if anchor not in file_anchors:
+                file_broken.append((f"{path}#{anchor}", f"anchor '#{anchor}' not found in {rel_file}"))
+
+        if file_broken:
+            broken[source_file] = file_broken
+
+    return broken
+
 
 def find_internal_links(mdx_content: str) -> Set[str]:
     """Extract all internal links from MDX content, excluding links in comments and code blocks."""
@@ -178,42 +467,45 @@ def find_external_links(mdx_content: str) -> Set[str]:
     
     return external_links
 
-def scan_mdx_files(directory: str, check_external: bool = False) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]], Dict[str, Set[str]]]:
-    """Scan all MDX files and return links, images, and external links by file."""
-    file_links = {}
-    file_images = {}
-    file_external_links = {}
+def scan_mdx_files(directory: str, check_external: bool = False, check_anchors: bool = False) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]], Dict[str, Set[str]], Dict[str, Set[Tuple[str, str]]]]:
+    """Scan all MDX files and return links, images, external links, and anchor links by file."""
+    file_links: Dict[str, Set[str]] = {}
+    file_images: Dict[str, Set[str]] = {}
+    file_external_links: Dict[str, Set[str]] = {}
+    file_anchor_links: Dict[str, Set[Tuple[str, str]]] = {}
     mdx_files = glob.glob(os.path.join(directory, '**/*.mdx'), recursive=True)
-    
+
     print(f"Scanning {len(mdx_files)} MDX files for links and images...")
-    
+
     for mdx_file in mdx_files:
         try:
             with open(mdx_file, 'r', encoding='utf-8') as f:
                 content = f.read()
-                
-                # Get relative path for reporting
-                rel_path = os.path.relpath(mdx_file, directory)
-                
-                # Find links and images
-                links = find_internal_links(content)
-                images = find_image_references(content)
-                
-                if links:
-                    file_links[rel_path] = links
-                if images:
-                    file_images[rel_path] = images
-                
-                # Find external links if requested
-                if check_external:
-                    external_links = find_external_links(content)
-                    if external_links:
-                        file_external_links[rel_path] = external_links
-                    
+
+            rel_path = os.path.relpath(mdx_file, directory)
+
+            links = find_internal_links(content)
+            images = find_image_references(content)
+
+            if links:
+                file_links[rel_path] = links
+            if images:
+                file_images[rel_path] = images
+
+            if check_external:
+                external_links = find_external_links(content)
+                if external_links:
+                    file_external_links[rel_path] = external_links
+
+            if check_anchors:
+                anchor_links = find_internal_links_with_anchors(content)
+                if anchor_links:
+                    file_anchor_links[rel_path] = anchor_links
+
         except Exception as e:
             print(f"Error reading {mdx_file}: {e}")
-    
-    return file_links, file_images, file_external_links
+
+    return file_links, file_images, file_external_links, file_anchor_links
 
 def load_redirects(directory: str) -> Dict[str, str]:
     """Load redirects from docs.json or mint.json configuration files."""
@@ -384,49 +676,56 @@ def check_external_links(file_external_links: Dict[str, Set[str]], timeout: int 
     
     return file_results
 
-def check_broken_links(base_dir: str, check_external: bool = False, external_timeout: int = 10, external_delay: float = 1.0) -> Tuple[Dict[str, List[str]], Dict[str, List[str]], Dict[str, str], Dict[str, List[Dict[str, Any]]]]:
-    """Check for broken internal links, missing images, and optionally external links."""
+def check_broken_links(
+    base_dir: str,
+    check_external: bool = False,
+    external_timeout: int = 10,
+    external_delay: float = 1.0,
+    check_anchors: bool = False,
+    anchor_target_excludes: Optional[List[str]] = None,
+) -> Tuple[
+    Dict[str, List[str]],
+    Dict[str, List[str]],
+    Dict[str, str],
+    Dict[str, List[Dict[str, Any]]],
+    Dict[str, List[Tuple[str, str]]],
+]:
+    """Check for broken internal links, missing images, and optionally external links and anchors."""
     print(f"Checking for broken links in: {base_dir}")
-    
-    # Load redirects from configuration
+
     redirects = load_redirects(base_dir)
-    
-    # Scan all MDX files
-    file_links, file_images, file_external_links = scan_mdx_files(base_dir, check_external)
-    
-    # Find all existing files
+    file_links, file_images, file_external_links, file_anchor_links = scan_mdx_files(
+        base_dir, check_external, check_anchors
+    )
     existing_files = find_existing_files(base_dir)
-    
-    # Check for broken links
-    broken_links = {}
-    broken_images = {}
-    
-    # Check internal links
+
+    broken_links: Dict[str, List[str]] = {}
+    broken_images: Dict[str, List[str]] = {}
+
     for file_path, links in file_links.items():
-        file_broken_links = []
-        for link in links:
-            if not check_link_exists(link, existing_files, redirects):
-                file_broken_links.append(link)
-        
-        if file_broken_links:
-            broken_links[file_path] = file_broken_links
-    
-    # Check image references
+        file_broken = [l for l in links if not check_link_exists(l, existing_files, redirects)]
+        if file_broken:
+            broken_links[file_path] = file_broken
+
     for file_path, images in file_images.items():
-        file_broken_images = []
-        for image in images:
-            if image not in existing_files:
-                file_broken_images.append(image)
-        
-        if file_broken_images:
-            broken_images[file_path] = file_broken_images
-    
-    # Check external links if requested
-    external_results = {}
+        file_broken = [img for img in images if img not in existing_files]
+        if file_broken:
+            broken_images[file_path] = file_broken
+
+    external_results: Dict[str, List[Dict[str, Any]]] = {}
     if check_external and file_external_links:
         external_results = check_external_links(file_external_links, external_timeout, external_delay)
-    
-    return broken_links, broken_images, redirects, external_results
+
+    broken_anchor_results: Dict[str, List[Tuple[str, str]]] = {}
+    if check_anchors and file_anchor_links:
+        print(f"\n🔍 Building anchor map for {base_dir}...")
+        anchor_map = build_anchor_map(base_dir)
+        broken_anchor_results = check_broken_anchors(
+            base_dir, file_anchor_links, anchor_map, existing_files, redirects,
+            anchor_target_excludes=anchor_target_excludes or [],
+        )
+
+    return broken_links, broken_images, redirects, external_results, broken_anchor_results
 
 
 def extract_navigation_links(navigation: Dict[str, Any]) -> Set[str]:
@@ -610,6 +909,196 @@ def validate_docs_json(directory: str) -> Dict[str, Any]:
     }
 
 
+def find_internal_link_targets_raw(mdx_content: str) -> Set[str]:
+    """Extract internal link targets WITHOUT normalising trailing slashes.
+
+    Unlike find_internal_links(), this keeps the trailing slash so we can detect
+    links that Mintlify will 308-redirect. Comments and code blocks are stripped
+    so example/illustrative links are not flagged.
+    """
+    clean_content = remove_comments_and_code(mdx_content)
+    targets: Set[str] = set()
+    patterns = [
+        r'\[([^\]]*)\]\(([^)]+)\)',             # markdown [text](path)
+        r'<a[^>]+href=["\']([^"\']+)["\']',      # <a href="path">
+        r'<Card[^>]+href=["\']([^"\']+)["\']',   # <Card href="path">
+    ]
+    for pattern in patterns:
+        for match in re.findall(pattern, clean_content, re.IGNORECASE):
+            url = match[1] if isinstance(match, tuple) and len(match) > 1 else match
+            url = url.strip().strip('"\'')
+            # internal absolute paths only
+            if not url.startswith('/'):
+                continue
+            # drop anchor/query but KEEP any trailing slash
+            path = url.split('#', 1)[0].split('?', 1)[0]
+            if path:
+                targets.add(path)
+    return targets
+
+
+def resolve_redirect_chain(path: str, redirects: Dict[str, str]) -> str:
+    """Follow a redirect chain to its final, non-redirecting target (slash-stripped)."""
+    key = path.strip('/')
+    seen: Set[str] = set()
+    while key in redirects and key not in seen:
+        seen.add(key)
+        key = redirects[key].strip('/')
+    return key
+
+
+def check_redirecting_links(base_dir: str, redirects: Dict[str, str]) -> Dict[str, List[Tuple[str, str, str]]]:
+    """Find internal links that hit a 3xx redirect instead of resolving directly.
+
+    Two cases are flagged:
+      1. Trailing slash: Mintlify serves canonical URLs without a trailing slash
+         and 308-redirects '/foo/' -> '/foo'.
+      2. Redirect source: the link target is the 'source' of a docs.json redirect,
+         so it 30x-redirects to the configured destination.
+
+    Returns {file_path: [(offending_link, reason, suggested_target), ...]}.
+    Links inside comments and code blocks are ignored.
+    """
+    results: Dict[str, List[Tuple[str, str, str]]] = {}
+    mdx_files = glob.glob(os.path.join(base_dir, '**', '*.mdx'), recursive=True)
+    for file_path in mdx_files:
+        try:
+            with open(file_path, 'r', encoding='utf-8') as fh:
+                content = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+
+        findings: Set[Tuple[str, str, str]] = set()
+        for target in find_internal_link_targets_raw(content):
+            if target == '/':
+                continue
+            key = target.strip('/')
+            is_trailing = target.endswith('/')
+            is_redirect_source = key in redirects
+            if not (is_trailing or is_redirect_source):
+                continue
+            suggestion = '/' + resolve_redirect_chain(key, redirects)
+            reason = ('links to a redirect source (3xx)' if is_redirect_source
+                      else 'trailing slash (308 redirect)')
+            findings.add((target, reason, suggestion))
+        if findings:
+            results[file_path] = sorted(findings)
+    return results
+
+
+def find_absolute_links(mdx_content: str) -> Set[str]:
+    """Extract absolute http(s):// link targets (markdown, <a>, <Card>), excluding comments/code."""
+    clean_content = remove_comments_and_code(mdx_content)
+    links: Set[str] = set()
+    patterns = [
+        r'\[[^\]]*\]\((https?://[^)\s]+)\)',       # markdown [text](http://...)
+        r'<a[^>]+href=["\'](https?://[^"\']+)["\']',
+        r'<Card[^>]+href=["\'](https?://[^"\']+)["\']',
+    ]
+    for pattern in patterns:
+        for url in re.findall(pattern, clean_content, re.IGNORECASE):
+            links.add(url.strip())
+    return links
+
+
+# First-party hosts that must always be served over https.
+INSECURE_FIRST_PARTY_RE = re.compile(r'^http://(?:[a-z0-9-]+\.)*tyk\.io(?:[:/?#]|$)', re.IGNORECASE)
+
+
+def check_insecure_links(base_dir: str) -> Dict[str, List[Tuple[str, str]]]:
+    """Find insecure http:// links to first-party (tyk.io) domains.
+
+    An https page linking to http://...tyk.io triggers a 30x upgrade and is a
+    mixed-signal / security smell. Only first-party hosts are flagged so that
+    legitimately http-only third-party links are not false-positives. Links in
+    comments and code blocks are ignored.
+
+    Returns {file_path: [(insecure_link, https_suggestion), ...]}.
+    """
+    results: Dict[str, List[Tuple[str, str]]] = {}
+    for file_path in glob.glob(os.path.join(base_dir, '**', '*.mdx'), recursive=True):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as fh:
+                content = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        findings = sorted({
+            (url, 'https://' + url[len('http://'):])
+            for url in find_absolute_links(content)
+            if INSECURE_FIRST_PARTY_RE.match(url)
+        })
+        if findings:
+            results[file_path] = findings
+    return results
+
+
+_FENCE_OPEN = re.compile(r'^\s*(`{3,}|~{3,})(.*)$')
+_FENCE_CLOSE = re.compile(r'^\s*(`{3,}|~{3,})\s*$')
+
+
+def find_content_h1s(mdx_content: str) -> List[str]:
+    """Return in-content H1s (markdown '# ' and raw <h1>) that render outside code and comments.
+
+    Uses CommonMark fence rules (a closing fence is bare, same char, length >= opening) so
+    that '#' shell comments and <h1> examples inside code blocks - including blocks that show
+    other ``` fences - are not miscounted. Inline code spans are also stripped.
+    """
+    text = re.sub(r'\{/\*.*?\*/\}', '', mdx_content, flags=re.DOTALL)
+    text = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
+
+    found: List[str] = []
+    in_fence = False
+    fence_char = ''
+    fence_len = 0
+    for line in text.splitlines():
+        if in_fence:
+            close = _FENCE_CLOSE.match(line)
+            if close and close.group(1)[0] == fence_char and len(close.group(1)) >= fence_len:
+                in_fence = False
+            continue
+        opener = _FENCE_OPEN.match(line)
+        if opener:
+            in_fence = True
+            fence_char = opener.group(1)[0]
+            fence_len = len(opener.group(1))
+            continue
+        if re.match(r'^# \S', line):
+            found.append(line.strip())
+        if re.search(r'<h1[ >]', re.sub(r'`[^`]*`', '', line), re.IGNORECASE):
+            found.append('<h1>')
+    return found
+
+
+def has_frontmatter_title(mdx_content: str) -> bool:
+    """True if the MDX frontmatter defines a non-empty title (which Mintlify renders as the H1)."""
+    m = re.match(r'^---\n(.*?)\n---', mdx_content, re.DOTALL)
+    return bool(m and re.search(r'^title:\s*\S', m.group(1), re.MULTILINE))
+
+
+def check_multiple_h1(base_dir: str) -> Dict[str, Tuple[int, List[str]]]:
+    """Flag pages that render more than one H1.
+
+    In Mintlify the frontmatter title is the page H1, so any in-content H1 (or two or more
+    when there is no title) means the page has multiple H1s. Snippet fragments are skipped.
+    Returns {file_path: (total_h1_count, [in_content_h1s])}.
+    """
+    results: Dict[str, Tuple[int, List[str]]] = {}
+    for file_path in glob.glob(os.path.join(base_dir, '**', '*.mdx'), recursive=True):
+        norm = file_path.replace(os.sep, '/')
+        if norm.startswith('snippets/') or '/snippets/' in norm:
+            continue
+        try:
+            with open(file_path, 'r', encoding='utf-8') as fh:
+                content = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        h1s = find_content_h1s(content)
+        total = len(h1s) + (1 if has_frontmatter_title(content) else 0)
+        if total > 1:
+            results[file_path] = (total, h1s)
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(description='Check for broken links in converted documentation')
     parser.add_argument('directory', nargs='?', default='converted', help='Directory to scan (default: converted)')
@@ -622,25 +1111,51 @@ def main():
     parser.add_argument('--external-delay', type=float, default=1.0, help='Delay between external link requests (default: 1.0s)')
     parser.add_argument('--external-only', action='store_true', help='Only check external links')
     parser.add_argument('--external-errors-only', action='store_true', help='Only show failed external links')
-    
+    parser.add_argument('--check-anchors', action='store_true', help='Validate anchor fragments in internal links')
+    parser.add_argument('--anchor-target-excludes', nargs='*', default=[], metavar='PATH',
+                        help='Relative file paths whose anchors should not be validated (e.g. auto-generated files that use MDX imports)')
+    parser.add_argument('--check-redirecting-links', action='store_true',
+                        help='Flag internal links that hit a 3xx redirect (trailing slashes and links to docs.json redirect sources)')
+    parser.add_argument('--check-insecure-links', action='store_true',
+                        help='Flag insecure http:// links to first-party (tyk.io) domains that should use https')
+    parser.add_argument('--check-multiple-h1', action='store_true',
+                        help='Flag pages that render more than one H1 (frontmatter title + in-content # / <h1>)')
+
     args = parser.parse_args()
-    
+
     if not os.path.exists(args.directory):
         print(f"Error: Directory '{args.directory}' does not exist")
         return 1
-    
+
     # Check for broken links and images
-    broken_links, broken_images, redirects, external_results = check_broken_links(
-        args.directory, 
+    broken_links, broken_images, redirects, external_results, broken_anchors = check_broken_links(
+        args.directory,
         check_external=args.external_links or args.external_only,
         external_timeout=args.external_timeout,
-        external_delay=args.external_delay
+        external_delay=args.external_delay,
+        check_anchors=args.check_anchors,
+        anchor_target_excludes=args.anchor_target_excludes,
     )
     
     # Validate docs.json if requested
     validation_results = None
     if args.validate_redirects:
         validation_results = validate_docs_json(args.directory)
+
+    # Check for internal links that resolve via a 3xx redirect
+    redirecting_links = None
+    if args.check_redirecting_links:
+        redirecting_links = check_redirecting_links(args.directory, redirects)
+
+    # Check for insecure http:// links to first-party domains
+    insecure_links = None
+    if args.check_insecure_links:
+        insecure_links = check_insecure_links(args.directory)
+
+    # Check for pages with multiple H1 tags
+    multiple_h1 = None
+    if args.check_multiple_h1:
+        multiple_h1 = check_multiple_h1(args.directory)
     
     # Report results
     print(f"\n{'='*60}")
@@ -707,6 +1222,15 @@ def main():
         print(f"   🔄 Redirects (3xx): {redirected_external} links")
         print(f"   ❌ Failed: {failed_external} links")
     
+    # Report broken anchor results
+    if broken_anchors:
+        total_broken_anchors = sum(len(v) for v in broken_anchors.values())
+        print(f"\n⚓ BROKEN ANCHOR FRAGMENTS ({total_broken_anchors} total):")
+        for file_path, issues in sorted(broken_anchors.items()):
+            print(f"\n  📄 {file_path}:")
+            for link, reason in sorted(issues):
+                print(f"    ❌ {link}  ({reason})")
+
     # Report validation results
     if validation_results:
         print(f"\n{'='*60}")
@@ -780,31 +1304,92 @@ def main():
             print(f"❌ Found {total_broken_images} broken image references in {len(broken_images)} files")
         else:
             print("✅ No broken image references found!")
-    
+
+    if args.external_links or args.external_only:
+        if external_results:
+            failed_count = sum(1 for results in external_results.values() for r in results if not r['accessible'])
+            if failed_count:
+                print(f"❌ Found {failed_count} broken external links")
+            else:
+                print("✅ All external links are reachable!")
+        else:
+            print("✅ No external links found!")
+
+    if args.check_anchors:
+        if broken_anchors:
+            total_broken_anchors = sum(len(v) for v in broken_anchors.values())
+            print(f"❌ Found {total_broken_anchors} broken anchor fragments in {len(broken_anchors)} files")
+        else:
+            print("✅ No broken anchor fragments found!")
+
+    if args.check_redirecting_links:
+        if redirecting_links:
+            total_redirecting = sum(len(v) for v in redirecting_links.values())
+            print(f"\n↪️  INTERNAL LINKS THAT REDIRECT ({total_redirecting} in {len(redirecting_links)} files):")
+            for file_path, items in sorted(redirecting_links.items()):
+                print(f"\n  📄 {file_path}")
+                for link, reason, suggestion in items:
+                    print(f"    - {link}  [{reason}]  ->  use {suggestion}")
+            print("\n  Fix: point each link directly at the suggested target (no trailing slash).")
+        else:
+            print("✅ No internal links pointing to redirects found!")
+
+    if args.check_insecure_links:
+        if insecure_links:
+            total_insecure = sum(len(v) for v in insecure_links.values())
+            print(f"\n🔒 INSECURE (http://) FIRST-PARTY LINKS ({total_insecure} in {len(insecure_links)} files):")
+            for file_path, items in sorted(insecure_links.items()):
+                print(f"\n  📄 {file_path}")
+                for link, suggestion in items:
+                    print(f"    - {link}  ->  use {suggestion}")
+            print("\n  Fix: use https:// for tyk.io links.")
+        else:
+            print("✅ No insecure first-party http:// links found!")
+
+    if args.check_multiple_h1:
+        if multiple_h1:
+            print(f"\n🔠 PAGES WITH MULTIPLE H1 TAGS ({len(multiple_h1)}):")
+            for file_path, (total, h1s) in sorted(multiple_h1.items()):
+                print(f"\n  📄 {file_path}  (H1 count: {total})")
+                for h in h1s:
+                    print(f"    - {h}")
+            print("\n  Fix: the frontmatter title is the page H1 - demote in-content '# ' headings to '##' (or wrap example <h1> in a code block).")
+        else:
+            print("✅ No pages with multiple H1 tags found!")
+
     if validation_results and 'error' not in validation_results:
-        total_issues = (len(validation_results['self_referencing_redirects']) + 
-                       len(validation_results['navigation_redirect_conflicts']) + 
+        total_issues = (len(validation_results['self_referencing_redirects']) +
+                       len(validation_results['navigation_redirect_conflicts']) +
                        len(validation_results['invalid_redirects']))
         if total_issues > 0:
             print(f"❌ Found {total_issues} redirect validation issues")
         else:
             print("✅ No redirect validation issues found!")
-    
+
     if args.verbose:
         print(f"\nScanned files in: {args.directory}")
         print(f"Total MDX files processed: {len(glob.glob(os.path.join(args.directory, '**/*.mdx'), recursive=True))}")
-    
+
     # Return non-zero exit code if any issues found
     has_broken_links = broken_links and not args.images_only
     has_broken_images = broken_images and not args.links_only
-    has_validation_issues = (validation_results and 'error' not in validation_results and 
-                           (validation_results['self_referencing_redirects'] or 
-                            validation_results['navigation_redirect_conflicts'] or 
+    has_broken_anchors = bool(broken_anchors) and args.check_anchors
+    has_redirecting_links = bool(redirecting_links) and args.check_redirecting_links
+    has_insecure_links = bool(insecure_links) and args.check_insecure_links
+    has_multiple_h1 = bool(multiple_h1) and args.check_multiple_h1
+    has_broken_external = bool(external_results) and any(
+        not result['accessible']
+        for results in external_results.values()
+        for result in results
+    )
+    has_validation_issues = (validation_results and 'error' not in validation_results and
+                           (validation_results['self_referencing_redirects'] or
+                            validation_results['navigation_redirect_conflicts'] or
                             validation_results['invalid_redirects'] or
                             validation_results['missing_navigation_files'] or
                             validation_results['missing_redirect_destinations']))
-    
-    return 1 if (has_broken_links or has_broken_images or has_validation_issues) else 0
+
+    return 1 if (has_broken_links or has_broken_images or has_broken_anchors or has_broken_external or has_validation_issues or has_redirecting_links or has_insecure_links or has_multiple_h1) else 0
 
 if __name__ == '__main__':
     exit(main())
