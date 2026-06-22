@@ -103,6 +103,8 @@ Tyk Helm Charts are configured to install the LTS version of Tyk Gateway. You wi
 
 ##### Added
 
+<AccordionGroup>
+
 <Accordion title='Add API-level timeout configuration'>
 You can now configure an upstream request timeout at the API level, applying a single timeout across all endpoints of an API without having to set it on each endpoint individually. The API-level timeout sits between the Gateway default (`proxy_default_timeout`) and any endpoint-level timeout: an endpoint timeout overrides the API-level value, which in turn overrides the Gateway default.
 It is supported for both Tyk OAS and Tyk Classic APIs and accepts human-readable durations in milliseconds, seconds, or minutes (for example `500ms`, `1.5s`, or `2m`), from a minimum of `1ms` up to a maximum of `300s`.
@@ -127,6 +129,43 @@ Because the certificate is now a string field in the API definition, it can also
 The Gateway can now resolve KV/secret references from the contents of a local file, making it straightforward to consume secrets mounted as files on the data plane without storing the secret material in the management plane. A new `file://<path>` scheme resolves at API load time, alongside the existing `env://`, `vault://`, `consul://`, and `secrets://` schemes, and a new `$secret_file.<key>` prefix resolves at request time in the header-modification, URL-rewrite, and body-transform middleware, alongside the existing `$secret_env.`, `$secret_vault.`, and `$secret_consul.` prefixes.
 
 Trailing newlines are stripped by default, multi-line content such as PEM certificates is preserved, and Kubernetes secret rotations are picked up on API reload.
+</Accordion>
+
+<Accordion title='Add OAuth 2.0 security scheme for external IdP integration'>
+{/* TT-17172 */}
+A new `oauth2` security scheme is available for Tyk OAS APIs, enabling authentication against an external identity provider such as Keycloak, Okta, or Auth0. Tyk acts as the OAuth 2.0 protected resource, validating inbound bearer tokens against the IdP's JWKS endpoint.
+
+This is distinct from `tyk_oauth`, which issues tokens to clients, and from the deprecated `externalOAuth` scheme, which validated external IdP tokens but was limited to a single provider.
+
+The new scheme is natively integrated with the Tyk OAS API definition and is the foundation for scope enforcement, Protected Resource Metadata, and token exchange.
+</Accordion>
+
+<Accordion title='Add OAuth 2.0 scope enforcement'>
+{/* TT-17173, TT-17174 */}
+Scope enforcement can now be configured for APIs using the new `oauth2` security scheme, requiring that inbound tokens carry specific OAuth scopes before a request is permitted. Scopes can be enforced at the API level, applying to all requests, or overridden per-operation and per-MCP-primitive for fine-grained access control over individual endpoints and tools.
+</Accordion>
+
+<Accordion title='Move Protected Resource Metadata into the OAuth 2.0 scheme'>
+{/* TT-17175 */}
+Protected Resource Metadata (PRM) configuration has moved from the top-level `authentication.protectedResourceMetadata` block into the `oauth2` scheme, under `authentication.securitySchemes[name].oauth2.protectedResourceMetadata`. This aligns PRM with the scheme it describes and allows each `oauth2` scheme to carry its own discovery configuration.
+
+A new `autoDeriveScopes` option automatically populates the PRM `scopes_supported` list from the API's OAS `security:` declarations, keeping the discovery document in sync with the API definition without manual maintenance.
+</Accordion>
+
+<Accordion title='Add RFC 8693 token exchange for upstream authentication'>
+{/* TT-17177, TT-17179 */}
+Tyk Gateway now supports RFC 8693 token exchange for upstream authentication (Enterprise Edition). When configured, the gateway exchanges the inbound client token for a new token issued by your identity provider before forwarding the request upstream — the original token never reaches the upstream service. This is particularly valuable for MCP flows where an AI agent's SSO token must be replaced with a service-specific token carrying the correct audience and scopes for the backend.
+
+Token exchange is configured within the `oauth2` scheme and supports multiple named providers, each with its own token endpoint, client credentials, and default target audience. Per-operation and per-MCP-primitive overrides allow a different audience and scope set for individual endpoints and tools.
+
+Exchanged tokens are cached using one of two models to avoid a round-trip to the identity provider on every request. A configurable safety margin causes tokens to be refreshed before they expire, ensuring upstream services always receive a valid token.
+</Accordion>
+
+<Accordion title='Filter MCP capability discovery by OAS-level allow and block rules'>
+{/* TT-16823 */}
+The MCP proxy now filters the tool, resource, and prompt lists returned during capability discovery (`tools/list`, `resources/list`, `prompts/list`) and the `initialize` capability handshake using OAS-level allow and block rules configured in the MCP OAS definition.
+
+Previously, these rules were enforced at invocation time only — discovery responses passed through unfiltered from the upstream server, so agents would discover capabilities they could not use and only encounter the restriction when they tried to call them. Agents now see only the tools, resources, and prompts they are permitted to invoke.
 </Accordion>
 
 </AccordionGroup>
@@ -175,6 +214,11 @@ Session handling is now safe under high concurrency, so these authentication flo
 Resolved an issue where, when a GraphQL API was configured with `strip_auth_data` set to `false`, the client's authentication header (for example `Authorization`, or a custom header such as `X-API-KEY`) was not forwarded to the upstream service. This affected all GraphQL execution modes, proxy-only (including WebSocket subscriptions), subgraph, Universal Data Graph, and supergraph, leaving upstream services that require the header unable to authenticate the request.
 
 The active authentication method's header is now propagated upstream across all execution modes, with only the active method's header forwarded. In addition, upstream WebSocket connections for subscriptions are no longer reused across clients presenting different credentials, so each subscription carries its own authentication header, and one client's token can no longer leak to another. When `strip_auth_data` is `true`, no authentication headers are forwarded, as before.
+</Accordion>
+
+<Accordion title='Fixed MCP distributed trace blind spot enabling request tracing end-to-end from agent through Tyk to upstream MCP server'>
+{/* TT-17356 */}
+When an AI agent made a request through a Tyk MCP proxy, Tyk's spans, access logs, and analytics records were disconnected from the agent's distributed trace. This was because AI agents using MCP pass their trace context inside the JSON-RPC message body (`params._meta`) rather than the HTTP header - Tyk was only looking at the HTTP header, so it missed the agent's trace ID and started a fresh one. This made it impossible to correlate what Tyk did with the agent's journey using a single trace ID, forcing operators to reconstruct Tyk's role manually from timestamps rather than following one trace end-to-end.
 </Accordion>
 
 
