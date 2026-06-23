@@ -73,7 +73,7 @@ x-tyk-api-gateway:
                     - api:write
 ```
 
-The `clientSecret` field accepts `env://`, `secrets://`, `vault://`, and `consul://` prefixes so credentials are not stored directly in the API definition.
+String fields in the API definition accept `env://`, `secrets://`, `vault://`, and `consul://` prefixes so sensitive values are not stored directly in the definition.
 
 ### Provider fields
 
@@ -110,38 +110,10 @@ providers:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | boolean | `false` | Enables Redis-backed caching for this provider's exchanged tokens. |
-| `mode` | string | `"derived"` | `"derived"` — TTL is taken from the exchanged token's `exp` claim. `"static"` — a fixed TTL set by `timeout`. |
-| `maxTimeout` | duration string | — | Maximum cache TTL in `"derived"` mode (for example, `"5m"`). Has no effect in `"static"` mode. |
-| `timeout` | duration string | — | Fixed cache TTL in `"static"` mode (for example, `"2m"`). |
-| `safetyMargin` | duration string | `"30s"` | Duration subtracted from the computed TTL to avoid serving near-expired tokens. |
-
-### Actor token (delegation)
-
-By default, Tyk performs impersonation: the exchange request carries only a `subject_token`. To assert delegation intent (RFC 8693 §4.4), configure the `actorToken` block. The authorization server receives both `subject_token` and `actor_token` and can issue a delegated token containing an `act` claim that records the gateway's identity alongside the original caller's.
-
-```yaml
-providers:
-  - name: keycloak-prod
-    ...
-    actorToken:
-      source: client_credentials
-      clientCredentials:
-        tokenEndpoint: https://idp.example.com/realms/demo/protocol/openid-connect/token
-        clientId: tyk-gateway-actor
-        clientSecret: env://ACTOR_CLIENT_SECRET
-        scopes:
-          - gateway:delegate
-```
-
-The `source` field selects how Tyk obtains the actor token:
-
-| Source | Description |
-|---|---|
-| `client_credentials` | Tyk acquires an actor token from the IdP using its own client credentials. The token is cached independently for its own lifetime. |
-| `header` | The actor token is read from an inbound request header (default header name: `X-Actor-Token`). The header is stripped from the proxied request unless `strip: false` is set. The request is rejected if the header is absent unless `required: false` is set. |
-| `static` | A pre-configured static token value. For testing only — static tokens do not rotate. |
-
-To enforce that the inbound subject token carries a `may_act` claim (RFC 8693 §4.4) authorizing the configured actor before calling the IdP, set `requireMayAct: true`. This is disabled by default because some IdPs issue delegation-capable tokens without a `may_act` claim.
+| `mode` | string | `"derived"` | How the cache TTL is computed. `"derived"` — TTL is `min(expiresIn, inboundRemaining, maxTimeout) − safetyMargin`, where `expiresIn` is the exchanged token's lifetime, `inboundRemaining` is the inbound token's remaining life, and `maxTimeout` is an optional operator ceiling. `"static"` — TTL is `min(timeout, expiresIn) − safetyMargin`; the exchanged token's expiry still acts as an upper bound even in fixed-TTL mode. |
+| `maxTimeout` | duration string | — | Optional operator ceiling on the cache TTL in `"derived"` mode (for example, `"5m"`). Has no effect in `"static"` mode. |
+| `timeout` | duration string | — | Fixed cache TTL in `"static"` mode (for example, `"2m"`). Still clamped by the exchanged token's expiry. |
+| `safetyMargin` | duration string | `"30s"` | Duration subtracted from the computed TTL to avoid serving near-expired tokens. Applies in both modes. |
 
 ---
 
@@ -197,52 +169,13 @@ If you prefer explicit control over the requested scopes, set `scopes` to a non-
 
 ---
 
-## Observability
-
-### OTel metrics
-
-Token exchange emits three OpenTelemetry metrics:
-
-| Metric | Type | Description |
-|---|---|---|
-| `tyk.oauth2.exchange.requests` | Counter | Total exchange decisions, labelled by `outcome` and `provider`. |
-| `tyk.oauth2.exchange.duration` | Histogram | IdP round-trip latency in seconds. Only recorded for requests that reached the IdP — cache hits are excluded. |
-| `tyk.oauth2.exchange.cache_hit` | Counter | Total requests served from the token cache, labelled by `provider`. |
-
-The `outcome` label takes one of the following values: `ok`, `idp_error`, `misconfig`, `no_matching_provider`, `actor_not_authorized`, `missing_actor_token`.
-
-### Audit events
-
-Two audit events are emitted per exchange decision:
-
-- `OAuth2ExchangeSucceeded` — fired when the exchange produces a token, including cache hits.
-- `OAuth2ExchangeFailed` — fired when the exchange is rejected. The `oauth2_exchange_outcome` field identifies the failure reason.
-
-Both events include the following meta fields:
-
-| Field | Description |
-|---|---|
-| `oauth2_api_id` | API identifier. |
-| `oauth2_provider` | Matched provider name. |
-| `oauth2_exchange_outcome` | Outcome: `ok`, `idp_error`, `misconfig`, `no_matching_provider`, `actor_not_authorized`, or `missing_actor_token`. |
-| `oauth2_exchange_cache_hit` | Whether the token was served from cache. |
-| `oauth2_subject_azp` | Authorized party (`azp`) from the inbound token — identifies the calling application. |
-| `oauth2_exchanged_azp` | Authorized party from the exchanged token, when present. |
-| `oauth2_audience` | Resolved audience sent to the IdP. |
-| `oauth2_scopes_requested` | Resolved scope list sent to the IdP. |
-
-No subject identity, token ID (`jti`, `sub`), or raw token material is included in audit events.
-
 ---
 
 ## Known limitations
 
 The following limitations apply in Tyk 5.14.0:
 
-- **Keycloak `act` claim** — Keycloak does not include the `act` claim in tokens issued in response to delegation exchanges. Delegated tokens are functional, but downstream services inspecting `act` will not find it populated.
 - **Azure Entra On-Behalf-Of** — Entra's On-Behalf-Of (OBO) flow does not conform to RFC 8693. Azure Entra is not supported in this release.
-- **Auth0** — Auth0 does not support RFC 8693 token exchange natively. Auth0 is not supported in this release.
-- **Multi-hop exchange** — Chained token exchange (exchanging an already-exchanged token for a second downstream service) is not supported in this release.
 
 ---
 
