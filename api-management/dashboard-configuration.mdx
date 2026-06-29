@@ -4770,6 +4770,86 @@ As well as configuring OPA rules through the API, admin users can view and edit 
 <img src="/img/2.10/opa-floating.png" alt="OPA Floating UI" />
 <img src="/img/2.10/opa.png" alt="OPA screen" />
 
+#### OPA Rule Precedence: Organization-Level Rules Override the File
+
+Tyk Dashboard evaluates OPA rules from one of two sources, with a strict precedence:
+
+1. **Organization-level rules (database)**. If a ruleset is stored at the organization level, Tyk Dashboard uses it and ignores the file.
+2. **File-based default (`schema/dashboard.rego`)**. Used only when no organization-level ruleset exists.
+
+OPA rules are stored at the organization level when:
+
+- the organization is first bootstrapped, where the default ruleset is seeded, or
+- you save rules through the [OPA API](/api-management/dashboard-configuration#open-policy-agent-api) (`PUT /api/org/opa`) or the Tyk Dashboard UI.
+
+To check which rules are currently stored at the organization level, use the [List OPA rules and settings](/api-management/dashboard-configuration#list-opa-rules-and-settings) endpoint.
+
+<Warning>
+Because organization-level rules take precedence, editing `schema/dashboard.rego` (or its mounted ConfigMap on Kubernetes) has no effect while organization-level rules exist, even after a Tyk Dashboard restart. Setting `security.open_policy.enable_api: false` does not delete rules already stored at the organization level; they continue to load and be enforced.
+</Warning>
+
+##### Revert to the File-Based Ruleset
+
+To make Tyk Dashboard fall back to `schema/dashboard.rego`, clear the organization-level rules:
+
+1. Temporarily enable the OPA API in `tyk_analytics.conf` and restart:
+
+   ```json
+   "security": { "open_policy": { "enabled": true, "enable_api": true } }
+   ```
+
+   On Kubernetes, update the `opa` block in `values.yaml`:
+
+   ```yaml
+   dashboard:
+     opa:
+       enabled: true   # maps to security.open_policy.enabled
+       api: true       # maps to security.open_policy.enable_api
+   ```
+
+2. Back up the current rules:
+
+   ```bash
+   curl -s https://DASHBOARD_HOST/api/org/opa \
+     -H "Authorization: ADMIN_API_KEY" > opa-backup.json
+   ```
+
+3. Clear them with an empty ruleset:
+
+   ```bash
+   curl -s -X PUT https://DASHBOARD_HOST/api/org/opa \
+     -H "Authorization: ADMIN_API_KEY" -H "Content-Type: application/json" \
+     -d '{"open_policy":{"rules":""}}'
+   ```
+
+4. Confirm `GET /api/org/opa` now returns the `schema/dashboard.rego` ruleset. Tyk Dashboard now enforces `schema/dashboard.rego`, so your OPA policies come from the file mount. Set `enable_api: false` again and restart.
+
+To restore the previous rules, enable the API config again and `PUT` the backup:
+
+```bash
+curl -s -X PUT https://DASHBOARD_HOST/api/org/opa \
+  -H "Authorization: ADMIN_API_KEY" -H "Content-Type: application/json" \
+  -d @opa-backup.json
+```
+
+##### Validate Rules Before Switching
+OPA governs access to the Tyk Dashboard API, so a faulty ruleset can lock users out. Validate `dashboard.rego` with the OPA CLI before relying on it. Add stubs for the Tyk-injected `TykAPIGet` and `TykDiff` functions, which exist only at runtime:
+
+```bash
+opa check dashboard.rego        # compiles?
+opa eval -d dashboard.rego -i input.json 'data.dashboard_users.allow'   # admin -> true?
+```
+
+<Warning>
+**Recovery if a ruleset locks you out:** disable OPA at the config layer and restart, which bypasses both sources:
+
+```json
+"security": { "open_policy": { "enabled": false } }
+```
+
+The default ruleset's `is_admin` rule also keeps admin users from being locked out in most cases.
+</Warning>
+
 ### Dashboard OPA rules
 
 <OpaRules/>
