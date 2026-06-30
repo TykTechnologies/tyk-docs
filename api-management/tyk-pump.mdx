@@ -8,6 +8,7 @@ sidebarTitle: "Tyk Pump"
 ## Introduction
 
 Traffic analytics are captured by the Gateway nodes and then temporarily stored in Redis.  The Tyk Pump is responsible for moving those analytics into a persistent data store, such as MongoDB, where the traffic can be analyzed.
+<!-- Documents: STK-REQ-001, SYS-REQ-001, INT-REQ-001 -->
 
 ## What is the Tyk Pump?
 
@@ -35,7 +36,8 @@ Here's the architecture depending on your deployment model:
 </Tab>
 </Tabs>
 
-Tyk-Pump is both extensible, and flexible- meaning it is possible to configure Tyk-Pump to send data to multiple different backends at the same time as depicted by Pump Backends (i) and (ii), MongoDB and Elasticsearch respectively in Figure 1. Tyk-Pump is scalable, both horizontally and vertically, as indicated by Instances "1", "2", and "n". Additionally, it is possible to apply filters that dictate WHAT analytics go WHERE, please see the [docs on sharded analytics configuration here](/api-management/tyk-pump#configuring-the-sharded-analytics).
+Tyk-Pump is both extensible, and flexible- meaning it is possible to configure Tyk-Pump to send data to multiple different backends at the same time as depicted by Pump Backends (i) and (ii), MongoDB and Elasticsearch respectively in Figure 1. Tyk-Pump is scalable, both horizontally and vertically, as indicated by Instances "1", "2", and "n". Each configured pump receives the same purged analytics batch after common filtering and privacy transforms, so a pump-specific filter or sink failure should not change which records are offered to the other configured pumps. Additionally, it is possible to apply filters that dictate WHAT analytics go WHERE, please see the [docs on sharded analytics configuration here](/api-management/tyk-pump#configuring-the-sharded-analytics).
+<!-- Documents: SYS-REQ-022, INT-REQ-004, INT-REQ-006 -->
 
 | <img src="/img/diagrams/diagram_docs_pump-configuration-multi-backend.png" alt="Configuration and Scaling of Tyk Pump" />  |
 | :-- |
@@ -49,7 +51,8 @@ We list our [supported backends here](/api-management/tyk-pump#external-data-sto
 
 See [Tyk Pump Configuration](/api-management/tyk-pump#tyk-pump-configuration) for more details on setting up your Tyk Pump.
 
-Tyk Pump can be horizontally scaled without causing duplicate data, please see the following Table for the supported permutations of Tyk Pump scaling. 
+Tyk Pump can be horizontally scaled without causing duplicate data, please see the following Table for the supported permutations of Tyk Pump scaling. Tyk Pump runs as independent processes and does not provide a clustered leader-election protocol; multiple instances coordinate by atomically consuming traffic-log records from the shared temporal store.
+<!-- Documents: STK-REQ-002, SYS-REQ-004, SYS-REQ-027, SYS-REQ-028, SW-REQ-075, SW-REQ-095 -->
 
 | Supported | Summary |
 | :-- | :-- |
@@ -78,9 +81,11 @@ Tyk no longer supports SQLite as of Tyk 5.7.0. To avoid disruption, please trans
 </Note>
 
 
-In v4.0 of the Tyk Dashboard, we added support for the following SQL platforms:
+Current SQL storage support is available for the following SQL platforms:
 - PostgreSQL
-- SQLite
+- MySQL
+
+SQLite was previously supported when SQL storage was introduced, but is no longer supported since Pump 1.12.0 / Tyk 5.7.0.
 
 Within your Dashboard configuration file (`tyk-analytics.conf`) there is now a `storage` section.
 
@@ -117,7 +122,7 @@ For every `storage` section, you must populate the following fields:
   }
 }
 ```
-- `type` use this field to define your SQL platform (currently SQLite or PostgreSQL are supported)
+- `type` use this field to define your SQL platform (currently PostgreSQL or MySQL are supported)
 - `connection_string` the specific connection settings for your platform
 
 The pump needed for storing logs data in the database, is very similar to other pumps as well as the storage setting in your Tyk Dashboard config. It just requires the `sql` name and database specific configuration options.
@@ -142,6 +147,7 @@ Tyk Gateways can generate a lot of analytics data. Be sure to read about [cappin
 
 From Tyk Pump 1.5.1+, you can configure an environment variable to omit the configuration file with the `TYK_PMP_OMITCONFIGFILE` variable.
 This is specially useful when using Docker, since by default, the Tyk Pump has a default configuration file with pre-loaded pumps.
+<!-- Documents: SYS-REQ-008, SYS-REQ-035 -->
 
 #### Sharding analytics to different data sinks
 
@@ -152,6 +158,7 @@ while Org B can send their analytics to DataDog + expose the Prometheus metrics 
 ##### Configuring the sharded analytics
 
 You can achieve the sharding by setting both an <Tooltip tip="A list of allowed items or permitted entries">allowlist</Tooltip>t and a <Tooltip tip="A list of blocked or denied items or entries">blocklist</Tooltip>, meaning that some data sinks can receive information for all orgs, whereas other data sinks will not receive certain organization's analytics if it was block listed.
+<!-- Documents: STK-REQ-003, SYS-REQ-009 -->
 
 This feature makes use of the field called `filters`, which can be defined per pump. This is its structure:
 ```
@@ -215,7 +222,8 @@ See below details about these pumps, their configs, matching collections and rel
 
 ##### Mongo Pump
 
-**`mongo`** Pump simply saves all individual requests across every organization to a collection called **`tyk_analytics`**. Each request will be stored as a single document.
+**`mongo`** Pump simply saves all individual requests across every organization to a collection called **`tyk_analytics`**. Each request will be stored as a single document. For a non-empty analytics batch, each incoming record is written once to the selected collection.
+<!-- Documents: SW-REQ-034, SW-REQ-082 -->
 
 ###### Pump Config
 
@@ -238,6 +246,7 @@ This collection [should be capped](/api-management/tyk-pump#capping-analytics-da
 
 ###### Omitting Indexes
 From Pump 1.6+, the Mongo Pumps indexes default behavior is changed and the new configuration option `omit_index_creation` is available. This option is applicable to the following Pumps: `Mongo Pump`,`Mongo Aggregate Pump` and `Mongo Selective Pump`.
+<!-- Documents: SW-REQ-097, SW-REQ-098, SW-REQ-099 -->
 
 The behavior now depends upon the value of 'omit_index_creation' and the Pump in use, as follows:
 
@@ -260,7 +269,8 @@ The field [use_sharded_analytics](/tyk-dashboard/configuration#use_sharded_analy
 
 ##### Mongo Aggregate Pump
 
-**`mongo-pump-aggregate`** pump stores data in a collection called `**z_tyk_analyticz_aggregate_{ORG ID}**`.
+**`mongo-pump-aggregate`** pump stores data in a collection called `**z_tyk_analyticz_aggregate_{ORG ID}**`. It updates aggregate documents with atomic increments for counters and accumulated latency values. If a record cannot be associated with an organization, the pump treats it as invalid aggregate input rather than writing it into an organization collection.
+<!-- Documents: SW-REQ-018, SW-REQ-036, SW-REQ-059, SW-REQ-060, SYS-REQ-029 -->
 
 ###### Pump Config
 
@@ -281,6 +291,7 @@ The field [use_sharded_analytics](/tyk-dashboard/configuration#use_sharded_analy
 
 - `use_mixed_collection: true` - will store analytics to **both** your organization defined collections `z_tyk_analyticz_aggregate_{ORG ID}` and your org-less `tyk_analytics_aggregates` collection. 
 - `use_mixed_collection: false`- your pump will only store analytics to your org defined collection.
+<!-- Documents: SW-REQ-084, SW-REQ-102 -->
 
 `tyk_analytics_aggregates` collection is used to query analytics across your whole Tyk setup. This can be used, for example, by a superuser role that is not attached to an organization. When set to `true`, you also need to set [use_sharded_analytics](/tyk-dashboard/configuration#use_sharded_analytics) to true in your Dashboard config.
 
@@ -303,6 +314,7 @@ As a minimal number of documents get stored, you don't need to worry about cappi
 ####### High Traffic Environment Settings
 
 If you have a high traffic environment, and you want to ignore aggregations to avoid Mongo overloading and/or reduce aggregation documents size, you can do it using the `ignore_aggregations` configuration option. The possible values are:
+<!-- Documents: SW-REQ-096 -->
 * APIID
 * Errors
 * Versions
@@ -344,6 +356,7 @@ Also, if you are not sure what's causing the growth of the collection, you can a
 
 **`mongo-pump-selective`** pump stores individual requests per organization in collections called **`z_tyk_analyticz_{ORG ID}`**.
 Similar to the regular `mongo` pump, Each request will be stored as a single document.
+<!-- Documents: SW-REQ-035 -->
 
 ###### Pump Config
 
@@ -372,6 +385,7 @@ This collection [should be capped](/api-management/tyk-pump#tyk-pump-capping-ana
 As with the regular analytics, if you are using the Selective pump, you need to set `use_sharded_keys: true` in the dashboard config file so it will query `z_tyk_analyticz_{ORG ID}` collections to populate the `Log Browser`. 
 
 ##### Uptime Tests Analytics
+<!-- Documents: STK-REQ-005, SYS-REQ-014, SYS-REQ-021, INT-REQ-002 -->
 
 ###### Pump Configuration
 
@@ -418,6 +432,7 @@ In a production environment, we recommend sharding. You can configure your analy
 While aggregated analytics offer a decent amount of details, there are use cases when you’d like to have access to all request details in your analytics. For that you can generate analytics based on raw logs. This is especially helpful when, once you have all the analytics generated based on raw logs stored in your SQL database, you can then build your own custom metrics, charts etc. outside of your Tyk Dashboard, which may bring more value to your product.
 
 The pump needed for storing log data in the database is very similar to other pumps as well as the storage setting in the Tyk Dashboard config. It just requires the SQL name and database-specific configuration options.
+<!-- Documents: SW-REQ-040 -->
 
 ###### SQL Pump Configuration
 
@@ -433,9 +448,9 @@ For storing logs into the `tyk_analytics` database table.
   }
 }
 ```
-`type` - The supported types are `sqlite` and `postgres`. 
+`type` - The supported types are `postgres` and `mysql`.
 
-`connection_string` - Specifies the connection string to the database. For example, for `sqlite` it will be the path/name of the database, and for `postgres`, specifying the host, port, user, password, and dbname.
+`connection_string` - Specifies the connection string to the database. For example, for `postgres`, specify the host, port, user, password, and dbname.
 
 `log_level` - Specifies the SQL log verbosity. The possible values are: `info`,`error` and `warning`. By default, the value is `silent`, which means that it won't log any SQL query.
 
@@ -465,6 +480,7 @@ Make sure you have configured the dashboard with your SQL database connection se
 ##### SQL Aggregate Pump
 
 This is the default option offered by Tyk, because it is configured to store the most important analytics details which will satisfy the needs of most of our clients. This allows your system to save database space and reporting is faster, consuming fewer resources.
+<!-- Documents: SW-REQ-041 -->
 
 ###### SQL Aggregate Pump Configuration
 
@@ -481,9 +497,9 @@ For storing logs into the `tyk_aggregated` database table.
 }
 ```
 
-`type` - The supported types are `sqlite` and `postgres`. 
+`type` - The supported types are `postgres` and `mysql`.
 
-`connection_string` - Specifies the connection string to the database. For example, for `sqlite` it will be the path/name of the database, and for `postgres`, specifying the host, port, user, password, and dbname.
+`connection_string` - Specifies the connection string to the database. For example, for `postgres`, specify the host, port, user, password, and dbname.
 
 `log_level` - Specifies the SQL log verbosity. The possible values are: `info`, `error`, and `warning`. By default, the value is `silent`, which means that it won't log any SQL query.
 
@@ -534,9 +550,9 @@ In an `uptime_pump_config` section, you can configure a SQL uptime pump. To do t
   "table_sharding": false
 },
 ```
-`type` - The supported types are `sqlite` and `postgres`.
+`type` - The supported types are `postgres` and `mysql`.
 
-`connection_string` - Specifies the connection string to the database. For example, for `sqlite` it will be the path/name of the database, and for `postgres`, specifying the host, port, user, password, and dbname.
+`connection_string` - Specifies the connection string to the database. For example, for `postgres`, specify the host, port, user, password, and dbname.
 
 `table_sharding` - Specifies if all the analytics records will be stored in one table or multiple tables (one per day). By default, it is set to `false`.
 
@@ -650,7 +666,8 @@ To improve the data maintenance processes, as querying or removing data from one
 
 #### MongoDB
 
-Starting with version `1.7.0` of Tyk Pump and version `4.3.0` of Tyk Gateway it is possible to configure Graph MongoDB Pump. Once configured, the pump enables support for Graphql-specific metrics. The Graphql-specific metrics currently supported include (more to be added in future versions ):
+Starting with version `1.7.0` of Tyk Pump and version `4.3.0` of Tyk Gateway it is possible to configure Graph MongoDB Pump. Once configured, the pump enables support for Graphql-specific metrics. The pump uses the GraphQL statistics carried in analytics records, including operation, type, field, variable and error information. The Graphql-specific metrics currently supported include (more to be added in future versions ):
+<!-- Documents: SW-REQ-013, SW-REQ-037, SW-REQ-087 -->
 
 * Types Requested.
 * Fields requested for each type.
@@ -659,7 +676,7 @@ Starting with version `1.7.0` of Tyk Pump and version `4.3.0` of Tyk Gateway it 
 ##### Setting up Graph MongoDB Pump
 
 1. Set `enable_analytics` to `true` in your `tyk.conf`.
-2. Enable Detailed recording by setting `enable_detailed_recording` in your `tyk.conf` to `true`. This is needed so that the GraphQL information can be parsed from the request body and response.
+2. Enable analytics in a Gateway version that emits GraphQL statistics in traffic logs. Detailed recording can still be useful when you also need raw request and response payloads, but the GraphQL pump reads the structured GraphQL statistics from the analytics record.
    
 
 
@@ -708,6 +725,7 @@ With the Graph SQL pump currently includes information (per request) like:
 - Fields requested for each type
 - Error Information
 - Root Operations Requested.
+<!-- Documents: SW-REQ-042, SW-REQ-080 -->
 
  Setup steps include:
 1. Set `enable_anaytics` to `true` in your `tyk.conf`.
@@ -731,13 +749,14 @@ With the Graph SQL pump currently includes information (per request) like:
       }
 },
 ```
-The Graph SQL pump currently supports `postgres`, `sqlite` and `mysql` databases. The `table_name` refers to the table that will be created in the case of unsharded setups, and the prefix that will be used for sharded setups
+The Graph SQL pump currently supports `postgres` and `mysql` databases. The `table_name` refers to the table that will be created in the case of unsharded setups, and the prefix that will be used for sharded setups
 e.g `tyk_analytics_graph_20230327`.
 
 >The Graph SQL pump currently has the same limitations as the Graph Mongo Pump.
 
 ##### Setting up Graph SQL Aggregate Pump
 The `sql-graph-aggregate` can be configured similar to the Graph SQL pump:
+<!-- Documents: SW-REQ-043, SW-REQ-086 -->
 ```
  "sql-graph-aggregate": {
     "meta": {
@@ -752,10 +771,11 @@ The `sql-graph-aggregate` can be configured similar to the Graph SQL pump:
 ## External Data Stores
 
 The Tyk Pump component takes all of the analytics in Tyk and moves the data from the Gateway into your Dashboard. It is possible to set it up to send the analytics data it finds to other data stores. Currently we support the following:
+<!-- Documents: SW-REQ-019, SW-REQ-027, SW-REQ-028 -->
 
 - MongoDB or SQL (Used by the Tyk Dashboard)
 - [CSV](/api-management/tyk-pump#csv)
-- [Elasticsearch (2.0 - 7.x)](/api-management/tyk-pump#elasticsearch)
+- [Elasticsearch (3.x - 7.x)](/api-management/tyk-pump#elasticsearch)
 - Graylog
 - Resurface.io
 - InfluxDB
@@ -885,6 +905,7 @@ On startup, you should see the loaded configs when initialising the DogstatsD pu
 ### Elasticsearch
 
 [Elasticsearch](https://www.elastic.co/) is a highly scalable and distributed search engine that is designed to handle large amounts of data.
+<!-- Documents: SW-REQ-068, SW-REQ-069, SW-REQ-070 -->
 
 
 #### JSON / Conf 
@@ -1052,6 +1073,7 @@ By default, the plugin will collect the authenticated user (AliasId or OAuthId) 
 ### Splunk
 
 This is a step by step guide to setting Splunk to receive logs from the Tyk Pump.
+<!-- Documents: SW-REQ-048 -->
 
 The assumptions are that you have Docker installed and Tyk Pro Self-Managed already running.
 
@@ -1112,6 +1134,8 @@ The assumptions are that you have Docker installed and Tyk Pro Self-Managed alre
 <Note>
 Make sure that the `localhost` value matches with your setup. Head on over to our [community forum](https://community.tyk.io/) to ask for help if you are stuck here.
 </Note>
+
+The current Splunk client setup mutates Go's process-wide `http.DefaultClient.Transport`. If other components in the same process use the default HTTP client, account for this shared transport behavior when configuring TLS.
 
 
 4. **Restart Tyk Pump to pickup the Splunk config**
@@ -1174,6 +1198,7 @@ TYK_PMP_PUMPS_LOGZIO_META_TOKEN="{YOUR-LOGZIO-TOKEN}"
 ## Tyk Analytics Record Fields
 
 Below is a detailed list of each field contained within our Tyk Analytics Record that is sent from Tyk Pump.
+<!-- Documents: SYS-REQ-002, SW-REQ-009, SW-REQ-013, SW-REQ-014 -->
 
 ### Method
 Request method.
@@ -1305,8 +1330,9 @@ Client IP address.
 ### Geo
 Client geolocation data.
 
-**Remarks:** Calculated using MaxMind database, based on client IP address.<br/>
+**Remarks:** Calculated by the Gateway using the operator-supplied MaxMind database, based on client IP address. If the MaxMind database is absent, the client IP is empty, or the client IP cannot be parsed, Pump keeps processing the analytics record without requiring geolocation data.<br/>
 **Example:** `{"country":{"isocode":"SG"},"city":{"geonameid":0,"names":{}},"location":{"latitude":0,"longitude":0,"timezone":""}}`.
+<!-- Documents: SYS-REQ-032, SYS-REQ-034, SW-REQ-071 -->
 
 ### Network
 Network statistics.
@@ -1316,8 +1342,8 @@ Network statistics.
 ### Latency
 Latency statistics
 
-**Remarks:** Contains two fields; `upstream` is the roundtrip duration between the gateway sending the request to the upstream server and it receiving a response. `total` is the `upstream` value plus additional gateway-side functionality such as processing analytics data.<br/>
-**Example:** `{"total":3,"upstream":3}`.
+**Remarks:** Contains latency fields such as `upstream`, `gateway`, and `total`; `upstream` is the roundtrip duration between the gateway sending the request to the upstream server and it receiving a response. `gateway` is gateway-side processing time, and `total` includes both upstream and gateway-side work.<br/>
+**Example:** `{"total":3,"upstream":2,"gateway":1}`.
 
 
 <Note>
@@ -1377,11 +1403,13 @@ graph LR
 
 When a client makes a request to the Tyk Gateway, the details of the request and response are captured and stored in Redis.
 
-Tyk Pump reads the API traffic records from Redis every 10 seconds and then flushes them after processing. It processes the records and forwards them to the configured data sinks, such as databases or other external tools.
+Tyk Pump reads the API traffic records from Redis every 10 seconds and then flushes them after processing. Traffic-log records are read from Redis keys such as `tyk-system-analytics`, sharded analytics keys, and uptime analytics keys. The stored payload format is selected by the key convention: the plain analytics keys carry msgpack records, while protobuf payloads use the `_protobuf` key suffix. It processes the records and forwards them to the configured data sinks, such as databases or other external tools.
+<!-- Documents: INT-REQ-003, SYS-REQ-030, SYS-REQ-031, SW-REQ-001, SW-REQ-003, SW-REQ-006, SW-REQ-008 -->
 
 You can configure multiple pumps to send different types of data to different sinks. This setup allows you to route raw or processed analytics data wherever you need it.
 
-The Mongo Aggregate Pump and SQL Aggregate Pump aggregate raw analytics records before storing the summarized statistics in MongoDB or SQL databases. When you use Tyk Dashboard, the [Aggregate Pump](/api-management/tyk-pump#tyk-dashboard) collates this aggregated data and displays it in the [analytics UI](/api-management/dashboard-configuration#traffic-analytics).
+The Mongo Aggregate Pump and SQL Aggregate Pump aggregate raw analytics records before storing the summarized statistics in MongoDB or SQL databases. Aggregate records are accumulated monotonically for the active time window, and HTTP response codes greater than or equal to 400 are counted as errors. REST aggregate pumps do not write GraphQL- or MCP-classified records into the REST aggregate dimensions; those records are handled by their respective GraphQL or MCP aggregate pumps. When you use Tyk Dashboard, the [Aggregate Pump](/api-management/tyk-pump#tyk-dashboard) collates this aggregated data and displays it in the [analytics UI](/api-management/dashboard-configuration#traffic-analytics).
+<!-- Documents: SYS-REQ-003, SYS-REQ-018, SYS-REQ-019, SW-REQ-011, SW-REQ-093, SW-REQ-103 -->
 
 ### Configure API Traffic Logs
 
@@ -1394,6 +1422,12 @@ For a complete list of analytics configuration options available in the Gateway,
 <Note>
 To use analytics in the Tyk Dashboard, configure both per-request and aggregated pumps for your chosen database platform. For step-by-step guidance, see the [Setup Dashboard Analytics](/tyk-oss-gateway/configuration#analytics_config) section.
 </Note>
+
+### Demo Analytics Data
+
+When Pump is run in demo data generation mode, generated analytics records are stamped inside the requested synthetic hour. The `TimeStamp` value and the denormalized `Day`, `Month`, `Year`, and `Hour` fields are kept aligned so downstream stores that shard, group, or query by timestamp see the generated records in the intended demo window.
+<!-- Documents: SW-REQ-089 -->
+
 ### Configure Detailed Recording
 
 By default, the Tyk Gateway does **not** include request and response payloads in API traffic logs. This behavior keeps log records small and reduces the risk of capturing sensitive data.
@@ -1563,6 +1597,10 @@ If you add headers to the tags list that are unique to each request, such as a t
 ## Monitor your APIs with Prometheus
 
 Your Tyk Pump can expose Prometheus metrics for the requests served by your Tyk Gateway. This is helpful if you want to track how often your APIs are being called and how they are performing. Tyk collects latency data of how long your services take to respond to requests, how often your services are being called and what status code they return.
+<!-- Documents: SW-REQ-024, SW-REQ-104 -->
+
+The built-in Prometheus latency metric exposes total, upstream, and gateway latency observations from the analytics record. If path tracking is disabled, endpoint labels are emitted as `unknown`; when path tracking is enabled, the tracked path is preserved in the metric labels. Custom metrics create separate runtime metric instances with their own label definitions.
+<!-- Documents: SW-REQ-078, SW-REQ-079, SW-REQ-091, SW-REQ-094 -->
 
 We have created a [demo project in GitHub](https://github.com/TykTechnologies/demo-slo-prometheus-grafana) if you want to see this setup in action.
 
@@ -1926,6 +1964,8 @@ configurations to your `uptime_pump_config` and / or `mongo.meta` objects in `pu
 
 If capped collections are enabled and a max size is not set, a default cap size of `5Gib` is applied. 
 Existing collections will never be modified.
+Pump's capped-collection setup relies on MongoDB reporting capped collection size metadata as a numeric value compatible with the configured byte size. MongoDB driver/server type differences can affect test assertions around this metadata and should be treated as an external MongoDB compatibility assumption rather than a Pump storage-format change.
+<!-- Documents: SYS-REQ-033 -->
 
 
 <Note>
@@ -2042,4 +2082,3 @@ To enable a separate analytics server, update your `tyk.conf` with the following
 If you set `enable_cluster` to `false`, you only need to set one entry in `addrs`:
 
 The configuration is the same (and uses the same underlying driver) as the regular configuration, so Redis Cluster is fully supported.
-
