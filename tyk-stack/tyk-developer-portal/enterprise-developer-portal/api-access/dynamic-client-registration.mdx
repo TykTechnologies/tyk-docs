@@ -1,111 +1,120 @@
 ---
 title: "Dynamic Client Registration"
-description: "How to configure Dynamic Client Registration in Tyk developer portal"
+description: "Learn how to use Dynamic Client Registration to grant access to API Products"
 keywords: "Developer Portal, Tyk, Dynamic Client Registration"
 sidebarTitle: "OAuth 2.0 Dynamic Client Registration"
 ---
 
 ## Introduction
 
-**Why OAuth2.0 is important**
+Dynamic Client Registration (DCR) is an [IETF protocol](https://datatracker.ietf.org/doc/html/rfc7591) that automates the registration of OAuth 2.0 clients with an authorization server. The Tyk Developer Portal uses DCR so that when an API Consumer is approved for access to an API Product, they receive OAuth 2.0 credentials automatically. The API Consumer has no direct interaction with the IdP during this process; the Portal handles client registration on their behalf.
 
-OAuth 2.0 is a crucial security mechanism for both public and internal APIs, as it provides a secure and standardized way to authenticate and authorize access to protected resources. It enables granular access control and revocation of access when necessary without exposing sensitive login credentials. In short, OAuth 2.0 offers a secure and flexible approach to managing access to APIs.
+DCR requires an Identity Provider (IdP) that acts as an OAuth 2.0 authorization server, supports the DCR protocol, and exposes an OIDC well-known configuration endpoint. [OpenID Connect (OIDC)](https://openid.net/connect/) is an identity layer built on top of OAuth 2.0 that standardizes the discovery endpoint used by the Portal to locate the IdP's DCR and token endpoints.
 
+This page covers JWT-based flows, where the IdP issues access tokens as JSON Web Tokens (JWTs). When an API Consumer's access request is approved, the Portal registers a new client with the IdP and writes the resulting IdP configuration into Tyk.
 
-Implementing an OAuth2.0 provider can be a complex process that involves several technical and security considerations. As such, many API providers choose to use specialized identity providers instead of implementing OAuth2.0 provider themselves.
+At runtime, the API Consumer uses their credentials to obtain a JWT from the IdP, then presents it to Tyk Gateway when calling an API. The Gateway [validates the token's signature](/api-management/authentication/jwt-signature-validation) using the public keys published by the IdP at its JWKS endpoint, and maps the token's [scopes](#oauth-2-0-scopes) to Tyk policies to enforce access control.
 
+```mermaid
+sequenceDiagram
+    participant Dev as Developer / App
+    participant Portal as Tyk Developer Portal
+    participant IdP as Identity Provider (IdP)
+    participant GW as Tyk Gateway
 
-By using specialized identity providers, API providers can leverage the provider's expertise and infrastructure to manage access to APIs and ensure the security of the authentication process. This also allows API providers to focus on their core business logic and reduce the burden of managing user identities themselves.
+    rect rgb(235, 245, 255)
+        Note over Dev,GW: Setup — one time, on access request approval
+        Dev->>Portal: Submit access request
+        Portal->>IdP: Register OAuth 2.0 client (DCR)
+        IdP-->>Portal: Client credentials
+        Portal->>GW: Write JWKS URI + scope mappings
+        Note over Portal,GW: via Identity Provider Registry or API definition
+        Portal-->>Dev: Approval notification + credentials
+    end
 
-**How does Tyk help**
+    rect rgb(240, 255, 240)
+        Note over Dev,GW: Runtime — every API request
+        Dev->>IdP: Request JWT (client credentials)
+        IdP-->>Dev: JWT (signed access token)
+        Dev->>GW: API call with JWT
+        GW-->>IdP: Fetch JWKS (cached)
+        GW->>GW: Validate signature + map scopes to policies
+        GW-->>Dev: API response
+    end
+```
 
-Tyk offers a standard and reliable way to work with identity providers through the Dynamic Client Registration protocol (DCR), which is an [Internet Engineering Task Force](https://www.ietf.org/) protocol that establishes standards for dynamically registering clients with authorization servers.
+### Developer Apps and OAuth Clients
 
-Tyk Enterprise Developer portal allows API providers to set up a connection with identity providers that support DCR so that API Consumers can use the OAuth2.0 credentials issued by the identity provider to access APIs exposed on the portal.
+A Developer App in the Portal corresponds 1:1 to an OAuth 2.0 client registered in the IdP. When a DCR access request is approved, the Portal registers an OAuth client in the IdP on the API Consumer's behalf and stores the resulting credentials against the Developer App. The API Consumer uses these credentials to request access tokens from the IdP.
 
+A single Developer App can hold access to multiple API Products and Plans. Each subsequent approval adds the new scopes to the same OAuth client in the IdP rather than creating a new one. The API Consumer's credentials remain unchanged; their scope set grows.
 
-<br/>
+### OAuth 2.0 Scopes
 
-## Prerequisites
-Before getting starting with configuring the portal, it's required to configure your Identity provider and the Dashboard beforehand.
+OAuth 2.0 scopes are central to how Tyk enforces access control in the DCR flow. Understanding their role makes the configuration steps that follow easier to understand.
 
-### Create an initial access token
-Before setting up Tyk Enterprise Developer Portal to work with DCR, you need to configure the identity provider. Please refer to the guides for popular providers to create the initial access token for DCR:
-* [Gluu](https://gluu.org/docs/gluu-server/4.0/admin-guide/openid-connect#dynamic-client-registration)
-* [Curity](https://curity.io/docs/idsvr/latest/token-service-admin-guide/dcr.html)
-* [Keycloak](https://github.com/keycloak/keycloak/blob/25.0.6/docs/documentation/securing_apps/topics/client-registration.adoc)
-* [Okta](https://developer.okta.com/docs/reference/api/oauth-clients/)
+In Tyk's DCR flow, scopes serve as the link between the IdP, the API Consumer's access token, and Tyk's access control policies. Each API Product and each Plan has a unique scope name assigned to it. That scope name is what gets embedded in the access token by the IdP, and it is what Tyk Gateway uses to look up which policy to apply.
 
+Tyk's scope-to-policy mapping resolves one scope name to exactly one Tyk policy. No two API Products or Plans may share a scope; a duplicate would cause both to resolve to the same policy. Tyk Gateway combines the policies resolved from all scopes present in the token to authorize the request.
 
+The full sequence is:
 
-    <Note>
-    Whilst many providers require initial access tokens, they are optional. Please refer to your provider documentation to confirm if required.
-    </Note>
+1. When an access request is approved, the Portal sends the scope names for the approved Product and Plan to the IdP as part of registering the OAuth 2.0 client. The IdP associates those scopes with that client, constraining what it can request.
+2. When the API Consumer requests an access token, they must explicitly include those scope names. The IdP will only return scopes that are both registered with the client and present in the token request.
+3. Tyk Gateway reads the scopes in the incoming JWT and maps each one to its corresponding Tyk policy, enforcing the access control and rate limits defined for that Product and Plan.
 
+Every API Product and Plan used with DCR must therefore have a unique scope assigned, and that scope must exist in the IdP before the Product or Plan is published. Publishing makes it available for access requests; if a scope is missing when a request is approved, the Portal's attempt to register the OAuth client will fail. Scope names must exactly match between the IdP and the Portal.
 
-### Create OAuth2.0 scopes to enforce access control and rate limit
+## How Portal Manages Identity Providers
 
-Tyk uses OAuth2.0 scope to enforce access control and rate limit for API Products. Therefore, creating at least two scopes for an API Product and plan is required. 
+Identity Providers are configured in the Portal under the **OAuth 2.0 Providers** menu. This is the Portal's term for an IdP. The two are the same concept: an OAuth 2.0 Provider in the Portal represents an external IdP that the Portal will register DCR clients with.
 
-The below example demonstrates how to achieve that with Curity, Keycloak and Okta in the tabs below.
+There are two approaches to how the Portal stores IdP configuration in Tyk.
+
+| Approach | Available From | Where Scope Mappings Are Written |
+|:---------|:---------------|:---------------------------------|
+| Identity Provider Registry (recommended) | Portal 1.18.0, Tyk 5.14.0 | Identity Provider Registry |
+| API Definition | All versions | API definitions |
+
+The **Identity Provider Registry** approach is recommended for all new deployments. It stores IdP configuration centrally in the Tyk Dashboard, decoupled from API definitions, eliminating write conflicts between the Portal and Tyk Dashboard and ensuring that IdP configuration is kept up to date as API Products change and as OAuth 2.0 Providers are created, updated, or deleted. Refer to the [Identity Provider Registry](/api-management/client-idp-registry) page for more detail.
+
+The **API definition** approach is available for installations running Tyk prior to 5.14.0, or for deployments where the Registry cannot be used. The Portal writes the JWKS URI and scope-to-policy mappings directly into the relevant API definitions when an access request is approved.
+
+<Note>
+Refer to [Migrating to the Identity Provider Registry](#migrating-to-the-identity-provider-registry) if you have an existing installation using DCR and wish to use the IdP Registry.
+</Note>
+
+## Configure Your Identity Provider
+
+Before configuring Tyk Developer Portal, you need to prepare the IdP in two ways: authorize the Portal to register OAuth 2.0 clients on behalf of API Consumers, and define the OAuth 2.0 scopes that will be included in access tokens.
+
+These steps are required regardless of which approach you use.
+
+### Authorize the Portal
+
+Most IdPs use an [initial access token](https://openid.net/specs/openid-connect-registration-1_0.html#Terminology) to authorize a trusted client to register new OAuth 2.0 clients via the DCR protocol. The Portal presents this token when registering a client for an API Consumer, proving it has permission to do so.
+
+Some IdPs use a different authorization mechanism and do not require an initial access token, for example:
+
+- Gluu uses a `dynamicRegistrationEnabled` flag on each scope instead.
+- Auth0 uses a separate authorization model and does not issue initial access tokens.
+
+### Define OAuth 2.0 Scopes
+
+Create scopes in the IdP for each API Product and Plan you intend to use with DCR, following the naming and uniqueness requirements in the [OAuth 2.0 Scopes](#oauth-2-0-scopes) section above. Scopes must exist before the Product or Plan is published; see that section for details.
+
+The provider-specific tabs below show how to create scopes in each supported IdP.
+
+### Provider-Specific Instructions
 
 <Tabs>
-<Tab title="Curity">
-
-1. **Navigate to Profiles &#8594; Token Service &#8594; Scopes**
-
-    Click `+ New` to create a new scope.
-    
-    <img src="/img/dashboard/portal-management/enterprise-portal/curity-add-scope.jpg" alt="Navigate to the Scopes menu" />
-
-2. **Give the new scope a name**
-
-    Name the scope **product_payments** and click `Create`. Repeat to create another scope and give it the name **free_plan**.
-
-    <img src="/img/dashboard/portal-management/enterprise-portal/curity-name-scope-product.jpg" alt="Name the scope product_payments" />
-
-    <img src="/img/dashboard/portal-management/enterprise-portal/curity-name-scope-plan.jpg" alt="Name the scope free_plan" />
-
-    The created scopes can now be assigned to OAuth Clients configured, including DCR clients when they are registered.
-
-**Unauthenticated DCR**
-
-The Curity Identity Server by default requires a <Tooltip tip="A token that can only be used once">nonce token</Tooltip> with a `dcr` scope to authenticate the DCR endpoint. It obtains this via normal OAuth flows. It is, however, not possible to define an OAuth client_id and secret in Tyk to obtain such a token. A workaround is to disable authentication of the DCR endpoint in the Curity Identity Server by setting it to use no-authentication. 
-
-<br />
-
-
-<Warning>
-**Use in secure environments only**
-
-When configuring the DCR endpoint in the Curity Identity Server to use `no-authentication`, ensure that the communication between Tyk and the Curity Identity Server is secured so that it is only accessible to Tyk.
-
-To configure this in the AdminUI of the Curity Identity Server, go to Profiles &#8594; Token Service &#8594; Dynamic Registration &#8594; scroll to the Non-templatized section and set Authentication Method to `no-authentication`.
-</Warning>
-
-
-</Tab>
-
 <Tab title="Keycloak">
 
-1. **Navigate to the Client scopes menu item**
+Follow the [Keycloak client registration guide](https://www.keycloak.org/securing-apps/client-registration) to obtain the initial access token.
 
-    <img src="/img/dashboard/portal-management/enterprise-portal/step-1-navigate-to-the-client-scopes-menu.png" alt="Navigate to the Client scopes menu item" />
+Create scopes for each API Product and Plan from the **Client scopes** menu item. Set the scope type to **Optional**. Default scopes are applied automatically to all clients, but optional scopes can be requested on a case-by-case basis. The Portal requests specific scopes during client registration; using optional scopes ensures those scopes are included only when explicitly requested.
 
-2. **Create a scope for an API Product**
-
-    <img src="/img/dashboard/portal-management/enterprise-portal/step-2-create-a-scope-for-an-api-product.png" alt="Create a scope for an API Product" />
-
-3. **Create a scope for a plan**
-
-    <img src="/img/dashboard/portal-management/enterprise-portal/step-3-create-a-scope-for-a-plan.png" alt="Create a scope for a plan" />
-
-
-
-    <Note>
-    When using Keycloak, ensure that you set the type of the scope to be `Optional`. Default scopes are applied automatically, while optional scopes can be requested by clients on a case-by-case basis to extend the permissions granted by the user. In recent versions of Keycloak this should appear as a dropdown menu option, as shown in the images above. In older releases of Keycloak this may need to be set explicitly in a separate tab, as show on the image below.
-    </Note>
-
+<img src="/img/dashboard/portal-management/enterprise-portal/step-1-navigate-to-the-client-scopes-menu.png" alt="Navigate to the Client scopes menu item" />
 
 <img src="/img/dashboard/portal-management/enterprise-portal/old-keycloak-version-client-scope.png" alt="Client Scope Assigned Type" />
 
@@ -113,342 +122,249 @@ To configure this in the AdminUI of the Curity Identity Server, go to Profiles &
 
 <Tab title="Okta">
 
-1. **Create an auth server or use the `Default` authorization server**
+To obtain a Registration Access Token for Okta, go to **Okta Admin Console > Security > API > Tokens** and click **Create New Token**. Copy the token value; you will need it when configuring the OAuth 2.0 Provider in the Portal. For more details, refer to the [Okta Dynamic Client Registration guide](https://developer.okta.com/docs/reference/api/oauth-clients/).
 
-    Go to Security → API, Edit one of the auth servers and navigate to `Scopes`
+Create scopes for each API Product and Plan from the **Scopes** tab on the **Security > API** screen. All scopes must be associated with an authorization server. If you do not have a custom authorization server, use the **Default** one. Note the authorization server's issuer URL; you will need it when setting the OIDC well-known configuration URL in the Portal. The URL takes the form `https://{your-domain}/oauth2/default/.well-known/openid-configuration`.
 
-    <img src="/img/dashboard/portal-management/enterprise-portal/okta-api-page.png" alt="Add or Edit oauth servers in okta" />
-
-2. **Create a scope for an API Product**
-
-    <img src="/img/dashboard/portal-management/enterprise-portal/okta-product-payment.png" alt="Create a scope for an API Product" />
-
-3. **Create a scope for a plan**
-
-    <img src="/img/dashboard/portal-management/enterprise-portal/okta-free-plan-scope.png" alt="Create a scope for a plan" />
+<img src="/img/dashboard/portal-management/enterprise-portal/okta-api-page.png" alt="Add or Edit OAuth servers in Okta" />
 
 </Tab>
 
-</Tabs>
+<Tab title="Auth0">
 
-## Create Tyk policies for an API Product and plan
+Auth0 does not require an initial access token. Follow the [Auth0 Dynamic Client Registration guide](https://auth0.com/docs/get-started/applications/dynamic-client-registration) to configure DCR.
 
+Create scopes for each API Product and Plan by navigating to **Dashboard > Applications > APIs**, selecting your API, and opening the **Permissions** tab. Enter the permission name and description for each scope, then click **Add**.
 
-<Note>
-You can skip this step if you are using Tyk Developer Portal version 1.13.0 or later.
-Go directly to [Configure Tyk Enterprise Developer Portal to work with an identity provider](#configure-tyk-enterprise-developer-portal-to-work-with-an-identity-provider).
-</Note>
-
-
-Navigate to the Tyk Dashboard and create two policies: one for a plan and one for an API Product. Both policies should include only the APIs with JWT authentication that you want to bundle as an API Product.
-
-1. **Create a policy for an API product.** 
-
-    <img src="/img/dashboard/portal-management/enterprise-portal/create-jwt-policy-for-product.png" alt="Create a policy for a product" />
-
-2. **Create a policy for a plan.** 
-
-    <img src="/img/dashboard/portal-management/enterprise-portal/create-jwt-policy-for-plan.png" alt="Create a policy for a plan" />
-
-
-### Create the No Operation policy and API
-
-
-<Note>
-You can skip this step if you are using Tyk Developer Portal version 1.13.0 or later.
-Go directly to [Configure Tyk Enterprise Developer Portal to work with an identity provider](#configure-tyk-enterprise-developer-portal-to-work-with-an-identity-provider).
-</Note>
-
-
-Tyk requires any API that uses the scope to policy mapping to have [a default policy](/basic-config-and-security/security/authentication-authorization/json-web-tokens ). Access rights and rate limits defined in the default policy take priority over other policies, including policies for the API Product and plan.
-
-To avoid that, you need to create the No Operation API and policy that won't grant access to the APIs included in the API Product but will satisfy the requirement for a default policy.
-
-1. **Create the No Operation API.** 
-
-    Navigate to the `APIs` menu in the Tyk Dashboard:
-    <img src="/img/dashboard/portal-management/enterprise-portal/navigate-to-the-api-menu-in-the-tyk-dashboard.png" alt="Navigate to the API menu in the Tyk Dashboard" />
-
-
-    Create a new HTTP API:
-    <img src="/img/dashboard/portal-management/enterprise-portal/create-noop-api.png" alt="Create the No Operation API" />
-
-
-    Save it:
-    <img src="/img/dashboard/portal-management/enterprise-portal/save-the-noop-api.png" alt="Save the No Operation API" />
-
-<br/>
-
-2. **Create the No Operation policy.** 
-
-    Navigate to the `Policies` menu in the Tyk Dashboard:
-    <img src="/img/dashboard/portal-management/enterprise-portal/navigate-to-the-policies-menu.png" alt="Navigate to the policies menu" />
-
-    Create a new policy and select the No Operation API in the `Add API Access Rights` section:
-    <img src="/img/dashboard/portal-management/enterprise-portal/create-noop-policy.png" alt="Create the No Operation policy" />
-
-    Configure the No Operation policy and save it:
-    <img src="/img/dashboard/portal-management/enterprise-portal/save-the-noop-policy.png" alt="Save the No Operation policy" />
-
-### Configure scope to policy mapping
-
-
-<Note>
-You can skip this step if you are using Tyk Developer Portal version 1.13.0 or later.
-Go directly to [Configure Tyk Enterprise Developer Portal to work with an identity provider](#configure-tyk-enterprise-developer-portal-to-work-with-an-identity-provider).
-</Note>
-
-
-To enforce policies for the API Product and plan, you need to configure the scope to policy mapping for each API included in the API Product.
-To achieve that, perform the following steps for each API included in the API Product.
-
-1. Navigate to the API.
-
-    <img src="/img/dashboard/portal-management/enterprise-portal/navigate-to-the-api.png" alt="Navigate to the API" />
-
-2. Select the required JWT signing method. In this example, we use RSA. Leave the `Public key` and `pol` fields blank, they will be filled automatically by the Enterprise portal.
-
-    <img src="/img/dashboard/portal-management/enterprise-portal/select-signing-method.png" alt="Select signing method for the API" />
-
-3. Select the No Operation policy as the default policy for this API.
-
-    <img src="/img/dashboard/portal-management/enterprise-portal/select-the-default-policy.png" alt="Select the default policy for the API" />
-
-4. Enable scope to policy mapping and specify the value of the JWT claim used to extract scopes in the `Scope name` field (the default value is "scope").
-
-    <img src="/img/dashboard/portal-management/enterprise-portal/enable-scope-to-policy-mapping.png" alt="Enable scope to policy mapping" />
-
-
-5. Add a scope to policy mapping for the product scope. Type the product scope in the `Claim field` and select the product policy.
-
-    <img src="/img/dashboard/portal-management/enterprise-portal/add-a-scope-to-policy-mapping-for-the-product-scope.png" alt="Add scope to policy mapping for the product scope" />
-
-6. Add a scope to policy mapping for the plan scope. Type the plan scope in the `Claim field` and select the plan policy, then save the API.
-
-    <img src="/img/dashboard/portal-management/enterprise-portal/add-a-scope-to-policy-mapping-for-the-plan-scope.png" alt="Add scope to policy mapping for the plan scope" />
-
-## Configure Tyk Enterprise Developer Portal to work with an identity provider
-
-Set up the portal to work with your IdP.
-
-
-### Configure the App registration settings
-
-In the portal, navigate to the `OAuth2.0 Providers` menu section. In that section, you need to configure the connection settings to the IdP and define one or more types (configurations) of OAuth 2.0 clients. For instance, you can define two types of OAuth 2.0 clients:
-* A confidential client that supports the Client credential grant type for backend integrations;
-* A web client that supports the Authorization code grant type for integration with web applications that can't keep the client secret confidential.
-
-Each configuration of OAuth 2.0 client could be associated with one or multiple API Products so that when an API Consumer requests access to an API Product, they can select a client type that is more suitable for their use case.
-
-
-#### Specify connection setting to your IdP
-
-To connect the portal to the IdP, you need to specify the following settings:
-* OIDC well-known configuration URL.
-* Initial access token.
-
-First of all, select your IdP from the `Identity provider` dropdown list. Different IdPs have slightly different approaches to DCR implementation, so the portal will use a driver that is specific to your IdP. If your IdP is not present in the dropdown list, select the `Other` option. In that case, the portal will use the most standard implementation of the DCR driver, which implements the DCR flow as defined in the RFC.
-
-Then you need to specify the connection settings: [the initial access token and the well-known endpoint](#create-an-initial-access-token). If your Identity Provider uses certificates that are not trusted, the portal will not work with it by default. To bypass certificate verification, you can select the `SSL secure skip verify` checkbox.
-
-The below example demonstrates how to achieve that with Curity, Keycloak and Okta in the tabs below.
-
-<Tabs>
+</Tab>
 
 <Tab title="Curity">
 
-<img src="/img/dashboard/portal-management/enterprise-portal/curity-oauth-provider.jpg" alt="Specify connection setting" />
+When using [Curity](https://curity.io) as the Identity Provider, you must configure the DCR endpoint to use `no-authentication`. By default, Curity requires a nonce token with a `dcr` scope to authenticate the DCR endpoint, but nonce tokens are one-time-use and cannot be stored as a reusable credential in the Portal. Setting the authentication method to `no-authentication` allows the Portal to register clients without presenting a token.
 
-Set a **Name**, set the **Identity Provider Type** to `Other`, and the **OIDC well-known configuration URL** aproppriately.
-</Tab>
+Ensure that network access to the Curity DCR endpoint is restricted to Tyk only, since it will be unauthenticated.
 
-<Tab title="Keycloak">
+To configure this: go to **Profiles > Token Service > Dynamic Registration**, scroll to the **Non-templatized** section, and set **Authentication Method** to `no-authentication`.
 
-<img src="/img/dashboard/portal-management/enterprise-portal/specify-connection-setting-to-your-idp.png" alt="Specify connection setting to the IdP" />
+Create scopes for each API Product and Plan from **Profiles > Token Service > Scopes**.
 
-</Tab>
+<img src="/img/dashboard/portal-management/enterprise-portal/curity-add-scope.jpg" alt="Navigate to the Scopes menu" />
 
-<Tab title="Okta">
-
-<img src="/img/dashboard/portal-management/enterprise-portal/specify-connection-setting-to-your-idp-okta.png" alt="Specify connection setting to the IdP" />
-
-**OIDC URL**: `{your-domain.com}/oauth2/default/.well-known/openid-configuration`
-
-**Registration Access Token**: To obtain token, Go to Okta Admin Console → Security → API → Tokens → Create New Token
+For more information, see the [Curity DCR documentation](https://curity.io/docs/identity-server/profiles/token-profile/clients/dcr).
 
 </Tab>
 
-</Tabs>
+<Tab title="Gluu">
 
-#### Create client configurations
-Once the connection settings are specified, you need to create one or multiple types of clients. You might have multiple types of clients that are suitable for different use cases, such as backend integration or web applications.
+[Gluu](https://gluu.org/) does not use an initial access token for DCR. Instead, DCR is authorized per-scope via the **Dynamic Registration** toggle.
 
-You need at least one type of client for the DCR flow to work. To add the first client type, scroll down to the `Client Types` section and click on the `Add client type` button.
+Create scopes for each API Product and Plan by navigating to **Configuration > OpenID Connect > Scopes** and clicking **Add Scope**. For each scope, enable the **Dynamic Registration** toggle so that it can be included in DCR client registration requests.
 
-To configure a client type, you need to specify the following settings:
-* **Client type display name.** This name will be displayed to API consumers when they check out API products. Try to make it descriptive and short, so it's easier for API consumers to understand.
-* **Description.** A more verbose description of a client type can be provided in this field. By default, we do not display this on the checkout page, but you can customize the respective template and make the description visible to API consumers. Please refer to [the customization section](/portal/customization#) for guidance.
-* **Allowed response_types.** Response types associated with this type of client as per [the OIDC spec](https://openid.net/specs/openid-connect-core-1_0-17.html).
-* **Allowed grant_types.** Grant types that this type of client will support as per [the OIDC spec](https://openid.net/specs/openid-connect-core-1_0-17.html).
-* **Token endpoint auth methods.** The token endpoint that will be used by this type of client as per [the OIDC spec](https://openid.net/specs/openid-connect-core-1_0-17.html).
-* Additionally, there’s an additional field for Okta: **Okta application type** which defines which type of Okta client should be created. Ignored for all other IdPs.
-
-Please note that your IdP might override some of these settings based on its configuration.
-
-The below example demonstrates how to achieve that with Curity, Keycloak and Okta in the tabs below. After configuring a client type, scroll to the top of the page to save it by clicking on the `SAVE CHANGES` button.
-
-<Tabs>
-
-<Tab title="Curity">
-
-<img src="/img/dashboard/portal-management/enterprise-portal/curity-client-type.jpg" alt="Configure a client type" />
-
-</Tab>
-
-<Tab title="Keycloak">
-
-<img src="/img/dashboard/portal-management/enterprise-portal/configure-type-of-client.png" alt="Configure a client type" />
-
-</Tab>
-
-<Tab title="Okta">
-
-<img src="/img/dashboard/portal-management/enterprise-portal/configure-type-of-client-okta.png" alt="Configure a client type" />
-
-**For Okta Client Credentials**: allowed response types MUST be token only
+For more information, see the [Gluu Server documentation](https://docs.gluu.org).
 
 </Tab>
 
 </Tabs>
 
-## Configure API Products and plans for the DCR flow
-Once the App registration settings are configured, it is time for the final step: to configure the API Products and plans to work with the DCR flow.
+## Configure Tyk Developer Portal
 
-### Configure API Products for the DCR flow
+### Enable the Identity Provider Registry (Recommended)
 
-To configure API Products to work with the DCR flow, you need to:
-* Enable the DCR flow for the products you want to work with the DCR flow.
-* Associate each product with one or multiple types of clients that were created in the previous step.
-* Specify scopes for this API Product. Note the portal uses the scope to policy mapping to enforce access control to API Products, so there should be at least one scope.
+The Identity Provider Registry is available from Tyk Developer Portal 1.18.0 when using Tyk Dashboard 5.14.0 or later.
 
-For achieving this, navigate to the `API Products` menu and select the particular API product you want to use for the DCR flow. Next, go to the ‘App registration configs’ section and enable the ‘Enable dynamic client registration’ checkbox.
+It must be explicitly enabled in Tyk Developer Portal by setting [`TYK_PORTAL_ENABLEIDPREGISTRY=true`](/product-stack/tyk-enterprise-developer-portal/deploy/configuration#tyk-portal-enableidpregistry) (or `EnableIDPRegistry = true` in the config file) and restarting the Portal.
 
-After that, specify the scope for this API product. You should have at least one scope that was created in [the Prerequisites for getting started](/tyk-stack/tyk-developer-portal/enterprise-developer-portal/api-access/dynamic-client-registration#prerequisites). If you need to specify more than one scope, you can separate them with spaces.
-
-Finally, select one or multiple types of clients that were created in [the Create client configurations](/tyk-stack/tyk-developer-portal/enterprise-developer-portal/api-access/dynamic-client-registration#create-client-configurations) section of this guide to associate them with that product.
-
-<Tabs>
-
-<Tab title="Curity">
-
-<img src="/img/dashboard/portal-management/enterprise-portal/curity-enable-product-dcr.jpg" alt="Configure an API Product to work with the DCR flow" />
-
-</Tab>
-
-<Tab title="Keycloak">
-
-<img src="/img/dashboard/portal-management/enterprise-portal/configure-api-products-for-the-dcr-flow.png" alt="Configure an API Product to work with the DCR flow" />
-
-</Tab>
-
-<Tab title="Okta">
-
-<img src="/img/dashboard/portal-management/enterprise-portal/configure-api-products-for-the-dcr-flow-okta.png" alt="Configure an API Product to work with the DCR flow" />
-
-</Tab>
-
-</Tabs>
-
-<br />
-
+Ensure that Tyk Gateway and Tyk Dashboard are running on version 5.14.0 or later before starting Tyk Developer Portal with this flag enabled.
 
 <Note>
-From version 1.13.0, you can complete the DCR configuration for a product under the `Dynamic Client Registration` tab in the product's view. Scope to policy mapping for the selected API/s will be automatically configured using the scope defined in the `Scopes` field.
-<img src="/img/dashboard/portal-management/enterprise-portal/portal-product-dcr.png" alt="Add DCR settings" />
+If you are running Tyk Dashboard prior to 5.14.0, skip this step as the IdP Registry is not available.
 </Note>
 
+### Configure OAuth 2.0 Providers
 
-#### Configure plans for the DCR flow
+In the Admin Portal, navigate to **OAuth 2.0 Providers** (the Developer Portal's name for Identity Providers) and create an entry for each IdP you want to use with DCR.
 
-The last step is to configure the plans you want to use with the DCR flow. To do this, go to the portal's `Plans` menu section and specify the OAuth2.0 scope to use with each plan. You should have at least one scope that was created in [the Prerequisites for getting started](/tyk-stack/tyk-developer-portal/enterprise-developer-portal/api-access/dynamic-client-registration#prerequisites). If you need to specify more than one scope, you can separate them with spaces.
-<img src="/img/dashboard/portal-management/enterprise-portal/configure-plan-for-the-dcr-flow.png" alt="Configure a plan to work with the DCR flow" />
+#### Connection Settings
 
-<br />
+<img src="/img/dashboard/portal-management/enterprise-portal/curity-oauth-provider.jpg" alt="Configuring the connection to the IdP in OAuth 2.0 Providers" />
 
+| Field | Description |
+|:------|:------------|
+| **Name** | A label to identify this OAuth 2.0 Provider in the Portal UI. This is also stored as the name of the corresponding entry in the Identity Provider Registry. |
+| **Identity provider type** | Select your IdP from the dropdown. If it is not listed, select **Other** to use a standard RFC 7591-compliant client registration flow. |
+| **OIDC well-known configuration URL** (required) | The OIDC discovery endpoint for your IdP. |
+| **Scope claim name** (optional) | The JWT claim that contains the token's scopes. Different IdPs use different claim names: `scope` is the most common, but some use `scp` or another custom claim. Defaults to `scope`. Used by Tyk Gateway when [mapping token scopes to policies](/api-management/authentication/jwt-authorization#scope-policies). |
+| **Registration access token** (optional) | The token obtained in the [Authorize the Portal](#authorize-the-portal) section. |
+| **SSL insecure skip verify** (optional) | Enable only if your IdP uses a self-signed or privately issued certificate that Tyk cannot verify. This disables TLS certificate verification for connections to the IdP and should not be used in production. |
+
+#### Client Profiles
+
+When the Portal registers an OAuth 2.0 client in the IdP on behalf of an API Consumer, it must specify certain parameters that describe how access tokens will be obtained. These include the OAuth [grant type](https://datatracker.ietf.org/doc/html/rfc6749#section-1.3) and the authentication method used by the token endpoint. A **Client Profile** is a named template for these parameters (referred to as a **client type** in the Portal UI).
+
+You can define multiple Client Profiles to support different use cases. For example, you might define one Client Profile using the client credentials grant for server-to-server integrations and another using the authorization code grant for user-facing applications.
+
+When requesting access to an API Product in the Portal, API Consumers select from the list of Client Profiles defined for the IdP. The Portal uses that template when registering the OAuth 2.0 client that the IdP will use to issue tokens to that API Consumer.
+
+To add a Client Profile, scroll to **Client Types** and click **Add client type**.
+
+<img src="/img/dashboard/portal-management/enterprise-portal/curity-client-type.jpg" alt="Configuring a Client Profile for OAuth 2.0 client creation" />
+
+| Field | Description |
+|:------|:------------|
+| **Client type display name** | The name shown to API Consumers at checkout. Keep it short and descriptive, for example "Server-to-server" or "Web application". |
+| **Description** | Additional context to help API Consumers choose the right Client Profile. Not shown by default but configurable via templates. |
+| **Allowed response types** | Controls what the IdP returns to the API Consumer's application after authorization. Note: when using Okta with the client credentials grant, set this to `token`. <ul><li>`code` — authorization code to exchange for tokens</li><li>`token` — access token returned directly</li><li>`id_token` — identity token (OIDC)</li></ul>See the [OIDC specification](https://openid.net/specs/openid-connect-core-1_0.html#Authentication) for details. |
+| **Allowed grant types** | The OAuth 2.0 grant flow the API Consumer's application will use to obtain tokens. <ul><li>`client_credentials` — server-to-server, no user involved</li><li>`authorization_code` — user-facing applications</li><li>`refresh_token` — obtain new access tokens without re-authenticating</li></ul>See the [OAuth 2.0 specification](https://datatracker.ietf.org/doc/html/rfc6749#section-1.3) for details. |
+| **Token endpoint auth methods** | How the API Consumer's application authenticates to the IdP's token endpoint. <ul><li>`client_secret_basic` — credentials as a Base64-encoded Authorization header</li><li>`client_secret_post` — credentials in the request body</li></ul>See the [OIDC specification](https://openid.net/specs/openid-connect-core-1_0.html#ClientAuthentication) for details. |
+| **Okta application type** (Okta only) | The Okta application type to create: `web` for server-side apps, `native` for mobile or desktop, `browser` for single-page apps, `service` for machine-to-machine. |
 
 <Note>
-From version 1.13.0, you can complete the DCR configuration for a plan under the `Advanced settings (optional)` colapsible section in the plan's view. Scope to policy mapping for the plan will be automatically configured using the scope defined in the `Scopes` field.
-<img src="/img/dashboard/portal-management/enterprise-portal/portal-plan-advanced-settings.png" alt="Add Plan Advanced Settings" />
+Your IdP may override some of these settings based on its own configuration.
 </Note>
 
+When you have finished, click **Save Changes**.
 
-## Test the DCR flow
-To test the DCR flow, you need to perform the following actions:
-- Request access to the API product and plan you have selected for the DCR flow as a developer.
-- Approve the access request as an admin.
-- As a developer, copy the access credentials and obtain an access token.
-- As a developer, make an API call to verify the flow's functionality.
+<Note>
+When an OAuth 2.0 Provider is created, updated, or deleted in Portal, the corresponding entry in the Identity Provider Registry is updated immediately on every connected Tyk Dashboard. No approval is required to propagate the change.
+</Note>
 
-### Request access to the API Product
-To request access to the DCR enabled API Product:
-- Log in as a developer and navigate to the catalog page.
-- Select the DCR enabled API Product and add it to the shopping cart (if using cart-based flow) or proceed directly to checkout (if using direct access flow).
-- Navigate to the checkout page.
-- On the checkout page, select a plan to use with that product, select an existing application, or create a new one. If you plan to build an application that uses the Authorization code grant type, you also need to specify redirect URI of your application in the `Redirect URLs` field. If you have multiple redirect URI, you can separate them with commas.
-- Select a client type which is more suitable for your use case in the `Select a client type` section.
-- Finally, select the applicable type of client and click on the `Submit request` button. 
-<img src="/img/dashboard/portal-management/enterprise-portal/request-access-to-the-dcr-enabled-product.png" alt="Request access to the DCR enabled product" width="600" />
+### API Products and Plans
 
-### Approve the access request
-To approve the access request, navigate to the `Access requests` menu in the portal, select the access request and approve it by clicking on the `Approve` button.
+Each API Product and each Plan used with DCR must have a unique OAuth 2.0 scope assigned, matching a scope you created in the IdP. See the [OAuth 2.0 Scopes](#oauth-2-0-scopes) section for the full requirements.
+
+See [API Products](/portal/api-products#dynamic-client-registration) and [API Plans](/portal/api-plans#dynamic-client-registration) for configuration instructions.
+
+<Note>
+When APIs are added to or removed from a DCR-enabled API Product, or when its DCR scopes are changed, the scope-to-policy mappings in the Identity Provider Registry are updated immediately. Existing tokens gain or lose access without requiring a new approval.
+
+This applies only when at least one access request for the API Product has already been approved. If no approval has ever been made, the Registry has no entry for that Product yet and there is nothing to update; the first approval will write the full mapping.
+</Note>
+
+## End-to-End DCR Flow
+
+This section walks through the complete DCR flow from the perspective of each actor: an API Consumer requesting access, an API Owner approving it, and the API Consumer using their credentials to call an API. It covers what happens at each stage and what to expect as output.
+
+Before proceeding, confirm that the following are in place:
+
+- At least one [OAuth 2.0 Provider](#configure-your-identity-provider) is configured in the Portal, with at least one [Client Profile](#client-profiles) defined.
+- At least one API in Tyk Dashboard has JWT authentication enabled.
+- An API Product includes that API and has DCR enabled, with a scope assigned.
+- A Plan has a scope assigned.
+- Both scopes [exist in the IdP](#oauth-2-0-scopes).
+
+### Request Access to the API Product
+
+The API Consumer discovers the DCR-enabled API Product in the catalog and submits an access request. As part of checkout, they select how their application will obtain tokens.
+
+As an API Consumer, log in and navigate to the catalog page. Select the DCR-enabled API Product, proceed to checkout, and complete the following:
+
+- Select a Plan.
+- Select an existing Developer App or create a new one.
+- Select a Client Profile (**client type** in the Portal UI).
+- If your Client Profile uses the authorization code grant, enter your application's redirect URI in the **Redirect URLs** field. This is the URL the IdP will redirect the user to after authentication, carrying the authorization code your application exchanges for a token. Separate multiple URIs with commas.
+- Click **Submit request**.
+
+<img src="/img/dashboard/portal-management/enterprise-portal/request-access-to-the-dcr-enabled-product.png" alt="Request access to the DCR-enabled product" width="600" />
+
+### Approve the Access Request
+
+An API Owner reviews and approves the request.
+
+The Portal then registers a new OAuth 2.0 client with the IdP on the API Consumer's behalf, using the selected Client Profile to determine the grant type and token endpoint authentication method. The scopes from the API Product and Plan are associated with that client in the IdP.
+
+As part of the same process, the Portal retrieves the JWKS URI from the IdP and writes it, together with the scope-to-policy mappings, into Tyk. With `EnableIDPRegistry = true`, these are written to the Identity Provider Registry. Otherwise, they are written into the API definition.
+
+As an API Owner, navigate to **Access Requests**, select the request, and click **Approve**.
+
 <img src="/img/dashboard/portal-management/enterprise-portal/approve-dcr-access-request.png" alt="Approve DCR access request" />
 
+### Obtain an Access Token
 
-<Note>
-When approving an access request, if the Plan scope is not already present in the API Product's scope mappings the Portal will append it in the scope-to-policy mapping declared in the API definition, mapping it to the Id of the Tyk Dashboard consumption policy that relates to the Plan. This will ensure that when the JWT is presented to Tyk, the Plan will be applied to the session.
-</Note>
+Once the request is approved, the API Consumer can retrieve their OAuth 2.0 credentials from **My Dashboard**. Navigate to the Developer App and copy the **client ID** and **secret**.
 
+<img src="/img/dashboard/portal-management/enterprise-portal/copy-oauth-credentials.png" alt="Copy the OAuth 2.0 credentials" />
 
-### Obtain an access token
-Once the access request is approved, the developer should receive an email informing them of the approval. Please refer to [the email customization section](/portal/customization/email-notifications) if you wish to change the email template.
+Use these credentials to request an access token from the IdP's token endpoint. You must include the scopes for the API Product and Plan in the request. Tyk Gateway uses these to identify which policies to apply, and will reject requests where the token does not contain the expected scopes.
 
-As a developer, navigate to the `My Dashboard` section in the developer portal, select the application, and copy the OAuth 2.0 credentials. 
+The example below uses the `client_credentials` grant with the `client_secret_basic` authentication method, where credentials are passed as a Base64-encoded `{client_id}:{client_secret}` string in the `Authorization` header.
 
-<img src="/img/dashboard/portal-management/enterprise-portal/copy-oauth-credentials.png" alt="Copy the OAuth2.0 credentials" />
-
-Then use the credentials you have copied to obtain an access token. Make sure to include the scopes that are used to enforce access to the API product and plan. Otherwise, the gateway will not authorize the request. Here's an example of to achieve that with `curl`:
-```curl
-curl --location --request POST 'http://localhost:9999/realms/DCR/protocol/openid-connect/token' \
+```bash
+curl --location --request POST '<your-idp-token-endpoint>' \
 --header 'Authorization: Basic N2M2NGM2ZTQtM2I0Ny00NTMyLWFlMWEtODM1ZTMyMWY2ZjlkOjNwZGlJSXVxd004Ykp0M0toV0tLZHFIRkZMWkN3THQ0' \
 --header 'Content-Type: application/x-www-form-urlencoded' \
 --data-urlencode 'scope=product_payments free_plan' \
 --data-urlencode 'grant_type=client_credentials'
 ```
-Since in this example we use the client_secret_basic token endpoint authentication method, the credentials must be supplied as a Base64-encoded string: `{client_id}:{client_secret}`.
 
-As a result, you should receive a JWT access token containing the required scopes:
+A successful response includes a JWT access token. Decode it to confirm it contains the expected scopes before making an API call.
+
 <img src="/img/dashboard/portal-management/enterprise-portal/jwt.png" alt="An example of a JWT" width="600" />
 
 ### Make an API Call
-Finally, use the access token to make an API call and test the flow functionality:
-```curl
-curl --location --request GET 'http://localhost:8080/payment-api/get' \
---header 'Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCIgOiAiSldUIiwia2lkIiA6ICJUR1ZQd25MWlduaWpNc2taU3lHeHFtYnFDNVlIcW9QUUJYZE4xTmJCRDZjIn0.eyJleHAiOjE2Nzg0NDA2ODksImlhdCI6MTY3ODQ0MDM4OSwianRpIjoiMGYwNTdlYjItODQ5My00ZmM2LTllMzQtZTk0OWUzYWQ2MmI2IiwiaXNzIjoiaHR0cDovL2xvY2FsaG9zdDo5OTk5L3JlYWxtcy9EQ1IiLCJzdWIiOiJlNGE3YmFkNy04ZDA4LTQxOTAtODc1Ni1mNTU1ZWQ3Y2JhZjciLCJ0eXAiOiJCZWFyZXIiLCJhenAiOiI3YzY0YzZlNC0zYjQ3LTQ1MzItYWUxYS04MzVlMzIxZjZmOWQiLCJzY29wZSI6ImZyZWVfcGxhbiBwcm9kdWN0X3BheW1lbnRzIiwiY2xpZW50SWQiOiI3YzY0YzZlNC0zYjQ3LTQ1MzItYWUxYS04MzVlMzIxZjZmOWQiLCJjbGllbnRIb3N0IjoiMTcyLjE3LjAuMSIsImNsaWVudEFkZHJlc3MiOiIxNzIuMTcuMC4xIn0.WGp9UIqE7CjFhHdaM64b0G2HGP4adaDg3dgc0YVCV9rTDYmri32Djku7PcLiDKyNLCvlQXUm_O2YmwMCLLUHKPGlRmBMG2y-79-T8z5V-qBATbE6uzwPh38p-SYIIDBUZtlMEhnVp049ZqNolUW-n2uB4CTRb0kDosdRnqhiMUFpe-ORwnZB-4BHGRlwWKyjc5Da6CvVczM1a_c5akqurGMFaX9DC81SS-zMXXpQPDpAkvUJBfLYDHEvXWH8JISqYv7ZQSAbOyE4b-EkVAesyHIMDCQ_pzf5Yp2ivM0dOufN9kdG2w_9ToMqJieVyQILJPowEakmEealbNUFQvc5FA'
+
+With a valid JWT access token, the API Consumer can call the API. Tyk Gateway validates the token signature and maps the scopes to policies before forwarding the request.
+
+Use the access token to call the API:
+
+```bash
+curl --location --request GET '<your-gateway-url>/payment-api/get' \
+--header 'Authorization: Bearer <your-access-token>'
 ```
 
-You should receive the following response:
-```{.json}
-{
-  "args": {},
-  "headers": {
-    "Accept": "*/*",
-    "Accept-Encoding": "gzip",
-    "Authorization": "Bearer eyJhbGciOiJSUzI1NiIsInR5cCIgOiAiSldUIiwia2lkIiA6ICJUR1ZQd25MWlduaWpNc2taU3lHeHFtYnFDNVlIcW9QUUJYZE4xTmJCRDZjIn0.eyJleHAiOjE2Nzg0NDA2ODksImlhdCI6MTY3ODQ0MDM4OSwianRpIjoiMGYwNTdlYjItODQ5My00ZmM2LTllMzQtZTk0OWUzYWQ2MmI2IiwiaXNzIjoiaHR0cDovL2xvY2FsaG9zdDo5OTk5L3JlYWxtcy9EQ1IiLCJzdWIiOiJlNGE3YmFkNy04ZDA4LTQxOTAtODc1Ni1mNTU1ZWQ3Y2JhZjciLCJ0eXAiOiJCZWFyZXIiLCJhenAiOiI3YzY0YzZlNC0zYjQ3LTQ1MzItYWUxYS04MzVlMzIxZjZmOWQiLCJzY29wZSI6ImZyZWVfcGxhbiBwcm9kdWN0X3BheW1lbnRzIiwiY2xpZW50SWQiOiI3YzY0YzZlNC0zYjQ3LTQ1MzItYWUxYS04MzVlMzIxZjZmOWQiLCJjbGllbnRIb3N0IjoiMTcyLjE3LjAuMSIsImNsaWVudEFkZHJlc3MiOiIxNzIuMTcuMC4xIn0.WGp9UIqE7CjFhHdaM64b0G2HGP4adaDg3dgc0YVCV9rTDYmri32Djku7PcLiDKyNLCvlQXUm_O2YmwMCLLUHKPGlRmBMG2y-79-T8z5V-qBATbE6uzwPh38p-SYIIDBUZtlMEhnVp049ZqNolUW-n2uB4CTRb0kDosdRnqhiMUFpe-ORwnZB-4BHGRlwWKyjc5Da6CvVczM1a_c5akqurGMFaX9DC81SS-zMXXpQPDpAkvUJBfLYDHEvXWH8JISqYv7ZQSAbOyE4b-EkVAesyHIMDCQ_pzf5Yp2ivM0dOufN9kdG2w_9ToMqJieVyQILJPowEakmEealbNUFQvc5FA",
-    "Host": "httpbin.org",
-    "User-Agent": "curl/7.85.0",
-  },
-  "origin": "XXX.XXX.XXX.XXX, XXX.XXX.XXX.XXX",
-  "url": "http://httpbin.org/get"
-}
-```
+## Migrating to the Identity Provider Registry
 
+DCR support in Tyk Developer Portal has evolved across three eras. The table below summarizes each to help you identify your current state before migrating.
+
+| Era | Portal Version | How IdP Config Is Stored | Limitations |
+|:----|:--------------|:------------------------|:------------|
+| Legacy | Before 1.13.0 | Manually in each API definition | No Portal management of IdP configuration; scope mappings require manual setup per API in Tyk Dashboard |
+| API Definition | 1.13.0 to 1.17.x | Portal writes to API definitions at approval | Write conflicts possible between Portal and Tyk Dashboard; configuration not updated automatically when API Products change |
+| Identity Provider Registry | 1.18.0+ | Centralized Registry in Tyk Dashboard | Recommended for all deployments |
+
+### Legacy Setup (Before Portal 1.13.0)
+
+Before Portal 1.13.0, DCR required fully manual configuration of scope-to-policy mappings in each Tyk Dashboard API definition. The Portal did not write anything into API definitions when an access request was approved. For each JWT-authenticated API, this involved:
+
+- Creating Tyk policies for the API Product and Plan
+- Creating a No Operation API and policy to satisfy the default policy requirement without granting real access. On Gateway versions prior to 5.11.0, Tyk required a default policy on APIs using scope-to-policy mapping; the No Operation API satisfied this without overriding the Product and Plan policies. From Gateway 5.11.0 onwards this workaround is no longer needed.
+- Manually enabling scope-to-policy mapping on each API definition and configuring the JWKS URI, scope-to-policy mappings, and default policy directly
+
+To migrate to the Identity Provider Registry, first upgrade to Portal 1.18.0, then follow the [Migration Steps](#migration-steps) below. Note that the automatic backfill does not cover manually configured API definitions. You will need to create OAuth 2.0 Providers in the Portal for each IdP, then populate the Registry manually via `POST /api/clientidps`.
+
+### API Definition Era (Portal 1.13.0 to 1.17.x)
+
+From Portal 1.13.0, the Portal began managing IdP configuration directly. OAuth 2.0 Providers and Client Profiles are configured in the Portal, and when an access request is approved, the Portal automatically writes the JWKS URI and scope-to-policy mappings into the relevant API definitions.
+
+For each JWT-authenticated API, the setup required leaving the **Public key** and **default policy** fields blank. The Portal populated these when an access request was approved. On Gateway versions prior to 5.11.0, a No Operation API and policy were also required to satisfy the default policy requirement; from Gateway 5.11.0 this is no longer needed.
+
+The limitation of this approach is that API definition configuration takes precedence over any changes made in Tyk Dashboard, and write conflicts can occur if the Portal and Tyk Dashboard both manage the same API definition. Configuration is also not updated automatically when API Products change outside of an approval event.
+
+To migrate to the Identity Provider Registry, first upgrade to Portal 1.18.0, then follow the [Migration Steps](#migration-steps) below.
+
+### Migration Steps
+
+1. Set [`TYK_PORTAL_ENABLEIDPREGISTRY=true`](/product-stack/tyk-enterprise-developer-portal/deploy/configuration#tyk-portal-enableidpregistry) (or `EnableIDPRegistry = true` in the config file) and restart the Portal.
+
+    On startup, the Portal runs a backfill that creates Registry entries in Tyk Dashboard for any existing OAuth 2.0 Providers. Any new, or changes to existing, OAuth 2.0 Providers and API Products will be stored in the Registry going forward.
+
+    If moving from a [legacy version](#legacy-setup-before-portal-1-13-0) there will be nothing for the backfill to process.
+
+2. **Audit your API definitions.**
+
+    Call `GET /api/clientidps` against the Tyk Dashboard API to inspect the Registry entries created by the backfill.
+    
+    For each JWT-authenticated API, compare the JWKS URI and scope-to-policy mappings in the API definition against what the Registry now contains.
+
+    Pay particular attention to any IdP configuration that was added directly in Tyk Dashboard rather than through the Portal. The backfill only covers OAuth 2.0 Providers managed by the Portal; configuration added manually outside the Portal will not appear in the Registry after the backfill. Any such configuration must be added to the Registry manually via `POST /api/clientidps` before proceeding to the next step.
+
+    <Note>
+    There is no Tyk Dashboard UI for the Identity Provider Registry. All inspection and manual management must be done via the [Tyk Dashboard API](/tyk-dashboard-api).
+    </Note>
+
+3. **Remove IdP configuration from API definitions.**
+
+    Once the Registry is verified as complete and correct, remove the JWKS URIs and scope-to-policy mappings from each API definition. Until this step is completed, the API definition configuration takes precedence over the Registry and the Registry entries are not used for those APIs.
+
+    <Warning>
+    Do not remove configuration from an API definition until you have confirmed that the corresponding Registry entry exists and is correct. Removing configuration that has no Registry counterpart will break JWT validation for that API.
+    </Warning>
