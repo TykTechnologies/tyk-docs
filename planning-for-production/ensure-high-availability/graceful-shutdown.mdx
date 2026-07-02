@@ -1,7 +1,7 @@
 ---
-title: "Graceful Shutdown in Tyk"
-description: "Graceful Shutdown in Tyk"
-keywords: "graceful shutdown, deployment, stability, gateway, pump"
+title: "Graceful Shutdown"
+description: "Graceful Shutdown for Tyk Data Plane"
+keywords: "graceful shutdown, deployment, stability, Gateway, Pump, data plane"
 sidebarTitle: "Graceful Shutdown"
 ---
 
@@ -15,17 +15,21 @@ Tyk Gateway includes a graceful shutdown mechanism that ensures clean terminatio
 
 ### Configuration
 
-Add the [graceful_shutdown_timeout_duration](/tyk-oss-gateway/configuration#graceful_shutdown_timeout_duration) parameter to your Tyk Gateway configuration file (or set the environment variable `TYK_GW_GRACEFULSHUTDOWNTIMEOUTDURATION`):
+Add the following parameters to your configuration file (or the equivalent environment variables):
 
 ```json
 {
+  "graceful_shutdown_delay_seconds": 10,
   "graceful_shutdown_timeout_duration": 30
 }
 ```
 
 | Parameter | Type | Description |
 | :----------- | :------ | :------------- |
-| `graceful_shutdown_timeout_duration` | integer | The number of seconds Tyk will wait for existing connections to complete before forcing termination. Default: 30 seconds. |
+| [`graceful_shutdown_timeout_duration`](/tyk-oss-gateway/configuration#graceful_shutdown_timeout_duration) | integer | The number of seconds Tyk Gateway will wait for in-flight requests to complete before forcing termination. Default: 30 seconds. |
+| [`graceful_shutdown_delay_seconds`](/tyk-oss-gateway/configuration#graceful_shutdown_delay_seconds) | integer | **(From Tyk Gateway 5.14.0)** The number of seconds Tyk Gateway will continue accepting new connections after receiving a termination signal, before beginning the graceful shutdown. During this period, the `/ready` endpoint immediately returns `503 Service Unavailable`, signaling to load balancers and orchestrators to remove the Gateway from the active pool. Default: 0 seconds (disabled). |
+
+The two settings work in sequence. The total time from receiving a termination signal to process exit is at most `graceful_shutdown_delay_seconds` + `graceful_shutdown_timeout_duration`.
 
 ### How It Works
 
@@ -33,72 +37,87 @@ Add the [graceful_shutdown_timeout_duration](/tyk-oss-gateway/configuration#grac
 
 Tyk Gateway listens for standard termination signals:
 
-- `SIGTERM`: Sent by container orchestrators like Kubernetes
-- `SIGQUIT` : Manual quit signal
-- `SIGINT` : Interrupt signal (Ctrl+C)
+- `SIGTERM`: Sent by container orchestrators such as Kubernetes
+- `SIGQUIT`: Manual quit signal
+- `SIGINT`: Interrupt signal (Ctrl+C)
 
-
-
-    <Note>
-    Note that Gateway will not shutdown gracefully if it receives a `SIGKILL` signal, but will stop immediately.
-    </Note>
+<Note>
+Tyk Gateway will not shut down gracefully if it receives a `SIGKILL` signal and will stop immediately.
+</Note>
 
 #### Shutdown Sequence
 
-When a termination signal is received, Tyk:
+When a termination signal is received, Tyk Gateway:
 
-- Logs that shutdown has begun
-- Stops accepting new connections
-- Waits for active requests to complete (up to the configured timeout)
-- Cleans up resources (cache stores, analytics, profiling data)
-- Deregisters from the Dashboard (if using DB configurations)
-- Disconnects from MDCB (if deployed in a distributed data plane)
-- Logs completion and exits
+1. Immediately marks itself as shutting down. The `/ready` endpoint begins returning `503 Service Unavailable`.
+2. **(From Tyk Gateway 5.14.0)** If `graceful_shutdown_delay_seconds` is configured, waits for that period while continuing to accept and process new requests. This gives load balancers and orchestrators time to detect the failing readiness probe and remove the Gateway from the active pool before connections are refused.
+3. Stops accepting new connections.
+4. Waits for in-flight requests to complete, up to `graceful_shutdown_timeout_duration`.
+5. Cleans up resources (cache stores, analytics, profiling data).
+6. Deregisters from Tyk Dashboard (if using a database configuration).
+7. Disconnects from MDCB (if deployed in a distributed data plane).
+8. Logs completion and exits.
 
 ```mermaid
 sequenceDiagram
  participant OS as Operating System
+ participant LB as Load Balancer / Ingress
  participant Gateway as Tyk Gateway
  participant Connections as Active Connections
  participant Dashboard as Tyk Dashboard
  participant MDCB as MDCB
-    
+
  OS->>Gateway: SIGTERM/SIGINT/SIGQUIT
- Note over Gateway: Begin graceful shutdown
- Gateway->>Gateway: Log shutdown initiation
+ Note over Gateway: /ready returns 503 immediately
+ Gateway->>LB: Readiness probe fails
+ Note over Gateway,LB: graceful_shutdown_delay_seconds<br/>(Gateway continues to accept traffic)
+ LB->>LB: Remove Gateway from active pool
+ Note over Gateway: Delay period elapsed
  Gateway->>Gateway: Stop accepting new connections
-    
+
  par Process existing connections
- Gateway->>Connections: Wait for completion (timeout: configurable)
- and Clean up resources
+ Gateway->>Connections: Wait for completion (up to graceful_shutdown_timeout_duration)
+ and Prepare resources for cleanup
  Gateway->>Gateway: Prepare to release resources
  end
-    
+
  Note over Gateway: Timeout or connections completed
-    
+
  Gateway->>Gateway: Clean up resources
-    
+
  alt Using Dashboard
  Gateway->>Dashboard: Deregister node
  end
-    
+
  alt Using MDCB
  Gateway->>MDCB: Disconnect
  end
-    
+
  Gateway->>Gateway: Log completion
  Gateway->>OS: Process terminates
 ```
 
+### Kubernetes Deployments
+
+In Kubernetes environments, a pod receiving `SIGTERM` is removed from the Service endpoints list, but the time for that change to propagate to all load balancers and ingress controllers (such as AWS ALB) varies. During this propagation window, traffic can still be routed to a pod that has already stopped accepting connections, resulting in `HTTP 502` errors.
+
+`graceful_shutdown_delay_seconds` addresses this by keeping the Gateway accepting traffic while the `/ready` probe fails, giving the load balancer time to complete deregistration before the Gateway stops accepting connections.
+
+Set `graceful_shutdown_delay_seconds` to be at least as long as it takes your load balancer to detect the failing readiness probe and stop routing traffic to the pod. This depends on your readiness probe configuration (`periodSeconds` and `failureThreshold`) and your load balancer's deregistration delay setting.
+
+For example, with a readiness probe configured as `periodSeconds: 10` and `failureThreshold: 1`, the load balancer may take up to 10 seconds to remove the pod. Setting `graceful_shutdown_delay_seconds: 15` provides a safety margin.
+
+Also ensure that Kubernetes `terminationGracePeriodSeconds` on the pod is greater than `graceful_shutdown_delay_seconds` + `graceful_shutdown_timeout_duration`, otherwise Kubernetes will send `SIGKILL` before the shutdown sequence completes.
+
 ### Best Practices
 
-- Adjust timeout for your workloads: If your APIs typically handle long-running requests, increase the timeout accordingly.
-- Configure orchestration platforms: When using Kubernetes, ensure pod termination grace periods align with your Tyk graceful shutdown timeout.
-- Monitor shutdown logs: Check for timeout warnings during restarts, which may indicate you need a longer duration.
+- Adjust the drain timeout for your workloads: If your APIs handle long-running requests, increase `graceful_shutdown_timeout_duration` accordingly.
+- Kubernetes deployments: Set `graceful_shutdown_delay_seconds` to exceed your load balancer's deregistration detection time, and ensure `terminationGracePeriodSeconds` is greater than `graceful_shutdown_delay_seconds` + `graceful_shutdown_timeout_duration`.
+- Monitor shutdown logs: Check for timeout warnings during restarts, which may indicate you need a longer drain timeout.
 
 ### Advanced Details
 
-If the shutdown process exceeds the configured timeout, Tyk logs a warning and forcibly terminates any remaining connections. This prevents the Gateway from hanging indefinitely if connections don't close properly.
+If the drain period exceeds `graceful_shutdown_timeout_duration`, Tyk Gateway logs a warning and forcibly terminates any remaining connections. This prevents the Gateway from hanging indefinitely if connections do not close properly.
 
 The implementation uses Go's context with timeout to manage the shutdown process, ensuring that resources are properly released even in edge cases.
 
@@ -127,13 +146,13 @@ The graceful shutdown behavior in Tyk Pump is primarily controlled by the [purge
 
 Tyk Pump listens for standard termination signals:
 
-- `SIGTERM`: Sent by container orchestrators like Kubernetes
+- `SIGTERM`: Sent by container orchestrators such as Kubernetes
 - `SIGINT` : Interrupt signal (Ctrl+C)
 
 
 
     <Note>
-    Note that Pump will not shutdown gracefully if it receives a `SIGKILL` signal, but will stop immediately.
+    Tyk Pump will not shut down gracefully if it receives a `SIGKILL` signal and will stop immediately.
     </Note>
 
 
@@ -141,12 +160,12 @@ Tyk Pump listens for standard termination signals:
 
 When a termination signal is received, Tyk Pump:
 
-- Logs that shutdown has begun
-- Completes the current purge cycle
-- Processes any data already in memory
-- Triggers a final flush operation on all configured pumps
-- Closes all database and storage connections
-- Logs completion and exits
+- Logs that shutdown has begun.
+- Completes the current purge cycle.
+- Processes any data already in memory.
+- Triggers a final flush operation on all configured pumps.
+- Closes all database and storage connections.
+- Logs completion and exits.
 
 ```mermaid
 sequenceDiagram
@@ -186,4 +205,4 @@ These pumps buffer data in-memory before sending the data to the storage and so 
 - Adjust `purge_delay` for your workloads: A shorter purge delay means more frequent processing but also faster shutdown. For high-volume environments, finding the right balance is important.
 - Configure orchestration platforms: When using Kubernetes, ensure pod termination grace periods are sufficient to allow for at least one complete purge cycle.
 - Monitor shutdown logs: Check for any warnings during restarts that might indicate data processing issues.
-- Consider redundant instances: For high-availability environments, run multiple pump instances to ensure continuous analytics processing.
+- Consider redundant instances: For high-availability environments, run multiple Tyk Pump instances to ensure continuous analytics processing.
