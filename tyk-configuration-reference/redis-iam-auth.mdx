@@ -1,0 +1,113 @@
+---
+title: "IAM Authentication for Cloud-Managed Redis"
+description: "Configure Tyk to authenticate to GCP Memorystore for Valkey and Redis Cluster using IAM access tokens instead of a static password."
+keywords: "configuration, redis, valkey, memorystore, iam, gcp, authentication, tyk-gateway"
+sidebarTitle: "Redis IAM Auth"
+---
+
+<Note>
+IAM authentication for cloud-managed Redis is a new capability. Confirm the exact Tyk Gateway release version with the team before publishing this page.
+</Note>
+
+## Overview
+
+Cloud-managed Redis services support authenticating with short-lived Identity and Access Management (IAM) tokens instead of a static password. This removes the need to store a long-lived Redis password in your Tyk configuration: Tyk mints a token from the identity of the workload it runs as, presents it when connecting, and refreshes it automatically before it expires.
+
+Tyk supports IAM authentication for:
+
+- Google Cloud Memorystore for Valkey
+- Google Cloud Memorystore for Redis Cluster
+
+Both use the same mechanism, so a single configuration covers either service. The only difference is the IAM role you grant, which is described below.
+
+<Note>
+Amazon ElastiCache IAM authentication is not yet supported. Use a static password for ElastiCache.
+</Note>
+
+## How It Works
+
+When IAM authentication is enabled, Tyk:
+
+1. Obtains a Google OAuth2 access token from the workload's identity, using Application Default Credentials (ADC).
+2. Connects to the instance and authenticates with the user `default` and the access token as the password.
+3. Caches the token and refreshes it before it expires, so new connections always use a valid token.
+
+Access tokens are valid for approximately one hour. Existing connections continue to work after a token expires; only new connections need a fresh token.
+
+## Prerequisites
+
+### Grant the Connection Role
+
+Grant the identity that Tyk runs as the role that permits connecting to the instance:
+
+- Memorystore for Valkey: `roles/memorystore.dbConnectionUser`
+- Memorystore for Redis Cluster: `roles/redis.dbConnectionUser`
+
+### Provide the Workload Identity
+
+Tyk resolves its identity through Application Default Credentials:
+
+- On Google Kubernetes Engine, enable Workload Identity so the Kubernetes service account maps to a Google service account that holds the connection role.
+- Elsewhere, set the `GOOGLE_APPLICATION_CREDENTIALS` environment variable to a service account key file, or run on a Compute Engine instance with an attached service account.
+
+### Enable In-Transit Encryption
+
+Enable in-transit encryption on the instance and set `use_ssl` to `true` in Tyk. IAM authentication does not require Transport Layer Security (TLS), but Google strongly recommends it because the token is sent over the connection. If IAM authentication is enabled while `use_ssl` is `false`, Tyk connects and logs a warning.
+
+## Configuration
+
+Add an `iam_auth` block to the `storage` section of your `tyk.conf`. Leave `username` and `password` empty: they are ignored when IAM authentication is enabled.
+
+```json
+"storage": {
+  "type": "redis",
+  "host": "10.0.0.3",
+  "port": 6379,
+  "enable_cluster": true,
+  "use_ssl": true,
+  "username": "",
+  "password": "",
+  "iam_auth": {
+    "enabled": true,
+    "provider": "gcp"
+  }
+}
+```
+
+Set `enable_cluster` to `true` for Memorystore for Redis Cluster and for Valkey running in cluster mode. Leave it `false` for a standalone Valkey instance.
+
+The same `iam_auth` block applies to the separate cache and analytics storage sections (`cache_storage` and `analytics_storage`) if you use them, so you can enable IAM authentication independently for each store.
+
+### Configuration Options
+
+| Field | Description |
+|-------|-------------|
+| `enabled` | Set to `true` to use IAM authentication for this storage connection. |
+| `provider` | The cloud IAM provider. Currently supported: `gcp`. |
+| `service_account` | Optional. A Google service account to impersonate when minting tokens, instead of the workload's own identity. Leave empty to use Application Default Credentials directly. |
+| `token_refresh_before_expiry` | Optional. How far ahead of expiry to refresh the token, as a Go duration string, for example `5m`. Defaults to `5m`. |
+
+### Impersonating a Service Account
+
+If the workload cannot use the connection-role identity directly, grant the workload's identity permission to impersonate a service account that holds the connection role, then set `service_account`:
+
+```json
+"iam_auth": {
+  "enabled": true,
+  "provider": "gcp",
+  "service_account": "tyk-redis@my-project.iam.gserviceaccount.com"
+}
+```
+
+## Verify the Connection
+
+On startup, Tyk attempts to connect to the configured storage. If IAM authentication succeeds, the gateway logs that it has connected to Redis. If authentication fails, for example because the connection role is missing or the token cannot be minted, Tyk logs a connection error and retries.
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---------|--------------|
+| Connection error mentioning credentials or default credentials | The workload has no resolvable identity. Confirm Workload Identity or `GOOGLE_APPLICATION_CREDENTIALS` is configured. |
+| Authentication is rejected by the server | The identity does not hold the connection role, or holds the wrong one (Valkey and Redis Cluster use different roles). |
+| Connection times out | A network or Private Service Connect issue, not authentication. Confirm Tyk runs inside a network that can reach the instance. |
+| Warning that IAM is enabled without TLS | `use_ssl` is `false`. Enable in-transit encryption on the instance and set `use_ssl` to `true`. |
