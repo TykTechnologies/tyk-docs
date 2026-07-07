@@ -25,7 +25,7 @@ Only the most recent Tyk Gateway release and the most recent on the [Long Term S
 
 **OAuth 2.0 authentication with external Authorization Server**
 
-Tyk Gateway now supports a first-class [OAuth 2.0 authentication method](/api-management/authentication/oauth-2) for Tyk OAS APIs, enabling token validation against an external Identity Provider such as Keycloak, Okta, or Auth0 that acts as the Authorization Server. Tyk acts as the OAuth 2.0 protected resource, validating inbound bearer tokens against the IdP's JWKS endpoint. No token issuance, just enforcement.
+Tyk Gateway introduces a first-class OAuth 2.0 authentication method for Tyk OAS APIs, enabling token validation against an external Identity Provider such as Keycloak, Okta, or Auth0 that acts as the Authorization Server. Tyk acts as the OAuth 2.0 protected resource, validating inbound bearer tokens against the IdP's JWKS endpoint. It performs enforcement only and does not issue tokens.
 
 The new method supports **scope enforcement** at API, per-operation, and per-MCP-primitive granularity, giving you fine-grained access control over individual endpoints and tools without additional middleware. It is natively expressed through the standard `oauth2` security scheme in the Tyk OAS API definition, and replaces the deprecated [External OAuth](/api-management/client-authentication#integrate-with-external-authorization-server-deprecated) method, which performed only limited token validation.
 
@@ -33,7 +33,7 @@ This is also the foundation for Protected Resource Metadata and RFC 8693 Token E
 
 **RFC 8693 Token Exchange for Upstream Authentication** *(Enterprise Edition)*
 
-When the inbound client token should not reach your upstream service, for example when an AI agent's SSO token needs to be replaced with a service-specific token carrying the correct audience and scopes, Tyk Gateway can now perform an [RFC 8693 token exchange](https://datatracker.ietf.org/doc/html/rfc8693) transparently before forwarding the request. The original token is consumed at the Gateway; the upstream sees only the exchanged token.
+When the inbound client token should not reach your upstream service, for example when an AI agent's SSO token needs to be replaced with a service-specific token carrying the correct audience and scopes, Tyk Gateway can perform an [RFC 8693 token exchange](https://datatracker.ietf.org/doc/html/rfc8693) transparently before forwarding the request. The original token is consumed at the Gateway; the upstream sees only the exchanged token.
 
 Token exchange is configured within the `oauth2` scheme and supports multiple named providers. Per-operation and per-MCP-primitive overrides allow a different audience and scope set for individual endpoints and tools. Exchanged tokens are cached to avoid a round-trip on every request, with a configurable safety margin to ensure upstream services always receive a valid token.
 
@@ -51,7 +51,9 @@ Building on this, API definitions can now reference a PEM-encoded certificate st
 
 **Other Changes**
 
-This release also delivers: granular enforced timeouts configurable in milliseconds, seconds, or minutes at both API and endpoint level; the original client request path recorded in OpenTelemetry spans, traffic logs, and access logs before any path stripping or rewriting; a configurable graceful shutdown delay to prevent `HTTP 502` errors during scale-down in high-traffic Kubernetes deployments; a Client IdP registry for centralized JWT Identity Provider management; and standardized application log format aligned with other Tyk components - see [Breaking Changes](#breaking-changes) if your log parsing tools depend on the previous format.
+This release also delivers: granular enforced timeouts configurable in milliseconds, seconds, or minutes at both API and endpoint level; the original client request path recorded in OpenTelemetry spans, traffic logs, and access logs before any path stripping or rewriting; a configurable graceful shutdown delay to prevent `HTTP 502` errors during scale-down in high-traffic Kubernetes deployments; a Client IdP registry for centralized JWT Identity Provider management (Enterprise Edition); and standardized application log format aligned with other Tyk components - see [Breaking Changes](#breaking-changes) if your log parsing tools depend on the previous format.
+
+Notable fixes include: a Gateway crash under high authentication load; unbounded memory growth with CoProcess plugins and large sessions; and GraphQL API authentication headers not being forwarded upstream.
 
 For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-v5.14.0) below.
 
@@ -156,7 +158,8 @@ A new `autoDeriveScopes` option automatically populates the PRM `scopes_supporte
 <Note>
 Enterprise Edition only
 </Note>
-Tyk Gateway now supports RFC 8693 token exchange for upstream authentication. When configured, the Gateway exchanges the inbound client token for a new token issued by your identity provider before forwarding the request upstream — the original token never reaches the upstream service. This is particularly valuable for MCP flows where an AI agent's SSO token must be replaced with a service-specific token carrying the correct audience and scopes for the backend.
+
+Tyk Gateway supports RFC 8693 token exchange for upstream authentication. When configured, the Gateway exchanges the inbound client token for a new token issued by your identity provider before forwarding the request upstream; the original token never reaches the upstream service. This is particularly valuable for MCP flows where an AI agent's SSO token must be replaced with a service-specific token carrying the correct audience and scopes for the backend.
 
 Token exchange is configured within the `oauth2` scheme and supports multiple named providers, each with its own token endpoint, client credentials, and default target audience. Per-operation and per-MCP-primitive overrides allow a different audience and scope set for individual endpoints and tools.
 
@@ -253,6 +256,7 @@ Following the delay period, the existing [graceful shutdown](/planning-for-produ
 <Note>
 Enterprise Edition only
 </Note>
+
 Tyk Gateway's authentication middleware provides support for JSON Web Token (JWT) [signature validation](/api-management/authentication/jwt-signature-validation#jwt-signature-fundamentals) against JSON Web Key Sets (JWKS) stored locally in the API definition or, more commonly, retrieved from the dedicated JWKS endpoint of a 3rd party Identity Provider (IdP) (the *issuer* of the token). Following signature validation, the claims within the JWT can be interrogated to identify scopes which are then used to identify the Policies that should be applied to the Session generated for the request. This scope-to-policy mapping is traditionally stored in the API definition.
 
 The new Client IdP registry extracts the IdP details (issuer value and JWKS endpoint) and the scope-to-policy mapping from the API definitions into a new registry that maps the IdP metadata against the API(s). When a request is received, the Gateway will first check any JWKS URLs and scope-to-policy mappings in the API definition (for backward compatibility) before checking the registry.
@@ -266,7 +270,7 @@ The IdP registry exists as an in-memory table that is managed by the Tyk Dashboa
 {/* TT-16823 */}
 The MCP proxy now filters the tool, resource, and prompt lists returned during capability discovery (`tools/list`, `resources/list`, `prompts/list`) and the `initialize` capability handshake using OAS-level allow and block rules configured in the MCP OAS definition.
 
-Previously, these rules were enforced at invocation time only — discovery responses passed through unfiltered from the upstream server, so agents would discover capabilities they could not use and only encounter the restriction when they tried to call them. Agents now see only the tools, resources, and prompts they are permitted to invoke.
+Previously, these rules were enforced at invocation time only: discovery responses passed through unfiltered from the upstream server, so agents would discover capabilities they could not use and only encounter the restriction when they tried to call them. Agents now see only the tools, resources, and prompts they are permitted to invoke.
 </Accordion>
 
 </AccordionGroup>
@@ -278,7 +282,7 @@ Previously, these rules were enforced at invocation time only — discovery resp
 
 <Accordion title='Fixed issue with Docker images incompatible with legacy registries and tools'>
 {/* TT-17333 */}
-Docker images published in v5.13.0 contained mixed layer compression — base image layers used zstd compression while Tyk application layers used gzip. This caused image copy and promotion failures with legacy Docker tooling, older registry versions, and some security scanners, with the error: `zstd compression is not officially supported for docker images`.
+Docker images published in v5.13.0 contained mixed layer compression: base image layers used zstd compression while Tyk application layers used gzip. This caused image copy and promotion failures with legacy Docker tooling, older registry versions, and some security scanners, with the error: `zstd compression is not officially supported for docker images`.
 
 All image layers are now uniformly compressed using `gzip`, restoring compatibility with `skopeo`, `oc image mirror`, and other tools that do not support OCI `zstd` compression.
 </Accordion>
@@ -290,12 +294,12 @@ When the Gateway control API is moved to a separate port via [`control_api_port`
 
 <Accordion title='Fixed unbounded memory growth with CoProcess plugins and large sessions'>
 {/* TT-17049 */}
-Resolved a risk of unbound memory consumption for APIs using gRPC plugins. The leak was due to an internal regular-expression cache that could grow without limit when Session access rights contained per-user URL patterns, and excessive memory churn when copying large sessions on every request. The fix bounds the maximum size of the cache and reuses Session objects to eliminate the churn. The Gateway now also aligns [`GOMAXPROCS`](https://pkg.go.dev/runtime#GOMAXPROCS) with the container's CPU quota at startup.
+We have resolved a risk of unbound memory consumption for APIs using gRPC plugins. The leak was due to an internal regular-expression cache that could grow without limit when Session access rights contained per-user URL patterns, and excessive memory churn when copying large sessions on every request. The fix bounds the maximum size of the cache and reuses Session objects to eliminate the churn. The Gateway now also aligns [`GOMAXPROCS`](https://pkg.go.dev/runtime#GOMAXPROCS) with the container's CPU quota at startup.
 
 This fix introduces the following new configuration options:
 
 - [`regexp_cache_max_entries`](/tyk-oss-gateway/configuration#regexp_cache_max_entries)  caps the regular-expression cache (default: `5000`)
-- [`disable_regexp_cache_bound`](/tyk-oss-gateway/configuration#disable_regexp_cache_bound) restores the previous unbounded behaviour for deployments with a naturally limited set of patterns (default:`false`)
+- [`disable_regexp_cache_bound`](/tyk-oss-gateway/configuration#disable_regexp_cache_bound) restores the previous unbounded behavior for deployments with a naturally limited set of patterns (default:`false`)
 - [`disable_auto_max_procs`](/tyk-oss-gateway/configuration#disable_auto_max_procs) restores the previous default behavior of GOMAXPROCS (default:`false`)
 </Accordion>
 
@@ -319,7 +323,7 @@ Now, tokens with length exactly equal to `min_token_length` are correctly accept
 
 <Accordion title='Fixed GraphQL API authentication headers not being forwarded upstream'>
 {/* TT-16017, TT-17442 */}
-Resolved an issue where, when a GraphQL API was configured with `strip_auth_data` set to `false`, the client's authentication header (for example `Authorization`, or a custom header such as `X-API-KEY`) was not forwarded to the upstream service. This affected all GraphQL execution modes (proxy-only (including WebSocket subscriptions), subgraph, Universal Data Graph, and supergraph) leaving upstream services that require the header unable to authenticate the request.
+We have resolved an issue where, when a GraphQL API was configured with `strip_auth_data` set to `false`, the client's authentication header (for example `Authorization`, or a custom header such as `X-API-KEY`) was not forwarded to the upstream service. This affected all GraphQL execution modes (proxy-only (including WebSocket subscriptions), subgraph, Universal Data Graph, and supergraph) leaving upstream services that require the header unable to authenticate the request.
 
 The active authentication method's header is now propagated upstream across all execution modes, with only the active method's header forwarded. In addition, upstream WebSocket connections for subscriptions are no longer reused across clients presenting different credentials, so each subscription carries its own authentication header, and one client's token can no longer leak to another. When `strip_auth_data` is `true`, no authentication headers are forwarded, as before.
 </Accordion>
