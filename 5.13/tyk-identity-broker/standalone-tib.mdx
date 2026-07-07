@@ -1,0 +1,247 @@
+---
+title: "Standalone Tyk Identity Broker"
+description: "Learn how to install and configure Tyk Identity Broker (TIB) as a standalone service using Docker, Linux packages, or Kubernetes, including Redis and profile storage setup."
+keywords: "Tyk Identity Broker, TIB, installation, standalone, Docker, Helm, Kubernetes, packages"
+sidebarTitle: "Standalone TIB"
+canonical: "https://tyk.io/docs/tyk-identity-broker/standalone-tib"
+---
+
+This guide covers the installation of Tyk Identity Broker (TIB) as a standalone service, which is required for the [OAuth token generation](/5.13/api-management/access-control/sessions-and-keys/issuing-tokens-via-tib#issuing-oauth-tokens) use case where TIB communicates directly with Tyk Gateway on behalf of authenticated users.
+
+<Note>
+If you are setting up Single Sign-On for Tyk Dashboard or Tyk Developer Portal, TIB is already embedded in those products and you do not need to follow this guide. See [SSO into Tyk Dashboard](/5.13/tyk-identity-broker/dashboard-sso) or [SSO into Tyk Developer Portal](/5.13/tyk-stack/tyk-developer-portal/enterprise-developer-portal/managing-access/enable-sso) instead.
+</Note>
+
+## Prerequisites
+
+- Redis
+- And either:
+  - Tyk Gateway v1.9.1+ (for the `GenerateOAuthTokenForClient` action)
+  - Tyk Dashboard v0.9.7.1+ (for the `GenerateTemporaryAuthToken` action)
+
+## Installation
+
+### Docker
+
+Pull and run the TIB image from [Docker Hub](https://hub.docker.com/r/tykio/tyk-identity-broker/), which includes full run instructions and a reference for passing configuration via environment variables.
+
+### Linux Packages
+
+Install via [deb or rpm packages](https://packagecloud.io/tyk/tyk-identity-broker/install#bash-deb) on packagecloud.
+
+### Kubernetes
+
+The Tyk Helm charts do not include a standalone TIB deployment. If you need to run standalone TIB in Kubernetes, deploy it using the [Docker image](https://hub.docker.com/r/tykio/tyk-identity-broker/) and provide your own Kubernetes manifests. When deploying in Kubernetes, you must pass configuration via [environment variables](/5.13/tyk-configuration-reference/tyk-identity-broker-configuration).
+
+To manage TIB profiles in Kubernetes, mount `profiles.json` from a ConfigMap:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tib-profiles
+data:
+  profiles.json: |
+    [ ]
+```
+
+Mount the ConfigMap into the TIB pod and pass the path via the `-p` flag:
+
+```yaml expandable
+containers:
+  - name: tib
+    image: tykio/tyk-identity-broker:{version}  # replace with a specific version tag
+    args: ["-c", "/etc/tib/tib.conf", "-p", "/etc/tib/profiles.json"]
+    volumeMounts:
+      - name: tib-profiles
+        mountPath: /etc/tib/profiles.json
+        subPath: profiles.json
+volumes:
+  - name: tib-profiles
+    configMap:
+      name: tib-profiles
+```
+
+For profile content, see [SSO into Tyk Dashboard](/5.13/tyk-identity-broker/dashboard-sso), [SSO into Tyk Developer Portal](/5.13/tyk-stack/tyk-developer-portal/enterprise-developer-portal/managing-access/enable-sso), or [Issuing Tokens via TIB](/5.13/api-management/access-control/sessions-and-keys/issuing-tokens-via-tib).
+
+<Note>
+When profiles are loaded from a file, changes made via the [Tyk Identity Broker API](/5.13/tyk-identity-broker/tib-rest-api) are written back to the mounted file. However, changes made directly to the ConfigMap will not take effect until the pod is restarted.
+</Note>
+
+## Starting TIB
+
+TIB is started from the command line with two configurable options:
+
+- **Configuration**: via `tib.conf` (pass the path with `-c`, defaults to `tib.conf` in the current directory) or [environment variables](/5.13/tyk-configuration-reference/tyk-identity-broker-configuration). See [Configuration](/5.13/#configuration).
+- **Profile location**: from a file (pass the path with `-p`, defaults to `profiles.json` in the current directory) or from MongoDB. See [Profile Storage](/5.13/#profile-storage).
+
+For file-based profile storage:
+
+```bash
+./tyk-identity-broker -c /path/to/tib.conf -p /path/to/profiles.json
+```
+
+For MongoDB profile storage, the `-p` flag is not required:
+
+```bash
+./tyk-identity-broker -c /path/to/tib.conf
+```
+
+## Configuration
+
+TIB is configured via the `tib.conf` configuration file. All settings can alternatively be provided as environment variables. One exception: the [Session Cookie Secret](/5.13/#session-cookie-secret) must always be set as an environment variable and cannot be configured in `tib.conf`.
+
+<Note>
+Environment variables are always applied and take precedence over values in `tib.conf`. Set [`TYK_IB_OMITCONFIGFILE=true`](/5.13/tyk-configuration-reference/tyk-identity-broker-configuration#omitting-the-configuration-file) if you want to ensure no values from a config file are used at all - useful in containerized deployments where configuration is managed entirely via environment variables.
+</Note>
+
+### Management API Secret
+
+The `Secret` field sets the secret used to authenticate requests to the [Tyk Identity Broker API](/5.13/tyk-identity-broker/tib-rest-api). This is required.
+
+```json
+{
+  "Secret": "{tib-api-secret}"
+}
+```
+
+### TLS
+
+The `HttpServerOptions` section controls how TIB listens for incoming requests. SSL (TLS) is strongly recommended for production deployments.
+
+```json
+{
+  "HttpServerOptions": {
+    "UseSSL": true,
+    "CertFile": "./certs/server.pem",
+    "KeyFile": "./certs/server.key"
+  }
+}
+```
+
+### Profile Storage
+
+Tyk Identity Broker can load [profiles](/5.13/tyk-identity-broker/overview#profile) from either a local file or from a MongoDB instance. After being loaded, profiles are held in memory at runtime regardless of the storage type. After every create, update, or delete operation via the Tyk Identity Broker API, TIB writes the updated profile set back to the source.
+
+**Local Storage**
+
+The default behavior is to load profiles from the file specified by the `-p` flag on startup.
+
+Any updates to the profiles are written back to the same file.
+
+<Note>
+Configure [`ProfileDir`](/5.13/tyk-configuration-reference/tyk-identity-broker-configuration#profiledir) with a directory path where timestamped backups of the previous `profiles.json` will be created before the file is overwritten. This prevents data loss if a write fails or profiles need to be rolled back.
+</Note>
+
+Changes made via the [Tyk Identity Broker API](/5.13/tyk-identity-broker/tib-rest-api) take effect immediately; TIB updates its in-memory store and writes the change back to `profiles.json` without requiring a restart. If you edit `profiles.json` directly on disk, TIB must be restarted to pick up the changes.
+
+**MongoDB Storage**
+
+To load profiles from MongoDB instead, add a [`Storage`](/5.13/tyk-configuration-reference/tyk-identity-broker-configuration#storage) block to the TIB config. Only `mongo_url` and `db_name` are required:
+
+```json
+{
+  "Storage": {
+    "storage_type": "mongo",
+    "mongo": {
+      "mongo_url": "mongodb://localhost:27017",
+      "db_name": "tib"
+    }
+  }
+}
+```
+
+The following optional settings are also available:
+
+| Field | Description |
+|---|---|
+| `mongo_use_ssl` | Set to `true` to enable TLS for the MongoDB connection. TIB will verify the server certificate against system CAs. |
+| `mongo_ssl_insecure_skip_verify` | Skip TLS certificate verification. Not recommended for production. |
+| `session_consistency` | MongoDB session consistency level. |
+| `driver` | MongoDB driver to use: `mongo-go` (default) or `mgo`. |
+| `direct_connection` | Set to `true` to connect directly to a single MongoDB host, bypassing replica set discovery. |
+
+Any updates to the profiles are written back to the MongoDB collection.
+
+### Identity Cache
+
+TIB uses Redis to cache the one-token-per-user mapping for API token generation. The connection is configured via the `BackEnd.IdentityBackendSettings` block and is required regardless of how profiles are stored.
+
+For a single Redis server, only `Host` and `Port` are required:
+
+```json
+{
+  "BackEnd": {
+    "IdentityBackendSettings": {
+      "Host": "localhost",
+      "Port": 6379
+    }
+  }
+}
+```
+
+The following optional settings are also available:
+
+| Field | Description |
+|---|---|
+| `Password` | Redis authentication password. |
+| `Username` | Redis 6+ ACL username. |
+| `Database` | Redis database index. Defaults to `0`. |
+| `MaxActive` | Maximum number of connections in the pool per node. Defaults to 500. |
+| `Timeout` | Timeout in seconds applied to dial, read, and write operations. Defaults to 5 seconds. |
+| `Addrs` | List of `host:port` addresses. Use instead of `Host`/`Port` for Redis Cluster or Sentinel. |
+| `EnableCluster` | Set to `true` to enable Redis Cluster mode. |
+| `MasterName` | Redis Sentinel master name. |
+| `SentinelPassword` | Redis Sentinel authentication password. |
+| `UseSSL` | Set to `true` to enable TLS. Server certificate is verified against system CAs by default. |
+| `CAFile` | Path to a custom CA certificate file. Use when the Redis server uses a self-signed or private CA certificate. |
+| `CertFile` | Path to the client certificate file. Set together with `KeyFile` to enable mutual TLS (mTLS). |
+| `KeyFile` | Path to the client key file. Set together with `CertFile` to enable mutual TLS (mTLS). |
+| `SSLInsecureSkipVerify` | Skip TLS certificate verification. Not recommended for production. |
+| `MinVersion` | Minimum TLS version. Defaults to `1.2`. Valid values: `1.0`, `1.1`, `1.2`, `1.3`. |
+| `MaxVersion` | Maximum TLS version. Defaults to `1.3`. Valid values: `1.0`, `1.1`, `1.2`, `1.3`. |
+
+### Tyk Dashboard Connection
+
+Required for the [`GenerateTemporaryAuthToken`](/5.13/api-management/access-control/sessions-and-keys/issuing-tokens-via-tib) action, which calls the Tyk Dashboard API to generate auth keys. Configure the `DashboardConfig` block within `TykAPISettings`:
+
+```json
+{
+  "TykAPISettings": {
+    "DashboardConfig": {
+      "Endpoint": "http://{dashboard-host}",
+      "Port": "3000",
+      "AdminSecret": "{dashboard-admin-secret}"
+    }
+  }
+}
+```
+
+### Tyk Gateway Connection
+
+Required for the [`GenerateOAuthTokenForClient`](/5.13/api-management/access-control/sessions-and-keys/issuing-tokens-via-tib) action, which calls the Tyk Gateway OAuth endpoint directly to issue OAuth 2.0 tokens. Configure the `GatewayConfig` block within `TykAPISettings`:
+
+```json
+{
+  "TykAPISettings": {
+    "GatewayConfig": {
+      "Endpoint": "http://{gateway-host}",
+      "Port": "8080",
+      "AdminSecret": "{gateway-admin-secret}"
+    }
+  }
+}
+```
+
+For the full configuration reference including all fields and their environment variable equivalents, see [Tyk Identity Broker Configuration](/5.13/tyk-configuration-reference/tyk-identity-broker-configuration).
+
+### Session Cookie Secret
+
+When using redirect-based methods (`SocialProvider` or `SAMLProvider`), TIB [signs the session cookie](/5.13/tyk-identity-broker/overview#redirect-session-cookie) using a secret set via the `TYK_IB_SESSION_SECRET` environment variable:
+
+```bash
+export TYK_IB_SESSION_SECRET='your-session-secret'
+```
+
+Use a randomly generated string of 32 or 64 bytes. This should always be set explicitly for standalone deployments.
+

@@ -1,0 +1,57 @@
+---
+title: "Session Metadata"
+description: "Understand what session metadata is, how it can be used, and where it can be modified and accessed."
+keywords: "Session, Metadata, Context Variables, Identity Propagation, Dynamic Routing"
+sidebarTitle: "Session Metadata"
+canonical: "https://tyk.io/docs/api-management/access-control/sessions-and-keys/session-metadata"
+---
+
+## Introduction
+
+While standard Session fields handle access rights, rate limits, and quotas, Tyk also provides a flexible key-value store attached directly to the Session object known as Session Metadata (`meta_data`).
+
+<Note>
+**Key vs. Session**
+
+While Tyk's APIs and UI often refer to adding metadata to a "Key", the metadata is actually stored on the underlying **Session**. The Key is simply the credential or identifier used by the client to look up this Session.
+</Note>
+
+Metadata allows you to store custom, user-specific, or application-specific context. This data persists with the Session and is loaded into memory whenever the Key is used to authenticate a request, making it instantly available during the request lifecycle.
+
+## Use Cases
+
+Metadata is primarily used to make user-specific data available to Tyk middleware when handling a request without requiring additional database lookups. Common use cases include:
+
+- **Identity Propagation:** Storing a `user_id`, `tenant_id`, or `account_id` in the Session metadata and injecting it into upstream headers so your backend service knows exactly who is making the request.
+- **Dynamic Routing:** Using metadata values in [URL Rewrites](/5.13/transform-traffic/url-rewriting) to route users to specific backend shards, geographic regions, or pricing tiers.
+- **Custom Plugin Logic:** Passing custom attributes (like user roles, subscription levels, or feature flags) to [custom plugins](/5.13/api-management/plugins/overview) to make dynamic authorization or transformation decisions.
+
+## Where it can be modified
+
+Session metadata can be set or updated in several locations:
+
+- **Session creation and update:** You can directly update the `meta_data` field (a JSON object) in the Session object when creating or updating a Session
+    - via the Dashboard API
+    - via the Gateway API
+    - via the Dashboard UI
+- **Applying Policies** Sessions can inherit metadata from [Policies](/5.13/api-management/policies).
+- **Dynamic plugins:** Custom plugins (JSVM, Coprocess/gRPC) can dynamically modify the metadata during the request lifecycle. If a plugin modifies the metadata, Tyk automatically saves the updated Session back to the Redis store.
+- **OAuth flow:** When generating an OAuth token, any `meta_data` configured on the OAuth Client is automatically copied into the generated Session's `meta_data`.
+
+## Where it can be accessed
+
+Metadata stored in the Session can be accessed dynamically during the request lifecycle in several ways:
+
+- **Middleware:** Some middleware have access to Session metadata using the `$tyk_meta.KEY_NAME` variable syntax. This is evaluated in the same way as [request context variables](/5.13/api-management/traffic-transformation/request-context-variables), with the Gateway replacing this reference with the corresponding value from the Session metadata in the following middleware:
+    - [URL Rewrite](/5.13/transform-traffic/url-rewriting#the-rewrite-target)
+    - [Request Header Transform](/5.13/api-management/traffic-transformation/request-headers#injecting-dynamic-data-into-headers)
+    - [Response Header Transform](/5.13/api-management/traffic-transformation/response-headers#injecting-dynamic-data-into-headers)
+    - [Request Body Transform](/5.13/api-management/traffic-transformation/request-body#data-accessible-to-the-middleware)
+    - [Response Body Transform](/5.13/api-management/traffic-transformation/response-body#data-accessible-to-the-middleware)
+    - [Rate Limiting](/5.13/api-management/rate-limit#how-custom-rate-limiting-works)
+    - [Signed Auth Token](/5.13/api-management/authentication/bearer-token#auth-token-with-signature)
+    - GraphQL & Persisted Queries
+- **Go Templates:** In Body Transform and Response Body Transform middleware, if EnableSession is true, metadata is injected into the template context and can be accessed using `{{ ._tyk_meta.KEY_NAME }}`.
+- **JSVM Plugins & Virtual Endpoints:** The session object is passed as a JSON argument to your JavaScript functions. Metadata is accessible via session.meta_data.
+- **Custom Go Plugins:** Go plugins can extract the session state from the request context (post-authentication) and directly read from or write to the MetaData map.
+- **Coprocess Plugins (gRPC, Python, etc.):** The session object is passed within the Coprocess request object, and metadata is accessible via Session.Metadata.
