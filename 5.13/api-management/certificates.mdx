@@ -1,0 +1,247 @@
+---
+title: "TLS and Certificate Management"
+description: "Transport Layer Security and Tyk Certificate Store"
+keywords: "Transport Layer Security, TLS, SSL, mTLS, mutual TLS, Security, Certificate, Pinning, Certificate Authority, Tyk Certificate Store"
+order: 2
+sidebarTitle: "TLS and Certificate Management"
+canonical: "https://tyk.io/docs/api-management/certificates"
+---
+
+## Introduction
+
+Modern web applications require secure communication to protect sensitive data from eavesdropping and tampering. Transport Layer Security (TLS) is the foundation of secure internet communication, and Tyk provides comprehensive TLS support for both client-facing APIs and backend service communication.
+
+## Understanding Secure Communication
+
+<img src="/img/diagrams/certificates-insecure-secure.png" alt="Insecure and Secure Communication" />
+
+### The Problem: Insecure Communication
+
+Without encryption, network communication faces several risks:
+
+- **Eavesdropping**: Anyone can read your data as it travels across networks
+- **Tampering**: Attackers can modify data in transit without detection
+- **Impersonation**: Malicious actors can pretend to be legitimate servers or clients
+
+### The Solution: Transport Layer Security (TLS)
+
+**TLS (Transport Layer Security)** is a cryptographic protocol that solves these problems by providing:
+
+- **Confidentiality**: Encrypts data so only intended recipients can read it
+- **Integrity**: Ensures data hasn't been modified during transmission
+- **Authentication**: Verifies the identity of communicating parties
+
+TLS is the "S" in HTTPS and secures billions of web transactions daily.
+
+#### TLS or SSL
+
+SSL (Secure Sockets Layer) is the older version of TLS, which is now the standard for secure web communication. TLS uses stronger encryption and better key management. All SSL and earlier TLS versions (1.0, 1.1) are deprecated. Today, "SSL" usually refers to TLS, especially versions 1.2 and 1.3, which are secure.
+
+## Fundamentals of Public Key Cryptography
+
+Transport Layer Security uses public key cryptography. This is an asymmetric method in which each communicating party possesses a unique key pair: a private key for decryption and a public key for encryption, enabling secure communication.
+
+### Encryption Keys
+
+A key is a specific value used within a cryptographic algorithm to encrypt data into an unreadable format and decrypt it back to its original state with the correct key using a defined algorithm.
+
+With public key cryptography, there are two different keys:
+- the *private key* is held by the originator of the message and is kept private
+- the *public key* is shared with the recipient of the message
+
+A key exchange algorithm, such as RSA, uses the public-private key pair to agree upon session keys, which are used for symmetric encryption once the handshake is complete.
+
+[DIAGRAM: Public Key Encryption] Visual representation of asymmetric encryption with Party A using Party B's public key to encrypt, Party B using their private key to decrypt. Visual flow arrows showing the data encryption/decryption process
+
+### Digital Certificates
+
+<img src="/img/diagrams/certificates-x509-certificate.png" alt="X.509 Digital Certificate" />
+
+The public key is usually shared in the form of an [X.509](https://datatracker.ietf.org/doc/html/rfc5280) *digital certificate*. This is like a digital passport or driver's license. It's an electronic document that proves identity and contains the elements shown above. The certificate is itself *signed* using the private key owned by an entity that is trusted by both parties, known as a *Certificate Authority*.
+
+<Note>
+    Various signature algorithms are available for signing certificates. The chosen algorithm can affect performance, as some are easier for Tyk to verify than others. Generally, elliptic curve algorithms offer better performance on average, but actual results may vary depending on CPU architecture. It is recommended to test and determine the most suitable balance between security and performance for specific needs.
+</Note>
+
+### Certificate Authorities (CAs)
+
+<img src="/img/diagrams/certificates-ca-trust-store.png" alt="Certificate Authorities and Trust Store" />
+
+Certificate Authorities are organizations trusted to issue digital certificates. Their role is analogous to that of government agencies that issue official identification documents.
+
+Popular Certificate Authorities include:
+- Let's Encrypt: Free, automated certificates
+- DigiCert: Enterprise-grade certificates
+- GlobalSign: International CA with global presence
+- Internal CAs: Organizations can run their own CAs for internal use (self-signed certificates)
+
+### Certificate Chains and Trust
+
+<img src="/img/diagrams/certificates-trust-chain.png" alt="Certificate Trust Chain" />
+
+The recipient checks the certificate by following a chain of trust up to a recognized root CA, verifying each signature along the way.
+
+
+## Fundamentals of Transport Layer Security
+
+### Standard TLS: Server Authentication
+
+<img src="/img/diagrams/certificates-tls-handshake.png" alt="TLS Handshake" />
+
+In typical HTTPS connections, only the **server** proves its identity through this one-way authentication process.
+
+### Mutual TLS (mTLS): Two-Way Authentication
+
+<img src="/img/diagrams/certificates-mtls-handshake.png" alt="Mutual TLS Handshake" />
+
+Mutual TLS (mTLS) extends TLS with two-way authentication, meaning both sides verify their identities by exchanging certificates.
+
+This provides stronger security because:
+
+- The server knows that the client is who they claim to be
+- The client knows that the server is legitimate
+- Both parties are cryptographically verified
+
+
+## Certificate Management
+
+The Tyk Dashboard offers a Certificate Management API to register certificates for Gateway use with unique IDs for reference in configurations.
+
+For Tyk OSS users, the Tyk Gateway also exposes a basic Certificate Management API.
+
+A legacy approach allows using local file-system certificates as long as the Gateway can read the files anywhere in the system. When using the file-system, references to certificates are made using the path to the certificate's `.pem` file.
+
+### Tyk Certificate Store
+
+The Tyk Certificate Store centralizes certificates within Tyk's data layer for use by multiple APIs, managed through the Dashboard API.
+
+In licensed Tyk installations, the Dashboard manages certificates, storing them in the Control Plane Redis and syncing them to the Data Plane Redis for the Gateway.
+
+In a Tyk OSS installation, there is no Dashboard/Control Plane. The Gateway manages the certificates directly, storing them in Redis.
+
+### Certificate ID and Redis key
+
+When a certificate is added, it gets a unique **certificate ID**, used to refer to it, such as when linking to an API. This ID combines the `orgID` and the certificate's SHA-256 hash. In Redis, it is stored under `cert-raw-` plus the certificate ID.
+
+This means that certificate IDs are predictable and can be calculated if you know the Organisation ID and have the certificate file. You can generate the SHA256 fingerprint using the following command:
+
+```
+openssl x509 -noout -fingerprint -sha256 -inform pem -in <cert>
+```
+
+<img src="/img/diagrams/certificates-add-to-store.png" alt="Tyk Certificate ID" />
+
+<Note>
+  Notice that you can’t retrieve the raw certificate from just the certificate ID and that this is a unique identifier.
+</Note>
+
+### Certificate data
+
+The data stored against a certificateID is the [PEM-encoded](https://en.wikipedia.org/wiki/Privacy-Enhanced_Mail) certificate chain data, comprising:
+
+1. The Certificate(s):
+    - The primary X.509 certificate
+    - Any intermediate certificates in the chain
+2. Encrypted Private Key (if provided):
+    - If a private key was included with the certificate, it's encrypted using AES-256
+    - The encryption uses the `private_certificate_encoding_secret` from your Tyk configuration
+    - The encrypted key is appended to the certificate chain with the header `ENCRYPTED PRIVATE KEY`
+
+A typical certificate with a private key would be stored as:
+```
+-----BEGIN CERTIFICATE-----
+MIIDazCCAlOgAwIBAgIUJhdB...
+... (certificate data) ...
+-----END CERTIFICATE-----
+
+-----BEGIN ENCRYPTED PRIVATE KEY-----
+MIIFHDBOBgkqhkiG9w0BBQ0w...
+... (encrypted private key data) ...
+-----END ENCRYPTED PRIVATE KEY-----
+```
+
+#### Encryption of the Private Key
+
+If the private key was provided in the imported PEM file, it will be encrypted using the AES-256 algorithm with an encryption key that you must set in the Gateway, Dashboard, and MDCB configurations (if used).
+
+- **Gateway**: [`TYK_GW_SECURITY_PRIVATECERTIFICATEENCODINGSECRET`](/5.13/tyk-oss-gateway/configuration#security-private_certificate_encoding_secret)
+- **Dashboard**: [`TYK_DB_SECURITY_PRIVATECERTIFICATEENCODINGSECRET`](/5.13/tyk-dashboard/configuration#security-private_certificate_encoding_secret)
+- **MDCB**: [`TYK_MDCB_SECURITY_PRIVATECERTIFICATEENCODINGSECRET`](/5.13/tyk-multi-data-centre/mdcb-configuration-options#security-private_certificate_encoding_secret)
+
+It is essential that these secrets match so that the Gateway can decrypt the key when required during a TLS handshake.
+
+<Note>
+    It is important to keep the shared secret secure.
+</Note>
+
+#### Standalone Public Key
+
+Stand-alone public keys (not contained within a certificate) are sometimes used for upstream certificate pinning or JWT verification.
+
+If only the public key were provided, rather than the certificate containing that key, then just the PEM-encoded public key would be stored against the certificateID, for example:
+
+```
+-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...
+-----END PUBLIC KEY-----
+```
+
+### Monitoring Certificate Expiry
+
+X.509 certificates have a validity period with both start and end timestamps outside which they will not be accepted in the TLS handshake.
+
+Tyk Gateway checks the validity of each certificate when it is used in an API request and will generate both an error log and a [Gateway event](/5.13/api-management/gateway-events#certificate-expiry-events) if an attempt is made to use an expired certificate (after its `notAfter` timestamp).
+
+An optional warning can be configured to generate a log and Gateway event if a certificate is used within a configurable window before the `notAfter` timestamp.
+
+- `CertificateExpired`: an expired certificate has been used in a request
+- `CertificateExpiringSoon`: a certificate has been used within the expiry threshold window
+
+The behavior of this Certificate Expiry Monitor is configured at the Gateway level using the following fields in the [`security.certificate_expiry_monitor`](/5.13/tyk-oss-gateway/configuration#security-certificate_expiry_monitor) section of the Gateway configuration (or equivalent environment variables):
+
+| Field | Effect |
+|-------|--------|
+| `warning_threshold_days` | The number of days before certificate expiry that the Gateway will start generating CertificateExpiringSoon events when the certificate is used |
+| `check_cooldown_seconds` | A cool-off period after checking a certificate's expiry before another check is made, to avoid unnecessary log generation when an API is called repeatedly |
+| `event_cooldown_seconds` | A cool-off period after generating `CertificateExpired` or `CertificateExpiringSoon` for a certificate, to avoid unnecessary event generation when an API is called repeatedly |
+
+Note that the certificate expiry monitor is reactive and only checks for certificate expiry when the certificate is used; it will not flag impending expiry or expired certificates if they are not actively used.
+
+[Event handlers](/5.13/api-management/gateway-events#handling-events-with-tyk) can be configured at the API level to respond to Gateway event generation.
+
+### Tyk Certificate Store API
+
+The Tyk Dashboard API exposes endpoints to manage the Tyk Certificate Store allowing you to:
+
+- [Register](https://tyk.io/docs/api-reference/certificates/create-a-certificate-in-tyk-org-cert-store) a new certificate with the store
+    - provide either a PEM-encoded certificate (optionally concatenated with PEM-encoded private key) or a PEM-encoded public key
+    - This returns the assigned certificate ID
+- [Retrieve](https://tyk.io/docs/api-reference/certificates/get-single-certificate-with-id) details of a specific entry in the store
+    - provide a certificate ID
+    - This returns metadata including the certificate issuer, whether there is a private key and the certificate fingerprint (SHA256 hash of the certificate)
+- [Retrieve](https://tyk.io/docs/api-reference/certificates/list-certificates) a list of all certificates in the store
+- [Delete](https://tyk.io/docs/api-reference/certificates/delete-certificate) a certificate from the store
+- [Retrieve](https://tyk.io/docs/api-reference/certificates/list-apis-lined-to-a-certificate) a list of APIs that are using a certificate
+
+There is a similar API exposed by [Tyk Gateway](https://tyk.io/docs/api-reference/certs/list-certificates), for use in Tyk OSS installations to manage the certificates stored in Redis. This does not include the advanced functionality for identifying the APIs that use each certificate.
+
+### Managing Certificates using the Dashboard UI
+
+The Tyk Dashboard provides a visual interface to the Tyk Certificate Store via the **API Security > TLS/SSL Certificates** screen.
+
+<img src="/img/dashboard/certificate-manager/certificates-tyk-certificate-store.png" alt="Dashboard listing content of Tyk Certificate Store" />
+
+This screen displays a list of certificates registered in the store; any for which the [certificate expiry monitor](/5.13/api-management/certificates#monitoring-certificate-expiry) has generated an event will be highlighted with a warning or error symbol; a banner will be displayed to highlight these symbols.
+
+Click on the certificate ID or select **View** from the **Actions** menu to view details of the certificate, including a list of APIs currently using the certificate.
+
+<img src="/img/dashboard/certificate-manager/certificates-cert-details.png" alt="Dashboard showing details of a certificate in the store" />
+
+You can click on the name of an API in this list to go directly to that API in the API Designer. Note that this will list all APIs, even those for which the logged in user does not have [access](/5.13/api-management/user-management#api-ownership). This is to mitigate against the scenario where a certificate is deleted because the user believes it is unused. Users are unable to click through to APIs to which they do not have access.
+
+You can upload a new certificate to the Tyk Certificate Store using the **+ Add Certificate** button.
+
+<img src="/img/dashboard/certificate-manager/certificates-upload-cert.png" alt="Dashboard showing the certificate upload screen" />
+
+Select either a valid PEM-encoded file containing a certificate, or a file containing PEM-encoded certificate concatenated with the PEM-encoded private key, and select **Upload**. If successful, the certificate will be loaded into the Certificate Store and assigned a certificate ID that you can use to associate it with a TLS interaction via API definition or Gateway configuration.
+
