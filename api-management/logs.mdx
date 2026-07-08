@@ -1,26 +1,26 @@
 ---
-title: "Logging in Tyk Gateway"
-description: "Learn different types of logs in Tyk, how to configure them and how to integrate with third-party log management tools for effective API observability."
+title: "Application and Access Logs"
+description: "Learn about the different types of logs in Tyk, how to configure them and how to integrate with third-party log management tools for effective API observability."
 keywords: "Metrics, Traces, Logs, Application Logs, API Traffic, Opentelemetry, Datadog, Dynatrace, New Relic, Elastic Search, Jaeger, Monitoring, Observability"
 sidebarTitle: "Logs"
 ---
 
 A log is a timestamped text record, either structured (recommended) or unstructured, with some metadata.
 
+<Note>
 Tyk logs are written to `stderr`. In a typical installation, these will be handled by the service manager running the process.
+</Note>
 
 ## Types of Logs
 
-Tyk generates three types of logs:
+Tyk generates four types of logs:
 
-- **Application Logs:** Captures internal events of the system, such as health-checks, status, configuration changes, and errors, which are typically used for monitoring and debugging.
-- **Access Logs:** Traditional server logs that record basic information about each request to your API Gateway. <Badge color="orange">Gateway Only</Badge>
-- **404 Logs:** A configuration option in Tyk Gateway that enables logging of HTTP 404 (Not Found) errors. <Badge color="orange">Gateway Only</Badge>
+- **[Application Log](#application-logs):** Internal system events such as health-checks, configuration changes, and errors. Written to `stderr` and consumed by your log aggregator or service manager.
+- **[API Traffic Log](/api-management/tyk-pump#api-traffic-logs):** <Badge color="orange">Gateway</Badge> A record of every API request, written into Redis and processed by Tyk Pump for analytics and reporting. Not written to `stderr`.
+- **[Access Log](#access-logs):** <Badge color="orange">Gateway</Badge> Per-request server logs written to `stderr`, intended for external log aggregators. Similar to API Traffic Logs in that both record individual requests, but Access Logs are lightweight and real-time whereas API Traffic Logs are richer and processed asynchronously.
+- **[Audit Log](/api-management/dashboard-configuration#dashboard-audit-logs):** <Badge color="blue">Dashboard</Badge> A record of user actions in Tyk Dashboard, such as API changes and login events.
 
-
-<Note>
-Tyk Gateway also generates **API Traffic Logs**, which are written into Redis for detailed information about API traffic and analysis. For more information on API Traffic Logs, refer to this [documentation](/api-management/tyk-pump#api-traffic-logs).
-</Note>
+This page covers the configuration and behavior of Application Logs and Access Logs. API Traffic Logs and Dashboard Audit Logs are documented separately.
 
 <Note>
 See [Tyk Pump vs OpenTelemetry](/api-management/observability/pump-vs-opentelemetry) to understand the capability boundaries and choose the right tool for your setup.
@@ -28,36 +28,64 @@ See [Tyk Pump vs OpenTelemetry](/api-management/observability/pump-vs-openteleme
 
 ## Configuring Logs
 
-You can configure log verbosity and format for the following Tyk components:
+Application logs and Tyk Gateway access logs are written to `stderr`. Three aspects can be configured: **verbosity** (which severity levels are written), **format** (the structure and timestamp style of each entry), and **log output** (where logs are sent, for example to a third-party aggregator).
 
-### Log Verbosity
+Both verbosity and format can be controlled globally across all components, or per component for finer control. Global settings take priority over component-specific ones.
 
-Tyk can generate application logs at four levels of verbosity:
-- `error` is the most minimal level of logging, reporting only errors
-- `warn` will log warnings and errors
-- `info` logs errors, warnings and some additional information and is the default logging level
-- `debug` generates a high volume of logs for maximum visibility of what Tyk is doing when you need to debug an issue
+### Global Settings
+
+Two environment variables apply across multiple components and override any component-specific setting:
+
+| Setting | Environment variable | Applies to |
+| :--- | :--- | :--- |
+| Verbosity | `TYK_LOGLEVEL` | All components except Tyk Developer Portal |
+| Format | `TYK_LOGFORMAT` | Tyk Gateway, Tyk Dashboard, Tyk Pump |
+
+### Component Settings
+
+When global variables are not set, each component can be configured individually using environment variables or the equivalent `log_level` and `log_format` settings in its configuration file.
+
+All components default to `info` verbosity and `text` format. Tyk Developer Portal is an exception: it defaults to `prod` format, which is equivalent to `json`.
+
+| Tyk component | Log level env var | Log format env var | Supported formats |
+| :--- | :--- | :--- | :--- |
+| [Tyk Gateway](/tyk-oss-gateway/configuration#log_level) | `TYK_GW_LOGLEVEL` | `TYK_GW_LOGFORMAT` | `text`, `json`, `legacy` |
+| [Tyk Pump](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables#log_level) | `TYK_PMP_LOGLEVEL` | `TYK_PMP_LOGFORMAT` | `text`, `json`, `legacy` |
+| [Tyk Dashboard](/tyk-dashboard/configuration#log_level) | `TYK_DB_LOGLEVEL` (from `v5.14.0`) | `TYK_DB_LOGFORMAT` | `text`, `json` |
+| [Tyk MDCB](/tyk-multi-data-centre/mdcb-configuration-options#log_level) | `TYK_MDCB_LOGLEVEL` | N/A | Legacy text only |
+| [Tyk Developer Portal](/product-stack/tyk-enterprise-developer-portal/deploy/configuration#portal_log_level) | `PORTAL_LOG_LEVEL` | `PORTAL_LOG_FORMAT` | `text`, `json` |
 
 <Note>
+The `legacy` format was introduced in Tyk Gateway 5.14.0 and Tyk Pump 5.14.0 to maintain backward compatibility for existing users with log pipelines reliant on the precise log content. See [legacy format](/api-management/logs#legacy-format).
+</Note>
+
+### Severity and Verbosity
+
+The severity of a log is an indication of its likely importance to the system administrator. The system will generate logs at four different levels of severity:
+
+| Severity | Purpose | Example |
+|:---------|:--------|:--------|
+| Error | Conditions that require immediate attention, such as a component being unreachable or a request failing due to a system fault. | Failed to connect to Redis |
+| Warning | Potential issues or degraded behavior that may require investigation, but do not prevent the system from operating. | Configuration value out of bounds, using default |
+| Information | Normal operational events confirming the system is functioning as expected. This is the default level. | Gateway started, API loaded, access log entries |
+| Debug | Detailed diagnostic output useful for troubleshooting, such as middleware execution steps and request routing decisions. | Middleware execution details |
+
+Each component can individually be configured to output only the logs generated at or above a given severity level by setting the **log level** as follows:
+
+- `error`: only errors are logged
+- `warn`: warnings and errors are logged
+- `info`: errors, warnings, and informational messages are logged (default)
+- `debug`: all of the above, plus detailed diagnostic output
+
+All access logs are written at `info` level. Setting verbosity to `warn` or `error` will suppress generation of access log output.
+
+<Warning>
 Debug log level generates a significant amount of data and is not recommended unless debugging.
-</Note>
+</Warning>
 
-You can set the logging verbosity for each Tyk Component using the appropriate `log_level` setting in its configuration file (or the equivalent environment variable).
+### Format Options
 
-| Tyk component  | Config option | Environment variable | Default value if unset   |
-| :---------------- | :--------------- | :---------------------- | :-------------------------- |
-| Tyk Dashboard | `log_level`  | `TYK_LOGLEVEL`       | `info`                   |
-| [Tyk Gateway](/tyk-oss-gateway/configuration#log_level)   | `log_level`   | `TYK_GW_LOGLEVEL`    | `info`                   |
-| [Tyk Pump](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables#log_level)     | `log_level`   | `TYK_PMP_LOGLEVEL`   | `info`                   |
-| [Tyk Developer Portal](/product-stack/tyk-enterprise-developer-portal/deploy/configuration#portal_log_level) | `logLevel`  | `PORTAL_LOG_LEVEL`   | `info`   |
-
-<Note>
-The `TYK_LOGLEVEL` environment variable is applicable to all Tyk components. If set, it takes priority and overrides any component-specific log level environment variables (such as `TYK_GW_LOGLEVEL` or `TYK_PMP_LOGLEVEL`).
-</Note>
-
-### Log Format
-
-You can configure the format in which logs will be generated; it can be either `text` (default) or `json` (recommended).
+Log format controls the structure and timestamp style of all log output from a component. The supported values are `text` (default), `json` (recommended), and `legacy`.
 
 <Tip>
 As a general performance tip, the `json` output format incurs less memory allocation overhead than the `text` format. For optimal performance, it's recommended to configure logging in the JSON format.
@@ -67,31 +95,76 @@ As a general performance tip, the `json` output format incurs less memory alloca
 <Tab title="Text Format">
 
 ```
-time="Sep 05 09:04:12" level=info msg="Tyk API Gateway v5.6.0" prefix=main
+time="2024-09-05T09:04:12Z" level=info message="Tyk API Gateway v5.14.0" prefix=main
 ```
 
 </Tab>
 <Tab title="JSON Format">
 
 ```json
-{"level":"info","msg":"Tyk API Gateway v5.6.0","prefix":"main","time":"2024-09-05T09:01:23-04:00"}
+{"level":"info","message":"Tyk API Gateway v5.14.0","prefix":"main","time":"2024-09-05T09:04:12Z"}
+```
+
+</Tab>
+<Tab title="Legacy Format">
+
+Preserves the previous timestamp format and `msg` field key:
+
+```
+time="Sep 05 09:04:12" level=info msg="Tyk API Gateway v5.14.0" prefix=main
 ```
 
 </Tab>
 </Tabs>
 
-| Tyk component          | Config option  | Environment variable   | Default value if unset |
-| :--------------------- | :------------- | :--------------------- | :--------------------- |
-| Tyk Gateway (from `v5.6.0`) | log_format   | TYK_GW_LOGFORMAT     | text                 |
-| Tyk Pump               | log_format   | TYK_PMP_LOG_FORMAT   | text                 |
-| Tyk Dashboard (System) | log_format   | TYK_DB_LOGFORMAT     | text                 |
-| Tyk Dashboard (Audit)  | audit.format | TYK_DB_AUDIT_FORMAT  | text                 |
-| Tyk MDCB               | Not Available  | Not Available          | text             |
-| Tyk Developer Portal   | LogFormat    | PORTAL_LOG_FORMAT     | prod (equivalent to json)   |
+#### Legacy Format
 
-<Note>
-The `TYK_LOGFORMAT` environment variable is shared between the Gateway and Dashboard. If set, it takes priority and overrides component-specific log format environment variables (such as `TYK_GW_LOGFORMAT` or `TYK_DB_LOGFORMAT`).
-</Note>
+From Tyk Gateway 5.14.0 and Tyk Pump 5.14.0, the `text` and `json` formats use RFC3339 timestamps and a standardized `message` field.
+
+If your log pipeline relies on the previous timestamp format (`Dec 12 13:50:45`) or the `msg` field key, set `log_format` to `legacy` to preserve the old behavior.
+
+### Log Output
+
+By default, Tyk components write their log output to `stderr`.
+
+Tyk can also forward logs to a third-party aggregator, in addition to `stderr` output, which continues regardless. Tyk Gateway supports Sentry, Logstash, Graylog, and syslog; Tyk Dashboard supports Sentry only. Add the relevant settings to `tyk.conf` for Tyk Gateway, or `tyk_analytics.conf` for Tyk Dashboard (or use the equivalent environment variables):
+
+<Tabs>
+<Tab title="Sentry">
+
+<Badge color="orange">Gateway</Badge> <Badge color="blue">Dashboard</Badge>
+
+- `use_sentry`: Set to `true` to enable output to [Sentry](https://sentry.io/product/logs/).
+- `sentry_code`: The Sentry-assigned DSN (endpoint URL) to which the logs are sent.
+
+</Tab>
+<Tab title="Logstash">
+
+<Badge color="orange">Gateway Only</Badge>
+
+- `use_logstash`: Set to `true` to enable output to [Logstash](https://www.elastic.co/logstash).
+- `logstash_transport`: Set this to `"tcp"`.
+- `logstash_network_addr`: The network address of the Logstash server, in the form `hostname:port`.
+
+</Tab>
+<Tab title="Graylog">
+
+<Badge color="orange">Gateway Only</Badge>
+
+- `use_graylog`: Set to `true` to enable output to [Graylog](https://graylog.org/).
+- `graylog_network_addr`: The network address of the Graylog server, in the form `hostname:port`.
+
+</Tab>
+<Tab title="Syslog">
+
+<Badge color="orange">Gateway Only</Badge>
+
+- `use_syslog`: Set to `true` to enable output to syslog.
+- `syslog_transport`: Set to `"udp"` to send to a remote syslog server, or leave empty to use the local Unix socket.
+- `syslog_network_addr`: The network address of the syslog server, in the form `hostname:port`.
+
+</Tab>
+</Tabs>
 
 ## Application Logs
 
@@ -100,21 +173,51 @@ Application logs capture internal events of the system, such as health-checks, s
 **Example**
 
 ```
-time="Feb 16 22:48:39" level=info msg="Using Policies from Dashboard Service" prefix=main
-time="Feb 16 22:48:39" level=info msg="Calling dashboard service for policy list" prefix=policy
-time="Feb 16 22:48:39" level=info msg="Processing policy list" prefix=policy
-time="Feb 16 22:48:39" level=info msg="Policies found (5 total):" prefix=main
+time="2025-02-16T22:48:39Z" level=info message="Using Policies from Dashboard Service" prefix=main
+time="2025-02-16T22:48:39Z" level=info message="Calling dashboard service for policy list" prefix=policy
+time="2025-02-16T22:48:39Z" level=info message="Processing policy list" prefix=policy
+time="2025-02-16T22:48:39Z" level=info message="Policies found (5 total):" prefix=main
 ```
 
-### Trace and Span IDs in Application Logs
+### OpenTelemetry Trace and Span IDs
 
-When OpenTelemetry tracing is enabled, Tyk Gateway automatically injects `trace_id` and `span_id` fields into all request-scoped application log entries — including middleware execution, error handling, and debug output. This lets you correlate an application log line with the corresponding span in your distributed trace.
+<Badge color="orange">Gateway Only</Badge>
+
+When OpenTelemetry tracing is enabled, Tyk Gateway automatically injects `trace_id` and `span_id` fields into all request-scoped application log entries, including middleware execution, error handling, and debug output. This lets you correlate an application log line with the corresponding span in your distributed trace.
 
 ```
-time="Feb 16 22:48:39" level=error msg="Rate limit exceeded" prefix=rate-limit api_id=b1a41c9a89984ffd7bb7d4e3c6844ded trace_id=4bf92f3577b34da6a3ce929d0e0e4736 span_id=00f067aa0ba902b7
+time="2025-02-16T22:48:39Z" level=error message="Rate limit exceeded" prefix=rate-limit api_id=b1a41c9a89984ffd7bb7d4e3c6844ded trace_id=4bf92f3577b34da6a3ce929d0e0e4736 span_id=00f067aa0ba902b7
 ```
 
 Non-request-scoped entries (startup, configuration reload, health-checks) do not carry trace or span IDs because they are not associated with a specific request.
+
+### Tracking HTTP 404 Errors
+
+<Badge color="orange">Gateway Only</Badge>
+
+By default, requests that do not match any configured API listen path return HTTP 404 and are not logged. Because these requests never enter the proxy pipeline, they are not recorded in Access Logs or API Traffic Logs, which only cover requests that are routed and processed by the Gateway.
+
+To track them in the application log, set [`track_404_logs`](/tyk-oss-gateway/configuration#track_404_logs) to `true` in `tyk.conf` (or the equivalent environment variable).
+
+When enabled, a log entry is written at `error` level for each unmatched request.
+
+From **Tyk Gateway 5.14.0**, the entry includes a `host` field when using the `text` or `json` log format. Because Tyk Gateway exposes both a proxy API and a control API, and these can be [configured on a separate hostname and port](/planning-for-production#change-your-control-port), the `host` field identifies which one received the unmatched request:
+
+```
+time="2025-07-15T10:25:30Z" level=error message="Not Found" prefix=gateway request="GET /nonexistent/path HTTP/1.1" origin=192.168.1.5:54321 host=api.example.com:9696
+```
+
+In `legacy` format, the `host` field is omitted:
+
+```
+time="Jul 15 10:25:30" level=error msg="Not Found" prefix=gateway request="GET /nonexistent/path HTTP/1.1" origin=192.168.1.5:54321
+```
+
+### Event Log Handlers
+
+<Badge color="orange">Gateway Only</Badge>
+
+[Event log handlers](/api-management/gateway-events#logging-api-events) can be registered against Gateway events to write a log entry each time a specific event fires, such as an authentication failure or rate limit being exceeded.
 
 ## Access Logs
 
@@ -307,7 +410,7 @@ time="Jan 29 08:27:48" level=info api_id=b1a41c9a89984ffd7bb7d4e3c6844ded api_ke
 
 ### Error Classification
 
-Access logs automatically include structured error classification fields for failed requests. These fields help developers quickly identify root causes, such as TLS certificate expiry, connection refusal, rate limiting, or authentication errors—directly from the access log without cross referencing application or API Traffic Logs.
+Access logs automatically include structured error classification fields for failed requests. These fields help developers quickly identify root causes, such as TLS certificate expiry, connection refusal, rate limiting, or authentication errors, directly from the access log without cross-referencing application or API Traffic Logs.
 
 <Note>
 Error classification fields appear only when errors occur; successful requests do not include them.
@@ -329,7 +432,7 @@ Error classification fields appear only when errors occur; successful requests d
 <Note>
 Fields with empty or zero values are omitted from the log entry rather than being set to empty strings or zero. This keeps successful request logs unchanged and error logs concise.
 </Note>
-#### Response flags: Upstream and proxy errors (5XX)
+#### Response Flags: Upstream and Proxy Errors (5XX)
 
 These flags indicate errors occurring when the gateway proxies requests to the upstream service.
 
@@ -354,7 +457,7 @@ These flags indicate errors occurring when the gateway proxies requests to the u
 | `URS` | Upstream Response 5XX | 5XX | The upstream returned a 5XX status code |
 | `UPE` | Upstream Error | 5XX | A generic upstream error that did not match a specific pattern |
 
-#### Response flags: Gateway errors (4XX)
+#### Response Flags: Gateway Errors (4XX)
 
 These flags indicate errors within the gateway's middleware pipeline before the request reaches the upstream. The `error_source` field identifies the middleware that rejected the request.
 
@@ -569,98 +672,19 @@ Note that JSON-RPC errors are typically returned with HTTP 200 (as per the JSON-
 
 Enabling access logs introduces some performance overhead:
 
-- **Latency:** Increases consistently by approximately 4%–13%, depending on CPU allocation and configuration.
-- **Memory Usage:** Memory consumption increases by approximately 6%–7%.
-- **Allocations:** The number of memory allocations increases by approximately 5%–6%.
+- **Latency:** Increases consistently by approximately 4%-13%, depending on CPU allocation and configuration.
+- **Memory Usage:** Memory consumption increases by approximately 6%-7%.
+- **Allocations:** The number of memory allocations increases by approximately 5%-6%.
 
 <Note>
 While the overhead of enabling access logs is noticeable, the impact is relatively modest. These findings suggest the performance trade-off may be acceptable depending on the criticality of logging to your application.
 </Note>
 
-## track_404_logs
-
-<Badge color="orange">Gateway Only</Badge>
-
-The [track_404_logs](/tyk-oss-gateway/configuration#track_404_logs) is a configuration in Tyk Gateway. When you set it to `true`, the gateway will log all incoming HTTP requests that result in a 404 `Not Found` error because they don't match any of your configured API listen paths.
-
-<Note> 
-Currently, users can track 404 traffic through the gateway only using this method. Access logs and Tyk Pump’s API traffic logs do not include 404 traffic. 
-</Note>
-
-### Configuration
-
-You can enable this feature by setting the [track_404_logs](/tyk-oss-gateway/configuration#track_404_logs) option to `true` in your `tyk.conf` file or by setting the [TYK_GW_TRACK404LOGS](/tyk-oss-gateway/configuration#track_404_logs) environment variable to `true`.
-
-**Example**
-
-```
-time="2023-07-15T10:25:30Z" level=error msg="Not Found" prefix=gateway request="GET /nonexistent/path HTTP/1.1" origin=192.168.1.5:54321
-```
-
-## Register Custom Log Handlers
-
-<Badge color="orange">Gateway Only</Badge>
-
-[Custom logging event handlers](/api-management/gateway-events#logging-api-events) can be registered against **Gateway events** to customise the logs that are generated for those events.
-
-## Exporting Logs
-
-<Badge color="orange">Gateway Only</Badge>
-
-Tyk Gateway can be configured to send log data to a range of 3rd party tools for aggregation and analysis.
-
-<Tabs>
-<Tab title="Sentry">
-
-To enable Sentry as a log aggregator, update these settings in both your `tyk.conf` and your `tyk_analytics.conf`:
-
-*   `use_sentry`: Set this to `true` to enable the Sentry logger, you must specify a Sentry DSN under `sentry_code`.
-
-*   `sentry_code`: The Sentry-assigned DSN (a kind of URL endpoint) that Tyk can send log data to.
-
-</Tab>
-
-<Tab title="Logstash">
-
-To enable Logstash as a log aggregator, update these settings in your `tyk.conf`:
-
-*   `use_logstash`: Set this to `true` to enable the Logstash logger.
-
-*   `logstash_transport`: The Logstash transport to use, should be `"tcp"`.
-
-*   `logstash_network_addr`: Set to the Logstash client network address, should be in the form of `hostname:port`.
-
-</Tab>
-
-<Tab title="Graylog">
-
-
-To enable Graylog as a log aggregator, update these settings in your `tyk.conf`:
-
-*   `use_graylog`: Set this to `true` to enable the Graylog logger.
-
-*   `graylog_network_addr`: The Graylog client address in the form of `<graylog_ip>:<graylog_port>`.
-
-</Tab>
-
-<Tab title="Syslog">
-
-To enable Syslog as a log aggregator, update these settings in your `tyk.conf`:
-
-*   `use_syslog`: Set this to `true` to enable the Syslog logger.
-
-*   `syslog_transport`: The Syslog transport to use, should be `"udp"` or empty.
-
-*   `syslog_network_addr`: Set to the Syslog client network address, should be in the form of `hostname:port`
-
-</Tab>
-</Tabs>
-
 ## Troubleshooting
 
 <AccordionGroup>
 
-<Accordion title='Distinguishing connection errors from upstream response errors'>
+<Accordion title='Distinguishing Connection Errors from Upstream Response Errors'>
 
 A common troubleshooting question is whether the upstream received the request or if the connection itself failed. The error classification fields make this distinction clear:
 
