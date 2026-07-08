@@ -225,6 +225,8 @@ The `info`, `server`, and `upstream` sections work identically to a standard Tyk
 
 There are no MCP-specific fields in these three sections. You configure authentication, TLS, load balancing, upstream rate limits, and all other standard gateway capabilities exactly as you would for a REST API. See [Tyk OAS](/nightly/api-management/gateway-config-tyk-oas) for the full field reference for these sections.
 
+The example above uses `bearerAuth` as the security scheme — a simple bearer token check. For full OAuth 2.1 compliance (token validation, scope enforcement, Protected Resource Metadata, and token exchange), use the `oauth2` scheme instead. See [MCP OAuth 2.1](/nightly/ai-management/mcp-gateway/oauth-2-1).
+
 ### The middleware section
 
 The `middleware` section is where MCP OAS definitions diverge from standard Tyk OAS API definitions. It contains the same `global` block for API-wide middleware, but adds two new concepts: an `operations` map keyed by JSON-RPC method, and three primitive maps: `mcpTools`, `mcpResources`, and `mcpPrompts`.
@@ -358,9 +360,10 @@ When a request arrives, Tyk evaluates middleware in this order:
 
 1. **Global middleware**: Applies to all requests on the API.
 2. **Operation middleware** (`operations`): Applies to all requests for the matched JSON-RPC method.
-3. **Primitive middleware** (`mcpTools`, `mcpResources`, or `mcpPrompts`): Applies to the specific named tool, resource, or prompt.
+3. **Primitive middleware** (`mcpTools`, `mcpResources`, or `mcpPrompts`): Applies to the specific named tool, resource, or prompt. Scope check (`scopeCheck`) and token exchange (`exchange`) run at this level — scope check validates the inbound token's scopes against the primitive's `security:` requirements, and token exchange replaces the `Authorization` header before the request reaches the upstream.
+4. **Upstream proxy**: The modified request is forwarded to the upstream MCP server.
 
-All three levels can be active simultaneously. A `tools/call` request to `execute-query` must pass global middleware, then the `tools/callPOST` operation middleware, then the `execute-query` primitive middleware, in that order. If any level rejects the request, processing stops and Tyk returns a JSON-RPC error to the client.
+All three middleware levels can be active simultaneously. A `tools/call` request to `execute-query` must pass global middleware, then the `tools/callPOST` operation middleware, then the `execute-query` primitive middleware, in that order. If any level rejects the request, processing stops and Tyk returns a JSON-RPC error to the client.
 
 All three middleware levels apply to all consumers of the proxy. For per-consumer control (different rate limits or tool access for different API keys), use security policies. Policies introduce a five-level rate limit hierarchy (including per-consumer primitive rate limits) and primitive allow/block lists that are evaluated independently for each consumer key. See [MCP proxy policies](/nightly/ai-management/mcp-gateway/policies) for details.
 
@@ -468,6 +471,8 @@ What this definition does:
 - Only the `weather-summary` prompt is accessible.
 - Traffic logs are enabled for all requests.
 
+This example uses `bearerAuth` for simplicity. For full OAuth 2.1 compliance — including token validation against an external IdP, per-primitive scope enforcement, Protected Resource Metadata, and RFC 8693 token exchange — replace `bearerAuth` with the `oauth2` scheme. See [MCP OAuth 2.1](/nightly/ai-management/mcp-gateway/oauth-2-1) for a complete worked example.
+
 ---
 
 ## Supported MCP spec features
@@ -484,7 +489,7 @@ The following table documents which MCP protocol capabilities Tyk currently impl
 | **Sampling** (`sampling/createMessage`) | Pre-2025-03-26 | ✅ Pass-through | Tyk proxies sampling messages. Method-level middleware via `operations` applies; primitive-level middleware does not (sampling is client-side). |
 | **Roots** (`roots/list`) | Pre-2025-03-26 | ✅ Pass-through | Tyk proxies roots messages unchanged. |
 | **Elicitation** (`elicitation/create`) | 2025-03-26 | ✅ Pass-through | Tyk proxies elicitation messages unchanged. |
-| **Protected Resource Metadata (PRM)** | 2025-03-26 | ✅ Full | Tyk serves `/.well-known/oauth-protected-resource` automatically. See [OAuth 2.1 authentication](/nightly/ai-management/mcp-gateway/oauth-2-1). |
+| **Protected Resource Metadata (PRM)** | 2025-03-26 | ✅ Full | Tyk serves `/.well-known/oauth-protected-resource` automatically. Configured under `authentication.securitySchemes[name].oauth2.protectedResourceMetadata` from Tyk 5.14.0. See [OAuth 2.1 authentication](/nightly/ai-management/mcp-gateway/oauth-2-1). |
 | **stdio transport** | Pre-2025-03-26 | ❌ Not supported | Tyk is a network-based gateway. Use a stdio-to-HTTP bridge for local MCP servers. |
 
 **MCP specification version:** Tyk implements the `2025-11-25` revision of the MCP specification.
