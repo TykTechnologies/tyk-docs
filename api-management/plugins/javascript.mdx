@@ -342,6 +342,60 @@ Two functions read and write the [session object](/api-management/policies#what-
   TykSetKeyData(event.EventMetaData.Key, JSON.stringify(thisSession));
   ```
 
+### Storage Operations
+
+JavaScript plugins can persist small key-value data in the storage (Redis) used by Tyk Gateway using the `TykStorage` functions. This bounded key-value store lets plugins share state across requests and across gateway nodes that use the same storage, supporting patterns such as idempotency guards, distributed locks, replay protection and simple counters.
+
+<Note>
+The storage functions are available from Tyk Gateway v5.15.0 and only in the goja JSVM engine. They are not available in the legacy otto engine.
+</Note>
+
+The following functions are provided:
+
+- `TykStorageGet(key)`: retrieves the value stored at `key`, returned as a string; returns `null` if the key does not exist
+- `TykStorageSet(key, value, ttlSeconds)`: stores `value` at `key` with an expiry of `ttlSeconds`; pass `0` for no expiry
+- `TykStorageSetNX(key, value, ttlSeconds)`: atomically stores `value` at `key` only if the key does not already exist (Redis `SET NX EX`); returns `true` if the key was claimed, `false` if it already existed; this is the primitive to use for idempotency guards, locks and replay protection
+- `TykStorageDel(key)`: deletes `key` from storage
+- `TykStorageTTL(key)`: returns the remaining time to live of `key` in seconds; returns `-1` if the key has no expiry and `-2` if the key does not exist
+- `TykStorageIncr(key, ttlSeconds)`: atomically increments the integer stored at `key` and returns the new value as a string (a string is returned because JavaScript numbers lose precision above 2^53); `ttlSeconds` is applied only when the increment creates the key
+
+In this example, `TykStorageSetNX` is used to implement an idempotency guard: the first request carrying a given idempotency key claims it and is passed through to the upstream, while any repeat request within 24 hours is rejected with `HTTP 409 Conflict`:
+
+```js
+var idempotencyGuard = new TykJS.TykMiddleware.NewMiddleware({});
+
+idempotencyGuard.NewProcessRequest(function(request, session, config) {
+    var idempotencyKey = request.Headers["Idempotency-Key"];
+
+    if (idempotencyKey) {
+        try {
+            // Claim the key for 24 hours; only the first request succeeds
+            var claimed = TykStorageSetNX("idem:" + idempotencyKey[0], "1", 86400);
+
+            if (!claimed) {
+                request.ReturnOverrides.ResponseCode = 409;
+                request.ReturnOverrides.ResponseBody = "Duplicate request";
+            }
+        } catch (e) {
+            // Storage unavailable; fail closed rather than risk a duplicate
+            log("storage error: " + e);
+            request.ReturnOverrides.ResponseCode = 503;
+            request.ReturnOverrides.ResponseBody = "Try again later";
+        }
+    }
+
+    return idempotencyGuard.ReturnData(request, session.meta_data);
+});
+```
+
+<Note>
+All storage functions throw a JavaScript exception on failure, for example if the storage is unreachable, the operation exceeds the 2 second timeout, the key exceeds 256 bytes or the value exceeds 64 KB. They never fail silently by returning `false` or `undefined`, so wrap calls in `try/catch` and decide explicitly how your plugin should behave when storage is unavailable. Keys are automatically placed under a dedicated namespace (`jsvm-store:`) that is enforced by the gateway, so plugins cannot read or modify keys used internally by Tyk.
+</Note>
+
+<Warning>
+Atomicity guarantees, such as those provided by `TykStorageSetNX` and `TykStorageIncr`, apply per Redis instance. In deployments where gateway nodes use separate Redis instances, which is common in Hybrid deployments, guarantees such as idempotency and replay protection hold per node rather than globally. For a global guarantee, all gateways must share a single Redis deployment. This is the same consistency model as Tyk's rate limiting.
+</Warning>
+
 For worked examples of these and the other globals, see the [examples in the starter repo](https://github.com/TykTechnologies/tyk-plugin-starter/tree/main/examples).
 
 ## Deploying JavaScript plugins
