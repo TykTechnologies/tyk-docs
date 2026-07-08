@@ -1152,7 +1152,7 @@ Tyk classic API definition: `custom_middleware.auth_check`.
 
 ### **SecuritySchemes**
 
-SecuritySchemes holds security scheme values, filled with Import().
+SecuritySchemes holds security scheme values keyed by the scheme name declared in `components.securitySchemes`. Each value can be an `oauth2` scheme — see [OAuth2](#oauth2) for the full configuration contract.
 
 ### **CustomKeyLifetime**
 
@@ -1187,6 +1187,8 @@ That is, Redis waits until the key has expired before deleting it.
 Tyk classic API definition: `session_lifetime_respects_key_expiration`.
 
 ### **ProtectedResourceMetadata**
+
+**Deprecated in Tyk 5.14.0.** Use `authentication.securitySchemes[name].oauth2.protectedResourceMetadata` ([OAuth2](#oauth2)) instead. Tyk Dashboard migrates existing configurations automatically on startup. This block remains for downgrade safety.
 
 ProtectedResourceMetadata holds the configuration for OAuth 2.0 Protected Resource Metadata (RFC 9728).
 It enables MCP clients to discover which authorization server protects this API resource.
@@ -2560,6 +2562,15 @@ Tyk classic API definition: `external_oauth.providers[].jwt.expires_at_validatio
 MCPPrimitive holds middleware configuration for MCP primitives (tools, resources, prompts).
 It embeds Operation to reuse all standard middleware (rate limiting, transforms, caching, etc.).
 
+**Field: `security` (`[]map[string][]string`)**
+Security mirrors the OAS `security:` array shape for this primitive. Used by scope enforcement when `scopeSource` is `"operation"` or `"union"`. Each entry is an OR branch; scopes within an entry are AND-required.
+
+**Field: `scopeCheck` ([ScopeCheck](#scopecheck))**
+ScopeCheck overrides the API-level OAuth 2.0 scope enforcement for this primitive. Set `enabled: false` to exempt the primitive from scope checks.
+
+**Field: `exchange` ([OAuth2Exchange](#oauth2exchange))**
+Exchange overrides the token exchange provider's default target for this primitive. Requires token exchange configured at the API level (Enterprise Edition only).
+
 ### **MockResponse**
 
 MockResponse configures the mock responses.
@@ -2645,6 +2656,182 @@ Introspection configures token introspection.
 
 Tyk classic API definition: `external_oauth.providers[].introspection`.
 
+### **OAuth2**
+
+OAuth2 is the container for the OAS-native OAuth 2.0 security scheme. Configured under `server.authentication.securitySchemes[name]`.
+
+**Field: `enabled` (`boolean`)**
+Enabled is the master switch for this scheme. When false the entire block is inert.
+
+**Field: `scopeCheck` ([OAuth2ScopeCheck](#oauth2scopecheck))**
+ScopeCheck enables OAS-native scope enforcement against the inbound token's claims.
+
+**Field: `protectedResourceMetadata` ([OAuth2ProtectedResourceMetadata](#oauth2protectedresourcemetadata))**
+ProtectedResourceMetadata configures the RFC 9728 PRM document served for this scheme. Supersedes the deprecated top-level `authentication.protectedResourceMetadata` block.
+
+**Field: `tokenExchange` ([OAuth2TokenExchange](#oauth2tokenexchange))**
+TokenExchange enables RFC 8693 token exchange. The inbound token is exchanged at the matched provider's IdP for a backend-scoped token before being forwarded upstream.
+
+---
+
+### **OAuth2ScopeCheck**
+
+OAuth2ScopeCheck holds scope enforcement configuration for an `oauth2` security scheme. The required scopes themselves are declared in the OAS `security:` array.
+
+**Field: `enabled` (`boolean`)**
+Enabled toggles scope enforcement for this scheme.
+
+**Field: `claimNames` (`[]string`)**
+ClaimNames is the ordered list of JWT claim names to read scopes from. Tyk reads all listed claims present on the token and merges the results. Defaults to `["scope", "scp"]` when empty.
+
+**Field: `separator` (`string`)**
+Separator splits string-valued scope claims into individual scopes. Defaults to `" "` (space, per RFC 6749 §3.3). Set to `","` for comma-separated IdPs.
+
+**Field: `scopeSource` (`string`)**
+ScopeSource selects which `security:` declarations drive enforcement: `"union"` (default — per-operation ∪ root), `"operation"` (per-operation only), or `"global"` (root only).
+
+---
+
+### **OAuth2ProtectedResourceMetadata**
+
+OAuth2ProtectedResourceMetadata configures the RFC 9728 Protected Resource Metadata document served for a per-scheme `oauth2` block. Replaces the deprecated top-level `authentication.protectedResourceMetadata`.
+
+**Field: `enabled` (`boolean`)**
+Enabled activates PRM document publishing for this scheme.
+
+**Field: `wellKnownPath` (`string`)**
+WellKnownPath is the path at which the document is served, relative to the API listen path. Defaults to `.well-known/oauth-protected-resource`.
+
+**Field: `resource` (`string`)**
+Resource is the canonical identifier for this resource, surfaced as `resource` in the PRM document. Accepts Tyk context variables. Required for static mode.
+
+**Field: `authorizationServers` (`[]string`)**
+AuthorizationServers is the list of issuer URLs published in the PRM document.
+
+**Field: `autoDeriveScopes` (`boolean`)**
+AutoDeriveScopes unions `scopes_supported` with scopes from every `security:` array when `true` (default). Set to `false` to advertise only the `flows` scopes catalog.
+
+---
+
+### **OAuth2TokenExchange**
+
+OAuth2TokenExchange holds RFC 8693 token exchange configuration. Enterprise Edition only — OSS deployments can configure this block but exchange does not execute at runtime.
+
+**Field: `enabled` (`boolean`)**
+Enabled is the master switch for token exchange on this scheme.
+
+**Field: `providers` (`[]`[OAuth2ExchangeProvider](#oauth2exchangeprovider))**
+Providers is the list of IdP entries this scheme can exchange against. Provider selection is by inbound `iss` claim match against each provider's `issuers` list. Must not be empty when `enabled` is `true`.
+
+---
+
+### **OAuth2ExchangeProvider**
+
+OAuth2ExchangeProvider configures one IdP entry for token exchange. Provider names must be unique; issuer values must not overlap across providers.
+
+**Field: `name` (`string`)**
+Name is an operator-assigned identifier used in log output. Must be unique within `providers`.
+
+**Field: `issuers` (`[]string`)**
+Issuers is the set of inbound token `iss` values routed to this provider. Must not overlap with issuers on other providers.
+
+**Field: `tokenEndpoint` (`string`)**
+TokenEndpoint is the IdP token endpoint. Must accept `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`.
+
+**Field: `clientAuth` ([OAuth2ClientAuth](#oauth2clientauth))**
+ClientAuth describes how Tyk authenticates to the token endpoint.
+
+**Field: `defaultTarget` ([OAuth2DefaultTarget](#oauth2defaulttarget))**
+DefaultTarget is the fallback audience and scopes used when the matched operation has no per-operation exchange override.
+
+**Field: `timeout` ([ReadableDuration](#readableduration))**
+Timeout caps each call to `tokenEndpoint`. Defaults to `"15s"`.
+
+**Field: `customParams` (`map[string]string`)**
+CustomParams are extra form parameters appended to the exchange request. Standard RFC 8693 keys are reserved and may not be overridden.
+
+**Field: `cache` ([OAuth2ExchangeCache](#oauth2exchangecache))**
+Cache controls Redis-backed caching of exchanged tokens for this provider.
+
+---
+
+### **OAuth2ClientAuth**
+
+OAuth2ClientAuth describes how Tyk authenticates to the IdP token endpoint.
+
+**Field: `method` (`string`)**
+Method selects the client-auth scheme: `"client_secret_basic"` (default — credentials in the `Authorization` header) or `"client_secret_post"` (credentials in the request body).
+
+**Field: `clientId` (`string`)**
+ClientID is the OAuth 2.0 client identifier Tyk presents to the IdP.
+
+**Field: `clientSecret` (`string`)**
+ClientSecret accepts `env://`, `secrets://`, `vault://`, `consul://` prefixes.
+
+---
+
+### **OAuth2DefaultTarget**
+
+OAuth2DefaultTarget is the fallback audience and scopes used when no per-operation exchange override is set.
+
+**Field: `audience` (`string`)**
+Audience is the default target audience requested for the exchanged token.
+
+**Field: `scopes` (`[]string`)**
+Scopes is the default set of scopes requested for the exchanged token.
+
+---
+
+### **OAuth2ExchangeCache**
+
+OAuth2ExchangeCache controls Redis-backed caching of exchanged tokens per provider.
+
+**Field: `enabled` (`boolean`)**
+Enabled turns on caching of exchanged tokens for this provider.
+
+**Field: `mode` (`string`)**
+Mode selects how the cache TTL is derived: `"derived"` (default — from the exchanged token's `exp` claim) or `"static"` (the fixed `timeout` value).
+
+**Field: `maxTimeout` ([ReadableDuration](#readableduration))**
+MaxTimeout caps the TTL in `"derived"` mode (for example, `"5m"`). Has no effect in `"static"` mode.
+
+**Field: `timeout` ([ReadableDuration](#readableduration))**
+Timeout is the fixed cache TTL in `"static"` mode (for example, `"2m"`).
+
+**Field: `safetyMargin` ([ReadableDuration](#readableduration))**
+SafetyMargin is subtracted from the computed TTL to avoid serving near-expired tokens. Defaults to `"30s"`.
+
+---
+
+### **OAuth2Exchange**
+
+OAuth2Exchange is the per-operation or per-MCP-primitive audience and scopes override for token exchange. Configured under `middleware.operations[id].exchange` or `middleware.mcpTools[name].exchange`.
+
+Scope resolution (most-specific wins):
+1. `enabled: true` with non-empty `scopes` — explicit per-operation list.
+2. `enabled: true` with empty `scopes` — scopes inferred from the operation's `security:` declaration (RFC 8693 §4.5.5).
+3. Provider `defaultTarget` — used when this block is absent or `enabled` is `false`.
+
+**Field: `enabled` (`boolean`)**
+Enabled activates this per-operation override. When `false` or absent, the provider's `defaultTarget` is used.
+
+**Field: `audience` (`string`)**
+Audience is the target audience requested for this operation's exchanged token.
+
+**Field: `scopes` (`[]string`)**
+Scopes is the explicit scope list for this operation. When empty and `enabled` is `true`, scopes are inferred from the operation's `security:` declaration.
+
+---
+
+### **ScopeCheck**
+
+ScopeCheck is the per-operation or per-MCP-primitive toggle for OAuth 2.0 scope enforcement. Configured under `middleware.operations[id].scopeCheck` or `middleware.mcpTools[name].scopeCheck`.
+
+**Field: `enabled` (`boolean`)**
+Enabled enforces the operation's scope check when `true`. Set to `false` to exempt the operation from scope enforcement (for example, where scopes are enforced upstream).
+
+---
+
 ### **Operation**
 
 Operation holds a request operation configuration, allowances, tranformations, caching, timeouts and validation.
@@ -2716,6 +2903,12 @@ RequestSizeLimit limits the maximum allowed size of the request body in bytes.
 
 **Field: `rateLimit` ([RateLimitEndpoint](#ratelimitendpoint))**
 RateLimit contains endpoint level rate limit configuration.
+
+**Field: `scopeCheck` ([ScopeCheck](#scopecheck))**
+ScopeCheck overrides the API-level OAuth 2.0 scope enforcement for this operation. Set `enabled: false` to exempt the operation from scope checks.
+
+**Field: `exchange` ([OAuth2Exchange](#oauth2exchange))**
+Exchange overrides the token exchange provider's default target for this operation. Requires token exchange configured at the API level (Enterprise Edition only).
 
 ### **Path**
 
