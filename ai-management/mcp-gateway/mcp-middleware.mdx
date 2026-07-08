@@ -43,6 +43,8 @@ The **Primitives** tab lets you add middleware to individual tools, resources, a
 | Transform Request Headers | `transformRequestHeaders` |
 | Transform Response Headers | `transformResponseHeaders` |
 | Virtual Endpoint | `virtualEndpoint` |
+| Scope check | `scopeCheck` |
+| Token exchange | `exchange` |
 | Track Endpoint, Do Not Track Endpoint | `trackEndpoint`, `doNotTrackEndpoint` |
 | Post Plugins | `postPlugins` |
 
@@ -138,6 +140,77 @@ The `ignoreAuthentication` middleware exempts a primitive from the API's authent
 ```
 
 Use this for primitives that need to be publicly accessible (health checks, capability discovery, or public reference data) without requiring a separate unauthenticated API definition.
+
+### scopeCheck
+
+The `scopeCheck` middleware enforces OAuth 2.0 scope requirements for a specific primitive. When enabled, Tyk extracts the scopes from the inbound token and checks them against the `security:` declarations for that primitive. Requests where the token does not carry the required scopes are rejected with a `403 Forbidden` and an RFC 6750 `WWW-Authenticate` header describing the missing scopes.
+
+```json
+{
+  "middleware": {
+    "mcpTools": {
+      "read-customer": {
+        "scopeCheck": { "enabled": true }
+      }
+    }
+  }
+}
+```
+
+Scope enforcement for the primitive is governed by two things working together:
+
+- The `security:` field on the primitive in the [Tyk vendor extension](/api-management/gateway-config-tyk-oas) — this names which scopes the token must carry. MCP primitives have no OAS path entry, so `security:` is declared in `x-tyk-api-gateway.middleware.mcpTools` (or `mcpResources` / `mcpPrompts`) alongside the other per-primitive middleware:
+
+  ```json
+  {
+    "middleware": {
+      "mcpTools": {
+        "read-customer": {
+          "security": [{ "idpAuth": ["tools:read"] }],
+          "scopeCheck": { "enabled": true }
+        }
+      }
+    }
+  }
+  ```
+
+- The API-level `oauth2.scopeCheck` configuration — `claimNames`, `scopeSource`, and `separator` control how Tyk reads scopes out of the inbound token.
+
+Setting `enabled: true` activates scope enforcement for this primitive only. Other primitives are unaffected unless they also declare `scopeCheck: { "enabled": true }`. Omitting the block or setting `enabled: false` means this primitive's own `security:` declaration does not contribute to scope enforcement. The API-level root `security:` array may still apply depending on `scopeSource` — when `scopeSource` is `"union"` (the default) or `"global"`, root security requirements are enforced regardless.
+
+`scopeCheck` requires the `oauth2` security scheme to be configured on the API. It has no effect when `externalOAuthServer` or other authentication schemes are in use. For scheme setup and scope configuration details, see [OAuth 2.0 (External IdP)](/api-management/authentication/oauth2-authentication).
+
+---
+
+## Upstream authentication
+
+### exchange
+
+The `exchange` middleware overrides the token exchange provider's defaults for a specific primitive. When active, Tyk requests a new exchange token scoped to this primitive's `audience` and `scopes`, rather than using the API-level provider's `defaultTarget`.
+
+Token exchange is Enterprise Edition only and requires a provider to be configured at the API level under `oauth2.tokenExchange.providers`. For provider setup and caching options, see [Token exchange](/api-management/authentication/token-exchange).
+
+```json
+{
+  "middleware": {
+    "mcpTools": {
+      "write-record": {
+        "exchange": {
+          "enabled": true,
+          "audience": "https://storage.example.com",
+          "scopes": ["storage.write"]
+        }
+      }
+    }
+  }
+}
+```
+
+- **`enabled`**: Must be explicitly `true` to activate the per-primitive override. Omitting this field or setting it to `false` leaves the API-level provider's `defaultTarget` in effect for this primitive.
+- **`audience`**: The resource or audience parameter sent to the token endpoint, overriding `provider.defaultTarget` for this primitive.
+- **`scopes`**: The scopes to request in the exchange. When omitted or empty while `enabled` is `true`, Tyk uses the scopes listed in the primitive's `security:` field in the [Tyk vendor extension](/api-management/gateway-config-tyk-oas) — the same field used by `scopeCheck` — as the scopes to request from the token endpoint. This avoids repeating the scope list in two places.
+
+When no `exchange` block is present on a primitive, the provider's `defaultTarget` and `scopes` apply uniformly to all primitives.
 
 ---
 
@@ -468,6 +541,8 @@ The following table summarises every middleware capability available for MCP pro
 | Allowlist | `allow` | — | Yes | Yes |
 | Blocklist | `block` | — | Yes | Yes |
 | Ignore authentication | `ignoreAuthentication` | — | Yes | Yes |
+| Scope check | `scopeCheck` | — | Yes | Yes |
+| Token exchange (per-primitive) | `exchange` | — | Yes | Yes |
 | Rate limiting | `rateLimit` | — | Yes | Yes |
 | Request size limit | `requestSizeLimit` | — | Yes | Yes |
 | Circuit breaker | `circuitBreaker` | — | Yes | Yes |
