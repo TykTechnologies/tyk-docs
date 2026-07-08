@@ -11,7 +11,15 @@ import { ButtonLeft } from '/snippets/ButtonLeft.mdx';
 
 <ButtonLeft href="https://raw.githubusercontent.com/TykTechnologies/tyk-docs/refs/heads/production/swagger/nightly/dashboard-admin-swagger.yml" color="green" content="Download Swagger" />
 
-For Tyk On-Premises installations only, the Dashboard Admin API has two endpoints and is used to set up and provision a Tyk Dashboard instance without the command line.
+For Tyk On-Premises installations only, the Dashboard Admin API is used to set up and provision a Tyk Dashboard instance without the command line. It provides the following administrator-level functions:
+
+ - Managing [organizations](#organizations)
+ - Creating initial [users](https://tyk.io/docs/api-reference/users/create-a-user) during boot-strapping of the system
+ - Forcing a [URL reload](https://tyk.io/docs/api-reference/dashboard-url-reload/reloads-dashboard-urls)
+ - [Exporting](https://tyk.io/docs/api-reference/organisations/retrieve-a-single-organisation) and [importing](https://tyk.io/docs/api-reference/import/import-organisations) Tyk assets (organizations, APIs and policies) for backup, or when migrating between environments; imported assets retain their base IDs so that they continue to work together
+ - Setting up [SSO integration](https://tyk.io/docs/api-reference/single-sign-on/generate-authentication-token)
+
+## Authentication
 
 In order to use the Dashboard Admin API, you'll need to get the `admin_secret` value from your Tyk Dashboard configurations.
 
@@ -20,4 +28,133 @@ The secret you set should then be sent along as a header with each Dashboard Adm
 ```
 admin-auth: <your-secret>
 ```
+
+
+<Warning>
+In a production environment, you must change the default `admin_secret` in the `tyk_analytics.conf` file. Admin APIs use this value for authentication, and you should set it in the `admin-auth` header while sending the request.
+</Warning>
+
+
+
+<Note>
+**Important Note on Spelling:**
+
+While our documentation now uses American English [(en-us)](https://www.andiamo.co.uk/resources/iso-language-codes/), the product itself, including all user interfaces, configuration 
+fields, environment variables, and APIs, continues to use British English spellings. When interacting with the product, 
+please continue using the British English (en-gb) spellings as appear in the interface and API.  This change does not affect 
+how you use the product; all functionality remains the same. 
+
+<br />
+
+**Example:** The API endpoint `/organisations` uses British spelling (with an 's' not 'z'). In all other instances, such as when describing or referring to this object in the documentation, we will use the American spelling "organization" with a 'z'.
+</Note>
+
+
+## Organizations
+
+Many businesses have a complex structure, for example a lot of distinct departments where each department has its own teams. You might also need to deploy and manage multiple environments such as Production, Staging and QA for different stages in your product workflow. The Tyk Dashboard is multi-tenant capable which allows you to use a single Tyk Dashboard to host separate *organizations* for each team or environment.
+
+An Organization is a completely isolated unit, and has its own:
+ - API Definitions
+ - API Keys
+ - Users
+ - Developers
+ - Domain
+ - Tyk Classic Portal 
+
+When bootstrapping your Dashboard, the first thing the bootstrap script does is to create a new default Organization.
+
+Additional organizations can be created and managed using the [Dashboard Admin API](https://tyk.io/docs/api-reference/organisations/list-all-organisations).
+
+### Tyk Gateway and organizations
+The concept of an organization does not exist within the Tyk Gateway. Gateways only proxy and validate the rules imposed on them by the definitions and keys that are being processed, however at their core there are some security checks within the Gateway that ensure organizational ownership of objects.
+
+Tyk allows each organization to own its own set of Gateways, for example when you want to use different hosting providers you can segregate them in terms of resources, or just for security reasons.
+
+Self-Managed users should use [API tagging](/api-management/api-sharding#api-tagging-with-on-premises) and enforce a tagging standard across all organizations.
+
+All actions in a Self-Managed installation of Tyk must use a base Organization, and all actions should stem from a User owned by that organization.
+
+
+<Note>
+A user that does not belong to an Organization is sometimes referred to as an *unbounded user*. These users have visibility across all Organizations, but should be granted read-only access.
+</Note>
+
+
+
+## Dashboard Audit Logs
+
+The audit log system captures detailed records of all requests made to endpoints under the `/api` route. These audit logs can be stored either in files (in JSON or text format) or in the database, providing flexible options for log management and retrieval.
+
+Subsequently, if hosting Tyk Dashboard within a Kubernetes cluster, please ensure that the configured log file path is valid and writeable.
+
+The Tyk Dashboard config section contains an audit section for configuring audit logging behavior. An example is listed below.
+
+```yaml
+  ...
+  "audit": {
+    "enabled": true,
+    "format": "json",
+    "path": "/tmp/audit.log",
+    "detailed_recording": false
+  },
+  ...
+```
+
+### Configuration Parameters
+
+| Parameter | Description                                                                                                                                                              | Default |
+| :---- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :--------- |
+| enabled | Enable audit logging. Setting `security.audit_log_path` also enables audit logging                                                                                       | true    |
+| format | Specifies audit log file format. Valid values are `json` and `text`                                                                                                      | `text`  |
+| path | Path to the audit log. Overwrites `security.audit_log_path` if it was set                                                                                                |         |
+| detailed_recording | Enable detailed records in the audit log. If set to `true` then audit log records will contain the http-request (without body) and full http-response including the body | `false` |
+| store_type | Specifies the storage in which audit logs will be written, valid values are `file` and `db`.                                                          | `file`  |
+
+Please consult [Tyk Dashboard Configuration Options](/tyk-dashboard/configuration#audit) for equivalent configuration with environment variables.
+
+### JSON File Format
+
+Audit records the following fields for `json` format:
+
+| Field | Description |
+| :---- | :---- |
+| req_id | Unique request ID |
+| org_id | Organization ID |
+| date   | Date in *RFC1123* format |
+| timestamp | UNIX timestamp |
+| ip | IP address the request originated from |
+| user | Dashboard user who performed the request |
+| action | Description of the action performed (e.g. Update User) |
+| method | HTTP request method |
+| url | URL of the request |
+| status | HTTP response status of the request |
+| diff | Provides a diff of changed fields (available only for PUT requests) |
+| request_dump | HTTP request copy (available if `detailed_recording` is set to `true`) |
+| response_dump | HTTP response copy (available if `detailed_recording` is set to `true`) |
+
+### Text File Format
+
+The `text` format outputs all fields as plain text separated with a new line and provided in the same order as `json` format.
+
+### Database Storage Support
+
+In addition to file storage, audit logs can be stored in the main database (MongoDB or Postgres), this feature has been available since Tyk 5.7.0. To enable database storage set `audit.store_type` to `db`:
+
+```yaml
+...
+    "audit": {
+      "enabled": true,
+      "store_type": "db",
+      "detailed_recording": false
+    }
+...
+```
+
+When `store_type` is set to `db`, audit logs will be stored in the main database storage instead of a file.
+
+### Retrieving Audit Logs via API
+
+Since Tyk 5.7.0 a new API endpoint has been added to allow authorized users to retrieve audit logs from the database storage. To know more about the API specifications, check out the swagger [documentation](/tyk-dashboard-api).
+To access the audit logs through the API ensure that your user account or group has been granted the "Audit Logs" RBAC group. If you do not have the necessary permissions, please contact your system administrator.
 
