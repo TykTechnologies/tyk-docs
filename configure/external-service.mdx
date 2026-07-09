@@ -110,14 +110,14 @@ Service-specific settings can be configured for the following services:
 | Service Type | Description | Example Services |
 | :-------------- | :------------- | :------------ |
 | `oauth` | [OAuth/JWT token validation and introspection](/basic-config-and-security/security/authentication-authorization/json-web-tokens) | JWT auth interactions with Auth Server (Identity Provider) |
-| `storage` | [External storage operations](/planning-for-production/database-settings) | Redis connections, database interactions |
+| `storage` | mTLS configuration for the rate limiter's Redis connection. Proxy settings are not supported for this service type. | Rate limiter Redis TLS |
 | `webhooks` | [Webhook event notifications](/api-management/gateway-events#event-handling-with-webhooks) | Event handlers, notification delivery |
 | `health` | [Health check requests](/planning-for-production/ensure-high-availability/health-check) | Host checker, uptime monitoring |  
 | `discovery` | [Service discovery requests](/planning-for-production/ensure-high-availability/service-discovery) | Load balancer, service registry |
 
 For each type of service, you can configure:
 
-- specific proxies for HTTP, HTTPS and lists of hosts that should not be proxied
+- specific proxies for HTTP, HTTPS and lists of hosts that should not be proxied (not applicable for `storage`)
 - mTLS certificates, versions and insecure mode
 
 #### Proxy Configuration
@@ -328,10 +328,6 @@ Settings are applied in the following priority order (highest to lowest):
       "bypass_proxy": "localhost,127.0.0.1,redis"
     },
     "storage": {
-      "proxy": {
-        "enabled": true,
-        "bypass_proxy": "localhost,127.0.0.1,redis.internal"
-      },
       "mtls": {
         "enabled": true,
         "cert_file": "/etc/tyk/certs/redis-client.crt",
@@ -351,11 +347,8 @@ Settings are applied in the following priority order (highest to lowest):
 
 **What this does:**
 
-- **Global configuration**: Sets a baseline proxy (port 3128) for all external services with a general bypass list that includes "redis"
-- **Storage service customization**: 
-  - Inherits the global proxy URLs (3128) but overrides the bypass list to include "redis.internal"
-  - This allows direct connections to internal Redis instances while still routing other storage traffic through the proxy
-  - Adds mTLS security specifically for Redis connections, ensuring encrypted and authenticated communication with the database
+- **Global configuration**: Sets a baseline proxy (port 3128) for all external services with a general bypass list.
+- **Storage service customization**: Adds mTLS security for the rate limiter's Redis connection, ensuring encrypted and authenticated communication. Note that proxy settings are not supported for the `storage` service type.
 - **Webhook customization**:
   - Routes webhook traffic through a separate dedicated proxy (port 3130)
 
@@ -449,9 +442,10 @@ Settings are applied in the following priority order (highest to lowest):
   - This enables centralized certificate management through the Tyk Dashboard
   - Certificates can be rotated, renewed, or replaced without changing configuration files
 - **Comprehensive mTLS deployment**:
-  - Every service type (OAuth, storage, webhooks) has its own dedicated client certificate
-  - This provides service-specific identity and enables granular access control
-  - Each service also has its own CA certificate configuration for validating server certificates
+  - Every applicable service type (OAuth, storage, webhooks) has its own dedicated client certificate.
+  - For `storage`, this applies mTLS to the rate limiter's Redis connection specifically.
+  - This provides service-specific identity and enables granular access control.
+  - Each service also has its own CA certificate configuration for validating server certificates.
 - **Certificate chain support**:
   - The OAuth configuration includes multiple CA certificates (`["oauth-ca-prod", "intermediate-ca"]`)
   - This supports complex PKI setups with intermediate certificate authorities
@@ -467,11 +461,10 @@ Tyk implements connection pooling for each service type with built-in default va
 | :-------------- | :----------------- | :---------- | :-------------- |
 | OAuth | 50 | 10 | 30s |
 | Health | 20 | 5 | 15s |
-| Storage | 50 | 15 | 90s |
 | Discovery | 30 | 5 | 20s |
 | Webhooks | 50 | 10 | 30s |
 
-> **Note:** These connection pooling settings are built into Tyk and are not configurable through the configuration file. They are optimized defaults based on the typical usage patterns of each service type. "Per Host" refers to the maximum number of idle connections maintained per upstream host.
+> **Note:** These connection pooling settings are built into Tyk and are not configurable through the configuration file. They are optimized defaults based on the typical usage patterns of each service type. "Per Host" refers to the maximum number of idle connections maintained per upstream host. The `storage` service type uses a direct Redis TCP connection managed by go-redis and does not use HTTP connection pooling.
 
 ### Service-Specific Timeouts
 
@@ -482,10 +475,9 @@ Tyk applies different default timeout values for each service type:
 | OAuth | 15 seconds |
 | Health | 10 seconds |
 | Discovery | 10 seconds |
-| Storage | 20 seconds |
 | Webhooks | 30 seconds |
 
-> **Note:** These timeout values are built into Tyk and are not configurable through the configuration file. They represent the maximum time Tyk will wait for a response from the external service before timing out the request. These values are optimized based on the expected response times and criticality of each service type.
+> **Note:** These timeout values are built into Tyk and are not configurable through the configuration file. They represent the maximum time Tyk will wait for a response from the external service before timing out the request. These values are optimized based on the expected response times and criticality of each service type. The `storage` service type connects to Redis directly via TCP; its timeout is controlled by the `timeout` field in the `storage` block of `tyk.conf`, not by this table.
 
 ## Migration from Legacy Configuration
 
