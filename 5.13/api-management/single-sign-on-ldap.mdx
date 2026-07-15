@@ -1,0 +1,223 @@
+---
+title: "SSO with LDAP"
+description: "Learn how to configure Single Sign-On (SSO) for Tyk Dashboard or Tyk Developer Portal using LDAP or Active Directory."
+keywords: "Tyk Identity Broker, TIB, SSO, Single Sign-On, LDAP, Active Directory, Authentication"
+sidebarTitle: "LDAP / Active Directory"
+canonical: "https://tyk.io/docs/api-management/single-sign-on-ldap"
+---
+
+## Introduction
+
+TIB supports Lightweight Directory Access Protocol (LDAP) and Active Directory using the `ADProvider` method, which uses a passthrough flow; user credentials are submitted directly to TIB, which validates them against your LDAP server. No browser redirect to an external IdP is involved.
+
+Because LDAP is a passthrough flow, you must provide a login page that submits credentials to TIB. Tyk Dashboard and Tyk Developer Portal do not include a built-in LDAP login page.
+
+Before configuring your TIB profile, read [Dashboard SSO](/5.13/tyk-identity-broker/dashboard-sso) or [Portal SSO](/5.13/tyk-stack/tyk-developer-portal/enterprise-developer-portal/managing-access/enable-sso) to understand the `ActionType`, `ReturnURL`, and `IdentityHandlerConfig` fields required for your use case.
+
+## TIB Profile
+
+The LDAP-specific configuration goes in the `ProviderConfig` block of the TIB profile. Set `ProviderName` to `ADProvider` and `Type` to `passthrough`.
+
+```json expandable
+{
+  "ProviderName": "ADProvider",
+  "Type": "passthrough",
+  "ProviderConfig": {
+    "LDAPServer": "{ldap-server-hostname}",
+    "LDAPPort": "389",
+    "LDAPUserDN": "cn=*USERNAME*,dc=example,dc=com",
+    "LDAPBaseDN": "dc=example,dc=com",
+    "LDAPFilter": "(objectClass=person)",
+    "LDAPEmailAttribute": "mail",
+    "LDAPFirstNameAttribute": "givenName",
+    "LDAPLastNameAttribute": "sn",
+    "LDAPAttributes": [],
+    "FailureRedirect": "http://{failure-redirect-url}",
+    "GetAuthFromBAHeader": true
+  }
+}
+```
+
+The LDAP-specific `ProviderConfig` fields are:
+
+| Field | Description |
+|---|---|
+| `LDAPServer` | Hostname or IP address of your LDAP server. |
+| `LDAPPort` | Port of your LDAP server. Use `389` for standard LDAP or `636` for LDAPS. |
+| `LDAPUserDN` | Distinguished Name template used to bind as the authenticating user. The literal string `*USERNAME*` is replaced at runtime with the submitted username. |
+| `LDAPBaseDN` | Base DN from which LDAP searches are performed. |
+| `LDAPFilter` | LDAP search filter applied when looking up users. |
+| `LDAPEmailAttribute` | LDAP attribute containing the user's email address. Defaults to `mail`. |
+| `LDAPFirstNameAttribute` | LDAP attribute containing the user's first name. Defaults to `givenName`. |
+| `LDAPLastNameAttribute` | LDAP attribute containing the user's last name. Defaults to `sn`. |
+| `LDAPAttributes` | Additional LDAP attributes to retrieve. Can be an empty list. |
+| `LDAPUseSSL` | Set to `true` to connect using LDAPS. |
+| `LDAPAdminUser` | DN of an admin user for performing user-lookup searches, if required. |
+| `LDAPAdminPassword` | Password for the admin user. |
+| `LDAPSearchScope` | Depth of the LDAP search: `0` for base object only, `1` for single level below the base DN, `2` for the entire subtree. Defaults to `2`. |
+| `DefaultDomain` | Domain appended to the username when building the full user identifier. Used to construct the username but not for performing LDAP requests. |
+| `FailureRedirect` | URL to redirect the user to on authentication failure. |
+| `GetAuthFromBAHeader` | Set to `true` to read the username and password from the HTTP Basic Auth header. Recommended for form-based login pages. |
+| `SlugifyUserName` | Set to `true` to normalize the username to a URL-safe slug. |
+
+## Login Page
+
+Since LDAP is a passthrough flow, users submit credentials directly to TIB via a form `POST`. Create a login page with a form that posts to the TIB authentication endpoint:
+
+```html
+<form method="POST" action="http://{tib-host}/auth/{profile-id}/ADProvider">
+  <input type="text" name="username" />
+  <input type="password" name="password" />
+  <button type="submit">Log in</button>
+</form>
+```
+
+The form must use `POST` method and include `username` and `password` fields. TIB reads these field names exactly.
+
+For embedded TIB, `{tib-host}` is the same as your Dashboard host. For Portal, the embedded TIB is accessible under the `/tib` path prefix, so use `{portal-host}/tib` as the base.
+
+## Worked Examples
+
+<Tabs>
+<Tab title="Dashboard SSO">
+
+In this example, Tyk Dashboard is running at `http://dashboard.example.com` on port `3000`; replace the example values with your own.
+
+**Tyk Dashboard configuration**
+
+```json
+{
+  "sso_enable_user_lookup": true,
+  "sso_permission_defaults": {
+    "apis": "write",
+    "keys": "write",
+    "policies": "write"
+  },
+  "sso_default_group_id": "{tyk-user-group-id}"
+}
+```
+
+With this configuration, registered users (with a Tyk Dashboard user account) get their own permissions; unregistered users fall back to the group specified in `sso_default_group_id`. See [Dashboard SSO](/5.13/tyk-identity-broker/dashboard-sso#unregistered-user-login) for full details.
+
+**TIB profile**
+
+The TIB profile is created via the [Tyk Identity Broker API](/5.13/tyk-identity-broker/tib-rest-api) or the [Tyk Dashboard UI](/5.13/tyk-identity-broker/dashboard-sso#create-a-tib-profile-using-dashboard-ui).
+
+```json expandable
+{
+  "ID": "ldap-dashboard",
+  "Name": "LDAP Dashboard SSO",
+  "OrgID": "{tyk-org-id}",
+  "ActionType": "GenerateOrLoginUserProfile",
+  "Type": "passthrough",
+  "ProviderName": "ADProvider",
+  "ReturnURL": "http://dashboard.example.com:3000/tap",
+  "IdentityHandlerConfig": {
+    "DashboardCredential": "{tib-service-user-api-key}"
+  },
+  "ProviderConfig": {
+    "LDAPServer": "ldap.example.com",
+    "LDAPPort": "389",
+    "LDAPUserDN": "cn=*USERNAME*,dc=example,dc=com",
+    "LDAPBaseDN": "dc=example,dc=com",
+    "LDAPFilter": "(objectClass=person)",
+    "LDAPEmailAttribute": "mail",
+    "LDAPFirstNameAttribute": "givenName",
+    "LDAPLastNameAttribute": "sn",
+    "LDAPAttributes": [],
+    "FailureRedirect": "http://dashboard.example.com:3000/?fail=true",
+    "GetAuthFromBAHeader": true
+  }
+}
+```
+
+- set `DashboardCredential` to the [TIB service account's](/5.13/tyk-identity-broker/dashboard-sso#tib-service-account) Dashboard credentials
+- update `LDAPUserDN` to match your LDAP directory structure, keeping `*USERNAME*` as a literal placeholder
+
+**Login page form action**
+
+Your login page form should `POST` to:
+
+```
+http://dashboard.example.com:3000/auth/ldap-dashboard/ADProvider
+```
+
+**Redirect to login page**
+
+To redirect users to your custom login page instead of the default Dashboard login, set `sso_custom_login_url` in the Tyk Dashboard configuration:
+
+```json
+{
+  "sso_custom_login_url": "http://{your-login-page-url}"
+}
+```
+
+See [Dashboard SSO](/5.13/tyk-identity-broker/dashboard-sso) for details on session behavior, permissions, and user group mapping.
+
+</Tab>
+<Tab title="Portal SSO">
+
+In this example, Tyk Developer Portal is running at `http://portal.example.com` on port `3001`; replace the example values with your own.
+
+**Tyk Developer Portal configuration**
+
+Enable embedded TIB in the Portal configuration:
+
+```json
+{
+  "TIB": {
+    "Enable": true
+  }
+}
+```
+
+**TIB profile**
+
+The TIB profile is created via the Tyk Developer Portal UI under **Settings > SSO Profiles**.
+
+```json expandable
+{
+  "ID": "ldap-portal",
+  "Name": "LDAP Portal SSO",
+  "OrgID": "{tyk-org-id}",
+  "ActionType": "GenerateOrLoginDeveloperProfile",
+  "Type": "passthrough",
+  "ProviderName": "ADProvider",
+  "ReturnURL": "http://portal.example.com:3001/sso",
+  "IdentityHandlerConfig": {
+    "DashboardCredential": "{portal-api-secret}"
+  },
+  "ProviderConfig": {
+    "LDAPServer": "ldap.example.com",
+    "LDAPPort": "389",
+    "LDAPUserDN": "cn=*USERNAME*,dc=example,dc=com",
+    "LDAPBaseDN": "dc=example,dc=com",
+    "LDAPFilter": "(objectClass=person)",
+    "LDAPEmailAttribute": "mail",
+    "LDAPFirstNameAttribute": "givenName",
+    "LDAPLastNameAttribute": "sn",
+    "LDAPAttributes": [],
+    "FailureRedirect": "http://portal.example.com:3001/?fail=true",
+    "GetAuthFromBAHeader": true
+  }
+}
+```
+
+- set `ActionType` and `OrgID` based on the audience:
+    - Admin Portal (API owners): `ActionType: "GenerateOrLoginUserProfile"`, `OrgID: "0"`
+    - Live Portal (API consumers): `ActionType: "GenerateOrLoginDeveloperProfile"`, `OrgID` is not required
+- set `DashboardCredential` to the [`PortalAPISecret`](/5.13/product-stack/tyk-enterprise-developer-portal/deploy/configuration#portal_api_secret) used to authenticate with the Portal's management API
+- update `LDAPUserDN` to match your LDAP directory structure, keeping `*USERNAME*` as a literal placeholder
+
+**Login page form action**
+
+Your login page form should `POST` to:
+
+```
+http://portal.example.com:3001/tib/auth/ldap-portal/ADProvider
+```
+
+For details on user group mapping and admin vs developer profiles, see [Portal SSO](/5.13/tyk-stack/tyk-developer-portal/enterprise-developer-portal/managing-access/enable-sso).
+
+</Tab>
+</Tabs>

@@ -1,0 +1,200 @@
+---
+title: "Install Tyk Self-Managed on Docker"
+description: "Install the full Tyk Self-Managed stack (Gateway, Dashboard, Portal, Pump, Redis, and PostgreSQL) using Docker Compose."
+sidebarTitle: "Docker"
+canonical: "https://tyk.io/docs/tyk-self-managed/install/docker"
+---
+
+| Edition | Deployment Type |
+| :------ | :-------------- |
+| Enterprise | Self-Managed, Hybrid |
+
+<Note>
+Running on Podman, containerd, or another container runtime? See [Container Runtimes](/5.13/deployment-and-operations/container-runtimes).
+</Note>
+
+<Note>
+From v5.5.0 onwards, Docker images are based on [distroless](https://github.com/GoogleContainerTools/distroless). You cannot obtain a shell with `docker run --rm -it tykio/tyk-gateway:v5.5.0 sh`. Use [dive](https://github.com/wagoodman/dive) or [Docker Desktop](https://www.docker.com/products/docker-desktop/) to inspect images.
+</Note>
+
+## Prerequisites
+
+- [Docker Engine](https://docs.docker.com/engine/install/) 24.0 or later
+- [Docker Compose](https://docs.docker.com/compose/install/) v2.20 or later
+- Tyk license keys — Dashboard license and Portal license (optional). Get a free trial at [tyk.io/self-managed-trial](https://tyk.io/self-managed-trial/).
+- 4GB RAM or more available
+
+## Instructions
+
+### Step 1: Clone and configure
+
+1. Clone the [tyk-install](https://github.com/TykTechnologies/tyk-install) repository and navigate to the Docker self-managed directory:
+
+    ```bash
+    git clone https://github.com/TykTechnologies/tyk-install
+    cd tyk-install/docker/self-managed
+    ```
+
+2. Copy the example environment file and add your license keys:
+
+    ```bash
+    cp .env.example .env
+    ```
+
+3. Open `.env` and set your license keys:
+
+    ```bash
+    TYK_LICENSE_KEY=<your-dashboard-license>
+    TYK_PORTAL_LICENSE=<your-portal-license>
+    ```
+
+    <Warning>
+    Ensure there are **no spaces** around the `=` sign. Spaces will cause the configuration to fail silently.
+
+    ```bash
+    # Correct
+    TYK_LICENSE_KEY=eyJhbGciOiJSUzI1NiIsInR5cCI6...
+
+    # Wrong — will fail
+    TYK_LICENSE_KEY = eyJhbGciOiJSUzI1NiIsInR5cCI6...
+    ```
+    </Warning>
+
+### Step 2: Start services
+
+```bash
+docker compose up -d
+```
+
+Wait for all health checks to pass (approximately 30–60 seconds), then verify all containers are running:
+
+```bash
+docker compose ps
+```
+
+Expected containers:
+
+| Container | Port | Status |
+| --------- | ---- | ------ |
+| `tyk-dashboard` | 3000 | Running |
+| `tyk-gateway` | 8080 | Running |
+| `tyk-pump` | N/A | Running |
+| `tyk-portal` | 3001 | Running |
+| `tyk-redis` | 6379 | Running |
+| `tyk-postgres` | 5432 | Running |
+
+If any container is not running, check the logs:
+
+```bash
+docker compose logs -f
+```
+
+### Step 3: Bootstrap the stack
+
+Choose one of the following options to complete the initial setup.
+
+#### Option A: Automated bootstrap (recommended)
+
+Use the Bootstrap Utility from the repository to automatically create an organization, admin user, test API, policy, API key, and Portal configuration.
+
+1. Navigate to the bootstrap utility directory and create an `.env` file with your license key:
+
+    ```bash
+    cd tyk-install/utils/bootstrap
+    echo "TYK_LICENSE_KEY=<your-dashboard-license>" > .env
+    ```
+
+2. Run the bootstrap:
+
+    ```bash
+    docker compose --profile tools run --rm tyk-bootstrap
+    ```
+
+Credentials are printed to the terminal on completion.
+
+#### Option B: Manual bootstrap
+
+1. Open `http://localhost:3000` in your browser.
+
+2. Fill in the bootstrap form:
+    - Organization Name
+    - Admin Email
+    - Admin Password
+
+    <Note>
+    Use a combination of alphanumeric characters with both upper and lower case letters for your password.
+    </Note>
+
+3. Click **Bootstrap** to save.
+
+4. Log in to the Tyk Dashboard at `http://localhost:3000` with the credentials you just created.
+
+5. Bootstrap the Developer Portal by calling its API:
+
+    ```bash
+    curl "http://localhost:3001/portal-api/bootstrap" \
+      -H 'Content-Type: application/json' \
+      -d '{
+        "username": "portal-admin@example.com",
+        "password": "portalpass123",
+        "first_name": "Portal",
+        "last_name": "Admin"
+      }'
+    ```
+
+    Save the `api_token` from the response — you will need it to configure the Portal provider.
+
+### Step 4: Verify the installation
+
+Test that all components are responding:
+
+```bash
+# Gateway
+curl http://localhost:8080/hello
+
+# Dashboard
+curl http://localhost:3000/hello
+
+# Portal
+curl http://localhost:3001/ready
+```
+
+## Access URLs
+
+| Service | URL | Description |
+| ------- | --- | ----------- |
+| Dashboard | `http://localhost:3000` | Admin UI |
+| Gateway | `http://localhost:8080` | API Gateway |
+| Developer Portal | `http://localhost:3001` | Developer Portal |
+| Redis | `localhost:6379` | Cache and session storage |
+| PostgreSQL | `localhost:5432` | Analytics and config database |
+
+## Configuration
+
+The following environment files control each component's settings:
+
+| File | Purpose |
+| ---- | ------- |
+| `.env` | License keys and component versions |
+| `confs/tyk.env` | Gateway configuration |
+| `confs/tyk_analytics.env` | Dashboard configuration |
+| `confs/pump.env` | Pump configuration |
+| `confs/portal.env` | Developer Portal configuration |
+
+For production deployments, review the [Planning for Production](/5.13/planning-for-production) guide and apply the recommendations noted in the config file comments.
+
+## Cleanup
+
+Stop all services and remove volumes:
+
+```bash
+docker compose down -v
+```
+
+To also remove orphaned networks:
+
+```bash
+docker compose down -v --remove-orphans
+docker network prune -f
+```
+

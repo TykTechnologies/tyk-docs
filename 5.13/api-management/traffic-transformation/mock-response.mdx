@@ -1,0 +1,325 @@
+---
+title: "Request Termination"
+description: "Learn how to configure Tyk to handle a request entirely within the Gateway, returning a response to the client without forwarding to an upstream service"
+keywords: "request termination, mock response, virtual endpoint, static response, fixed response, deprecated endpoint, endpoint blocking"
+sidebarTitle: "Request Termination"
+canonical: "https://tyk.io/docs/api-management/traffic-transformation/mock-response"
+---
+
+Request termination configures an endpoint to generate a response directly within Tyk Gateway, without forwarding the request to an upstream service. Tyk handles the request entirely and returns the response to the client.
+
+Common uses include:
+- Returning a fixed response for a health check or status endpoint that requires no backend logic.
+- Retiring a deprecated endpoint with an informative error response.
+- Returning a maintenance message while an upstream service is offline.
+- Implementing complex response logic or aggregation that would otherwise require a dedicated microservice.
+
+## Approaches
+
+Tyk Gateway offers three mechanisms for request termination, differing in flexibility and complexity:
+
+| Approach | Flexibility | Best For |
+| :--- | :--- | :--- |
+| [Mock Response](/5.13/#mock-response) | Fixed response configured in the API definition | Static responses, deprecation notices, health checks, development mocking |
+| [Virtual Endpoint](/5.13/#virtual-endpoint) | JavaScript function runs in the Gateway | Dynamic responses, conditional logic, aggregation from multiple upstreams |
+| [Custom Plugins](/5.13/#custom-plugins) | Custom code in Go or via gRPC (Python, Lua, others) | High-performance termination, complex business logic, access to external systems |
+
+## Mock Response
+
+The mock response middleware returns a configured static response for an endpoint. No upstream call is made.
+
+### How It Works
+
+The point in the request pipeline at which the mock response fires differs between Tyk OAS and Tyk Classic:
+
+- **Tyk OAS**: the mock response fires near the end of the request-processing chain, after authentication, rate limiting, and request transforms. The request is fully authenticated before the response is generated. Analytics records are created as normal.
+- **Tyk Classic**: the mock response fires at the start of the request-processing chain, before authentication. Credentials are not required to receive the response, and no analytics records are created.
+
+### Configuration
+
+#### Tyk OAS
+
+The `mockResponse` middleware is configured in the `operations` section of the Tyk Vendor Extension (`x-tyk-api-gateway`), under the `operationId` for the endpoint.
+
+The response that will be returned by the endpoint can be configured manually, or automatically generated from the OpenAPI description.
+
+**Manual Configuration**
+
+You can configure the desired response directly in the API definition:
+
+| Field | Description |
+| :--- | :--- |
+| `enabled` | Activates the middleware for the endpoint. |
+| `code` | The HTTP response status code. Defaults to `200` if not set. |
+| `body` | The response body, as a string. |
+| `headers` | An array of `{ "name": "...", "value": "..." }` objects to include as response headers. |
+
+```json
+"operations": {
+  "getBooksHealth": {
+    "mockResponse": {
+      "enabled": true,
+      "code": 200,
+      "body": "{\"status\": \"ok\"}",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" }
+      ]
+    }
+  }
+}
+```
+
+**From OAS Examples**
+
+Alternatively, the response can be generated automatically from example data or schema declarations in the OpenAPI description.
+
+The OpenAPI description provides the response content via one of three mechanisms:
+
+- **`example`** - a single sample value for a specific content type and response code
+- **`examples`** - a named map of sample values; use `exampleName` in `fromOASExamples` to select one, or leave `exampleName` unset to use the first entry (sorted by key).
+- **`schema`** - a JSON schema for the response body; Tyk uses any `example` values on individual schema properties, and falls back to type defaults (`"string"`, `0`, `true`) for properties with no example.
+
+`example` and `examples` are mutually exclusive within the OpenAPI description for a given response object - you cannot provide both for the same content type and response code.
+
+Response headers defined in the OpenAPI description via `headers[*].schema` are also included in the generated response.
+
+This approach is configured using `fromOASExamples`:
+
+| Field | Description |
+| :--- | :--- |
+| `enabled` | Activates automatic response generation from the OpenAPI description. |
+| `code` | (Optional) Identifies the HTTP response code for the example response that should be returned. Defaults to `200`. |
+| `contentType` | (Optional) Identifies the content type of the example response that should be returned. Defaults to `application/json`. |
+| `exampleName` | (Optional) Identifies the specific example response that should be returned via the `name` given to the example in the OpenAPI description. If not set, the first entry alphabetically is used. |
+
+The optional `code`, `contentType` and `exampleName` fields are used to select a specific response when the OpenAPI description defines responses for multiple codes, content types, or named examples. The API client can override this configuration using [control headers](/5.13/#response-selection) to select a specific response.
+
+```json
+"operations": {
+  "anythingget": {
+    "mockResponse": {
+      "enabled": true,
+      "fromOASExamples": {
+        "enabled": true,
+        "code": 200,
+        "contentType": "text/plain",
+        "exampleName": "preview-example"
+      }
+    }
+  }
+}
+```
+
+**API Designer**
+
+1. **Add an endpoint** - From the API Designer, add an endpoint for the path and method to configure.
+2. **Select the Mock Response middleware** - Select **ADD MIDDLEWARE** and choose **Mock Response**.
+3. **Configure the response**:
+   - To provide the response directly, select **Manually configure mock response** and set the HTTP status code, content type, response body, and any headers.
+   - To generate from the OpenAPI description, select **Use mock response from Open API Specification** and choose the desired response code and content type from the drop-down.
+4. **Save the API** - Select **UPDATE MIDDLEWARE**, then **SAVE API**.
+
+#### Tyk Classic
+
+If using Tyk Classic, mock responses are manually configured via the `method_actions` field on an allow list, block list, or ignore authentication entry for the endpoint. Set `action` to `reply` and provide the response `code`, `data` (body), and `headers`.
+
+```json
+"extended_paths": {
+  "white_list": [
+    {
+      "path": "/health",
+      "method": "",
+      "ignore_case": false,
+      "method_actions": {
+        "GET": {
+          "action": "reply",
+          "code": 200,
+          "data": "{\"status\": \"ok\"}",
+          "headers": {
+            "Content-Type": "application/json"
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+The endpoint must be registered in one of the three list types (`white_list`, `black_list`, or `ignored`) for the mock response to take effect. The choice of list type does not affect the response returned - it determines the path matching rules applied to other endpoints on the same API.
+
+Because the Tyk Classic mock response fires before authentication, the endpoint does not require credentials regardless of the authentication method configured for the API.
+
+**API Designer**
+
+1. **Add an endpoint** - From the Endpoint Designer, add an endpoint and select the **Allow List** (or **Block List** / **Ignore Authentication**) plugin to register the path.
+2. **Add the mock response plugin** - Select the **Mock response** plugin on the same endpoint.
+3. **Configure the response** - Set the HTTP status code, headers, and body. Select **ADD** to add each header.
+4. **Save the API** - Select **Save** or **Create**.
+
+#### Tyk Operator
+
+Tyk Operator supports both Tyk OAS and Tyk Classic API definitions. The mock response middleware is configured in the same way as described above for each format.
+
+See [Tyk Operator](/5.13/api-management/automations/operator) for details on creating and managing API definitions with Tyk Operator.
+
+### Response Selection
+
+This section applies to mock responses generated from the OpenAPI description (`fromOASExamples`). Note that when the response is [configured directly](/5.13/#tyk-oas) in the Tyk Vendor Extension, Tyk returns it as-is and response selection does not apply.
+
+Three control headers can be used in the request to override the defaults configured in the Tyk Vendor Extension, selecting a different response from the OpenAPI description without modifying the API definition:
+
+| Header | Overrides | Description |
+| :--- | :--- | :--- |
+| `Accept` | `fromOASExamples.contentType` | Standard HTTP header, for example `text/plain`. |
+| `X-Tyk-Accept-Example-Code` | `fromOASExamples.code` | Selects which response code's definition to use, for example `404`. |
+| `X-Tyk-Accept-Example-Name` | `fromOASExamples.exampleName` | Selects a named entry from an `examples` map. Has no effect when the media type uses a direct `example` value. |
+
+The three headers are independent and can be combined. They operate at different levels of the OAS response structure:
+- `X-Tyk-Accept-Example-Code` selects the response object.
+- `Accept` selects the media type within that response.
+- `X-Tyk-Accept-Example-Name` selects a named entry within the media type's `examples` map.
+
+#### Defaults
+
+When `fromOASExamples` is enabled and no control headers are sent, Tyk uses the values from the `fromOASExamples` configuration as defaults:
+
+- **Response code** - the value of `fromOASExamples.code`, defaulting to `200` if not set.
+- **Content type** - the value of `fromOASExamples.contentType`, defaulting to `application/json` if not set.
+- **Example name** - the value of `fromOASExamples.exampleName`, if set. If not set, no name is used and selection falls through to the priority order below.
+
+#### Selection Priority
+
+Once the response code and content type have been resolved, Tyk selects the example body from the matching section of the OpenAPI description in the following order:
+
+1. **Direct `example` value** - if the media type declares a single `example` value (not an `examples` map), that value is returned. The `X-Tyk-Accept-Example-Name` header and `fromOASExamples.exampleName` are both ignored in this case.
+
+2. **Named entry from `examples`** - if an example name is set (via `fromOASExamples.exampleName` or the `X-Tyk-Accept-Example-Name` header), Tyk looks up that name in the media type's `examples` map. If the name is not found, Tyk returns `HTTP 404`.
+
+3. **First entry alphabetically from `examples`** - if no example name is set and the media type has an `examples` map, Tyk sorts the keys alphabetically and returns the first non-nil entry. This selection is deterministic from Tyk Gateway 5.8 onwards. In earlier versions, Tyk iterated directly over the map and the selection was non-deterministic.
+
+4. **Schema-derived example** - if no `example` or `examples` values are present, Tyk generates a body from the media type's JSON schema, using any `example` values on individual properties and falling back to type defaults (`"string"`, `0`, `true`) for properties with no example.
+
+If no example can be resolved at the selected code and content type, Tyk returns `HTTP 404`.
+
+#### Error Responses
+
+| Condition | Response |
+| :--- | :--- |
+| `X-Tyk-Accept-Example-Code` is not a valid integer | `HTTP 400` |
+| No response defined for the selected HTTP code | `HTTP 404` |
+| No content defined for the selected content type | `HTTP 404` |
+| Named example not found in the `examples` map | `HTTP 404` |
+
+## Virtual Endpoint
+
+The virtual endpoint middleware runs a JavaScript function directly within Tyk Gateway. The function determines the response returned to the client. No upstream call is made unless the function explicitly makes one.
+
+Virtual endpoints run after authentication, rate limiting, and request transforms. They have access to the full request context and the client's session data.
+
+Use a virtual endpoint when the response depends on logic that cannot be expressed in static configuration - for example, conditional responses based on request content, aggregation of data from multiple upstream services, or calls to an external service to look up data before responding.
+
+Virtual endpoints require the Tyk JavaScript Virtual Machine to be enabled in `tyk.conf` (`enable_jsvm: true`). They are not available in deployments where the JSVM is disabled.
+
+For full configuration detail, the JavaScript function API, and examples, see [Virtual Endpoints](/5.13/api-management/traffic-transformation/virtual-endpoints).
+
+## Custom Plugins
+
+Custom plugins can also terminate requests by writing a response directly, without forwarding to an upstream service. Unlike mock response and virtual endpoints, plugins are compiled and loaded separately from the API definition, and can call external systems, use arbitrary dependencies, and run at native speed.
+
+Plugins can be attached at multiple points in the request-processing chain - as pre-auth hooks, post-auth hooks, or response hooks. A plugin that terminates the request should be registered as a post-auth hook when authentication is required, or as a pre-auth hook when the response must be returned before authentication runs.
+
+For full detail on writing and deploying plugins, see:
+- [Go Plugins](/5.13/api-management/plugins/golang)
+- [Rich Plugins](/5.13/api-management/plugins/rich-plugins) (gRPC, Python, Lua)
+- [Plugin Types](/5.13/api-management/plugins/plugin-types)
+
+## Worked Example
+
+Acme Publishing is retiring the legacy single-book download endpoint `GET /books/{category}/{id}/download` in favor of the authenticated download flow introduced in [Internal Routing](/5.13/advanced-configuration/transform-traffic/looping). The endpoint is configured to return `HTTP 410 Gone` with a message directing clients to the replacement flow.
+
+**Tyk OAS Configuration**
+
+```json
+"operations": {
+  "getLegacyBookDownload": {
+    "mockResponse": {
+      "enabled": true,
+      "code": 410,
+      "body": "This endpoint has been retired. Download books using GET /books/{category}/{id}?download=true with a valid subscriber token.",
+      "headers": [
+        { "name": "Content-Type", "value": "text/plain" },
+        { "name": "Deprecation", "value": "true" }
+      ]
+    }
+  }
+}
+```
+
+If using Tyk Classic, add to `extended_paths.white_list` (or `black_list` / `ignored`):
+
+```json
+"extended_paths": {
+  "white_list": [
+    {
+      "path": "/{category}/{id}/download",
+      "method": "",
+      "ignore_case": false,
+      "method_actions": {
+        "GET": {
+          "action": "reply",
+          "code": 410,
+          "data": "This endpoint has been retired. Download books using GET /books/{category}/{id}?download=true with a valid subscriber token.",
+          "headers": {
+            "Content-Type": "text/plain",
+            "Deprecation": "true"
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+**Outcomes**
+
+| Request | Response |
+| :--- | :--- |
+| `GET /books/fiction/9780/download` | `HTTP 410` with deprecation message and `Deprecation: true` header |
+
+With Tyk OAS, the Books API is keyless so no credentials are required; the mock response fires after the no-op authentication stage. With Tyk Classic, the response fires before authentication.
+
+**DIAGRAM PLACEHOLDER: Request Termination vs Normal Routing**
+{/*
+  Diagram: Request Termination vs Normal Routing
+
+  Purpose: Show the contrast between a normal request (forwarded to upstream) and a
+  terminated request (response generated at the Gateway). The key insight is that
+  the request never reaches the upstream when termination is configured.
+
+  Structure: Two vertical flows side by side.
+
+  Left flow (normal routing):
+  1. Client sends request
+  2. Gateway: Auth → Rate limit → Transforms (single labelled box)
+  3. Arrow to upstream service (grey rectangle)
+  4. Response returned to client
+
+  Right flow (request termination):
+  1. Client sends request
+  2. Gateway: Auth → Rate limit → Transforms (same box structure as left)
+  3. Mock Response / Virtual Endpoint / Plugin box (blue, labelled "terminates here")
+  4. Arrow blocked before upstream - upstream box greyed out with "not reached" label
+  5. Response returned directly to client from the termination box
+
+  Key visual elements:
+  - The "terminates here" label on the right flow's termination box is the most
+    important annotation - make it visually prominent
+  - The upstream box on the right must be visually suppressed (grey, strikethrough,
+    or absent) to make clear the upstream is not reached
+  - A small annotation "no upstream call" on the right flow
+
+  Design notes:
+  - Keep both flows vertically aligned so the contrast is immediately obvious
+  - A small inset below the diagram can show the Tyk Classic difference: mock
+    response fires before the Auth/Rate limit box, not after it
+*/}

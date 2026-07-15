@@ -1,0 +1,226 @@
+---
+title: "OAuth 2.0 with an External IdP"
+description: "Use the oauth2 security scheme to validate tokens issued by an external OAuth 2.0 provider, enforce per-operation scopes, and publish Protected Resource Metadata."
+keywords: "OAuth 2.0, external IdP, scope enforcement, Protected Resource Metadata, token exchange, MCP, oauth2 scheme"
+sidebarTitle: "OAuth 2.0 (External IdP)"
+canonical: "https://tyk.io/docs/api-management/authentication/oauth2-authentication"
+---
+
+## Introduction
+
+The `oauth2` security scheme lets Tyk Gateway validate bearer tokens issued by an external OAuth 2.0 or OIDC provider. The scheme integrates scope enforcement, Protected Resource Metadata (PRM) publishing, and RFC 8693 token exchange into a single API-level declaration driven by your OpenAPI description.
+
+## How it fits with other OAuth options
+
+Tyk offers three distinct OAuth-related client authentication mechanisms:
+
+- **Tyk OAuth 2.0**: Tyk Gateway acts as the authorization server, issuing and managing tokens itself. See [Tyk OAuth 2.0](/api-management/authentication/oauth-2).
+- **`oauth2` security scheme** (this page): Tyk enforces scopes and can publish a PRM document for tokens issued by an external IdP.
+- **External OAuth (deprecated)**: A previous mechanism for external IdP integration, deprecated in Tyk 5.7.0. If you are using the `externalOAuthServer` block, the `oauth2` scheme is its replacement. Migration requires manual reconfiguration; there is no automatic migration for `externalOAuthServer` configs.
+
+## Configure the oauth2 scheme
+
+The `oauth2` scheme is declared in two places: the standard OAS `components.securitySchemes` section, and the Tyk Vendor Extension (`x-tyk-api-gateway`).
+
+### OAS security scheme declaration
+
+In `components.securitySchemes`, declare the scheme with `type: oauth2` and define the OAuth 2.0 flows your IdP supports. The scopes declared in `flows` serve as the documented catalog for your API and are used to populate the PRM document's `scopes_supported` field.
+
+```yaml
+components:
+  securitySchemes:
+    idpAuth:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://idp.example.com/realms/demo/protocol/openid-connect/auth
+          tokenUrl: https://idp.example.com/realms/demo/protocol/openid-connect/token
+          scopes:
+            api:read: Read access to API resources
+            api:write: Write access to API resources
+```
+
+The scheme name (`idpAuth` in this example) is used throughout the document to reference this scheme in `security:` arrays and in the Tyk Vendor Extension.
+
+### Tyk Vendor Extension
+
+Enable the scheme in the `x-tyk-api-gateway` extension using the matching scheme name:
+
+```yaml
+x-tyk-api-gateway:
+  server:
+    authentication:
+      enabled: true
+      securitySchemes:
+        idpAuth:
+          enabled: true
+          header:
+            enabled: true
+            name: Authorization
+```
+
+With `enabled: true` and the `header` block configured, Tyk reads the bearer token from the specified header. To add scope enforcement, PRM, or token exchange, extend the block as described in the sections below.
+
+To read the token from a different header, cookie, or query parameter, add the matching `header`, `cookie`, or `query` block. For example, to read from a custom header:
+
+```yaml
+securitySchemes:
+  idpAuth:
+    enabled: true
+    header:
+      enabled: true
+      name: X-Auth-Token
+```
+
+### Apply the scheme to operations
+
+Reference the scheme in the OAS `security:` array to require it for all operations on the API, or on individual operations:
+
+```yaml
+# Root-level: applies to all operations
+security:
+  - idpAuth: []
+
+# Per-operation: require specific scopes on this operation
+paths:
+  /reports:
+    get:
+      security:
+        - idpAuth: [api:read]
+```
+
+When scopes are listed alongside the scheme name (for example `[api:read]`), they become the required scopes for that operation when scope enforcement is enabled.
+
+### Apply the scheme to MCP primitives
+
+MCP primitives (tools, resources, and prompts) have no OAS path entries of their own, so their security requirements are declared in the Tyk Vendor Extension rather than under `paths`. The structure mirrors the OAS `security:` array exactly:
+
+```yaml
+x-tyk-api-gateway:
+  middleware:
+    mcpTools:
+      get-report:
+        security:
+          - idpAuth: [api:read]
+    mcpResources:
+      customer-data:
+        security:
+          - idpAuth: [data:read]
+    mcpPrompts:
+      summarise:
+        security:
+          - idpAuth: []
+```
+
+The scope enforcement engine reads these the same way as per-operation `security:` declarations, subject to the same `scopeSource` rules. The root-level `security:` array still applies as a fallback when a primitive carries no `security` entry of its own.
+
+---
+
+## Scope enforcement
+
+Scope enforcement checks that the inbound token carries the scopes required by the matched operation's `security:` declaration. Configure it under `scopeCheck` in the scheme block:
+
+<Note>
+Scope enforcement reads claims from the inbound bearer token at request time. The `oauth2` scheme does not validate the token's JWT signature itself in Tyk 5.14.0. JWT authentication must be configured on the API so that the inbound token is verified before scope check runs. Without a JWT auth method configured, Tyk's auth chain will reject the request before scope enforcement is reached.
+</Note>
+
+```yaml
+x-tyk-api-gateway:
+  server:
+    authentication:
+      securitySchemes:
+        idpAuth:
+          enabled: true
+          scopeCheck:
+            enabled: true
+            claimNames: ["scope", "scp"]
+            separator: " "
+            scopeSource: "union"
+```
+
+When a request fails scope enforcement, Tyk returns `403 Forbidden` with a `WWW-Authenticate` challenge containing `error="insufficient_scope"`.
+
+### Scope check fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Enables scope enforcement for this scheme. |
+| `claimNames` | array of strings | `["scope", "scp"]` | JWT claim names to read scopes from. Tyk reads all listed claims present on the token and merges the results into a single scope set. |
+| `separator` | string | `" "` (space) | Character used to split string-valued scope claims. Set to `","` for comma-separated IdPs. |
+| `scopeSource` | string | `"union"` | Which `security:` declarations drive the required scope set. See below. |
+
+### Scope source modes
+
+`scopeSource` controls which `security:` declarations Tyk enforces against:
+
+- **`union`** (default): Merges per-operation and root `security:` alternatives. A request passes if it satisfies any one alternative from the combined set.
+- **`operation`**: Only the matched operation's `security:` array applies. The root `security:` array is ignored.
+- **`global`**: Only the root `security:` array applies, uniformly across every operation on this API.
+
+### Per-operation and per-MCP-primitive overrides
+
+You can exempt individual operations or MCP primitives from scope enforcement by setting `enabled: false` on the operation or primitive:
+
+```yaml
+x-tyk-api-gateway:
+  middleware:
+    operations:
+      getHealthCheck:
+        scopeCheck:
+          enabled: false
+    mcpTools:
+      ping:
+        scopeCheck:
+          enabled: false
+```
+
+This is useful where a specific operation enforces scopes upstream, or where a health-check endpoint should be reachable without a fully-scoped token.
+
+---
+
+## Protected Resource Metadata
+
+Protected Resource Metadata (PRM) is a discovery document defined in [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) that tells OAuth 2.0 clients where to obtain a token and which scopes the resource accepts. Tyk publishes this document from the `oauth2` scheme configuration, serving it at a well-known path on the API.
+
+Configure PRM under `protectedResourceMetadata` in the scheme block:
+
+```yaml
+x-tyk-api-gateway:
+  server:
+    authentication:
+      securitySchemes:
+        idpAuth:
+          enabled: true
+          protectedResourceMetadata:
+            enabled: true
+            resource: https://api.example.com/
+            authorizationServers:
+              - https://idp.example.com/realms/demo
+            wellKnownPath: .well-known/oauth-protected-resource
+            autoDeriveScopes: true
+```
+
+Tyk serves the PRM document at `{listenPath}/{wellKnownPath}`. The default well-known path is `.well-known/oauth-protected-resource`.
+
+### PRM fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Enables PRM document publishing. |
+| `resource` | string | - | Canonical identifier for this resource. Surfaced as `resource` in the PRM document. Accepts Tyk context variables. |
+| `authorizationServers` | array of strings | - | Issuer URLs published in the PRM document. Clients use these to discover where to obtain a token. |
+| `wellKnownPath` | string | `.well-known/oauth-protected-resource` | Path at which the PRM document is served, relative to the API listen path. |
+| `autoDeriveScopes` | boolean | `true` | When `true`, the `scopes_supported` field is populated from both the `flows.scopes` catalog and every `security:` array on the API. When `false`, only the `flows.scopes` catalog is used. |
+
+### Migration
+
+Prior to Tyk 5.14.0, Protected Resource Metadata was configured at the root-level `authentication.protectedResourceMetadata` block. It is now configured under the `oauth2` security scheme at `authentication.securitySchemes[name].protectedResourceMetadata`.
+
+When Tyk Dashboard starts, it automatically migrates existing configurations across all OAS API definitions. No manual action is required. The migration is non-destructive: it skips any API where the new block already exists. If both locations are present, the scheme-level block takes precedence.
+
+
+## Token exchange
+
+Token exchange (RFC 8693) is a client authentication feature that replaces the inbound token with a backend-scoped token before forwarding the request upstream. It is configured within the `oauth2` scheme but operates in the upstream authentication phase, after scope enforcement and before the reverse proxy.
+
+Token exchange is Enterprise Edition only. For full configuration details, see [Token exchange](/api-management/authentication/token-exchange).

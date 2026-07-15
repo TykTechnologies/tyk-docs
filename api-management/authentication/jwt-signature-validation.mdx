@@ -31,7 +31,7 @@ The JWT signature serves three main purposes:
 3. **Security:**
    Prevents malicious users from forging tokens or altering claims.
 
-### How JWT Signatures are Created
+### How JWT Signatures Are Created
 
 The JWT signature is created by taking the encoded header, the encoded payload, a secret, and the algorithm specified in the header.
 
@@ -65,103 +65,48 @@ When Tyk receives a JWT, it performs the following steps to validate the signatu
 
 ## Supported Algorithms for Signature Validation
 
-| Method    | Cryptographic Style | Secret Type   | Supported Locations for Secret | Supported Algorithms                                 |
-| --------- | ------------------- | ------------- | ------------------------------ | ---------------------------------------------------- |
-| **HMAC**  | Symmetric           | Shared secret | API definition                 | `HS256`, `HS384`, `HS512`                            |
-| **RSA**   | Asymmetric          | Public key    | API definition, JWKS endpoint  | `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512` |
-| **ECDSA** | Asymmetric          | Public key    | API definition, JWKS endpoint  | `ES256`, `ES384`, `ES512`                            |
+| Method    | Cryptographic Style | Secret Type   | Supported Algorithms                                 |
+| --------- | ------------------- | ------------- | ---------------------------------------------------- |
+| **HMAC**  | Symmetric           | Shared secret | `HS256`, `HS384`, `HS512`                            |
+| **RSA**   | Asymmetric          | Public key    | `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512` |
+| **ECDSA** | Asymmetric          | Public key    | `ES256`, `ES384`, `ES512`                            |
 
 ## Configuration Options
 
-You can configure JWT signature validation using the Dashboard UI or the Tyk API definition. To configure it, you must provide Tyk with the secret or key to validate incoming JWTs.
+Tyk supports two approaches to supplying the key or secret used to validate incoming JWTs:
 
-Tyk supports three methods for referencing keys and secrets:
+- **[Identity Provider](#identity-providers) (IdP)**: Tyk fetches public keys from a JWKS endpoint exposed by the IdP. The IdP can be configured centrally in the Identity Provider Registry, or directly in the API definition.
+- **[Local Keys](#local-keys)**: The key or secret is supplied directly in the API definition, either as a hard-coded value or as a reference to an external secret store.
 
-1. **Locally Stored Keys**: The key or secret is stored directly in the API definition.
-2. **External Key Value Store**: The key or secret is stored in an external key value store (e.g., Consul, Vault) and referenced in the API definition.
-3. **Remotely Stored Keys**: Tyk retrieves the key from a public JSON Web Key Set (JWKS) endpoint.
+### Identity Providers
 
-Depending on the cryptographic style used, the options vary:
-
-| Cryptographic Style | Locally Stored Keys | External Key Value Store | Remotely Stored Keys (JWKS) |
-| ------------------- | ------------------- | ------------------------ | --------------------------- |
-| **Symmetric** | Yes                 | Yes                      | No                          |
-| **Asymmetric** | Yes                 | Yes                      | Yes                         |
-
-
-### Locally Stored Keys and Secrets
-
-When storing the key or secret in the API definition, it is first base64 encoded and then configured in `server.authentication.securitySchemes.<jwtAuthScheme>.source` (in Tyk Classic, this is [jwt_source](/api-management/gateway-config-tyk-classic#configuring-authentication-for-tyk-classic-apis).
-
-For example, the Tyk OAS fragment below configures the secret `mysecret` to validate the signatures of incoming JWTs. **Note** that the secret has been base64 encoded and then stored in `source`:
-
-```yaml
-x-tyk-api-gateway:
-  server:
-    authentication:
-      securitySchemes:
-        jwtAuth:
-          source: bXlzZWNyZXQ=
-```
-
-Refer to the [Tyk OAS API Definition](/api-management/gateway-config-tyk-oas#jwt) reference for details.
-
-### External Key Value Store
-
-For improved separation of concerns and flexibility, the key/secret can be placed in an [external key value store](/tyk-configuration-reference/kv-store), with the appropriate reference configured in the API definition.
-
-For example, this fragment configures the JWT authentication middleware to use the secret at `consul://secrets/jwt-secret` to validate the signatures of incoming JWTs. Note that the external KV store reference has been base64 encoded and then stored in `source`:
-
-```yaml
-x-tyk-api-gateway:
-  server:
-    authentication:
-      securitySchemes:
-        jwtAuth:
-          source: Y29uc3VsOi8vc2VjcmV0cy9qd3Qtc2VjcmV0
-```
-
-### Remotely Stored Keys (JWKS endpoint)
-
-Tyk can retrieve public keys from JSON Web Key Sets (JWKS) endpoints to validate the signature of incoming JWTs. Tyk supports configuring [single](#single-jwks-endpoint) or [multiple](#multiple-jwks-endpoints) JWKS endpoints with [caching](#jwks-caching) capabilities.
+An Identity Provider (IdP) issues JWTs and exposes a JWKS endpoint where Tyk fetches the public keys needed to validate token signatures. The IdP can be configured centrally in the [Identity Provider Registry](/api-management/client-idp-registry), or directly in the API definition.
 
 #### Feature Compatibility Summary
 
-| Feature                        | Tyk Classic APIs | Tyk OAS APIs | Available From |
-| ------------------------------ | ---------------- | ------------ | -------------- |
-| Single JWKS Endpoint Support   | ✅               | ✅          | All versions   |
-| Multiple JWKS Endpoint Support | ❌               | ✅          | 5.9.0          |
+| Feature                                            | Tyk Classic APIs | Tyk OAS APIs | Available From      |
+| -------------------------------------------------- | ---------------- | ------------ | ------------------- |
+| Identity Provider Registry (recommended)           | ✅               | ✅           | 5.14.0 (Enterprise) |
+| Single JWKS endpoint in API definition             | ✅               | ✅           | All versions        |
+| Multiple JWKS endpoints in API definition          | ❌               | ✅           | 5.9.0               |
 
-#### Single JWKS endpoint
+#### Identity Provider Registry
 
-Before Tyk 5.9.0 and when using Tyk Classic APIs, Tyk can only retrieve a single JSON Web Key Set from a JWKS endpoint configured in `server.authentication.securitySchemes.<jwtAuthScheme>.source` (in Tyk Classic, this is [jwt_source](/api-management/gateway-config-tyk-classic#configuring-authentication-for-tyk-classic-apis)). This field accepts the base64-encoded full URI (including the protocol) of the JWKS endpoint.
+The [Identity Provider Registry](/api-management/client-idp-registry) is a centralized store for IdP configuration (JWKS endpoints, scope claim names, and [scope-to-policy mappings](/api-management/authentication/jwt-authorization#scope-policies)) managed independently of API definitions in the Tyk Dashboard. Available from **Tyk 5.14.0** (Enterprise), it is the recommended approach when using Dynamic Client Registration or when multiple systems need to manage IdP configuration for the same API.
 
-For example, the following Tyk OAS fragment configures the JWT authentication middleware to retrieve the JWKS from `https://your-tenant.auth0.com/.well-known/jwks.json` when validating the signatures of incoming JWTs. Note that the JWKS endpoint has been base64 encoded and then stored in `source`:
+Adopting the registry is a non-breaking change: existing API definitions are unaffected.
 
-```yaml
-x-tyk-api-gateway:
-  server:
-    authentication:
-      securitySchemes:
-        jwtAuth:
-          source: aHR0cHM6Ly95b3VyLXRlbmFudC5hdXRoMC5jb20vLndlbGwta25vd24vandrcy5qc29u
-```
+#### Configuring IdPs in the API Definition
 
-#### Multiple JWKS endpoints
+If you are not using the Identity Provider Registry, JWKS endpoints can be configured directly in the API definition.
 
-From **Tyk 5.9.0** onwards, Tyk OAS APIs can validate against multiple JWKS endpoints, allowing you to use different IdPs to issue JWTs for the same API.
+**Multiple JWKS Endpoints**
 
-Multiple JWKS endpoints can be configured in the `<jwtAuthScheme>.jwksURIs` array. Tyk will retrieve the JSON Web Key Sets from each of these endpoints, which will be used to attempt to validate the received JWT.
+From **Tyk 5.9.0** onwards, Tyk OAS APIs can validate against multiple JWKS endpoints, allowing different IdPs to issue JWTs for the same API.
 
-<Note>
-**Note**  
+Multiple JWKS endpoints can be configured in the `<jwtAuthScheme>.jwksURIs` array. Tyk retrieves the JSON Web Key Sets from each endpoint and uses them to attempt to validate the received JWT.
 
-- The `<jwtAuthScheme>.jwksURIs` URIs are not base64 encoded in the API definition and so are human-readable.
-- If both `<jwtAuthScheme>.source` and `<jwtAuthScheme>.jwksURIs` are configured, the latter will take precedence.
-- Multiple JWKS endpoints and the `jwksURIs` array are not supported by Tyk Classic APIs.
-</Note>
-
-For example, the following fragment will configure the JWT authentication middleware to retrieve the JWKS from both Auth0 and Keycloak when validating the signature of incoming JWTs:
+For example, the following fragment configures the JWT authentication middleware to retrieve the JWKS from both Auth0 and Keycloak when validating the signature of incoming JWTs:
 
 ```yaml
 x-tyk-api-gateway:
@@ -174,36 +119,83 @@ x-tyk-api-gateway:
             - url: http://your-keycloak-host/realms/tyk-demo/protocol/openid-connect/certs
 ```
 
-## JWKS caching
+<Note>
+Multiple JWKS endpoints and the `jwksURIs` array are not supported by Tyk Classic APIs.
+</Note>
 
-Tyk caches the [JSON Web Key Set](https://datatracker.ietf.org/doc/html/rfc7517) (JWKS) retrieved from JWKS endpoints to reduce the performance impact of contacting external services during request handling.
+**Single JWKS Endpoint**
+
+If using Tyk Classic APIs, or Tyk OAS APIs on versions before 5.9.0, a single JWKS endpoint can be configured in `server.authentication.securitySchemes.<jwtAuthScheme>.source` (in Tyk Classic, this is [jwt_source](/api-management/gateway-config-tyk-classic#configuring-authentication-for-tyk-classic-apis)). This field accepts the base64-encoded full URI (including the protocol) of the JWKS endpoint.
+
+For example, the following Tyk OAS fragment configures the JWT authentication middleware to retrieve the JWKS from `https://your-tenant.auth0.com/.well-known/jwks.json`:
+
+```yaml
+x-tyk-api-gateway:
+  server:
+    authentication:
+      securitySchemes:
+        jwtAuth:
+          source: aHR0cHM6Ly95b3VyLXRlbmFudC5hdXRoMC5jb20vLndlbGwta25vd24vandrcy5qc29u
+```
+
+<Note>
+The `<jwtAuthScheme>.source` URIs must be base64 encoded in the API definition.
+
+If both `<jwtAuthScheme>.source` and `<jwtAuthScheme>.jwksURIs` are configured, the latter will take precedence.
+</Note>
+
+### Local Keys
+
+The key or secret used to validate JWTs can be supplied directly in the API definition via `server.authentication.securitySchemes.<jwtAuthScheme>.source` (in Tyk Classic, this is [jwt_source](/api-management/gateway-config-tyk-classic#configuring-authentication-for-tyk-classic-apis)). The value must be base64 encoded.
+
+This approach supports both symmetric (HMAC shared secret) and asymmetric (RSA/ECDSA public key) algorithms.
+
+Rather than hard-coding the value, the recommended approach is to store the key or secret in an [external secret store](/tyk-configuration-reference/kv-store) such as Consul or Vault, and place a KV reference in `source` instead. The reference is base64 encoded in the same way as a hard-coded value.
+
+For example, the following fragment hard-codes the secret `mysecret`:
+
+```yaml
+x-tyk-api-gateway:
+  server:
+    authentication:
+      securitySchemes:
+        jwtAuth:
+          source: bXlzZWNyZXQ=  # base64("mysecret")
+```
+
+The following fragment uses a Consul KV reference instead, keeping the secret out of the API definition:
+
+```yaml
+x-tyk-api-gateway:
+  server:
+    authentication:
+      securitySchemes:
+        jwtAuth:
+          source: Y29uc3VsOi8vc2VjcmV0cy9qd3Qtc2VjcmV0  # base64("consul://secrets/jwt-secret")
+```
+
+Refer to the [Tyk OAS API Definition](/api-management/gateway-config-tyk-oas#jwt) reference for details.
+
+## JWKS Caching
+
+Tyk caches public keys fetched from Identity Providers to reduce the performance impact of contacting external services during request handling.
 
 ### Feature Compatibility Summary
 
-From **Tyk 5.10.0** onwards, we have introduced enhanced JWKS caching for [Tyk OAS APIs](/api-management/gateway-config-tyk-oas) with the following improvements:
-
-- **Configurable cache timeout** - Set custom validity periods per JWKS endpoint
-- **Pre-fetch functionality** - Automatically retrieve and cache all JWKS when the API loads to the Gateway, ensuring the first request doesn't experience the latency of fetching keys from external endpoints
-- **Cache management API** - New endpoints to manually invalidate JWKS caches
-
-The table below summarizes the availability of JWKS caching features between Tyk Classic and Tyk OAS APIs:
-
-| Feature                    | Tyk Classic | Tyk OAS | Available From |
-| -------------------------- | ----------- | ------- | -------------- |
-| Single JWKS endpoint       | ✅          | ✅      | All versions   |
-| Multiple JWKS endpoints    | ❌          | ✅      | Tyk 5.9.0+     |
-| Configurable cache timeout | ✅          | ✅      | Tyk 5.12.0+    |
-| Per-API cache timeout      | ❌          | ✅      | Tyk 5.10.0+    |
-| Pre-fetch functionality    | ❌          | ✅      | Tyk 5.10.0+    |
-| Cache management API       | ✅          | ✅      | Tyk 5.10.0+    |
+| Feature                        | Tyk Classic | Tyk OAS | Available From |
+| ------------------------------ | ----------- | ------- | -------------- |
+| Configurable cache timeout     | ✅          | ✅      | Tyk 5.12.0+    |
+| Per-IdP cache timeout          | ❌          | ✅      | Tyk 5.10.0+    |
+| Pre-fetch on API load          | ❌          | ✅      | Tyk 5.10.0+    |
+| Cache management API           | ✅          | ✅      | Tyk 5.10.0+    |
 
 ### Configuration Options
 
-#### Gateway Config
+#### Gateway-Level Configuration
 
-Unless otherwise configured, all JWKS cache entries expire after a period of *240 seconds* after which the cache is refreshed when a new request is received.
+Unless otherwise configured, all cached keys expire after 240 seconds, after which the cache is refreshed when a new request is received.
 
-From **Tyk 5.12.0**, this default JWKS cache timeout is configurable from the Gateway config file (`tyk.conf`) or the equivalent environment variable:
+From **Tyk 5.12.0**, this default timeout is configurable in the Gateway config file (`tyk.conf`) or the equivalent environment variable:
 
 ```json
 {
@@ -215,13 +207,13 @@ From **Tyk 5.12.0**, this default JWKS cache timeout is configurable from the Ga
 }
 ```
 
-The [`timeout`](/tyk-oss-gateway/configuration#jwks-cache-timeout) is given in seconds. If set, this will override the default period of 240 seconds.
+The [`timeout`](/tyk-oss-gateway/configuration#jwks-cache-timeout) is given in seconds. This setting applies to all IdPs, including those configured via the [Identity Provider Registry](/api-management/client-idp-registry).
 
-#### Tyk OAS API
+#### API-Level Configuration
 
-When using Tyk OAS APIs, from **Tyk 5.10**, a more granular configuration is available with separate validity periods per JWKS endpoint. If configured, these will override the Gateway-level configuration for the specified JWKS endpoints.
+From **Tyk 5.10**, Tyk OAS APIs support a per-IdP cache timeout on each IdP configured via `jwksURIs`. If set, this overrides the gateway-level timeout for that IdP.
 
-For example, the following fragment will configure the JWT authentication middleware to retrieve the JWKS from both Auth0 and Keycloak when validating the signature of incoming JWTs, assigning a 300 second validity period to the Auth0 JWKS and 180 second validity period for Keycloak:
+For example, the following fragment assigns a 300 second cache timeout to Auth0 and 180 seconds to Keycloak:
 
 ```yaml
 x-tyk-api-gateway:
@@ -231,9 +223,9 @@ x-tyk-api-gateway:
         jwtAuth:
           jwksURIs:
             - url: https://your-tenant.auth0.com/.well-known/jwks.json
-              cacheTimeout: "300s"  # 5 minutes
+              cacheTimeout: "300s"
             - url: http://your-keycloak-host/realms/tyk-demo/protocol/openid-connect/certs
-              cacheTimeout: "3m"    # 3 minutes (alternative format)  
+              cacheTimeout: "3m"
 ```
 
 | Field          | Type   | Description           | Default  | Supported Formats              |
@@ -244,12 +236,16 @@ x-tyk-api-gateway:
 For more details, refer to the [Tyk OAS API definition reference](/api-management/gateway-config-tyk-oas#jwk).
 
 <Note>
-  Tyk Classic APIs do not support granular cache validity periods and use the timeout set in the Gateway config (from Tyk 5.12.0) or the default (24o seconds). The enhanced caching features are available only for Tyk OAS APIs.
+Tyk Classic APIs do not support per-IdP cache timeouts and use the gateway-level timeout (from Tyk 5.12.0) or the default of 240 seconds.
 </Note>
 
-### JWKS Cache Management
+<Warning>
+Per-IdP `cacheTimeout` applies only to IdPs [configured directly in the API definition](#configuring-idps-in-the-api-definition) via `jwksURIs`. IdPs configured in the [Identity Provider Registry](/api-management/client-idp-registry) always use the gateway-level `jwks.cache.timeout` and cannot currently be tuned per IdP. Per-IdP cache timeout configuration is planned for a future release.
+</Warning>
 
-Tyk Gateway and Dashboard APIs expose endpoints to manage JWKS caches programmatically for both Tyk OAS and Tyk Classic APIs:
+### Cache Management
+
+Tyk Gateway and Tyk Dashboard APIs expose endpoints to manage JWKS caches programmatically for both Tyk OAS and Tyk Classic APIs:
 
 | Endpoint                  | Method   | Description                              | Availability |
 | ------------------------- | -------- | ---------------------------------------- | ------------ |
@@ -284,11 +280,11 @@ Yes, each API definition can have its own JWT configuration with different signi
 </Accordion>
 
 <Accordion title='How do I handle JWTs signed with different keys (e.g., from different issuers)?'>
-You can use JWKS (JSON Web Key Sets) by configuring `JWTJwksURIs` with the URLs of your JWKS endpoints. Tyk will automatically fetch and use the appropriate key based on the kid (Key ID) in the token header.
+The recommended approach is to use the [Identity Provider Registry](/api-management/client-idp-registry) (Enterprise, from Tyk 5.14.0), which natively supports multiple IdPs per API. If you are not using the registry, Tyk OAS APIs from Tyk 5.9.0 support multiple JWKS endpoints via the `jwksURIs` array.
 </Accordion>
 
 <Accordion title='What happens if the JWKS endpoint is temporarily unavailable?'>
-Tyk caches JWKS responses. You can configure the cache timeout using the CacheTimeout parameter in the `JWTJwksURIs` configuration. This ensures that temporary JWKS endpoint outages don't affect API availability.
+Tyk caches public keys fetched from IdPs, so a temporary outage does not immediately affect API availability. The cache timeout defaults to 240 seconds and is configurable via the gateway-level `jwks.cache.timeout` setting. For IdPs configured directly in a Tyk OAS API definition via `jwksURIs`, a per-IdP `cacheTimeout` can also be set on each entry.
 </Accordion>
 
 <Accordion title='Can I use JWKS endpoints with symmetric cryptography (HMAC)?'>
@@ -296,11 +292,11 @@ No, JWKS endpoints are designed for asymmetric cryptography (RSA and ECDSA), whe
 </Accordion>
 
 <Accordion title='How often does Tyk refresh the JWKS cache?'>
-By default, Tyk refreshes the JWKS cache every 240 seconds. However, you can customize the cache timeout for each JWKS endpoint in Tyk OAS APIs using the `cacheTimeout` field in the API definition.
+By default, cached keys expire after 240 seconds. This can be changed gateway-wide using the `jwks.cache.timeout` setting in the Gateway config. For Tyk OAS APIs with IdPs configured directly in the API definition via `jwksURIs`, a per-IdP `cacheTimeout` can override the gateway-level setting. IdPs configured via the Identity Provider Registry always use the gateway-level timeout and cannot currently be tuned per IdP.
 </Accordion>
 
 <Accordion title='Is JWKS Pre-fetching configurable?'>
-The JWKS (JSON Web Key Set) pre-fetching functionality in Tyk Gateway is automatic and not configurable in terms of enabling/disabling it. When you configure JWKS URLs in your API definition, Tyk will automatically pre-fetch the keys when the API loads.
+The JWKS (JSON Web Key Set) pre-fetching functionality in Tyk Gateway is automatic and not configurable in terms of enabling/disabling it. When you configure JWKS URLs in your API definition, Tyk automatically pre-fetches the keys when the API loads.
 </Accordion>
 
 </AccordionGroup>

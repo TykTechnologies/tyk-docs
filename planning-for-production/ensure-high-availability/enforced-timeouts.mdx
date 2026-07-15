@@ -1,135 +1,176 @@
 ---
 title: "Enforced Timeouts"
-description: "Learn how to use Tyk's Enforced Timeout middleware to manage upstream service response times, ensuring system stability and optimal performance."
+description: "Configure upstream request timeouts in Tyk Gateway at Gateway, API, and endpoint level."
 sidebarTitle: "Enforced Timeouts"
 canonical: "https://tyk.io/docs/planning-for-production/ensure-high-availability/enforced-timeouts"
 ---
 
-## Introduction
+## Overview
 
-In any system, a task or operation takes a certain period of time to complete. When a client makes a request to the Tyk Gateway, it will be dependent upon the responsiveness of the upstream service before it can continue. If the upstream service is suffering from resource overload or congestion the response may be returned too late leading to unacceptable experience for the end user or even to instability in the system.
-
-Tyk's Enforced Timeout middleware can be used to apply a maximum time that the Gateway will wait for a response before it terminates (or times out) the request. If the timeout expires, then Tyk will notify the client with an `HTTP 504 Gateway Timeout` error.
-
-This feature helps to maintain system stability and prevents unresponsive or long-running tasks from affecting the overall performance of the system. The enforced timeout can be customized and configured to suit specific requirements, providing control over resource allocation and ensuring optimal system functionality.
-
-## When to use an enforced timeout
-
-**Resource management**
-
-The enforced timeout can be implemented to manage system resources efficiently, particularly in high-traffic environments, preventing long-running tasks from monopolising resources, ensuring fair distribution and optimal performance.
-
-**Task prioritization**
-
-Prioritizing critical tasks by setting timeouts based on their expected time-to-complete helps to ensure that essential tasks are completed by reducing the impact of non-responsive upstream services.
-
-**Security measures**
-
-Limiting task durations can help protect against potential security breaches or malicious activities by setting time constraints on user sessions or API requests.
-
-**Time-sensitive operations**
-
-For time-sensitive tasks, enforced timeouts can guarantee timely completion and avoid delays or missed deadlines.
-
-## How the enforced timeout middleware works
-
-The enforced timeout middleware is enabled and configured at the endpoint level.
-
-The configuration is very simple, the only option being the duration of the timeout (which is declared in seconds) after which the upstream request will be terminated and an `HTTP 504 Gateway Timeout` error returned to the client.
-
+Tyk Gateway enforces a maximum wait time for upstream responses. When the timeout expires, Tyk Gateway terminates the request and returns `504 Gateway Timeout` to the client with the response body `{"error": "Upstream service reached hard timeout."}`. This prevents slow or unresponsive upstream services from blocking connections and degrading overall system performance.
 
 <Note>
-If you are using the Service Discovery option, if an enforced timeout is triggered, the service discovery module will refresh the host / host list.
+If you are using the [Service Discovery](/planning-for-production/ensure-high-availability/load-balancing#service-discovery) option and an enforced timeout is triggered, the service discovery module will refresh the host or host list.
 </Note>
 
+## Timeout Levels
 
-<hr />
+Timeouts can be configured at three levels. The most specific level takes precedence:
 
-{/* proposed "summary box" to be shown graphically on each middleware page
- ## Enforced Timeout middleware summary
-  - The Enforced Timeout is an optional stage in Tyk's API Request processing chain, activated when the request is proxied to the upstream service.
-  - The Enforced Timeout is configured at the per-endpoint level within the API Definition and is supported by the API Designer within the Tyk Dashboard. */}
+| Level | Tyk OAS | Tyk Classic | Scope |
+| :---- | :------ | :---------- | :---- |
+| Gateway | `proxy_default_timeout` in `tyk.conf` | `proxy_default_timeout` in `tyk.conf` | All APIs on the Gateway |
+| API *(from Tyk Gateway 5.14.0)* | `upstream.enforceTimeout` | `global_enforce_timeout` in `version_data` | All endpoints in the API |
+| Endpoint | `enforceTimeout` in `operations` | `hard_timeouts` in `extended_paths` | A specific endpoint |
 
+An endpoint-level timeout overrides the API-level timeout. The API-level timeout overrides the Gateway default.
 
-## Using the Enforced Timeout middleware with Tyk OAS APIs
+<Note>
+The Gateway-level `proxy_default_timeout` also acts as an upper bound. It runs concurrently with the API- and endpoint-level timeouts, and the request is terminated by whichever expires first. An API- or endpoint-level timeout can therefore only shorten the effective timeout. To set one longer than the Gateway default, increase [`proxy_default_timeout`](/tyk-oss-gateway/configuration#proxy_default_timeout) accordingly.
+</Note>
 
+## Duration Format
 
-Tyk's [enforced timeout](/planning-for-production/ensure-high-availability/circuit-breakers) middleware is configured at the endpoint level, where it sets a limit on the response time from the upstream service. If the upstream takes too long to respond to a request, Tyk will terminate the request and return `504 Gateway Timeout` to the client.
+From Tyk Gateway 5.14.0, API-level and endpoint-level timeouts accept human-readable duration strings. Accepted units are `ms`, `s`, and `m` as follows:
 
-When working with Tyk OAS APIs the enforced timeout is configured in the [Tyk OAS API Definition](/api-management/gateway-config-tyk-oas#operation). You can do this via the Tyk Dashboard API or in the API Designer.
+| Format         | Example   | Meaning |
+| :------------- | :-------- | :------ |
+| Milliseconds   | `"500ms"` | 500 milliseconds |
+| Seconds        | `"1.5s"`  | 1.5 seconds |
+| Minutes        | `"2m"`    | 2 minutes |
+| Legacy integer | `3`       | 3 seconds (Gateway and endpoint level only) |
 
-If you're using the legacy Tyk Classic APIs, then check out the [Tyk Classic](#using-the-enforced-timeout-middleware-with-tyk-classic-apis) page.
+At the endpoint level, the legacy integer (seconds) format remains supported for backward compatibility.
 
-**Configuring an enforced timeout in the Tyk OAS API Definition**
+The Gateway-level timeout is configured using the legacy integer (seconds) format.
 
-The design of the Tyk OAS API Definition takes advantage of the `operationId` defined in the OpenAPI Document that declares both the path and method for which the middleware should be added. Endpoint `paths` entries (and the associated `operationId`) can contain wildcards in the form of any string bracketed by curly braces, for example `/status/{code}`. These wildcards are so they are human readable and do not translate to variable names. Under the hood, a wildcard translates to the “match everything” regex of: `(.*)`.
+## HTTP Server Write Timeout
 
-The enforced timeout middleware (`enforceTimeout`) can be added to the `operations` section of the Tyk OAS Extension (`x-tyk-api-gateway`) in your Tyk OAS API Definition for the appropriate `operationId` (as configured in the `paths` section of your OpenAPI Document).
+Enforced timeouts measure only the time spent waiting for the upstream service to respond. [`http_server_options.write_timeout`](/tyk-oss-gateway/configuration#http_server_options-write_timeout) in the Gateway configuration (default: 120 seconds) covers the entire request lifecycle: Gateway middleware processing, the upstream wait, and writing the response back to the client. Because it includes Gateway-side processing time on top of the upstream wait, it is always the outer bound on any enforced timeout.
 
-The `enforceTimeout` object has the following configuration:
-- `enabled`: enable the middleware for the endpoint
-- `value`: the duration of the upstream request timer
+If an enforced timeout is set to a value close to or longer than `write_timeout`, the HTTP server may close the connection before the enforced timeout fires. To use enforced timeouts longer than 120 seconds, increase `http_server_options.write_timeout` to at least the same value.
 
-For example:
-```json {hl_lines=["39-41"],linenos=true, linenostart=1}
-{
-    "components": {},
-    "info": {
-        "title": "example-timeout",
-        "version": "1.0.0"
-    },
-    "openapi": "3.0.3",
-    "paths": {
-        "/status/200": {
-            "get": {
-                "operationId": "status/200get",
-                "responses": {
-                    "200": {
-                        "description": ""
-                    }
-                }
-            }
-        }
-    },
-    "x-tyk-api-gateway": {
-        "info": {
-            "name": "example-timeout",
-            "state": {
-                "active": true
-            }
-        },
-        "upstream": {
-            "url": "http://httpbin.org/"
-        },
-        "server": {
-            "listenPath": {
-                "value": "/example-timeout/",
-                "strip": true
-            }
-        },
-        "middleware": {
-            "operations": {
-                "status/200get": {
-                    "enforceTimeout": {
-                        "enabled": true,
-                        "value": 3
-                    }
-                }
-            }
+## Configuration
+
+### Gateway Level
+
+The Gateway-level timeout is configured using [`proxy_default_timeout`](/tyk-oss-gateway/configuration#proxy_default_timeout) in `tyk.conf`. It applies to all APIs on the Gateway and accepts an integer value in seconds.
+
+### API Level
+
+<Note>
+Available from Tyk Gateway 5.14.0
+</Note>
+
+An API-level timeout applies to all endpoints in the API that do not have their own endpoint-level timeout configured.
+
+<Tabs>
+<Tab title="Tyk OAS">
+
+Configure `upstream.enforceTimeout` in the Tyk Vendor Extension:
+
+```json
+"upstream": {
+    "url": "http://httpbin.org/",
+    "enforceTimeout": {
+        "enabled": true,
+        "duration": "10s"
+    }
+}
+```
+
+| Field | Description |
+| :---- | :---------- |
+| `enabled` | Enable the API-level timeout. |
+| `duration` | Timeout duration as a human-readable string (for example `"500ms"`, `"1.5s"`, `"30s"`). |
+
+</Tab>
+<Tab title="Tyk Classic">
+
+Configure `global_enforce_timeout` in the `version_data` section of the API definition:
+
+```json
+"version_data": {
+    "versions": {
+        "Default": {
+            "global_enforce_timeout": "10s"
         }
     }
 }
- ```
+```
 
-In this example Tyk OAS API definition, the enforced timeout has been configured to monitor requests to the `GET /status/200` endpoint. It will configure a timer that will expire (`timeout`) 3 seconds after the request is proxied to the upstream service. If the upstream response is not received before the expiry of the timer, that request will be terminated and Tyk will return `504 Gateway Timeout` to the client.
+`global_enforce_timeout` accepts the same human-readable duration format as the Tyk OAS field.
 
-The configuration above is a complete and valid Tyk OAS API Definition that you can import into Tyk to try out the enforced timeout.
+</Tab>
+</Tabs>
 
-**Configuring an enforced timeout in the API Designer**
+### Endpoint Level
 
-Adding the enforced timeout to your API endpoints is easy when using the API Designer in the Tyk Dashboard, simply follow these steps:
+An endpoint-level timeout applies to a specific path and method, overriding any API-level or Gateway-level timeout for that endpoint.
 
-**Step 1: Add an endpoint**
+<Tabs>
+<Tab title="Tyk OAS">
+
+Configure `enforceTimeout` in the `operations` section of the Tyk Vendor Extension for the appropriate `operationId`:
+
+```json
+"operations": {
+    "status/200get": {
+        "enforceTimeout": {
+            "enabled": true,
+            "duration": "500ms",
+            "value": 1
+        }
+    }
+}
+```
+
+| Field | Description |
+| :---- | :---------- |
+| `enabled` | Enable the timeout for this endpoint. |
+| `duration` | Timeout duration as a human-readable string (for example `"500ms"`, `"1.5s"`, `"2m"`). Added in Tyk Gateway 5.14.0. |
+| `value` | Timeout in whole seconds. Deprecated in favor of `duration` from Tyk Gateway 5.14.0 but remains fully supported. |
+
+Tyk Dashboard automatically rounds `duration` up to the nearest whole second and stores that in `value` when the API is saved, ensuring that in a distributed (MDCB) deployment the timeout continues to be enforced on older Data Plane Gateways. Tyk Gateway 5.14.0 or later will ignore `value` and apply the more granular `duration`.
+
+</Tab>
+<Tab title="Tyk Classic">
+
+Add a `hard_timeouts` entry to the `extended_paths` section of the API definition:
+
+```json
+"extended_paths": {
+    "hard_timeouts": [
+        {
+            "path": "/status/200",
+            "method": "GET",
+            "duration": "500ms",
+            "timeout": 1
+        }
+    ]
+}
+```
+
+| Field | Description |
+| :---- | :---------- |
+| `path` | The endpoint path. |
+| `method` | The endpoint HTTP method. |
+| `duration` | Timeout duration as a human-readable string (for example `"500ms"`, `"1.5s"`, `"2m"`). Added in Tyk Gateway 5.14.0. |
+| `timeout` | Timeout in whole seconds. Deprecated in favor of `duration` from Tyk Gateway 5.14.0 but remains fully supported. |
+
+<Note>
+Unlike Tyk OAS APIs, Tyk Classic APIs do not automatically synchronize `duration` to the legacy `timeout` field. If you are running a mixed deployment with older Data Plane Gateways, you must set `timeout` manually to ensure the timeout continues to be enforced on those Gateways.
+</Note>
+
+</Tab>
+</Tabs>
+
+### Configuring the Endpoint-Level Timeout in the API Designer
+
+<Tabs>
+<Tab title="Tyk OAS">
+
+**Step 1: Add an Endpoint**
 
 From the **API Designer** add an endpoint that matches the path and method to which you want to apply the middleware.
 
@@ -139,13 +180,13 @@ From the **API Designer** add an endpoint that matches the path and method to wh
 
 <img src="/img/dashboard/api-designer/tyk-oas-no-middleware.png" alt="Tyk OAS API Designer showing no middleware enabled on endpoint" />
 
-**Step 2: Select the Enforce Timeout middleware**
+**Step 2: Select the Enforce Timeout Middleware**
 
 Select **ADD MIDDLEWARE** and choose the **Enforce Timeout** middleware from the *Add Middleware* screen.
 
 <img src="/img/dashboard/api-designer/tyk-oas-enforce-timeout.png" alt="Adding the Enforce Timeout middleware" />
 
-**Step 3: Configure the middleware**
+**Step 3: Configure the Middleware**
 
 Set the timeout duration that you wish to enforce for requests to the endpoint.
 
@@ -157,57 +198,18 @@ Select **ADD MIDDLEWARE** to apply the change to the middleware configuration.
 
 Select **SAVE API** to apply the changes to your API.
 
+</Tab>
+<Tab title="Tyk Classic">
 
-## Using the Enforced Timeout middleware with Tyk Classic APIs
-
-
-Tyk's [enforced timeout](/planning-for-production/ensure-high-availability/circuit-breakers) middleware is configured at the endpoint level, where it sets a limit on the response time from the upstream service. If the upstream takes too long to respond to a request, Tyk will terminate the request and return `504 Gateway Timeout` to the client.
-
-When working with Tyk Classic APIs the enforced timeout is configured in the Tyk Classic API Definition. You can do this via the Tyk Dashboard API or in the API Designer.
-
-If you're using the newer Tyk OAS APIs, then check out the [Tyk OAS](#using-the-enforced-timeout-middleware-with-tyk-oas-apis) page.
-
-If you're using Tyk Operator then check out the [configuring an enforced timeout in Tyk Operator](#configuring-an-enforced-timeout-in-tyk-operator) section below.
-
-**Configuring an enforced timeout in the Tyk Classic API Definition**
-
-To configure an enforced timeout you must add a new `hard_timeouts` object to the `extended_paths` section of your API definition.
-
-It has the following configuration:
-- `path`: the endpoint path
-- `method`: the endpoint HTTP method
-- `timeout`: the duration of the upstream request timer
-
-For example:
-```json
-{
-    "hard_timeouts": [
-        {
-            "path": "/status/200",
-            "method": "GET",
-            "timeout": 3
-        }
-    ]
-}
-```
-
-In this example the enforced timeout has been configured to monitor requests to the `GET /status/200` endpoint. It will configure a timer that will expire (`timeout`) 3 seconds after the request is proxied to the upstream service.
-
-If the upstream response is not received before the expiry of the timer, that request will be terminated and Tyk will return `504 Gateway Timeout` to the client.
-
-**Configuring an enforced timeout in the API Designer**
-
-You can use the API Designer in the Tyk Dashboard to configure the enforced timeout middleware for your Tyk Classic API by following these steps.
-
-**Step 1: Add an endpoint for the path and select the Enforced Timeout plugin**
+**Step 1: Add an Endpoint and Select the Enforced Timeout Plugin**
 
 From the **Endpoint Designer** add an endpoint that matches the path for which you want to deploy the enforced timeout. Select the **Enforced timeout** plugin.
 
 <img src="/img/2.10/enforced_breakout.png" alt="Plugin dropdown" />
 
-**Step 2: Configure the timeout**
+**Step 2: Configure the Timeout**
 
-Then enter the timeout to be enforced for the endpoint (in seconds):
+Enter the timeout to be enforced for the endpoint (in seconds):
 
 <img src="/img/2.10/enforced_timeouts_settings.png" alt="Enforced timeout configuration" />
 
@@ -215,62 +217,5 @@ Then enter the timeout to be enforced for the endpoint (in seconds):
 
 Use the *save* or *create* buttons to save the changes and activate the middleware.
 
-## Configuring an enforced timeout in Tyk Operator
-
-The process for configuring the middleware in Tyk Operator is similar to that explained in [configuring an enforced timeout in the Tyk Classic API Definition](#using-the-enforced-timeout-middleware-with-tyk-classic-apis). It is possible to configure an enforced timeout using the `hard_timeouts` object within the `extended_paths` section of the API Definition.
-
-The example API Definition below configures an API to listen on path `/httpbin-timeout-breaker` and forwards requests upstream to http://httpbin.org. A hard timeout value of 2 seconds is configured for path `/delay/{delay_seconds}`. This will return a `504 Gateway Timeout` response to the client if the upstream response is not received before expiry of the timer.
-
-```yaml {linenos=true, linenostart=1, hl_lines=["26-29"]}
-apiVersion: tyk.tyk.io/v1alpha1
-kind: ApiDefinition
-metadata:
-  name: httpbin-timeout-breaker
-spec:
-  name: httpbin-timeout-breaker
-  use_keyless: true
-  protocol: http
-  active: true
-  proxy:
-    target_url: http://httpbin.org
-    listen_path: /httpbin-timeout-breaker
-    strip_listen_path: true
-  version_data:
-    default_version: Default
-    not_versioned: true
-    versions:
-      Default:
-        name: Default
-        use_extended_paths: true
-        paths:
-          black_list: []
-          ignored: []
-          white_list: []
-        extended_paths:
-          hard_timeouts:
-            - method: GET
-              path: /delay/{delay_seconds}
-              timeout: 2
-          circuit_breakers:
-            - method: GET
-              path: /status/500
-              return_to_service_after: 10
-              samples: 4
-              threshold_percent: "0.5" # Tyk Dashboard API doesn't support strings.
-```
-
-We can test the example using the curl command as shown below:
-
-```bash
-curl http://localhost:8081/httpbin-timeout/delay/3 -i
-    HTTP/1.1 504 Gateway Timeout
-Content-Type: application/json
-X-Generator: tyk.io
-Date: Fri, 09 Aug 2024 07:43:48 GMT
-Content-Length: 57
-
-{
-    "error": "Upstream service reached hard timeout."
-}
-```
-
+</Tab>
+</Tabs>
