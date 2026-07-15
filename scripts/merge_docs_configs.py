@@ -1235,9 +1235,8 @@ class DocsMerger:
             "theme", "logo", "favicon", "colors", "description",
             "api", "integrations", "styling", "search", "seo",
             "background", "fonts", "appearance", "footer", "banner", "navbar", "contextual","thumbnails","icons",
-            "errors"
+            "errors", "scripts"
         ]
-
         for field in optional_fields:
             value = base_config.get(field)
             if value is not None and value != "":
