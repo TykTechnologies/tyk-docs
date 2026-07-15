@@ -1,0 +1,13 @@
+const script = document.createElement('script');
+script.async = true;
+script.src = 'https://widget.kapa.ai/kapa-widget.bundle.js';
+script.setAttribute('data-website-id', '3f95e3a5-8991-4c4b-86aa-f19eaa0aa0bb');
+script.setAttribute('data-project-name', 'Tyk');
+script.setAttribute('data-project-color', '#C380FF');
+script.setAttribute('data-project-logo', 'https://external-content.duckduckgo.com/iu/?u=https%3A%2F%2Fimages.seeklogo.com%2Flogo-png%2F47%2F1%2Ftyk-logo-png_seeklogo-477146.png&f=1&nofb=1&ipt=a0b76f90b2c90f0a1e90606751775bc943c313ed246a78d09820a11418b23a4c');
+script.setAttribute('data-view-mode', 'sidebar');
+script.setAttribute('data-modal-open-by-default', 'true');
+script.setAttribute('data-launcher-button-hidden', 'true');
+script.setAttribute('data-mcp-enabled', 'true');
+script.setAttribute('data-mcp-server-url', 'https://tyk.mcp.kapa.ai');
+document.head.appendChild(script);
