@@ -25,6 +25,18 @@ OPENAPI_SPEC_DIRECTORY_NAMES = {
     "ai-studio-swagger.yml": "ai-studio",
 }
 
+# Giving a spec its own subdirectory changes every one of its generated page URLs for
+# that version -> 404s for anyone with old links/bookmarks unless redirects are added.
+# To minimize that blast radius, default to only fixing "5.14 and above": the version
+# marked isLatest in branches-config.json, plus the isMain (nightly/edge) version since
+# it tracks what ships after 5.14. Older released versions keep their original shared
+# "api-reference" directory (and their original cross-spec collisions) untouched. Flip
+# "all" to True to apply the fix to every version instead. Exactly one should be True.
+OPENAPI_DIRECTORY_PREFIX_CONFIG = {
+    "latest": True,
+    "all": False,
+}
+
 
 def openapi_directory_name(swagger_filename: str) -> str:
     """Unique subdirectory name for a swagger file's generated API reference pages."""
@@ -827,14 +839,23 @@ class DocsMerger:
                         # No version subdirectory, add it
                         openapi_path = f"swagger/{version}/{swagger_file}"
 
-                    # Convert to object form with source and directory. Each spec gets its
-                    # own subdirectory so cross-spec tag+summary collisions can't merge
-                    # (see OPENAPI_SPEC_DIRECTORY_NAMES above).
-                    spec_dir_name = openapi_directory_name(path_parts[-1])
-                    if is_latest:
-                        directory = f"api-reference/{spec_dir_name}"
+                    # Convert to object form with source and directory.
+                    base_directory = "api-reference" if is_latest else f"{version}/api-reference"
+
+                    # Give the spec its own subdirectory so cross-spec tag+summary
+                    # collisions can't merge (see OPENAPI_SPEC_DIRECTORY_NAMES above) -
+                    # scoped per OPENAPI_DIRECTORY_PREFIX_CONFIG to limit URL churn.
+                    # "latest" mode covers "5.14 and above": isLatest plus isMain (nightly).
+                    is_in_latest_scope = is_latest or version == self.main_version
+                    apply_spec_prefix = OPENAPI_DIRECTORY_PREFIX_CONFIG["all"] or (
+                        OPENAPI_DIRECTORY_PREFIX_CONFIG["latest"] and is_in_latest_scope
+                    )
+                    if apply_spec_prefix:
+                        spec_dir_name = openapi_directory_name(path_parts[-1])
+                        directory = f"{base_directory}/{spec_dir_name}"
                     else:
-                        directory = f"{version}/api-reference/{spec_dir_name}"
+                        directory = base_directory
+
                     result["openapi"] = {"source": openapi_path, "directory": directory}
             
             return result
