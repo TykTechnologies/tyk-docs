@@ -1,11 +1,40 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 import argparse
 from pathlib import Path
 from typing import Dict, List, Any
 import copy
 import shutil
+
+# Each OpenAPI spec must render under its own Mintlify "directory" namespace.
+# Mintlify builds every API reference page URL as /<directory>/<tag>/<summary>;
+# specs that share a directory share that namespace, so two specs with the same
+# tag+summary (e.g. "Users" / "Create a new user") silently collide and one
+# overwrites the other at build time (DX-2380, DX-2380 follow-up). Keying by
+# swagger filename here keeps every spec in its own subdirectory regardless of
+# which navigation tab it's nested under.
+OPENAPI_SPEC_DIRECTORY_NAMES = {
+    "gateway-swagger.yml": "gateway",
+    "dashboard-swagger.yml": "dashboard",
+    "dashboard-admin-swagger.yml": "dashboard-admin",
+    "mdcb-swagger.yml": "mdcb",
+    "identity-broker-swagger.yml": "identity-broker",
+    "enterprise-developer-portal-swagger.yaml": "portal",
+    "ai-studio-swagger.yml": "ai-studio",
+}
+
+
+def openapi_directory_name(swagger_filename: str) -> str:
+    """Unique subdirectory name for a swagger file's generated API reference pages."""
+    known = OPENAPI_SPEC_DIRECTORY_NAMES.get(swagger_filename)
+    if known:
+        return known
+    # Fallback for a future spec that hasn't been added to the map above yet.
+    fallback = re.sub(r"\.ya?ml$", "", swagger_filename, flags=re.IGNORECASE)
+    return re.sub(r"-swagger$", "", fallback)
+
 
 class DocsMerger:
     def __init__(self, output_file: str = "docs.json", subfolder: str = "", additional_assets: List[str] = None):
@@ -798,11 +827,14 @@ class DocsMerger:
                         # No version subdirectory, add it
                         openapi_path = f"swagger/{version}/{swagger_file}"
 
-                    # Convert to object form with source and directory
+                    # Convert to object form with source and directory. Each spec gets its
+                    # own subdirectory so cross-spec tag+summary collisions can't merge
+                    # (see OPENAPI_SPEC_DIRECTORY_NAMES above).
+                    spec_dir_name = openapi_directory_name(path_parts[-1])
                     if is_latest:
-                        directory = "api-reference"
+                        directory = f"api-reference/{spec_dir_name}"
                     else:
-                        directory = f"{version}/api-reference"
+                        directory = f"{version}/api-reference/{spec_dir_name}"
                     result["openapi"] = {"source": openapi_path, "directory": directory}
             
             return result

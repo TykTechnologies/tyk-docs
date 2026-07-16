@@ -3,11 +3,14 @@
 Disambiguate Mintlify OpenAPI page-slug collisions by suffixing operation summaries.
 
 WHY: Mintlify builds every API reference page URL as
-        /api-reference/<slug(first-tag)>/<slug(summary or operationId)>
-in one global, flat namespace shared by ALL specs in docs.json. When two operations
-(in the same or different specs) produce the same slug, Mintlify keeps one at the clean
-URL and silently suffixes/drops the rest — so a page can render the wrong endpoint.
-This is DX-2380 (Dashboard "Create a key" rendered the Admin /admin/org/keys endpoint).
+        <directory>/<slug(first-tag)>/<slug(summary or operationId)>
+where <directory> is per-spec (merge_docs_configs.py's OPENAPI_SPEC_DIRECTORY_NAMES gives
+each spec its own subdirectory, e.g. api-reference/portal, api-reference/ai-studio) so
+cross-spec collisions should no longer be reachable in practice. This script still runs to
+catch WITHIN-spec collisions (two operations in the SAME spec with the same tag+summary),
+which a directory can't fix, and defensively covers any spec that isn't yet in that map.
+This is DX-2380 (Dashboard "Create a key" rendered the Admin /admin/org/keys endpoint, back
+when both specs shared one flat api-reference/ namespace).
 
 WHAT THIS DOES: detects every colliding slug, keeps the first occurrence (discovery order:
 docs.json spec order, then path, then method) at its clean slug, and appends an incrementing
@@ -17,9 +20,11 @@ every API group's nav links to its own correct page. Summaries (not tags) are su
 tag-based navigation grouping is preserved.
 
 WHERE THIS RUNS: as a deploy-time step in .github/workflows/deploy-docs.yml, AFTER the docs
-merger and BEFORE the deployment PR is created. It rewrites the swagger that gets deployed to
-the `production` branch only — it never edits the auto-synced swagger/*.yml on `main`, so it is
-compatible with the "do not edit auto-generated files" rule and re-applies on every deploy.
+merger and BEFORE the deployment PR is created. It reads the already-MERGED docs.json (openapi
+field in {source, directory} object form); it also accepts the pre-merge plain string form for
+standalone/local runs. It rewrites the swagger that gets deployed to the `production` branch
+only — it never edits the auto-synced swagger/*.yml on `main`, so it is compatible with the
+"do not edit auto-generated files" rule and re-applies on every deploy.
 
 Editing is surgical: ruamel.yaml is used only to locate each target operation's `summary:`
 line; the raw file text is then rewritten one line at a time so nothing else in the spec
@@ -43,15 +48,27 @@ def slugify(text):
 
 
 def find_openapi_specs(docs_json_path):
+    """Return every distinct {source, directory} referenced by an "openapi" key (in order).
+    Handles both the plain-string pre-merge form (directory implicitly "api-reference") and
+    the {source, directory} object form merge_docs_configs.py produces.
+    """
     with open(docs_json_path, encoding="utf-8") as f:
         config = json.load(f)
     specs = []
+    seen_sources = set()
+
+    def add(source, directory):
+        if isinstance(source, str) and source not in seen_sources:
+            seen_sources.add(source)
+            specs.append({"source": source, "directory": directory or "api-reference"})
 
     def walk(node):
         if isinstance(node, dict):
             spec = node.get("openapi")
-            if isinstance(spec, str) and spec not in specs:
-                specs.append(spec)
+            if isinstance(spec, str):
+                add(spec, "api-reference")
+            elif isinstance(spec, dict):
+                add(spec.get("source"), spec.get("directory"))
             for value in node.values():
                 walk(value)
         elif isinstance(node, list):
@@ -66,9 +83,9 @@ def label_of(operation):
     return operation.get("summary") or operation.get("operationId") or ""
 
 
-def slug_of(operation):
+def slug_of(directory, operation):
     tag = (operation.get("tags") or ["untagged"])[0]
-    return f"{slugify(tag)}/{slugify(label_of(operation))}"
+    return f"{directory}/{slugify(tag)}/{slugify(label_of(operation))}"
 
 
 def rewrite_summary_line(line, new_value):
@@ -109,9 +126,11 @@ def main():
     yaml.preserve_quotes = True
 
     specs = find_openapi_specs(docs_json_path)
-    # discovery order: list of (spec_rel, path, method, operation)
+    # discovery order: list of (spec_rel, spec_directory, path, method, operation)
     operations = []
-    for spec_rel in specs:
+    for spec_info in specs:
+        spec_rel = spec_info["source"]
+        spec_directory = spec_info["directory"]
         spec_path = os.path.join(args.directory, spec_rel)
         if not os.path.isfile(spec_path):
             print(f"  WARNING: spec referenced in docs.json not found: {spec_rel}")
@@ -123,11 +142,11 @@ def main():
                 continue
             for method, operation in methods.items():
                 if method.lower() in HTTP_METHODS and isinstance(operation, dict):
-                    operations.append((spec_rel, path, method, operation))
+                    operations.append((spec_rel, spec_directory, path, method, operation))
 
     groups = defaultdict(list)
     for entry in operations:
-        groups[slug_of(entry[3])].append(entry)
+        groups[slug_of(entry[1], entry[4])].append(entry)
 
     # Decide the new summary for each colliding operation (keep entries[0] clean).
     # edits_by_spec[spec_rel] = list of (line_index, new_summary_value)
@@ -136,7 +155,7 @@ def main():
     for slug, entries in groups.items():
         if len(entries) < 2:
             continue
-        for n, (spec_rel, path, method, operation) in enumerate(entries[1:], start=2):
+        for n, (spec_rel, spec_directory, path, method, operation) in enumerate(entries[1:], start=2):
             old_label = label_of(operation)
             new_label = f"{old_label} {n}".strip()
             lc = operation.lc.data.get("summary")
@@ -146,7 +165,8 @@ def main():
                 continue
             value_line = lc[2]  # 0-indexed line of the summary value
             edits_by_spec[spec_rel].append((value_line, new_label))
-            changed.append((spec_rel, method.upper(), path, slug, f"{slugify((operation.get('tags') or ['untagged'])[0])}/{slugify(new_label)}"))
+            new_slug = f"{spec_directory}/{slugify((operation.get('tags') or ['untagged'])[0])}/{slugify(new_label)}"
+            changed.append((spec_rel, method.upper(), path, slug, new_slug))
 
     if not changed:
         print("✅ No colliding slugs — nothing to disambiguate.")
@@ -155,7 +175,7 @@ def main():
     print(f"Disambiguated {len(changed)} colliding operation(s) across {len(edits_by_spec)} spec(s):")
     for spec_rel, method, path, old_slug, new_slug in changed:
         print(f"  [{spec_rel}] {method:6} {path}")
-        print(f"      /api-reference/{old_slug}  ->  /api-reference/{new_slug}")
+        print(f"      /{old_slug}  ->  /{new_slug}")
 
     if args.dry_run:
         print("\n(--dry-run: no files written)")
