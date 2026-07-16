@@ -3,15 +3,19 @@
 Detect Mintlify OpenAPI page-slug collisions across all specs referenced in docs.json.
 
 Mintlify auto-generates one API reference page per OpenAPI operation. The page URL is
-derived from the operation's *first tag* and its *summary* (falling back to operationId),
-slugified as:  api-reference/<slug(tag)>/<slug(summary)>
+derived from the spec's "directory", the operation's *first tag*, and its *summary*
+(falling back to operationId), slugified as:  <directory>/<slug(tag)>/<slug(summary)>
 
-All specs share a single flat /api-reference/ namespace, so two operations in *different*
-specs that share a tag (case-insensitively) AND a summary collide to the same URL. At build
-time one silently overwrites the other, so a page can render the wrong endpoint.
+Every spec now gets its own directory (merge_docs_configs.py's OPENAPI_SPEC_DIRECTORY_NAMES,
+added to fix cross-spec collisions structurally, e.g. the Developer Portal and AI Studio specs
+both defining "Create a new user"/"users"), so a true cross-spec collision should no longer be
+reachable in practice. This script still checks for it defensively (e.g. a future spec that
+isn't in the directory map, or two specs mapped to the same directory by mistake) and separately
+flags within-spec duplicate slugs, which directories don't fix.
 
-This is the root cause of DX-2380: the Dashboard API "Create a key." (tag "Keys") and the
-Dashboard Admin API "Create a key." (tag "keys") both resolve to api-reference/keys/create-a-key.
+This script reads the already-MERGED docs.json (openapi field in {source, directory} object
+form) because that's what the deploy pipeline hands it; it also accepts the pre-merge plain
+string form for standalone/local runs.
 
 Exit code 1 if any cross-spec collision is found (CI-failing). Within-spec duplicates are
 reported as warnings (Mintlify resolves them, but they signal latent ambiguity).
@@ -36,17 +40,30 @@ def slugify(text):
 
 
 def find_openapi_specs(docs_json_path):
-    """Walk docs.json and return every distinct value of an "openapi" key (in order)."""
+    """Walk docs.json and return every distinct {source, directory} referenced by an
+    "openapi" key (in order). Handles both the plain-string form ("openapi": "swagger/x.yml",
+    pre-merge, directory implicitly "api-reference") and the object form merge_docs_configs.py
+    produces ("openapi": {"source": ..., "directory": ...}), since this script runs against
+    the already-merged docs.json in the deploy pipeline.
+    """
     with open(docs_json_path, encoding="utf-8") as f:
         config = json.load(f)
 
     specs = []
+    seen_sources = set()
+
+    def add(source, directory):
+        if isinstance(source, str) and source not in seen_sources:
+            seen_sources.add(source)
+            specs.append({"source": source, "directory": directory or "api-reference"})
 
     def walk(node):
         if isinstance(node, dict):
             spec = node.get("openapi")
-            if isinstance(spec, str) and spec not in specs:
-                specs.append(spec)
+            if isinstance(spec, str):
+                add(spec, "api-reference")
+            elif isinstance(spec, dict):
+                add(spec.get("source"), spec.get("directory"))
             for value in node.values():
                 walk(value)
         elif isinstance(node, list):
@@ -64,9 +81,11 @@ def operation_slug(tag, operation):
 
 
 def collect_slugs(root, specs):
-    """Return slug -> list of {spec, method, path, tag, summary} occurrences."""
+    """Return full-page-slug (directory included) -> list of {spec, method, path, tag, summary} occurrences."""
     slug_map = defaultdict(list)
-    for spec_rel in specs:
+    for spec_info in specs:
+        spec_rel = spec_info["source"]
+        directory = spec_info["directory"]
         spec_path = os.path.join(root, spec_rel)
         if not os.path.isfile(spec_path):
             print(f"  WARNING: spec referenced in docs.json not found: {spec_rel}")
@@ -82,8 +101,10 @@ def collect_slugs(root, specs):
                 # Mintlify groups an operation under its FIRST tag (that drives the URL).
                 tags = operation.get("tags") or ["untagged"]
                 tag = tags[0]
-                slug_map[operation_slug(tag, operation)].append({
+                full_slug = f"{directory}/{operation_slug(tag, operation)}"
+                slug_map[full_slug].append({
                     "spec": spec_rel,
+                    "directory": directory,
                     "method": method.upper(),
                     "path": path,
                     "tag": tag,
@@ -93,7 +114,7 @@ def collect_slugs(root, specs):
 
 
 def load_baseline(path):
-    """Load a baseline file of known/accepted colliding slugs (one slug per line, # comments ok)."""
+    """Load a baseline file of known/accepted colliding slugs (one full page slug per line, # comments ok)."""
     if not path or not os.path.isfile(path):
         return set()
     allowed = set()
@@ -101,7 +122,7 @@ def load_baseline(path):
         for line in f:
             line = line.split("#", 1)[0].strip()
             if line:
-                allowed.add(line.lstrip("/").removeprefix("api-reference/"))
+                allowed.add(line.lstrip("/"))
     return allowed
 
 
@@ -124,7 +145,7 @@ def main():
     specs = find_openapi_specs(docs_json_path)
     print(f"Found {len(specs)} OpenAPI spec(s) referenced in docs.json:")
     for s in specs:
-        print(f"  - {s}")
+        print(f"  - {s['source']} (directory: {s['directory']})")
 
     slug_map = collect_slugs(args.directory, specs)
 
@@ -142,7 +163,7 @@ def main():
             f.write("# Known OpenAPI page-slug collisions accepted as a baseline (DX-2380).\n")
             f.write("# New collisions outside this list fail CI. Drive this list down to zero.\n")
             for slug in sorted(cross_spec):
-                f.write(f"api-reference/{slug}\n")
+                f.write(f"{slug}\n")
         print(f"Wrote {len(cross_spec)} baseline collision(s) to {args.write_baseline}")
         return 0
 
@@ -153,7 +174,7 @@ def main():
     if within_spec:
         print(f"\n⚠️  {len(within_spec)} within-spec duplicate slug(s) (Mintlify resolves these, but they are ambiguous):")
         for slug, occ in sorted(within_spec.items()):
-            print(f"  /api-reference/{slug}")
+            print(f"  /{slug}")
             for o in occ:
                 print(f"      {o['method']:6} {o['path']}  (tag: {o['tag']}, summary: {o['summary']!r})")
 
@@ -165,7 +186,7 @@ def main():
         kind = "NEW " if baseline else ""
         print(f"\n❌ {len(report)} {kind}cross-spec slug collision(s) — these silently overwrite each other at build time:")
         for slug, occ in sorted(report.items()):
-            print(f"\n  /api-reference/{slug}")
+            print(f"\n  /{slug}")
             for o in occ:
                 print(f"      [{o['spec']}]  {o['method']:6} {o['path']}  (tag: {o['tag']}, summary: {o['summary']!r})")
         print("\nFix: make the tag and/or summary unique per spec in the SOURCE OpenAPI spec")
