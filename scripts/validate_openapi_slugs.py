@@ -6,19 +6,26 @@ Mintlify auto-generates one API reference page per OpenAPI operation. The page U
 derived from the spec's "directory", the operation's *first tag*, and its *summary*
 (falling back to operationId), slugified as:  <directory>/<slug(tag)>/<slug(summary)>
 
-Every spec now gets its own directory (merge_docs_configs.py's OPENAPI_SPEC_DIRECTORY_NAMES,
-added to fix cross-spec collisions structurally, e.g. the Developer Portal and AI Studio specs
-both defining "Create a new user"/"users"), so a true cross-spec collision should no longer be
-reachable in practice. This script still checks for it defensively (e.g. a future spec that
-isn't in the directory map, or two specs mapped to the same directory by mistake) and separately
-flags within-spec duplicate slugs, which directories don't fix.
+Every spec gets its own directory (OPENAPI_SPEC_DIRECTORY_NAMES below, mirroring
+merge_docs_configs.py's mapping - added to fix cross-spec collisions structurally, e.g.
+the Developer Portal and AI Studio specs both defining "Create a new user"/"users"), so a
+true cross-spec collision should no longer be reachable in practice. What's left is
+within-spec duplicate slugs (the same file defining two operations with the same
+tag+summary), which a directory can't fix - only the source spec can.
 
-This script reads the already-MERGED docs.json (openapi field in {source, directory} object
-form) because that's what the deploy pipeline hands it; it also accepts the pre-merge plain
-string form for standalone/local runs.
+This runs in two contexts:
+  - On `main`, against the pre-merge docs.json (openapi as a plain string, e.g.
+    "swagger/ai-studio-swagger.yml"). Since `main` becomes the `nightly` version, which
+    gets the per-spec directory split, the plain-string form is assigned a directory the
+    same way merge_docs_configs.py would (via openapi_directory_name()) so this check
+    reflects the real future URL, not a flat pre-split namespace.
+  - Post-merge on `production` (openapi as a {"source", "directory"} object), reading
+    whatever directory merge_docs_configs.py actually assigned for that version.
 
 Exit code 1 if any cross-spec collision is found (CI-failing). Within-spec duplicates are
-reported as warnings (Mintlify resolves them, but they signal latent ambiguity).
+reported as warnings by default (Mintlify resolves them, but they signal latent ambiguity)
+- pass --fail-on-within-spec to also hard-fail on those (used on `main`, where every
+remaining collision is by definition within-spec, since directories are per-spec there).
 """
 import argparse
 import json
@@ -31,6 +38,29 @@ import yaml
 
 HTTP_METHODS = {"get", "post", "put", "delete", "patch", "options", "head", "trace"}
 
+# Mirrors merge_docs_configs.py's OPENAPI_SPEC_DIRECTORY_NAMES. Duplicated here (rather
+# than imported) so this script has no dependency on merge_docs_configs.py's own state -
+# they're maintained independently and don't need to be edited together.
+OPENAPI_SPEC_DIRECTORY_NAMES = {
+    "gateway-swagger.yml": "gateway",
+    "dashboard-swagger.yml": "dashboard",
+    "dashboard-admin-swagger.yml": "dashboard-admin",
+    "mdcb-swagger.yml": "mdcb",
+    "identity-broker-swagger.yml": "identity-broker",
+    "enterprise-developer-portal-swagger.yaml": "portal",
+    "ai-studio-swagger.yml": "ai-studio",
+}
+
+
+def openapi_directory_name(swagger_filename):
+    """Unique subdirectory name for a swagger file's generated API reference pages."""
+    known = OPENAPI_SPEC_DIRECTORY_NAMES.get(swagger_filename)
+    if known:
+        return known
+    # Fallback for a future spec that hasn't been added to the map above yet.
+    fallback = re.sub(r"\.ya?ml$", "", swagger_filename, flags=re.IGNORECASE)
+    return re.sub(r"-swagger$", "", fallback)
+
 
 def slugify(text):
     """Mirror Mintlify's slug rule: lowercase, non-alphanumerics to hyphens, trim."""
@@ -41,10 +71,10 @@ def slugify(text):
 
 def find_openapi_specs(docs_json_path):
     """Walk docs.json and return every distinct {source, directory} referenced by an
-    "openapi" key (in order). Handles both the plain-string form ("openapi": "swagger/x.yml",
-    pre-merge, directory implicitly "api-reference") and the object form merge_docs_configs.py
-    produces ("openapi": {"source": ..., "directory": ...}), since this script runs against
-    the already-merged docs.json in the deploy pipeline.
+    "openapi" key (in order). Handles both the pre-merge plain-string form
+    ("openapi": "swagger/x.yml" - directory assigned via openapi_directory_name(), as if
+    it were already split like merge_docs_configs.py will split it) and the object form
+    merge_docs_configs.py produces post-merge ("openapi": {"source": ..., "directory": ...}).
     """
     with open(docs_json_path, encoding="utf-8") as f:
         config = json.load(f)
@@ -61,7 +91,8 @@ def find_openapi_specs(docs_json_path):
         if isinstance(node, dict):
             spec = node.get("openapi")
             if isinstance(spec, str):
-                add(spec, "api-reference")
+                basename = spec.rsplit("/", 1)[-1]
+                add(spec, f"api-reference/{openapi_directory_name(basename)}")
             elif isinstance(spec, dict):
                 add(spec.get("source"), spec.get("directory"))
             for value in node.values():
@@ -132,9 +163,11 @@ def main():
     parser.add_argument("--baseline", metavar="FILE",
                         help="File of already-known colliding slugs to ignore (ratchet: fail only on NEW collisions)")
     parser.add_argument("--write-baseline", metavar="FILE",
-                        help="Write all current cross-spec collisions to FILE as a baseline and exit 0")
+                        help="Write all current collisions to FILE as a baseline and exit 0")
     parser.add_argument("--warn-only", action="store_true",
                         help="Report collisions but always exit 0 (for staged rollout)")
+    parser.add_argument("--fail-on-within-spec", action="store_true",
+                        help="Also hard-fail on within-spec duplicate slugs, not just cross-spec ones")
     args = parser.parse_args()
 
     docs_json_path = os.path.join(args.directory, "docs.json")
@@ -168,10 +201,13 @@ def main():
         return 0
 
     baseline = load_baseline(args.baseline)
-    new_collisions = {s: o for s, o in cross_spec.items() if s not in baseline}
-    grandfathered = len(cross_spec) - len(new_collisions)
+    failing = dict(cross_spec)
+    if args.fail_on_within_spec:
+        failing.update(within_spec)
+    new_collisions = {s: o for s, o in failing.items() if s not in baseline}
+    grandfathered = len(failing) - len(new_collisions)
 
-    if within_spec:
+    if within_spec and not args.fail_on_within_spec:
         print(f"\n⚠️  {len(within_spec)} within-spec duplicate slug(s) (Mintlify resolves these, but they are ambiguous):")
         for slug, occ in sorted(within_spec.items()):
             print(f"  /{slug}")
@@ -179,27 +215,25 @@ def main():
                 print(f"      {o['method']:6} {o['path']}  (tag: {o['tag']}, summary: {o['summary']!r})")
 
     if grandfathered:
-        print(f"\nℹ️  {grandfathered} cross-spec collision(s) ignored via baseline ({args.baseline}).")
+        print(f"\nℹ️  {grandfathered} collision(s) ignored via baseline ({args.baseline}).")
 
-    report = new_collisions if baseline else cross_spec
+    report = new_collisions if baseline else failing
     if report:
         kind = "NEW " if baseline else ""
-        print(f"\n❌ {len(report)} {kind}cross-spec slug collision(s) — these silently overwrite each other at build time:")
+        print(f"\n❌ {len(report)} {kind}OpenAPI page-slug collision(s) — these silently overwrite each other at build time:")
         for slug, occ in sorted(report.items()):
             print(f"\n  /{slug}")
             for o in occ:
                 print(f"      [{o['spec']}]  {o['method']:6} {o['path']}  (tag: {o['tag']}, summary: {o['summary']!r})")
-        print("\nFix: make the tag and/or summary unique per spec in the SOURCE OpenAPI spec")
-        print("(e.g. tag the Admin spec's key operations 'Org Keys', or rename summaries like")
-        print("'Create an organisation key.'). Tags differing only by case still collide.")
+        print("\nFix: make the tag and/or summary unique in the SOURCE OpenAPI spec (e.g. rename")
+        print("summaries like 'Create an organisation key.'). Tags differing only by case still collide.")
         print("Do NOT edit swagger/*.yml directly in tyk-docs — they are auto-synced and overwritten.")
         if args.warn_only:
             print("\n(--warn-only: not failing the build)")
             return 0
         return 1
 
-    print("\n✅ No cross-spec OpenAPI page-slug collisions found"
-          + (" beyond the baseline." if baseline else "."))
+    print("\n✅ No OpenAPI page-slug collisions found" + (" beyond the baseline." if baseline else "."))
     return 0
 
 
