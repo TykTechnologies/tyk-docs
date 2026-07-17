@@ -1,4 +1,9 @@
 (function () {
+  // Merged deploys copy this file into version folders too, and Mintlify
+  // includes every .js in the content directory globally - run only once.
+  if (window.__tykOutdatedBannerInit) return;
+  window.__tykOutdatedBannerInit = true;
+
   // Matches a version segment such as /5.10/ or /5.10.2/ anywhere in the path.
   // "nightly" is intentionally excluded - it isn't a numbered release users need
   // redirecting away from.
@@ -19,6 +24,12 @@
   }
 
   function updateBanner() {
+    // Keep the server-stamped path attribute honest across SPA navigations -
+    // outdated-version-banner.css keys its first-paint show/hide rules on it.
+    if (document.documentElement.getAttribute('data-current-path') !== location.pathname) {
+      document.documentElement.setAttribute('data-current-path', location.pathname);
+    }
+
     var banner = document.getElementById('banner');
     if (!banner) return;
 
