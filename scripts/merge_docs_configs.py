@@ -1243,19 +1243,35 @@ class DocsMerger:
             if value is not None and value != "":
                 unified[field] = value
 
-        # Substitute the {{LATEST_VERSION}} placeholder in the banner content with
-        # the current latest version (e.g. "5.14"), so the wording - and therefore
-        # the exact-text match Mintlify uses to track dismissals - changes on every
-        # release. That makes a previously-dismissed banner reappear automatically
-        # once a new version ships, instead of staying dismissed forever.
-        banner = unified.get("banner")
-        if isinstance(banner, dict) and isinstance(banner.get("content"), str) and latest_version:
-            unified["banner"] = {
-                **banner,
-                "content": banner["content"].replace("{{LATEST_VERSION}}", latest_version),
-            }
-
         return unified
+
+    def substitute_latest_version_in_banner_scripts(self, base_dir: str = ".") -> None:
+        """Replace {{LATEST_VERSION}} in every copy of outdated-version-banner.js.
+
+        The outdated-version banner widget embeds the latest version number in
+        its message text, and its dismissal handling stores that exact text -
+        so substituting a fresh version number on each release automatically
+        makes a previously-dismissed banner reappear for everyone.
+
+        Every copy in the output tree is patched (not just the root one):
+        merged deploys duplicate root-level JS into version folders, Mintlify
+        includes all of them globally, and load order between copies is not
+        guaranteed.
+        """
+        if not self.latest_version:
+            return
+
+        for script_path in Path(base_dir).rglob("outdated-version-banner.js"):
+            try:
+                content = script_path.read_text(encoding="utf-8")
+                if "{{LATEST_VERSION}}" in content:
+                    script_path.write_text(
+                        content.replace("{{LATEST_VERSION}}", self.latest_version),
+                        encoding="utf-8",
+                    )
+                    print(f"🏷️  Substituted latest version ({self.latest_version}) in {script_path}")
+            except Exception as e:
+                print(f"⚠️ Could not substitute version in {script_path}: {e}")
     def merge(self, version_configs: Dict[str, str] = None,
               config_dir: str = None,
               base_dir: str = None,
@@ -1295,6 +1311,9 @@ class DocsMerger:
         # Copy latest version content to root if requested
         if copy_latest:
             self.organize_content_files(configs, base_dir or ".")
+
+        # Stamp the current latest version into the outdated-version banner widget
+        self.substitute_latest_version_in_banner_scripts(base_dir or ".")
 
         # Create unified configuration
         unified_config = self.create_unified_config(configs)
