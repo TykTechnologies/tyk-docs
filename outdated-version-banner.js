@@ -41,7 +41,7 @@
 
     var link = banner.querySelector('a');
     if (link) {
-      link.href = 'https://tyk.io' + location.pathname.replace(versionRegex, '');
+      link.href = location.origin + location.pathname.replace(versionRegex, '');
     }
   }
 
