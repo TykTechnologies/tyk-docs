@@ -3,24 +3,41 @@
   // "nightly" is intentionally excluded - it isn't a numbered release users need
   // redirecting away from.
   var versionRegex = /\/\d+\.\d+(\.\d+)?(?=\/|$)/;
+  var DISMISS_KEY_SUFFIX = 'bannerDismissed'; // matches Mintlify's own dismissal storage key
+
+  // Mirrors Mintlify's own dismissal check: a banner is dismissed if some
+  // localStorage key ends in "bannerDismissed" and its stored value matches
+  // this banner's exact text.
+  function isDismissed(bannerText) {
+    for (var i = 0; i < localStorage.length; i++) {
+      var key = localStorage.key(i);
+      if (key && key.endsWith(DISMISS_KEY_SUFFIX) && localStorage.getItem(key) === bannerText) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   function updateBanner() {
     var banner = document.getElementById('banner');
-    if (!banner) return; // user already dismissed this banner, or none rendered
+    if (!banner) return;
 
     var onOldVersion = versionRegex.test(location.pathname);
 
     if (!onOldVersion) {
-      // Latest (or nightly) page - this banner is not relevant, hide it.
-      // Also clear the height Mintlify reserves for it so no gap is left behind.
-      banner.style.display = 'none';
-      document.documentElement.style.setProperty('--banner-height', '0px');
+      // Latest (or nightly) page - this banner is never relevant here, regardless
+      // of whether the visitor has dismissed it elsewhere.
       document.documentElement.setAttribute('data-banner-state', 'hidden');
       return;
     }
 
-    banner.style.display = '';
-    document.documentElement.setAttribute('data-banner-state', 'visible');
+    // Old version page - respect the visitor's existing dismissal choice rather
+    // than forcing it back open (Mintlify's own dismiss check only runs once on
+    // full page load, not on the client-side navigations between versions).
+    document.documentElement.setAttribute(
+      'data-banner-state',
+      isDismissed(banner.innerText) ? 'hidden' : 'visible'
+    );
 
     var link = banner.querySelector('a');
     if (link) {
