@@ -1243,6 +1243,18 @@ class DocsMerger:
             if value is not None and value != "":
                 unified[field] = value
 
+        # Substitute the {{LATEST_VERSION}} placeholder in the banner content with
+        # the current latest version (e.g. "5.14"), so the wording - and therefore
+        # the exact-text match Mintlify uses to track dismissals - changes on every
+        # release. That makes a previously-dismissed banner reappear automatically
+        # once a new version ships, instead of staying dismissed forever.
+        banner = unified.get("banner")
+        if isinstance(banner, dict) and isinstance(banner.get("content"), str) and latest_version:
+            unified["banner"] = {
+                **banner,
+                "content": banner["content"].replace("{{LATEST_VERSION}}", latest_version),
+            }
+
         return unified
     def merge(self, version_configs: Dict[str, str] = None,
               config_dir: str = None,
