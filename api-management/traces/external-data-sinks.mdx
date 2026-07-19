@@ -1,0 +1,650 @@
+---
+title: "External Data Sinks (Legacy)"
+description: "Configure Tyk Pump to forward traffic logs to external tools such as Splunk, Datadog, Elasticsearch, Moesif, and Logz.io."
+keywords: "Tyk Pump, Splunk, Datadog, Elasticsearch, Moesif, Logzio, CSV, Legacy"
+sidebarTitle: "External Data Sinks (Legacy)"
+---
+
+<Note>
+This page describes forwarding traffic logs to external tools using Tyk Pump. For new integrations, we recommend [OpenTelemetry tracing](/api-management/traces) instead: it exports full per-request detail directly from Tyk Gateway, without the Redis and Tyk Pump hop, and OTel tracing covers everything the pumps on this page provide. This page remains relevant for existing deployments, or if you specifically need Tyk's traffic log format rather than OTel spans.
+</Note>
+
+Tyk Pump can forward traffic logs to a range of external tools, each its own pump type, in parallel with, or instead of, the [pumps that populate Tyk Dashboard Analytics](/api-management/dashboard-analytics). Every pump on this page is declared the same way, under the `pumps` object in `pump.conf`, and every pump also accepts the [common pump settings](/api-management/tyk-pump#common-pump-settings) (`filters`, `timeout`, and so on) in addition to its own fields shown below.
+
+Every pump on this page forwards each traffic log largely as-is, mapped into that destination's native format.
+
+<Note>
+None of the pumps on this page ever receive aggregated analytics, whichever way you deploy them. Aggregation only ever feeds Tyk Dashboard's Traffic Analytics graphs; see [How Aggregation Works](/api-management/dashboard-analytics#how-aggregation-works). External sinks only ever see individual traffic logs.
+</Note>
+
+This page covers every External Data Sink pump. StatsD, DogStatsD, and Prometheus are metrics pumps, not sink pumps, so they're covered on [Metrics Pumps](/api-management/metrics/metrics-pumps) instead; see the [pump type catalog](/api-management/tyk-pump#pump-type-catalog) for the full breakdown.
+
+## Combined vs Distributed Deployments
+
+In a combined control and data plane, these pumps work exactly like the ones that feed Tyk Dashboard: Tyk Pump reads from the shared Redis and writes to each configured destination in parallel.
+
+In a distributed deployment, with separate control and data planes connected via Tyk MDCB, you have two options, and they're not equivalent:
+
+- **Run the sink pump directly on the data plane**, alongside the [Hybrid Pump](/api-management/dashboard-analytics/data-plane-pump), reading from the same local Redis. This is the simpler option.
+- **Run the sink pump on the control plane**, as a [Control Plane Pump](/api-management/dashboard-analytics/control-plane-pumps), receiving traffic logs the Hybrid Pump has forwarded via Tyk MDCB. This requires `forward_analytics_to_pump: true`. See [Data Plane Pump](/api-management/dashboard-analytics/data-plane-pump#how-tyk-mdcb-handles-the-data) for that mechanism in full.
+
+## CSV
+
+Tyk Pump can create or append to a CSV file to track API traffic logs.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings), the `csv` pump accepts the following `meta` field:
+
+```json
+{
+  "pumps": {
+    "csv": {
+      "type": "csv",
+      "meta": {
+        "csv_dir": "./your_directory_here"
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `csv_dir` | - | Directory the CSV file is written to; created automatically if it doesn't exist. **Required** |
+
+Limitations:
+
+- Writes one file per hour, named `YYYY-Month-DD-HH.csv`, inside `csv_dir`.
+- Every traffic log field is written; there's no `fields` filtering support.
+
+## Stdout
+
+Writes traffic logs to standard output as JSON, useful for sidecar log collectors such as the Datadog logging agent in Kubernetes.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings), the `stdout` pump accepts the following `meta` fields:
+
+```json
+{
+  "pumps": {
+    "stdout": {
+      "type": "stdout",
+      "meta": {
+        "log_field_name": "tyk-analytics-record",
+        "format": "json",
+        "use_legacy_payload_format": false
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `log_field_name` | `tyk-analytics-record` | Root field name the traffic log is nested under. |
+| `format` | `text` | `text` or `json`. With `json`, every Tyk Pump log written to stdout becomes JSON, not just this pump's output. |
+| `use_legacy_payload_format` | `false` | With `format: json`, renders `raw_request`/`raw_response` as legacy escaped strings instead of the newer JSON-aware format. |
+
+## Syslog
+
+Sends traffic logs to a syslog daemon.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings), the `syslog` pump accepts the following `meta` fields:
+
+```json
+{
+  "pumps": {
+    "syslog": {
+      "type": "syslog",
+      "meta": {
+        "transport": "udp",
+        "network_addr": "localhost:5140",
+        "log_level": 6,
+        "tag": "syslog-pump"
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `transport` | `udp` | `udp`, `tcp`, or `tls`. |
+| `network_addr` | `localhost:5140` | Host and port of your syslog daemon. |
+| `log_level` | - | Severity level, an integer from 0-7, following the [syslog severity levels](https://en.wikipedia.org/wiki/Syslog#Severity_level) standard. |
+| `tag` | `syslog-pump` | Prefix tag. |
+
+Limitations:
+
+- If working with FluentD, use a [FluentD parser](https://docs.fluentd.org/input/syslog) matching your OS so FluentD reads the logs correctly.
+
+## Open Source Data Sinks
+
+These sinks are open source software you run and manage yourself.
+
+### Elasticsearch
+
+[Elasticsearch](https://www.elastic.co/) is a highly scalable, distributed search engine for large volumes of data.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings), the `elasticsearch` pump accepts the following `meta` fields:
+
+```json
+{
+  "pumps": {
+    "elasticsearch": {
+      "type": "elasticsearch",
+      "meta": {
+        "index_name": "tyk_analytics",
+        "elasticsearch_url": "http://localhost:9200",
+        "use_sniffing": false,
+        "document_type": "tyk_analytics",
+        "rolling_index": false,
+        "extended_stats": false,
+        "version": "3",
+        "disable_bulk": false,
+        "bulk_config": {},                 // only if disable_bulk: false
+        "use_ssl": false,
+        "ssl_insecure_skip_verify": false,
+        "ssl_cert_file": "",                // only if use_ssl: true
+        "ssl_key_file": "",                 // only if use_ssl: true
+        "ssl_ca_file": "",                  // only if use_ssl: true
+        "generate_id": false,
+        "decode_base64": false,
+        "mcp_index_name": "",
+        "auth_api_key_id": "",              // alternative to auth_basic_username/auth_basic_password
+        "auth_api_key": "",
+        "auth_basic_username": "",          // alternative to auth_api_key_id/auth_api_key
+        "auth_basic_password": ""
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `index_name` | `tyk_analytics` | Index for all analytics data. |
+| `elasticsearch_url` | `http://localhost:9200` | Target URL, used when `use_sniffing` is `false`. |
+| `use_sniffing` | `false` | If `true`, uses `elasticsearch_url` to discover all cluster node addresses, then uses those instead. |
+| `document_type` | `tyk_analytics` | The document type created in Elasticsearch. |
+| `rolling_index` | `false` | Appends the date to the index name, for example `tyk_analytics-2016.02.28`, so each day is a separate index. |
+| `extended_stats` | `false` | If `true`, includes `Raw Request`, `Raw Response`, and `User Agent` fields. |
+| `version` | `3` | The Elasticsearch major version: `3`, `5`, `6`, or `7`. |
+| `disable_bulk` | `false` | Disables batch writing. |
+| `bulk_config` | - | Batch writing triggers, evaluated as an OR of each other: `workers` (default `1`), `flush_interval` in seconds (disabled by default), `bulk_actions` (default `1000`, `-1` to disable), and `bulk_size` in bytes (default 5MB, `-1` to disable). |
+| `use_ssl` | `false` | Enables an SSL connection. |
+| `ssl_insecure_skip_verify` | `false` | Skips verifying the Elasticsearch server's certificate chain and host name. |
+| `ssl_cert_file`, `ssl_key_file` | - | Paths to the PEM client certificate and private key for authenticating with the Elasticsearch server. |
+| `ssl_ca_file` | - | Path to the PEM file of trusted CA certificates used to verify the Elasticsearch server's certificate. |
+| `generate_id` | `false` | Generates a deterministic document ID per record, to prevent duplicates if a record is retried after a failed write. |
+| `decode_base64` | `false` | Decodes the `raw_request`/`raw_response` fields from base64 before sending to Elasticsearch. |
+| `auth_api_key_id`, `auth_api_key` | - | Authenticate to Elasticsearch using an API key, sent via the `Authorization` header. |
+| `auth_basic_username`, `auth_basic_password` | - | Authenticate to Elasticsearch using HTTP basic auth. |
+| `mcp_index_name` | (none) | When set, MCP records are written to this index instead of `index_name`, and follow the same `rolling_index` date-suffix behavior. Leave unset to keep MCP records in the same index as everything else. |
+
+### Graylog
+
+Sends traffic logs to [Graylog](https://graylog.org/).
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings), the `graylog` pump accepts the following `meta` fields:
+
+```json
+{
+  "pumps": {
+    "graylog": {
+      "type": "graylog",
+      "meta": {
+        "host": "10.60.6.15",
+        "port": 12216,
+        "tags": []
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `host` | `localhost` | Graylog host. |
+| `port` | `1000` | Graylog port. |
+| `tags` | (none) | Traffic log fields to send. If left empty, nothing is sent. Available values: `path`, `method`, `response_code`, `api_version`, `api_name`, `api_id`, `org_id`, `tracked`, `oauth_id`, `raw_request`, `raw_response`, `request_time`, and `ip_address`. |
+
+### InfluxDB
+
+Tyk Pump can write traffic logs to [InfluxDB](https://www.influxdata.com/) 1.x. For InfluxDB 2.x, use [Influx2](#influx2) below instead.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings), the `influx` pump accepts the following `meta` fields:
+
+```json
+{
+  "pumps": {
+    "influx": {
+      "type": "influx",
+      "meta": {
+        "database_name": "tyk_analytics",
+        "address": "http://localhost:8086",
+        "username": "",
+        "password": "",
+        "fields": ["request_time"],
+        "tags": ["method", "path", "response_code"]
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `database_name` | - | The InfluxDB database name. |
+| `address` | - | The InfluxDB host. |
+| `username`, `password` | - | InfluxDB credentials. |
+| `fields` | all available | Which traffic log fields to send as point fields. Available values, all included by default: `method`, `path`, `response_code`, `api_key`, `time_stamp`, `api_version`, `api_name`, `api_id`, `org_id`, `oauth_id`, `raw_request`, `request_time`, `raw_response`, and `ip_address`. |
+| `tags` | (none) | Which of those same fields act as tags on the point instead. |
+
+Limitations:
+
+- Points are written to a fixed measurement, `analytics`; this isn't configurable.
+
+### Influx2
+
+For InfluxDB 1.x, use [InfluxDB](#influxdb) above instead. Uses the official Go client library for InfluxDB 2.x.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings), the `influx2` pump accepts the following `meta` fields:
+
+```json
+{
+  "pumps": {
+    "influx2": {
+      "type": "influx2",
+      "meta": {
+        "organization": "my-org",
+        "bucket": "my-bucket",
+        "address": "http://localhost:8086",
+        "token": "my-super-secret-auth-token",
+        "create_missing_bucket": false,
+        "new_bucket_config": {},            // only if create_missing_bucket: true
+        "fields": ["request_time"],
+        "tags": ["method", "path", "response_code"],
+        "flush": false
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `organization` | - | The InfluxDB organization name. |
+| `bucket` | - | The InfluxDB bucket analytics data is stored in. |
+| `address` | - | The InfluxDB host. |
+| `token` | - | The InfluxDB auth token. |
+| `create_missing_bucket` | `false` | Creates the bucket if it doesn't exist. |
+| `new_bucket_config` | - | Used when `create_missing_bucket` is `true`: `description` (shown in the Influx UI) and `retention_rules`, a list of rules such as `{"every_seconds": 100000, "shard_group_duration_seconds": 0, "type": "expire"}` to expire data after a set period. |
+| `fields` | - | Which traffic log fields to send as point fields. |
+| `tags` | - | Which fields act as tags on the time series. |
+| `flush` | `false` | Writes each record to InfluxDB as soon as Tyk Pump receives it, rather than batching. |
+
+### Kafka
+
+Publishes traffic logs to a [Kafka](https://kafka.apache.org/) topic.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings), the `kafka` pump accepts the following `meta` fields:
+
+```json
+{
+  "pumps": {
+    "kafka": {
+      "type": "kafka",
+      "meta": {
+        "broker": ["localhost:9092"],
+        "topic": "tyk-pump",
+        "client_id": "tyk-pump",
+        "timeout": 60,
+        "use_ssl": false,
+        "ssl_insecure_skip_verify": false,
+        "ssl_cert_file": "",                // only if use_ssl: true
+        "ssl_key_file": "",                 // only if use_ssl: true
+        "ssl_ca_file": "",                  // only if use_ssl: true
+        "compressed": false,
+        "batch_bytes": 0,
+        "meta_data": {},
+        "sasl_mechanism": "",                // enables SASL auth: "plain" or "scram"
+        "sasl_username": "",                 // only if sasl_mechanism is set
+        "sasl_password": "",                 // only if sasl_mechanism is set
+        "sasl_algorithm": "sha-256"           // only if sasl_mechanism is "scram"
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `broker` | - | List of brokers used to discover the partitions available on the Kafka cluster, for example `localhost:9092`. |
+| `client_id` | - | Unique identifier for connections established with Kafka. |
+| `topic` | - | The topic messages are produced to. |
+| `timeout` | - | Maximum time, in seconds, to wait for a connect or write to complete. |
+| `compressed` | `false` | Compresses Kafka messages using the Snappy codec. |
+| `meta_data` | - | Custom metadata to attach to each Kafka message. |
+| `batch_bytes` | `0` | Maximum request size, in bytes, before it's sent to a partition. If `0`, uses the `kafka-go` library's own default (1MB). |
+| `use_ssl` | `false` | Enables an SSL connection. |
+| `ssl_insecure_skip_verify` | `false` | Skips verifying the Kafka server's certificate chain and host name. |
+| `ssl_cert_file`, `ssl_key_file` | - | PEM client certificate and private key for authenticating with the Kafka server. |
+| `ssl_ca_file` | - | Path to the PEM file of trusted CA certificates used to verify the Kafka server's certificate. |
+| `sasl_mechanism` | - | Enables SASL authentication: `plain` or `scram`. |
+| `sasl_username`, `sasl_password` | - | SASL credentials. |
+| `sasl_algorithm` | `sha-256` | Hash algorithm for SCRAM: `sha-256` or `sha-512`. |
+
+## Commercial and SaaS Data Sinks
+
+These sinks are commercial products or hosted SaaS platforms.
+
+### Logz.io
+
+[Logz.io](https://logz.io/) is a cloud-based log management and analytics platform built on Elasticsearch, Logstash, and Kibana.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings), the `logzio` pump accepts the following `meta` fields:
+
+```json
+{
+  "pumps": {
+    "logzio": {
+      "type": "logzio",
+      "meta": {
+        "token": "<YOUR-LOGZ.IO-TOKEN>",
+        "url": "https://listener.logz.io:8071",
+        "queue_dir": "",
+        "drain_duration": "3s",
+        "disk_threshold": 98,
+        "check_disk_space": true
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `token` | - | Token for sending data to your Logz.io account. **Required** |
+| `url` | `https://listener.logz.io:8071` | Use a non-default Logz.io URL, for example when proxying. |
+| `queue_dir` | A generated path under the OS temp directory | Directory used for the on-disk send queue. |
+| `drain_duration` | `3s` | How often queued logs are flushed to disk. |
+| `disk_threshold` | `98` | Disk usage percentage at which the sender stops enqueuing received logs. |
+| `check_disk_space` | `true` | Whether the sender checks disk usage against `disk_threshold`. |
+
+### Moesif
+
+[Moesif](https://www.moesif.com/solutions/track-api-program?language=tyk-api-gateway&utm_medium=docs&utm_campaign=partners&utm_source=tyk) provides API analytics and usage-based billing. With the Moesif pump, traffic logs are sent to Moesif asynchronously, including payloads, and Moesif collects the authenticated user (Alias ID or OAuth ID) to identify customers.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings), the `moesif` pump accepts the following `meta` fields:
+
+```json
+{
+  "pumps": {
+    "moesif": {
+      "type": "moesif",
+      "meta": {
+        "application_id": "Your Moesif Application Id",
+        "user_id_header": "",
+        "company_id_header": "",
+        "request_header_masks": [],
+        "response_header_masks": [],
+        "request_body_masks": [],
+        "response_body_masks": [],
+        "authorization_header_name": "authorization",
+        "authorization_user_id_field": "sub",
+        "disable_capture_request_body": false,
+        "disable_capture_response_body": false,
+        "enable_bulk": false
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `application_id` | - | Moesif Application ID. Multiple Tyk API IDs are logged under the same app ID. **Required** |
+| `user_id_header` | token alias | Header identifying the user. By default, Moesif identifies the customer from the authenticated user (Alias ID or OAuth ID); override with a header such as `X-Consumer-Id`. |
+| `company_id_header` | - | Header identifying the company or account, to link a user to a company. |
+| `request_header_masks`, `response_header_masks` | - | Mask a specific request or response header field. |
+| `request_body_masks`, `response_body_masks` | - | Mask a specific request or response body field. |
+| `disable_capture_request_body`, `disable_capture_response_body` | `false` | Disable logging of the request or response body. |
+| `authorization_header_name` | `authorization` | Request header used to identify the user in Moesif. |
+| `authorization_user_id_field` | `sub` | Field used to parse the user from the authorization header. |
+| `enable_bulk` | `false` | Enables the `bulk_config` batching options: `event_queue_size` (default `10000`), `batch_size` (default `200`), and `timer_wake_up_seconds` (default `2`). |
+
+Limitations:
+
+- Moesif needs [detailed recording](/api-management/dashboard-analytics#detailed-recording) enabled to log HTTP headers and bodies.
+- See [Moesif's documentation on identifying customers](https://www.moesif.com/docs/getting-started/identify-customers/?utm_medium=docs&utm_campaign=partners&utm_source=tyk) for `user_id_header`/`company_id_header`.
+
+### Resurface.io
+
+[Resurface](https://resurface.io/) captures every API call as a durable transaction in a purpose-built data lake, for attack and failure triage, root cause analysis, and usage monitoring.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings), the `resurfaceio` pump accepts the following `meta` fields:
+
+```json
+{
+  "pumps": {
+    "resurfaceio": {
+      "type": "resurfaceio",
+      "meta": {
+        "capture_url": "http://localhost:7701/message",
+        "rules": "include debug"
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `capture_url` | - | The Resurface database's [capture endpoint URL](https://resurface.io/docs/#getting-capture-url). **Required** |
+| `rules` | - | An [active set of rules](https://resurface.io/logging-rules) controlling what's logged and how sensitive data is masked. **Required** |
+
+Limitations:
+
+- Requires [detailed recording](/api-management/dashboard-analytics#detailed-recording) enabled to capture full API call details.
+
+### Segment
+
+Tyk Pump can send traffic logs to [Segment](https://segment.com/) as `Track` events.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings), the `segment` pump accepts the following `meta` field:
+
+```json
+{
+  "pumps": {
+    "segment": {
+      "type": "segment",
+      "meta": {
+        "segment_write_key": "<YOUR-SEGMENT-WRITE-KEY>"
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `segment_write_key` | - | Your Segment source's write key. **Required** |
+
+Limitations:
+
+- Every traffic log field is sent as the event's properties; there's no `fields`/`tags` filtering support.
+- Each event is named `Hit`, with `AnonymousId` set to the request's API key.
+
+### Splunk
+
+Sends traffic logs to [Splunk](https://www.splunk.com/) via its HTTP Event Collector (HEC).
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings), the `splunk` pump accepts the following `meta` fields:
+
+```json
+{
+  "pumps": {
+    "splunk": {
+      "type": "splunk",
+      "meta": {
+        "collector_token": "<token>",
+        "collector_url": "https://localhost:8088/services/collector/event",
+        "fields": [],
+        "obfuscate_api_keys": false,
+        "obfuscate_api_keys_length": 0,
+        "ignore_tag_prefix_list": [],
+        "enable_batch": false,
+        "batch_max_content_length": 838860800,
+        "max_retries": 0,
+        "ssl_insecure_skip_verify": false,
+        "ssl_cert_file": "",                // only for mutual TLS to the HEC endpoint
+        "ssl_key_file": "",                 // only for mutual TLS to the HEC endpoint
+        "ssl_ca_file": "",                  // only for mutual TLS to the HEC endpoint
+        "ssl_server_name": ""               // only if it differs from the hostname in collector_url
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `collector_token` | - | The HEC token from your Splunk collector. **Required** |
+| `collector_url` | - | Your Splunk HEC endpoint, for example `https://splunk:8088/services/collector/event`. **Required** |
+| `obfuscate_api_keys` | `false` | Masks the API key in each event. |
+| `obfuscate_api_keys_length` | `0` | With `obfuscate_api_keys: true`, keeps this many characters from the end of the API key rather than masking it fully. |
+| `fields` | all available | Restricts which traffic log fields are included in each Splunk event. Defaults to `method`, `path`, `response_code`, `api_key`, `time_stamp`, `api_version`, `api_name`, `api_id`, `org_id`, `oauth_id`, `raw_request`, `request_time`, `raw_response`, and `ip_address`. |
+| `ignore_tag_prefix_list` | (none) | Excludes tags, by prefix, from the event. |
+| `enable_batch` | `false` | Sends traffic logs to Splunk in batches rather than individually. |
+| `batch_max_content_length` | `838860800` (~800MB) | Maximum batch size in bytes, matching Splunk's own `max_content_length` default. If purged traffic logs don't reach this size before the next purge loop, they're sent anyway. |
+| `max_retries` | `0` | Maximum retry attempts for failed requests to the Splunk HEC. Connection, network, timeout, rate-limit, and server errors are all retried. |
+| `ssl_insecure_skip_verify` | `false` | Skips verifying the Splunk server's certificate chain and host name. |
+| `ssl_cert_file`, `ssl_key_file` | - | PEM client certificate and private key for authenticating with the Splunk server. |
+| `ssl_ca_file` | - | Path to the PEM file of trusted CA certificates used to verify the Splunk server's certificate. |
+| `ssl_server_name` | - | Server name used for the TLS handshake, if it differs from the hostname in `collector_url`. |
+
+## AWS Pumps
+
+Timestream, SQS, and Kinesis all authenticate using the official AWS Go SDK's default credential chain: environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, or `AWS_WEB_IDENTITY_TOKEN_FILE`), the shared credentials file under `.aws` in your home directory, an ECS task role, or an EC2 instance role, in that order. See the [AWS SDK documentation](https://aws.github.io/aws-sdk-go-v2/docs/configuring-sdk/#specifying-credentials) for details. Without credentials from one of these sources, the pump can't connect. The SQS pump additionally accepts explicit `aws_key`/`aws_secret`/`aws_token` fields in its own config, which override the default credential chain when set.
+
+### Kinesis
+
+Publishes traffic logs to an [Amazon Kinesis](https://aws.amazon.com/kinesis/) stream.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings), the `kinesis` pump accepts the following `meta` fields:
+
+```json
+{
+  "pumps": {
+    "kinesis": {
+      "type": "kinesis",
+      "meta": {
+        "stream_name": "my-stream",
+        "region": "eu-west-2",
+        "batch_size": 100,
+        "kms_key_id": ""
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `stream_name` | - | The name of your Kinesis stream in the specified AWS region. **Required** |
+| `region` | - | The AWS region your Kinesis stream is located in, for example `eu-west-2`. **Required** |
+| `batch_size` | `100` | Maximum records per batch. Kinesis limits each batch to 5MiB; lower this if your records are large enough to risk failed delivery. |
+| `kms_key_id` | (none) | AWS KMS key ID used to encrypt records in the stream. Records are unencrypted if omitted. |
+
+### SQS
+
+Publishes traffic logs to an [Amazon SQS](https://aws.amazon.com/sqs/) queue.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings), the `sqs` pump accepts the following `meta` fields:
+
+```json
+{
+  "pumps": {
+    "sqs": {
+      "type": "sqs",
+      "meta": {
+        "aws_queue_name": "access-logs-queue.fifo",
+        "aws_region": "us-east-1",
+        "aws_key": "",                       // overrides the default AWS credential chain
+        "aws_secret": "",                    // overrides the default AWS credential chain
+        "aws_token": "",                     // overrides the default AWS credential chain
+        "aws_endpoint": "",
+        "aws_message_group_id": "message_group_id",
+        "aws_sqs_batch_limit": 10,
+        "aws_message_id_deduplication_enabled": false,
+        "aws_delay_seconds": 0
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `aws_queue_name` | - | The name of the AWS SQS queue messages are sent to. **Required** |
+| `aws_region` | - | The AWS region where the SQS queue is located. **Required** |
+| `aws_key`, `aws_secret`, `aws_token` | - | Explicit AWS credentials, overriding the default credential chain above when set. |
+| `aws_endpoint` | - | Custom endpoint URL for AWS SQS, if applicable. |
+| `aws_message_group_id` | - | The SQS message group ID, for ordered processing. |
+| `aws_sqs_batch_limit` | - | Maximum number of messages per batch sent to the queue. |
+| `aws_message_id_deduplication_enabled` | `false` | Deduplicates messages by unique ID to prevent unintended duplicates. |
+| `aws_delay_seconds` | `0` | Delay, in seconds, before a sent message becomes available for processing. |
+
+### Timestream
+
+Writes traffic logs to [Amazon Timestream](https://aws.amazon.com/timestream/).
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings), the `timestream` pump accepts the following `meta` fields:
+
+```json
+{
+  "pumps": {
+    "timestream": {
+      "type": "timestream",
+      "meta": {
+        "aws_region": "us-east-1",
+        "timestream_table_name": "tyk-pump-table",
+        "timestream_database_name": "tyk-pump",
+        "write_rate_limit": false,
+        "read_geo_from_request": false,
+        "write_zero_values": false,
+        "dimensions": ["Method", "Host", "Path", "APIKey"],
+        "measures": ["ResponseCode", "RequestTime", "Latency.Total"],
+        "field_name_mappings": {}
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `aws_region` | - | The AWS region that contains the Timestream database. **Required** |
+| `timestream_database_name` | - | The Timestream database name that contains the table being written to. **Required** |
+| `timestream_table_name` | - | The table name where the data is written. **Required** |
+| `dimensions` | - | Which traffic log fields to write as Timestream dimensions. Available values: `Method`, `Host`, `Path`, `RawPath`, `APIKey`, `APIVersion`, `APIName`, `APIID`, `OrgID`, `OauthID`. **Required** |
+| `measures` | - | Which traffic log fields, including nested ones such as `Latency.Total`, to write as Timestream measures. Available values: `ContentLength`, `ResponseCode`, `RequestTime`, `NetworkStats.*`, `Latency.Total`, `Latency.Upstream`, `IPAddress`, `UserAgent`, `RawRequest`, `RawResponse`, `RateLimit.*`, and `GeoData.*`. **Required** |
+| `write_rate_limit` | `false` | Records `RateLimit` measures extracted from the response headers. |
+| `read_geo_from_request` | `false` | Reads geolocation information from the request headers, if not already present on the traffic log. |
+| `write_zero_values` | `false` | If `true`, numerical values equal to zero are recorded rather than omitted. |
+| `field_name_mappings` | - | Renames traffic log fields to your preferred Timestream field names. |
