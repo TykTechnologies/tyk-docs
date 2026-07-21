@@ -1,0 +1,194 @@
+---
+title: "Token Exchange"
+description: "Configure RFC 8693 token exchange to replace the inbound token with a backend-scoped token before forwarding requests upstream."
+keywords: "token exchange, RFC 8693, client authentication, OAuth 2.0, MCP, enterprise"
+sidebarTitle: "Token Exchange"
+canonical: "https://tyk.io/docs/api-management/authentication/token-exchange"
+---
+
+## Availability
+
+| Feature | Editions |
+|:---|:---|
+| Token exchange | Enterprise |
+
+*Available from Tyk 5.14.0*
+
+## Introduction
+
+Token exchange ([RFC 8693](https://www.rfc-editor.org/rfc/rfc8693)) is a client authentication feature that replaces the inbound bearer token with a backend-scoped token before forwarding a request to the upstream service. Tyk Gateway presents itself as a confidential client to an external authorization server, exchanges the inbound token for one audienced to the upstream, and injects the result into the `Authorization` header. The inbound token never reaches the upstream service.
+
+This approach addresses two common problems in multi-service architectures and MCP Gateway deployments:
+
+- **Token audience mismatch**: An SSO or agent token issued for Tyk is not accepted by the upstream service, which expects a token carrying its own audience claim.
+- **Audit trail continuity**: The raw inbound token is not forwarded to the upstream. The upstream receives a token scoped to its own audience, issued after the exchange, which keeps the token chain auditable at the authorization server level.
+
+Token exchange runs in the middleware chain after scope enforcement and before the reverse proxy.
+
+<Note>
+In open source deployments, token exchange does not execute at runtime. The inbound token is forwarded to the upstream unchanged, and an error is logged.
+</Note>
+
+---
+
+## How it works
+
+When a request arrives at a Tyk API with token exchange enabled:
+
+1. Tyk validates the inbound bearer token using the configured `oauth2` security scheme.
+2. If scope enforcement is enabled, Tyk checks the token's scopes against the operation's `security:` requirements.
+3. Tyk reads the `iss` claim from the validated token and matches it against the `issuers` list on each configured provider.
+4. Tyk POSTs an RFC 8693 exchange request to the matched provider's `tokenEndpoint`, presenting the inbound token as `subject_token`.
+5. The authorization server returns a new access token. Tyk replaces the `Authorization` header with the exchanged token.
+6. Tyk forwards the modified request upstream.
+
+If no configured provider's `issuers` list matches the inbound token's `iss` claim, Tyk returns `403 Forbidden` with `error="no_matching_provider"`.
+
+---
+
+## Configure token exchange
+
+Token exchange is configured under `tokenExchange` within the `oauth2` security scheme in your Tyk OAS API definition. The `oauth2` scheme must be enabled on the API; see [OAuth 2.0 (External IdP)](/nightly/api-management/authentication/oauth2-authentication). You must configure at least one provider.
+
+<Note>
+Token exchange reads the `iss` claim from the inbound bearer token at request time. The `oauth2` scheme does not validate the token's JWT signature itself in Tyk 5.14.0. JWT authentication must be configured on the API so that the inbound token is verified before the exchange middleware runs. Without a JWT auth method configured, Tyk's auth chain will reject the request before token exchange is reached.
+</Note>
+
+### Minimal example
+
+```yaml expandable
+x-tyk-api-gateway:
+  server:
+    authentication:
+      enabled: true
+      securitySchemes:
+        idpAuth:
+          enabled: true
+          tokenExchange:
+            enabled: true
+            providers:
+              - name: keycloak-prod
+                issuers:
+                  - https://idp.example.com/realms/demo
+                tokenEndpoint: https://idp.example.com/realms/demo/protocol/openid-connect/token
+                clientAuth:
+                  method: client_secret_basic
+                  clientId: tyk-gateway
+                  clientSecret: env://EXCHANGE_CLIENT_SECRET
+                defaultTarget:
+                  audience: https://api.internal.example.com
+                  scopes:
+                    - api:read
+                    - api:write
+```
+
+String fields in the API definition accept `env://`, `secrets://`, `vault://`, and `consul://` prefixes so sensitive values are not stored directly in the definition.
+
+### Provider fields
+
+Each entry in `providers` matches inbound tokens by `iss` claim and routes exchange requests to the corresponding token endpoint. Provider names must be unique, and issuer values must not overlap across providers.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | Yes | Operator-assigned identifier used in log output. Must be unique across providers. |
+| `issuers` | array of strings | Yes | Inbound token `iss` values routed to this provider. Must not overlap with issuers declared on other providers. |
+| `tokenEndpoint` | string | Yes | Authorization server token endpoint. Must accept `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`. |
+| `clientAuth.method` | string | No | How Tyk authenticates to the token endpoint: `client_secret_basic` (default) sends credentials in the `Authorization` header; `client_secret_post` sends them in the request body. |
+| `clientAuth.clientId` | string | Yes | Client ID Tyk presents to the authorization server. |
+| `clientAuth.clientSecret` | string | No | Client secret. Accepts `env://`, `secrets://`, `vault://`, `consul://` prefixes. |
+| `defaultTarget.audience` | string | No | Default audience requested for the exchanged token. Applied when no per-operation override is set. |
+| `defaultTarget.scopes` | array of strings | No | Default scopes requested. Applied when no per-operation override is set. |
+| `timeout` | duration string | No | Per-call timeout for requests to `tokenEndpoint`. Accepts values such as `"5s"` or `"500ms"`. Defaults to `"15s"`. |
+| `customParams` | map | No | Additional form parameters appended to the exchange request. Standard RFC 8693 keys (`grant_type`, `subject_token`, `audience`, and others) are reserved and cannot be overridden. |
+
+### Caching
+
+Tyk can cache exchanged tokens in Redis to avoid a round-trip to the authorization server on every request. Configure caching under `cache` within a provider:
+
+```yaml
+providers:
+  - name: keycloak-prod
+    ...
+    cache:
+      enabled: true
+      mode: derived
+      maxTimeout: 5m
+      safetyMargin: 30s
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Enables Redis-backed caching for this provider's exchanged tokens. |
+| `mode` | string | `"derived"` | How the cache TTL is computed. `"derived"`: TTL is `min(expiresIn, inboundRemaining, maxTimeout) − safetyMargin`, where `expiresIn` is the exchanged token's lifetime, `inboundRemaining` is the inbound token's remaining life, and `maxTimeout` is an optional operator ceiling. `"static"`: TTL is `min(timeout, expiresIn) − safetyMargin`; the exchanged token's expiry still acts as an upper bound even in fixed-TTL mode. |
+| `maxTimeout` | duration string | - | Optional operator ceiling on the cache TTL in `"derived"` mode (for example, `"5m"`). Has no effect in `"static"` mode. |
+| `timeout` | duration string | - | Fixed cache TTL in `"static"` mode (for example, `"2m"`). Still clamped by the exchanged token's expiry. |
+| `safetyMargin` | duration string | `"30s"` | Duration subtracted from the computed TTL to avoid serving near-expired tokens. Applies in both modes. |
+
+---
+
+## Per-operation override
+
+The `defaultTarget` on a provider applies to all requests routed to that provider. To request a different audience or scope set for a specific operation, add an `exchange` block under the matching operation in `middleware.operations`:
+
+```yaml
+x-tyk-api-gateway:
+  middleware:
+    operations:
+      getInternalReport:
+        exchange:
+          enabled: true
+          audience: https://reporting.internal.example.com
+          scopes:
+            - reports:read
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `enabled` | boolean | Activates this per-operation override. When `false` or absent, the provider's `defaultTarget` is used. |
+| `audience` | string | Audience requested for this operation's exchanged token. |
+| `scopes` | array of strings | Explicit scope list for this operation. When empty and `enabled` is `true`, scopes are inferred from the operation's `security:` declaration; see [Scope inference](/nightly/#scope-inference). |
+
+---
+
+## Per-MCP-primitive override
+
+For MCP Gateway deployments, you can override the exchange target per primitive using `middleware.mcpTools`, `middleware.mcpResources`, or `middleware.mcpPrompts`:
+
+```yaml
+x-tyk-api-gateway:
+  middleware:
+    mcpTools:
+      create-report:
+        exchange:
+          enabled: true
+          audience: https://reporting.internal.example.com
+          scopes:
+            - reports:write
+```
+
+The `exchange` block on a primitive has the same fields as the per-operation block. This lets you route different primitives to different downstream audiences within a single provider. For example, read tools to a read-only service and write tools to an elevated-privilege service.
+
+---
+
+## Scope inference
+
+When a per-operation or per-primitive `exchange` block has `enabled: true` but `scopes` is empty, Tyk infers the scope list from the operation's or primitive's `security:` declaration. The scopes required by the operation's security requirements are sent as the requested scope to the authorization server, aligning the exchanged token's scope with what the upstream is expected to require (RFC 8693 §4.5.5).
+
+If you prefer explicit control over the requested scopes, set `scopes` to a non-empty list.
+
+
+---
+
+## Known limitations
+
+The following limitations apply in Tyk 5.14.0:
+
+- **Azure Entra On-Behalf-Of**: Entra's On-Behalf-Of (OBO) flow does not conform to RFC 8693. Azure Entra is not supported in this release.
+
+---
+
+## Token exchange and upstream auth
+
+<Note>
+Do not configure `upstream.authentication.oauth` alongside token exchange. Token exchange replaces the `Authorization` header with the exchanged token before the reverse proxy; it is the upstream credential. The `upstream.authentication` block is for a separate scenario where Tyk authenticates to the upstream using its own static credentials, independent of any inbound token. Configuring both will produce a conflict.
+</Note>

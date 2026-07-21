@@ -5,10 +5,10 @@ sidebarTitle: "Database Management"
 canonical: "https://tyk.io/docs/planning-for-production/database-settings"
 ---
 
-import MongodbVersionsInclude from '/snippets/5.13/mongodb-versions-include.mdx';
-import SqlVersionsInclude from '/snippets/5.13/sql-versions-include.mdx';
-import RedisCalculator from '/snippets/5.13/RedisCalculator.mdx';
-import DatabaseCalculator from '/snippets/5.13/DatabaseCalculator.mdx';
+import MongodbVersionsInclude from '/snippets/5.14/mongodb-versions-include.mdx';
+import SqlVersionsInclude from '/snippets/5.14/sql-versions-include.mdx';
+import RedisCalculator from '/snippets/5.14/RedisCalculator.mdx';
+import DatabaseCalculator from '/snippets/5.14/DatabaseCalculator.mdx';
 
 Visit the following sections to see how to configure the Database for Production:
 * [Redis](/planning-for-production/database-settings#redis)
@@ -19,110 +19,67 @@ Please consult the [data storage configuration](/api-management/dashboard-config
 
 ## Redis
 
-**Supported Versions**
-- Tyk 5.3 and later supports Redis 6.2.x, 7.0.x, and 7.2.x
-- Tyk 5.2.x and earlier supports Redis 6.0.x and Redis 6.2.x only.
+### How Tyk Uses Redis
 
+Redis is central to Tyk's operation. Its role differs depending on whether it is serving a Control Plane or a Data Plane.
 
-**Split out Your Databases**
+**Control Plane Redis** is shared between Tyk Dashboard and the Management Gateway. It stores:
 
-This is a no-brainer, but keep Redis and MongoDB off the system running the Gateway, they both use lots of RAM, and with Redis and the Gateway constantly communicating you will be facing resource contention on the CPU for a marginal decrease in latency.
+- Tyk Dashboard user sessions.
+- API client [Session](/api-management/access-control/sessions-and-keys/understanding-sessions) data (the source of truth for the deployment).
+- [OAuth tokens issued by Tyk's OAuth 2.0 authorization server](/api-management/authentication/oauth-2#client-application).
+- [Tyk Certificate Store](/api-management/certificates#tyk-certificate-store).
+- Distributed locks, for example to ensure OAuth token purging runs on only one node at a time.
+- The pub/sub channel used to push hot-reload notifications from Tyk Dashboard to connected Data Plane Gateways.
 
-So in our setup, we recommend that Redis and MongoDB/PostgreSQL live on their own systems, separate from your Tyk Gateway. If you like, run them together on the same box, that's up to you.
+**Data Plane Redis** (used in distributed deployments) is local to each Data Plane cluster. Data Plane Gateways handle API traffic and use their local Redis for:
 
-The network topology we like to use is:
+- Rate limiting counters.
+- API response caching.
+- Webhook deduplication, preventing duplicate events from firing within the configured timeout.
+- [Traffic logs](/api-management/tyk-pump#api-traffic-logs) buffered before Tyk Pump processes them.
+- A local copy of API client Sessions and certificates, synced from the Control Plane.
+- API definition and policy backups, providing resilience when the Control Plane is unavailable.
 
-*   Two or more Tyk Gateway nodes (load balanced, each Gateway installed on separate machines).
-*   A separate MongoDB or PostgreSQL cluster
-*   A separate Redis server with fail-over or cluster
-*   One Tyk Dashboard node installed on a separate machine
-*   One Tyk Pump node installed on a separate machine that handles data transitions
+In deployments without Tyk MDCB, there is no Control Plane / Data Plane split. A single Redis instance covers all of the above, shared between Tyk Gateway, Tyk Dashboard and Tyk Pump.
 
-If you are making use of the Tyk Caching feature, then it is possible to use a secondary Redis server or Redis cluster to store cache data. This can be very useful in high-traffic APIs where latency is at a premium.
+### Protecting Redis Data
 
+Tyk's Redis usage differs between the Control Plane and Data Plane, and the consequences of losing each are different.
 
-**Make sure you have enough Redis connections**
+**Control Plane Redis** stores API keys, session data, OAuth tokens, and certificates. This is the source of truth for your deployment and cannot be recovered from any other Tyk component. Deploy it with persistence enabled and a high-availability topology such as Redis Sentinel or Redis Cluster. If you are using Amazon ElastiCache, also configure read replicas and regular snapshots.
 
-Tyk makes heavy use of Redis in order to provide a fast and reliable service, in order to do so effectively, it keeps a passive connection pool ready. For high-performance setups, this pool needs to be expanded to handle more simultaneous connections, otherwise you may run out of Redis connections.
+**Data Plane Redis** stores rate limiting counters, cached responses, and analytics buffers, plus a local copy of keys, sessions, and API definitions synced from the Control Plane. If Data Plane Redis is lost, the impact is temporary: keys and sessions re-sync from the Control Plane on reconnection, and API definition backups rebuild on the next hot reload. High availability is still recommended to avoid disruption during a node failure, but Data Plane Redis is recoverable in a way that Control Plane Redis is not.
 
-Tyk also lets you set a maximum number of open connections so that you don't over-commit connections to the server.
+For configuration details, see [Configure Redis](/tyk-configuration-reference/redis-cluster-sentinel).
 
-To set your maximums and minimums, edit your `tyk.conf` and `tyk_analytics.conf` files to include:
+### Redis Sizing Guidelines
 
-```yaml
-"storage": {
-  ...
-  "optimisation_max_idle": 2000,
-  "optimisation_max_active": 4000,
-  ...
-},
-```
-    
+Redis memory requirements depend on what the instance is serving.
 
-Set the `max_idle` value to something large, we usually leave it at around `2000` for HA deployments, and then set your `max_active` to your upper limit (as in, how many additional connections over the idle pool should be used).
+**Control Plane Redis** memory is driven primarily by the number and size of API keys, API definitions, and security policies stored. Key size is typically small (around 1KB), but large key counts or large API definition payloads can add up quickly.
 
-**Protection of Redis data**
+**Data Plane Redis** memory is driven by traffic volume and feature usage. The main contributors are:
 
-Tyk uses Redis to store API tokens and OAuth clients, so it is advisable to *not* treat Redis instances as ephemeral. The exception to this is when you are using Tyk Multi Data Center Bridge, but you will still need to retain the master Redis instance.
+- **Traffic log buffering**: traffic logs accumulate in Redis between purge intervals. Basic analytics records are typically around 2KB; detailed logging can reach 52KB per request. Logs are processed by Tyk Pump or, in distributed deployments, by Tyk MDCB.
+- **Response caching**: cached API responses are held in Redis for the duration of their TTL. Memory usage depends on cache hit rate, TTL, and average payload size.
+- **API definitions and policies**: a local copy is stored in Data Plane Redis for resilience.
 
-You must ensure that Redis is persisted, or at least in a configuration where it is easy to restore or failover. So, for example, with Elasticache, making sure there are many read-replicas and regular snapshots can ensure that your data survives a failure.
+<RedisCalculator />
 
-**Redis Encryption**
+### Managing Redis Memory
 
-Redis supports [SSL/TLS encryption](https://redis.io/topics/encryption) from version 6 as an optional feature, enhancing the security of data in transit. To configure TLS or mTLS connections between an application and Redis, consider the following settings in Tyk's configuration files:
+#### Capping Analytics
 
-- `storage.use_ssl`: Set this to true to enable TLS encryption for the connection.
+Tyk Gateways can generate a large volume of analytics data. Be sure to read about [capping your Dashboard analytics](/api-management/tyk-pump#tyk-pump-capping-analytics-data-storage).
 
-- `storage.ssl_insecure_skip_verify`: A flag that, when set to true, instructs the application not to verify the Redis server's TLS certificate. This is not recommended for production due to the risk of `man-in-the-middle` attacks.
+#### Compressing API Definitions and Policies
 
-From **Tyk 5.3**, additional options are available for more granular control:
+In [distributed deployments](/api-management/mdcb), Data Plane Gateways store API definition and policy backups in Redis to ensure resilience when the Control Plane is unavailable. For deployments with many or large API definitions, this can consume significant Redis memory.
 
-- `storage.ca_file`: Path to the Certificate Authority (CA) file for verifying the Redis server's certificate.
+You can reduce the size of these backups using optional Zstandard compression, which typically achieves around 75% reduction, though results vary depending on the size and complexity of your API definitions and policies.
 
-- `storage.cert_file` and `storage.key_file`: Paths to your application's certificate and private key files, necessary for mTLS where both parties verify each other's identity.
-
-- `storage.max_version` and `storage.min_version`: Define the acceptable range of TLS versions, enhancing security by restricting connections to secure TLS protocols (1.2 or 1.3).
-
-**Setting up an Insecure TLS Connection**
-- **Enable TLS**: By setting `"use_ssl": true`, you encrypt the connection.
-- **Skip Certificate Verification**: Setting `"ssl_insecure_skip_verify": true` bypasses the server's certificate verification, suitable only for non-production environments.
-
-**Setting up a Secure TLS Connection**
-- Ensure `use_ssl` is set to `true`.
-- Set `ssl_insecure_skip_verify` to `false` to enforce certificate verification against the CA specified in `ca_file`.
-- Specify the path to the CA file in `ca_file` for server certificate verification.
-- Adjust `min_version` and `max_version` to secure TLS versions, ideally 1.2 and 1.3.
-
-**Setting up a Mutual TLS (mTLS) Connection**
-- Follow the steps for a secure TLS connection.
-- Provide paths for `cert_file` and `key_file` for your application's TLS certificate and private key, enabling Redis server to verify your application's identity.
-
-**Example Gateway Configuration**
-```json
-"storage": {
-  "type": "redis",
-  "host": "server1",
-  "port": 6379,
-  "use_ssl": true,
-  "ssl_insecure_skip_verify": false,
-  "ca_file": "/path/to/ca.crt",
-  "cert_file": "/path/to/client.crt",
-  "key_file": "/path/to/client.key",
-  "max_version": "1.3",
-  "min_version": "1.2"
-}
-```
-
-**Capping Analytics**
-Tyk Gateways can generate a lot of analytics data. Be sure to read about [capping your Dashboard analytics](/api-management/tyk-pump#tyk-pump-capping-analytics-data-storage)
-
-**API Definition Compression for MDCB Deployments**
-
-In [MDCB](/api-management/mdcb) deployments, Data Plane Gateways store API definition backups in Redis to ensure resilience when the Control Plane is unavailable. For deployments with many or large API definitions, this can consume significant Redis memory.
-
-You can reduce the size of these backups using optional Zstandard compression. Typically you can expect to see approximately 75% compression, though this can vary depending on the specific configuration of your API definitions and policies.
-
-Set [`storage.compress_api_definitions`](/tyk-oss-gateway/configuration#storage-compress_api_definitions) and [`storage.compress_policies`](/tyk-oss-gateway/configuration#storage-compress_policies) in your Data Plane Gateway configuration to compress your API definition and policy backups respectively:
+Set the following fields in your Data Plane Gateway configuration:
 
 ```json
 "storage": {
@@ -130,29 +87,41 @@ Set [`storage.compress_api_definitions`](/tyk-oss-gateway/configuration#storage-
   "compress_policies": true
 }
 ```
-API definition compression is available from Tyk 5.12.0 onwards.
-Policy compression is available from Tyk 5.13.0 onwards.
 
-The Gateway will seamlessly read uncompressed API definitions and policies if they are already stored in Redis in that format. When the Data Plane is reloaded, the definitions and policies will be compressed before being stored.
+- [`storage.compress_api_definitions`](/tyk-oss-gateway/configuration#storage-compress_api_definitions) is available from Tyk 5.12.0.
+- [`storage.compress_policies`](/tyk-oss-gateway/configuration#storage-compress_policies) is available from Tyk 5.13.0.
 
-To mitigate the risk of decompression bombs, the maximum combined uncompressed size for the API definitions is limited to the value you configure for the `storage.max_decompressed_size`.
+Tyk Gateway reads uncompressed data already in Redis seamlessly. On the next hot reload, definitions and policies are compressed before being stored.
 
-### Redis Sizing Guidelines
+To mitigate the risk of decompression bombs, the maximum combined uncompressed size is limited to the value of `storage.max_decompressed_size`.
 
-The average single request analytics record (without detailed logging turned on) is around 1KB.
+#### Separate Analytics Storage
 
-In terms of Redis, in addition to key storage itself, it should be able to hold the last 10 seconds of analytics data, preferably more, in the case of a Tyk Pump failure. So if you have 100 requests per second, you will need approximately 6MB for storing 60 seconds of data. Be aware that if detailed logging is turned on, this can grow by a magnitude of 10. 
+By default, Tyk Gateway writes traffic logs to the same Redis instance used for rate limiting, session data, and other gateway operations. Under high traffic, this can place significant pressure on your primary Redis. You can offload traffic log buffering to a dedicated Redis instance by enabling a separate analytics store:
 
+```json
+"enable_separate_analytics_store": true,
+"analytics_storage": {
+  "host": "analytics-redis-server",
+  "port": 6379
+}
+```
 
-<Note>
-MDCB and Multi-Cloud clients - the Gateways write the data to a temporary Redis list and periodically send the analytics directly to the MDCB server, which, similar to Pump, processes them for purging to MongoDB or PostgreSQL.
-</Note>
+The `analytics_storage` block accepts the same fields as the main `storage` block. See [Configure Redis](/tyk-configuration-reference/redis-cluster-sentinel) for the full field reference.
 
+#### Separate Cache Storage
 
-**Redis RAM Calculator**
-You can calculate your Redis RAM requirements by entering your known values in the middle section of the calculator settings below:
+API response caching can consume significant Redis memory, particularly for large payloads or high cache hit rates. You can isolate cache storage in a dedicated Redis instance, keeping it separate from session and rate limiting data:
 
-<RedisCalculator />
+```json
+"enable_separate_cache_store": true,
+"cache_storage": {
+  "host": "cache-redis-server",
+  "port": 6379
+}
+```
+
+The `cache_storage` block accepts the same fields as the main `storage` block. See [Configure Redis](/tyk-configuration-reference/redis-cluster-sentinel) for the full field reference.
 
 
 ## MongoDB
@@ -176,19 +145,7 @@ You can configure which driver to use with the MongoDB driver option:
 * [Configure MDCB MongoDB driver](/tyk-multi-data-centre/mdcb-configuration-options#analytics-driver)
 * [Configure Pump MongoDB driver](https://github.com/TykTechnologies/tyk-pump#driver-type)
 
-**Split out your DB**
-
-This is a no-brainer, but keep Redis and MongoDB off the system running the Gateway, they both use lots of RAM, and with Redis and the Gateway constantly communicating you will be facing resource contention on the CPU for a marginal decrease in latency.
-
-So in our setup, we recommend that Redis and MongoDB/PostgreSQL live on their own systems, separate from your Tyk Gateway. If you like, run them together on the same box, that's up to you.
-
-The network topology we like to use is:
-
-*   Two or more Tyk Gateway nodes (load balanced, each Gateway installed on separate machines).
-*   A separate MongoDB or PostgreSQL cluster
-*   A separate Redis server with fail-over or cluster
-*   One Tyk Dashboard node installed on a separate machine
-*   One Tyk Pump node installed on a separate machine that handles data transitions
+For recommended deployment topology, see [Planning for Production](/planning-for-production#recommended-topology).
 
 **Special notes for DocumentDB**
 

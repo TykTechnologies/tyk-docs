@@ -1,11 +1,52 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 import argparse
 from pathlib import Path
 from typing import Dict, List, Any
 import copy
 import shutil
+
+# Each OpenAPI spec must render under its own Mintlify "directory" namespace.
+# Mintlify builds every API reference page URL as /<directory>/<tag>/<summary>;
+# specs that share a directory share that namespace, so two specs with the same
+# tag+summary (e.g. "Users" / "Create a new user") silently collide and one
+# overwrites the other at build time (DX-2380, DX-2380 follow-up). Keying by
+# swagger filename here keeps every spec in its own subdirectory regardless of
+# which navigation tab it's nested under.
+OPENAPI_SPEC_DIRECTORY_NAMES = {
+    "gateway-swagger.yml": "gateway",
+    "dashboard-swagger.yml": "dashboard",
+    "dashboard-admin-swagger.yml": "dashboard-admin",
+    "mdcb-swagger.yml": "mdcb",
+    "identity-broker-swagger.yml": "identity-broker",
+    "enterprise-developer-portal-swagger.yaml": "portal",
+    "ai-studio-swagger.yml": "ai-studio",
+}
+
+# Giving a spec its own subdirectory changes every one of its generated page URLs for
+# that version -> 404s for anyone with old links/bookmarks unless redirects are added.
+# To minimize that blast radius, default to only fixing "5.14 and above": the version
+# marked isLatest in branches-config.json, plus the isMain (nightly/edge) version since
+# it tracks what ships after 5.14. Older released versions keep their original shared
+# "api-reference" directory (and their original cross-spec collisions) untouched. Flip
+# "all" to True to apply the fix to every version instead. Exactly one should be True.
+OPENAPI_DIRECTORY_PREFIX_CONFIG = {
+    "latest": True,
+    "all": False,
+}
+
+
+def openapi_directory_name(swagger_filename: str) -> str:
+    """Unique subdirectory name for a swagger file's generated API reference pages."""
+    known = OPENAPI_SPEC_DIRECTORY_NAMES.get(swagger_filename)
+    if known:
+        return known
+    # Fallback for a future spec that hasn't been added to the map above yet.
+    fallback = re.sub(r"\.ya?ml$", "", swagger_filename, flags=re.IGNORECASE)
+    return re.sub(r"-swagger$", "", fallback)
+
 
 class DocsMerger:
     def __init__(self, output_file: str = "docs.json", subfolder: str = "", additional_assets: List[str] = None):
@@ -798,11 +839,23 @@ class DocsMerger:
                         # No version subdirectory, add it
                         openapi_path = f"swagger/{version}/{swagger_file}"
 
-                    # Convert to object form with source and directory
-                    if is_latest:
-                        directory = "api-reference"
+                    # Convert to object form with source and directory.
+                    base_directory = "api-reference" if is_latest else f"{version}/api-reference"
+
+                    # Give the spec its own subdirectory so cross-spec tag+summary
+                    # collisions can't merge (see OPENAPI_SPEC_DIRECTORY_NAMES above) -
+                    # scoped per OPENAPI_DIRECTORY_PREFIX_CONFIG to limit URL churn.
+                    # "latest" mode covers "5.14 and above": isLatest plus isMain (nightly).
+                    is_in_latest_scope = is_latest or version == self.main_version
+                    apply_spec_prefix = OPENAPI_DIRECTORY_PREFIX_CONFIG["all"] or (
+                        OPENAPI_DIRECTORY_PREFIX_CONFIG["latest"] and is_in_latest_scope
+                    )
+                    if apply_spec_prefix:
+                        spec_dir_name = openapi_directory_name(path_parts[-1])
+                        directory = f"{base_directory}/{spec_dir_name}"
                     else:
-                        directory = f"{version}/api-reference"
+                        directory = base_directory
+
                     result["openapi"] = {"source": openapi_path, "directory": directory}
             
             return result

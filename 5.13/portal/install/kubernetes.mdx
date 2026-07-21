@@ -1,0 +1,250 @@
+---
+title: "Install Developer Portal on Kubernetes"
+description: "Installation guide for the Tyk Developer Portal on Kubernetes using Helm charts"
+keywords: "Developer Portal, Tyk, Install Tyk Developer Portal, Bootstrap Tyk Developer Portal"
+sidebarTitle: "Kubernetes"
+canonical: "https://tyk.io/docs/portal/install/kubernetes"
+---
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| Enterprise | Self-Managed, Hybrid |
+
+## Compatible Kubernetes Versions
+
+1.33.x, 1.34.x, 1.35.x
+
+## Prerequisites
+
+- [Kubernetes](https://kubernetes.io/docs/setup/)
+- [Helm 3+](https://helm.sh/docs/intro/install/)
+- [Enterprise Edition License](/5.13/portal/overview/intro#getting-access)
+
+<Note>
+Running on Podman, containerd, or another container runtime? See [Container Runtimes](/5.13/deployment-and-operations/container-runtimes).
+</Note>
+
+## Tyk Stack (New Helm Chart)
+
+There are two ways to install the portal on Kubernetes:
+
+1. **As part of Tyk Self-Managed** - Enable `global.components.devPortal` during Tyk Self-Managed deployment using the [tyk-stack chart](/5.13/product-stack/tyk-charts/tyk-stack-chart)
+2. **Standalone installation** - Use the [tyk-dev-portal](https://github.com/TykTechnologies/tyk-charts/tree/main/components/tyk-dev-portal) Helm chart (described below)
+
+This section provides a step-by-step instruction for installing the Tyk Developer Portal as standalone component using the new helm chart.
+
+### Instructions
+
+1. **Create the `tyk-dev-portal-conf` secret**
+
+    Make sure the `tyk-dev-portal-conf` secret exists in your namespace. 
+    This secret will automatically be generated if Tyk Dashboard instance was bootstrapped with [tyk-boostrap](https://artifacthub.io/packages/helm/tyk-helm/tyk-bootstrap) component chart 
+    and `bootstrap.devPortal` was set to `true` in the `values.yaml`.
+
+    If the secret does not exist, you can create it by running the following command.
+
+    ```bash
+    kubectl create secret generic tyk-dev-portal-conf -n ${NAMESPACE} \
+    --from-literal=TYK_ORG=${TYK_ORG} \
+    --from-literal=TYK_AUTH=${TYK_AUTH}
+    ```
+
+    The fields `TYK_ORG` and `TYK_AUTH` are the Tyk Dashboard _Organization ID_ and the Tyk Dashboard API _Access Credentials_ respectively. These can be obtained under your profile in the Tyk Dashboard.
+
+2. **Config settings**
+
+    You must set the following values in the `values.yaml` or with `--set {field-name}={field-value}` using the helm upgrade command:
+
+    | Field Name | Description |
+    | ---------- | ----------- |
+    | `global.adminUser.email` and `global.adminUser.password` | Set portal admin username and email for bootstrapping |
+    | `global.secrets.devPortal` | Enable portal bootstrapping by providing secret name |
+    | `license` | Tyk license key for your portal installation |
+    | `storage.type` | Portal storage type, e.g. *fs*, *s3* and *db* |
+    | `image.tag` | Developer Portal version. You can get the latest version image tag from [Docker Hub](https://hub.docker.com/r/tykio/portal/tags) |
+    | `database.dialect` | Portal database dialect, e.g. *mysql*, *postgres* |
+    | `database.connectionString`| Connection string to the Portal's database, e.g. for the *mysql* dialect: `admin:secr3t@tcp(tyk-portal-mysql:3306)/portal?charset=utf8mb4&parseTime=true` |
+
+    In addition to `values.yaml`, you can also define the environment variables described in the [configuration section](/5.13/product-stack/tyk-enterprise-developer-portal/deploy/configuration) to further customize your portal deployment. These environment variables can also be listed as a name value list under the `extraEnvs` section of the helm chart.
+
+3. **Launch the portal using the helm chart**
+
+    Run the following command to update your infrastructure and install the developer portal:
+
+    ```bash
+    helm install tyk-dev-portal tyk-helm/tyk-dev-portal -f values.yaml -n tyk
+    ```
+4. **Bootstrapping the Developer Portal**
+
+    Follow the [bootstrapping section](/5.13/portal/install#bootstrapping-developer-portal) of the documentation to bootstrap the portal via the UI or the admin API.
+
+### Configuration
+
+For the full list of configurable values, refer to the [tyk-stack chart guide](/5.13/product-stack/tyk-charts/tyk-stack-chart). The sections below cover common production configuration scenarios.
+
+> **Note**: Helm chart supports Developer Portal v1.2.0+.
+
+### Pod Security Context
+
+The chart ships with hardened defaults for the Portal pod that satisfy the Kubernetes [Restricted Pod Security Standard](https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted):
+
+```yaml
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 2000
+
+containerSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  allowPrivilegeEscalation: false
+  privileged: false
+  readOnlyRootFilesystem: true
+  seccompProfile:
+    type: RuntimeDefault
+  capabilities:
+    drop:
+      - ALL
+```
+
+Override these in your `values.yaml` to match your cluster's PSS policy.
+
+<Warning>
+**Bootstrap job security context limitation**
+
+The bootstrap job does not inherit `securityContext` or `containerSecurityContext` from `values.yaml`. On clusters enforcing PSS Restricted or Baseline profiles, the job will fail with a security policy violation.
+
+**Workaround:** Disable the automatic bootstrap and run it manually after deployment. See [Bootstrap Job](/5.13/#bootstrap-job) below.
+</Warning>
+
+### Bootstrap Job
+
+The bootstrap job runs once after `helm install`. It waits for the Portal pod to become ready, then calls `POST /portal-api/bootstrap` to create the bootstrap admin ([API Owner](/5.13/portal/api-owner)) user. The Portal blocks its startup sequence until this call succeeds.
+
+**Verify bootstrap completed:**
+
+```bash
+kubectl get jobs -n <namespace>
+kubectl logs job/dev-portal-job-<release-name> -n <namespace>
+```
+
+A successful run logs: `API call completed.`
+
+**To disable automatic bootstrap and bootstrap manually** (required on clusters with strict Pod Security Standards):
+
+1. Set `global.components.bootstrap: false` in your `values.yaml` and deploy.
+2. Wait for the Portal pod to be ready, then send the bootstrap request:
+
+```bash
+curl -X POST http://<portal-service>:<port>/portal-api/bootstrap \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "admin@example.com",
+    "password": "your-password",
+    "first_name": "Admin",
+    "last_name": "User"
+  }'
+```
+
+Once the call succeeds, the Portal detects the new user and completes its startup sequence.
+
+### Storage
+
+The `storage.type` setting controls where the portal stores assets (themes, images, OpenAPI specs). Session storage is always backed by the Portal database, regardless of this setting.
+
+| Type | Description | Notes |
+|---|---|---|
+| `db` | Assets stored in the Portal database | Recommended for Kubernetes. No PVC required. |
+| `s3` | Assets stored in an S3-compatible bucket | Suitable for cloud or multi-replica deployments |
+| `fs` | Assets stored on the container filesystem | Requires a PersistentVolumeClaim |
+
+For `fs` storage, configure a PVC using `storage.persistence`:
+
+```yaml
+storage:
+  type: fs
+  persistence:
+    storageClass: "standard"
+    accessModes:
+      - ReadWriteOnce
+    size: 8Gi
+```
+
+<Note>
+`storage.type: fs` with multiple replicas requires a storage class that supports `ReadWriteMany`. Use `db` or `s3` to avoid this constraint.
+</Note>
+
+### Scaling and Replicas
+
+The default `kind: StatefulSet` is suited for single-pod deployments. To run multiple replicas, switch to `Deployment`:
+
+```yaml
+kind: Deployment
+replicaCount: 3
+
+storage:
+  type: db  # or s3; both support concurrent access from multiple replicas
+```
+
+Portal sessions are stored in the Portal database. All replicas share the same session store automatically via the shared database connection. No sticky sessions or additional session store configuration is required.
+
+### Troubleshooting
+
+For bootstrap job failures, crash-loops, database connectivity issues, and license key errors, see [Kubernetes Bootstrap Failures](/5.13/portal/troubleshooting/kubernetes-bootstrap-failures).
+
+## Legacy Helm Chart
+
+<Warning>
+**Note**
+
+It is recommended to use new helm charts instead of legacy charts. Guide for new charts can be found [here](/5.13/portal/install/kubernetes)
+</Warning>
+
+This section provides a clear and concise, step-by-step recipe for installing the Tyk Developer Portal using [legacy helm chart](https://github.com/TykTechnologies/tyk-helm-chart/tree/master/tyk-pro).
+
+### Instructions
+
+1. **Create the `tyk-enterprise-portal-conf` secret**
+
+    Make sure the `tyk-enterprise-portal-conf` secret exists in your namespace. This secret will automatically be generated during the Tyk Dashboard bootstrap if the `dash.enterprisePortalSecret` value is set to `true` in the `values.yaml`.
+
+    If the secret does not exist, you can create it by running the following command.
+
+    ```bash
+    kubectl create secret generic tyk-enterprise-portal-conf -n ${NAMESPACE} \
+    --from-literal=TYK_ORG=${TYK_ORG} \
+    --from-literal=TYK_AUTH=${TYK_AUTH}
+    ```
+
+    Where `TYK_ORG` and `TYK_AUTH` are the Tyk Dashboard Organization ID and the Tyk Dashboard API Access Credentials respectively. Which can be obtained under your profile in the Tyk Dashboard.
+
+2. **Config settings**
+
+    You must set the following values in the `values.yaml` or with `--set {field-name}={field-value}` with the helm upgrade command:
+
+    | Field Name | Description |
+    | ---------- | ----------- |
+    | `enterprisePortal.enabled` | Enable Portal installation |
+    | `enterprisePortal.bootstrap` | Enable Portal bootstrapping |
+    | `enterprisePortal.license`| Tyk license key for your portal installation |
+    | `enterprisePortal.storage.type`| Portal database dialect, e.g *mysql*, *postgres* |
+    | `enterprisePortal.storage.connectionString` | Connection string to the Portal's database, e.g for the mysql dialect: `admin:secr3t@tcp(tyk-portal-mysql:3306)/portal?charset=utf8mb4&parseTime=true` |
+
+    In addition to values.yaml, you can also define the environment variables described in the [configuration section](/5.13/product-stack/tyk-enterprise-developer-portal/deploy/configuration) to further customize your portal deployment. These environment variables can also be listed as a name value list under the `extraEnvs` section of the helm chart.
+
+3. **Launch the portal using the helm chart**
+
+    Run the following command to update your infrastructure and install the developer portal:
+
+    ```bash
+    helm upgrade tyk-pro tyk-helm/tyk-pro -f values.yaml -n tyk
+    ```
+
+
+
+    <Note>
+    In case this is the first time you are launching the portal, it will be necessary to bootstrap it before you can use it. For detailed instructions, please refer to the [bootstrapping documentation](/5.13/#bootstrapping-enterprise-developer-portal).
+    </Note>
+
+
+> **Note**: Helm chart supports Developer Portal v1.2.0+.

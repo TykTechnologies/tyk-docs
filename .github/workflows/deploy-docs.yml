@@ -278,14 +278,15 @@ jobs:
           python3 scripts/add-canonical-urls/index.py || { echo "❌ Canonical script failed"; exit 1; }
           echo "✅ Canonical URL update completed."
 
-      - name: Disambiguate OpenAPI page slugs (DX-2380)
+      - name: Verify no OpenAPI page-slug collisions (DX-2380)
         run: |
-          echo "🧭 Disambiguating Mintlify OpenAPI page-slug collisions in the merged output..."
-          echo "Mintlify builds every API page URL as /api-reference/<tag>/<summary>; identical"
-          echo "tag+summary across specs collide and silently render the wrong endpoint."
-          python3 scripts/disambiguate_openapi_slugs.py .
-          echo "🔎 Verifying no collisions remain (this hard-fails the deploy if any slip through)..."
-          python3 scripts/validate_openapi_slugs.py .
+          echo "🧭 Verifying no Mintlify OpenAPI page-slug collisions in the merged output..."
+          echo "Mintlify builds every API page URL as <directory>/<tag>/<summary>; identical"
+          echo "tag+summary within the same directory collide and silently render the wrong endpoint."
+          echo "There is no PR-time gate for already-published version folders, so this deploy-time"
+          echo "check is the only backstop - it hard-fails on ANY collision, cross-spec or within-spec,"
+          echo "instead of silently auto-rewriting summaries like the old disambiguator did."
+          python3 scripts/validate_openapi_slugs.py . --fail-on-within-spec
           echo "✅ OpenAPI page slugs are collision-free."
 
       - name: Verify output
@@ -388,6 +389,21 @@ jobs:
           maintainer-can-modify: true
           author: ${{ github.actor }} <${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com>
           committer: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+
+      - name: Log deployment PR outcome
+        if: always()
+        run: |
+          PR_NUMBER="${{ steps.create-pr.outputs.pull-request-number }}"
+          if [ -n "$PR_NUMBER" ]; then
+            echo "✅ Deployment PR #$PR_NUMBER created/updated (branch: ${{ steps.create-pr.outputs.pull-request-branch }})"
+            echo "   ${{ steps.create-pr.outputs.pull-request-url }}"
+            echo "## ✅ Deployment PR #$PR_NUMBER" >> $GITHUB_STEP_SUMMARY
+            echo "${{ steps.create-pr.outputs.pull-request-url }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ℹ️ No deployment PR created - the regenerated content produced no changes against '${{ github.ref_name }}'."
+            echo "## ℹ️ No deployment PR created" >> $GITHUB_STEP_SUMMARY
+            echo "The merge against \`${{ github.ref_name }}\` produced no differences, so there was nothing to open a PR for." >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Enable auto-merge on deployment PR
         if: steps.create-pr.outputs.pull-request-number
