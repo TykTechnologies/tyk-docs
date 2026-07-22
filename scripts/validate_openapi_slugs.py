@@ -112,7 +112,7 @@ def operation_slug(tag, operation):
 
 
 def collect_slugs(root, specs):
-    """Return full-page-slug (directory included) -> list of {spec, method, path, tag, summary} occurrences."""
+    """Return full-page-slug (directory included) -> list of {spec, method, path, tag, summary, operation_id} occurrences."""
     slug_map = defaultdict(list)
     for spec_info in specs:
         spec_rel = spec_info["source"]
@@ -132,13 +132,19 @@ def collect_slugs(root, specs):
                 # Mintlify groups an operation under its FIRST tag (that drives the URL).
                 tags = operation.get("tags") or ["untagged"]
                 tag = tags[0]
-                full_slug = f"{directory}/{operation_slug(tag, operation)}"
+                # An x-mint.href override (see fix_openapi_slug_collisions.py) replaces
+                # the default <directory>/<tag>/<summary> slug entirely - Mintlify
+                # renders the operation at that explicit path instead, so collision
+                # detection must key on it when present, not the slug it overrides.
+                href = ((operation.get("x-mint") or {}).get("href") or "").lstrip("/")
+                full_slug = href or f"{directory}/{operation_slug(tag, operation)}"
                 slug_map[full_slug].append({
                     "spec": spec_rel,
                     "directory": directory,
                     "method": method.upper(),
                     "path": path,
                     "tag": tag,
+                    "operation_id": operation.get("operationId"),
                     "summary": operation.get("summary") or operation.get("operationId") or "",
                 })
     return slug_map
