@@ -8,6 +8,34 @@ from typing import Dict, List, Any
 import copy
 import shutil
 
+# Each OpenAPI spec must render under its own Mintlify "directory" namespace.
+# Mintlify builds every API reference page URL as /<directory>/<tag>/<summary>;
+# specs that share a directory share that namespace, so two specs with the same
+# tag+summary (for example "Users" / "Create a new user") silently collide and one
+# overwrites the other at build time (DX-2380). Keying by swagger filename here
+# keeps every spec in its own subdirectory regardless of which navigation tab
+# it's nested under.
+OPENAPI_SPEC_DIRECTORY_NAMES = {
+    "gateway-swagger.yml": "gateway",
+    "dashboard-swagger.yml": "dashboard",
+    "dashboard-admin-swagger.yml": "dashboard-admin",
+    "mdcb-swagger.yml": "mdcb",
+    "identity-broker-swagger.yml": "identity-broker",
+    "enterprise-developer-portal-swagger.yaml": "portal",
+    "ai-studio-swagger.yml": "ai-studio",
+}
+
+
+def openapi_directory_name(swagger_filename: str) -> str:
+    """Unique subdirectory name for a swagger file's generated API reference pages."""
+    known = OPENAPI_SPEC_DIRECTORY_NAMES.get(swagger_filename)
+    if known:
+        return known
+    # Fallback for a future spec that hasn't been added to the map above yet.
+    fallback = re.sub(r"\.ya?ml$", "", swagger_filename, flags=re.IGNORECASE)
+    return re.sub(r"-swagger$", "", fallback)
+
+
 class DocsMerger:
     def __init__(self, output_file: str = "docs.json", subfolder: str = "", additional_assets: List[str] = None):
         self.output_file = output_file
@@ -799,11 +827,24 @@ class DocsMerger:
                         # No version subdirectory, add it
                         openapi_path = f"swagger/{version}/{swagger_file}"
 
-                    # Convert to object form with source and directory
-                    if is_latest:
-                        directory = "api-reference"
+                    # Convert to object form with source and directory.
+                    base_directory = "api-reference" if is_latest else f"{version}/api-reference"
+
+                    # Give the spec its own subdirectory so cross-spec tag+summary
+                    # collisions can't merge (see OPENAPI_SPEC_DIRECTORY_NAMES above).
+                    # Scoped to the main/nightly version ONLY: nightly has never been
+                    # published under a stable URL, so splitting it needs no redirects.
+                    # isLatest and every older version keep their original shared
+                    # "api-reference" directory - those URLs are already live and
+                    # indexed, and changing them would need redirects we don't want to
+                    # introduce. Once nightly promotes to the next release, it carries
+                    # the per-spec split forward as that release's URLs from day one.
+                    if version == self.main_version:
+                        spec_dir_name = openapi_directory_name(path_parts[-1])
+                        directory = f"{base_directory}/{spec_dir_name}"
                     else:
-                        directory = f"{version}/api-reference"
+                        directory = base_directory
+
                     result["openapi"] = {"source": openapi_path, "directory": directory}
             
             return result
