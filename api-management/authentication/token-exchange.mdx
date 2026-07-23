@@ -100,6 +100,110 @@ Each entry in `providers` matches inbound tokens by `iss` claim and routes excha
 | `timeout` | duration string | No | Per-call timeout for requests to `tokenEndpoint`. Accepts values such as `"5s"` or `"500ms"`. Defaults to `"15s"`. |
 | `customParams` | map | No | Additional form parameters appended to the exchange request. Standard RFC 8693 keys (`grant_type`, `subject_token`, `audience`, and others) are reserved and cannot be overridden. |
 
+### Grant type
+
+*Available from Tyk 5.15.0.*
+
+By default, a provider sends an RFC 8693 token exchange request. Some authorization servers — most notably Microsoft Entra ID — reject that grant outright and instead implement delegation using the [RFC 7523](https://www.rfc-editor.org/rfc/rfc7523) JWT bearer grant. Set `grantType` on a provider to switch:
+
+```yaml
+providers:
+  - name: corp-idp
+    grantType: jwt-bearer
+    issuers:
+      - https://idp.example.com
+    tokenEndpoint: https://idp.example.com/token
+    clientAuth:
+      method: client_secret_post
+      clientId: tyk-gateway
+      clientSecret: env://EXCHANGE_CLIENT_SECRET
+    defaultTarget:
+      audience: api://orders
+      scopes:
+        - Orders.Read
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `grantType` | string | No | `token-exchange` (default) sends the RFC 8693 token-exchange grant; `jwt-bearer` sends the RFC 7523 jwt-bearer grant. |
+
+<Note>
+See [Microsoft Entra ID On-Behalf-Of](/api-management/authentication/token-exchange-microsoft-entra-obo) for a complete, vendor-specific walkthrough of configuring `grantType: jwt-bearer` against Entra.
+</Note>
+
+Under `grantType: jwt-bearer`, the exchange request differs from RFC 8693 in three ways:
+
+- The gateway sends the inbound token as `assertion`, not `subject_token`. None of the RFC 8693 subject-token fields are sent under this grant.
+- No `audience` or `resource` wire parameter is ever sent. The audience is folded into `scope` instead, using the rendering rule below.
+- `customParams` reserved keys are scoped to the grant in use: under `jwt-bearer`, only `assertion` is reserved, so — unlike under the default `token-exchange` grant — you can pass a literal `audience` or `resource` custom parameter through if your IdP expects one on this grant.
+
+**Scope rendering.** The configured `audience` and `scopes` describe the same logical target under both grants, but `jwt-bearer` renders them differently: each scope that doesn't already contain a `/` is prefixed with `audience/`; a scope that already contains `/` is treated as fully qualified and passed through verbatim; and if no scopes are configured, no `scope` parameter is sent at all — Tyk never invents one.
+
+| Configured target | `scope` sent under `jwt-bearer` |
+|---|---|
+| `audience: api://orders`, `scopes: [Orders.Read]` | `scope=api://orders/Orders.Read` |
+| `audience: api://orders`, `scopes: [Orders.Read, https://graph.microsoft.com/.default]` | `scope=api://orders/Orders.Read https://graph.microsoft.com/.default` (the second scope already contains `/`, so it passes through unprefixed) |
+| No `audience`, `scopes: [read, write]` | `scope=read write` (nothing to prefix) |
+| `audience: api://orders`, no `scopes` | No `scope` parameter is sent |
+
+**Example: plain jwt-bearer provider.** Not every authorization server using this grant needs Entra's conventions. A provider such as Keycloak that implements plain RFC 7523 needs no `customParams` at all — leave `audience` out and write the scopes your authorization server defines exactly as it expects them:
+
+```yaml
+providers:
+  - name: keycloak-jwt-bearer
+    grantType: jwt-bearer
+    issuers:
+      - https://idp.example.com/realms/acme
+    tokenEndpoint: https://idp.example.com/realms/acme/protocol/openid-connect/token
+    clientAuth:
+      method: client_secret_post
+      clientId: tyk-gateway
+      clientSecret: env://EXCHANGE_CLIENT_SECRET
+    defaultTarget:
+      scopes:
+        - orders.read
+        - orders.write
+```
+
+This sends `scope=orders.read orders.write` — with no `audience` configured, the rendering rule has nothing to prefix, so the scopes pass through verbatim.
+
+<Note>
+RFC 7523 §3 requires the inbound token's `aud` claim to already name this authorization server's token endpoint. That's a precondition on how the token was issued, not something this configuration controls.
+</Note>
+
+If your authorization server also expects an explicit downstream resource ([RFC 8707](https://www.rfc-editor.org/rfc/rfc8707)), pass it through `customParams` — `resource` isn't reserved under `jwt-bearer`, so it's forwarded unchanged alongside the rendered `scope`:
+
+```yaml
+customParams:
+  resource: https://orders.example.com
+```
+
+**Client authentication.** `clientAuth.method` supports the same options under both grants — `client_secret_basic` (default), `client_secret_post` — plus **`private_key_jwt`**, which authenticates using a signed client-assertion JWT ([RFC 7523 §2.2](https://www.rfc-editor.org/rfc/rfc7523#section-2.2)) instead of a shared secret:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `clientAuth.method` | string | No | Adds `private_key_jwt` to the existing `client_secret_basic` / `client_secret_post` options. |
+| `clientAuth.certId` | string | Required when `method` is `private_key_jwt` | References a certificate already uploaded to the gateway's certificate store. Its private key signs the client assertion. |
+
+The assertion is short-lived (5 minutes) and generated fresh for every exchange request, with a random `jti` and a JOSE header carrying the certificate's SHA-256 thumbprint (`x5t#S256`) so the authorization server can select the matching registered key.
+
+<Note>
+`private_key_jwt` supports RSA-signed certificates only (RS256). EC keys are not supported.
+</Note>
+
+**Step-up authentication.** Under `grantType: jwt-bearer`, if the authorization server responds with `"error":"interaction_required"` — meaning the end user must sign in again — Tyk does not treat this as an ordinary exchange failure. Instead, it returns `401 Unauthorized` to the original caller with a `WWW-Authenticate: Bearer error="insufficient_claims"` header, relaying the authorization server's `claims` challenge (base64-standard-encoded) and `authorization_uri` when supplied. No upstream call is made and nothing is cached. This lets a caller such as an MSAL-based client complete the required step-up — for example, an Entra Conditional Access or MFA challenge — and retry; the gateway has no way to complete that step itself.
+
+This relay is scoped to the `jwt-bearer` grant. The same `interaction_required` error under the default `token-exchange` grant is treated as an ordinary `idp_error` failure, unchanged. The relay records a fifth outcome value, `step_up_required`, alongside the four described in [Observability](#observability) — it is never cached and never audited as a failure.
+
+**Multi-tenant issuer matching.** Some authorization servers issue a different `iss` per tenant, with no way to enumerate every tenant up front. Two additive, opt-in mechanisms cover this:
+
+- An `issuers` entry prefixed with `regex:` is matched as a compiled regular expression against the inbound token's `iss` claim. Entries without the prefix keep today's exact-match semantics unchanged — this is a purely additive change. Dispatch is deterministic: exact-match entries are checked first, across all providers; only if none match does Tyk try `regex:` entries, in provider order, first match wins.
+- `tokenEndpoint` accepts Tyk's standard `$tyk_context.*` request-time variables, so one provider entry can serve many tenants from a single per-tenant token endpoint template — for example `$tyk_context.jwt_claims_tid` to read a `tid` claim from the validated JWT. The resolved endpoint is re-validated as an absolute `http(s)` URL at request time, and when a substitution occurs, Tyk keys the token cache by the resolved endpoint so a cached token is never served to the wrong tenant.
+
+<Note>
+A `regex:` issuer entry controls routing to a provider, not trust. Which tenants are actually allowed to authenticate is decided by the JWT authentication scheme's `allowedIssuers` list — the scheme that verifies the token's signature before token exchange ever runs. Pairing a permissive `regex:` entry with an empty or permissive `allowedIssuers` accepts any tenant of that authorization server; set `allowedIssuers` deliberately.
+</Note>
+
 ### Caching
 
 Tyk can cache exchanged tokens in Redis to avoid a round-trip to the authorization server on every request. Configure caching under `cache` within a provider:
@@ -180,9 +284,96 @@ If you prefer explicit control over the requested scopes, set `scopes` to a non-
 
 ## Known limitations
 
-The following limitations apply in Tyk 5.14.0:
+The following limitations apply in Tyk 5.15.0:
 
-- **Azure Entra On-Behalf-Of**: Entra's On-Behalf-Of (OBO) flow does not conform to RFC 8693. Azure Entra is not supported in this release.
+- **`private_key_jwt` key support**: `private_key_jwt` client authentication (used with the [`jwt-bearer` grant](#grant-type)) supports RSA-signed certificates only (RS256). EC keys are not supported.
+- **Actor token delegation**: RFC 8693 defines an optional actor-token mechanism for representing a delegation chain (for example, a service acting on behalf of another service, which is itself acting on behalf of a user). Tyk does not currently implement this — token exchange always presents the gateway as the sole confidential client, with no actor token in the request. There is no `actorToken` configuration field.
+
+---
+
+## Observability
+
+*Available from Tyk 5.15.0.*
+
+Every token exchange decision emits an OpenTelemetry metric, a structured log line, and — for authorization outcomes — an audit event, and runs inside a dedicated trace span. This turns token exchange from a feature that works in a demo into one you can operate at scale: you can see exchange volume and IdP latency, alert on error rates by provider, and trace a single request through the exchange step and the IdP round-trip it triggered.
+
+These signals are bounded and non-PII by design. None of them ever carry the inbound token, the exchanged token, a client secret, the token's `jti` (token ID), or its `sub` (end-user subject identity) claim. Where an application identity is useful for correlation, Tyk records the OAuth client identifiers (`azp`) instead, which name the calling application rather than a person.
+
+### Metrics
+
+Tyk exports three OpenTelemetry instruments for token exchange: `tyk.oauth2.exchange.requests`, `tyk.oauth2.exchange.duration`, and `tyk.oauth2.exchange.cache_hit`. See [Token Exchange Metrics](/api-management/metrics/default-metrics#token-exchange-metrics) for the full instrument and dimension reference.
+
+Every exchange attempt is classified into one of four outcomes: `ok`, `idp_error`, `misconfig`, or `no_matching_provider`. Providers using the [`jwt-bearer` grant](#grant-type) can also produce a fifth outcome, `step_up_required`, when the authorization server asks the caller to complete a step-up authentication — see [Step-up authentication](#grant-type). A cache hit is not a distinct outcome — a warm-cache exchange still records `outcome="ok"` on `tyk.oauth2.exchange.requests`, with `tyk.oauth2.exchange.cache_hit` incrementing alongside it. This keeps a "successful exchanges" query from under-counting cache-served traffic, while cache hit-rate remains queryable on its own.
+
+### Structured logs
+
+Tyk writes one JSON log line per exchange decision, using stable, `oauth2_`-namespaced field names so you can wire SIEM or alerting rules directly to them:
+
+| Field | Description |
+|---|---|
+| `trace_id` | The OpenTelemetry trace ID for the request. Matches the `trace_id` on the gateway access log line for the same request, so you can join the two. |
+| `oauth2_api_id` | The Tyk API ID the exchange ran on. |
+| `oauth2_provider` | The provider `name` that matched the inbound token. |
+| `oauth2_exchange_outcome` | One of `ok`, `idp_error`, `misconfig`, `no_matching_provider`, or `step_up_required` (`jwt-bearer` grant only). |
+| `oauth2_exchange_cache_hit` | Whether the exchanged token was served from cache. |
+| `duration_ms` | Time taken to obtain the exchanged token, in milliseconds. |
+| `oauth2_idp_error` / `oauth2_idp_error_description` | The authorization server's error code and description. Present only on an `idp_error` outcome, and length-capped so an oversized or malicious IdP response cannot bloat the log line. |
+| `oauth2_subject_azp` | The `azp` (authorized party) of the inbound token — the client application the token was issued to. |
+| `oauth2_exchanged_azp` | The `azp` of the exchanged token, when the authorization server returns one. |
+| `oauth2_audience` | The audience requested for the exchanged token. |
+| `oauth2_scopes_requested` | The scopes requested for the exchanged token. |
+
+```json
+{
+  "level": "info",
+  "msg": "oauth2 token exchange",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "oauth2_api_id": "a1b2c3d4e5f6",
+  "oauth2_provider": "keycloak-prod",
+  "oauth2_exchange_outcome": "ok",
+  "oauth2_exchange_cache_hit": false,
+  "duration_ms": 42,
+  "oauth2_subject_azp": "agent-frontend",
+  "oauth2_audience": "https://api.internal.example.com",
+  "oauth2_scopes_requested": ["api:read", "api:write"]
+}
+```
+
+Tyk deliberately omits the inbound token's `jti` and `sub` claims from this log line rather than hashing them. A token ID is a correlation handle and a subject claim can carry personal data such as an email address or username — exactly the values [OWASP's logging guidance](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html) recommends you mask, hash, or omit rather than log raw. The `azp` fields above already answer which application acted, for which audience, with what scopes, and with what outcome, without exposing an end user's identity. No raw token material — access tokens, refresh tokens, client secrets, or raw JWTs — appears in this log line or anywhere else in the exchange's observability output.
+
+### Audit events
+
+Tyk fires an audit event for every exchange decision that represents an authorization outcome:
+
+| Outcome | Audit event |
+|---|---|
+| `ok` (including cache hits) | `OAuth2ExchangeSucceeded` |
+| `idp_error` | `OAuth2ExchangeFailed` |
+| `no_matching_provider` | `OAuth2ExchangeFailed` |
+| `misconfig` | Not audited |
+| `step_up_required` (`jwt-bearer` grant only) | Not audited — this is an expected control-flow event relaying a caller-side action, not a failure |
+
+A cache hit still fires `OAuth2ExchangeSucceeded`, because a backend call is still being made on the subject's behalf even though the exchanged token itself came from cache rather than a fresh round-trip to the authorization server.
+
+<Note>
+`misconfig` does not produce an audit event. An unresolvable client secret or other configuration fault is an operational error, not an authorization decision made by the IdP, so it's surfaced through the metric and log line only. If you're building compliance reporting on the audit trail, don't expect misconfiguration failures to appear there — check the structured logs or the `tyk.oauth2.exchange.requests{outcome="misconfig"}` metric instead.
+</Note>
+
+The audit event's metadata carries the same `oauth2_`-namespaced fields as the structured log line: the provider, outcome, audience, requested scopes, the `azp` client identifiers, and the IdP error code and description when applicable. As with the logs, no raw token material, `jti`, or `sub` ever appears in audit metadata.
+
+### Distributed tracing
+
+Token exchange opens a dedicated `oauth2.exchange` span for every attempt, nested inside the request's existing trace after the inbound token is identified and before the request reaches the upstream proxy. This is a real child span from the OpenTelemetry tracer, not attributes stamped onto the inbound request span, so the exchange step shows up as its own node in the trace.
+
+The span carries three attributes, using the same bounded values as the metric labels and log fields — no tokens or identities:
+
+| Attribute | Description |
+|---|---|
+| `oauth2.exchange.provider` | The matched provider name. |
+| `oauth2.exchange.outcome` | One of `ok`, `idp_error`, `misconfig`, `no_matching_provider`, or `step_up_required` (`jwt-bearer` grant only). |
+| `oauth2.exchange.cache_status` | `hit` or `miss`. |
+
+On a cache miss, the call to the authorization server's token endpoint appears as a child HTTP client span under `oauth2.exchange`, since Tyk's IdP client is already traced. On a cache hit, there's no such child span at all — the trace shows the absence of a round-trip. This makes it easy to tell, at a glance, whether a given request paid the cost of a live IdP call or was served entirely from cache. Put together, a single trace shows the inbound request, the exchange decision, the IdP round-trip (or its absence), and the upstream call, in order.
 
 ---
 
