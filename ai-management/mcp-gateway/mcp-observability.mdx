@@ -1,11 +1,11 @@
 ---
 title: "MCP Gateway Observability Overview"
 sidebarTitle: "Overview"
-description: "An overview of the observability signals Tyk Gateway emits for MCP traffic: metrics dimensions, structured access log fields, and the Dashboard analytics page."
-keywords: "mcp, observability, opentelemetry, metrics, access logs, analytics, monitoring"
+description: "An overview of the observability signals Tyk Gateway emits for MCP traffic: metrics dimensions, structured access log fields, distributed tracing, and the Dashboard analytics page."
+keywords: "mcp, observability, opentelemetry, metrics, access logs, distributed tracing, spans, trace context, analytics, monitoring"
 ---
 
-Tyk Gateway emits two categories of observability signal for MCP traffic: custom metrics dimensions and structured access log fields. Both signals are enriched with the same set of MCP-specific fields, letting you monitor tool call volumes, track latency per primitive, classify errors, and correlate usage across sessions, through the same observability infrastructure you use for your REST APIs.
+Tyk Gateway emits three categories of observability signal for MCP traffic: custom metrics dimensions, structured access log fields, and distributed tracing spans. All three are enriched with the same set of MCP-specific fields, letting you monitor tool call volumes, track latency per primitive, classify errors, and correlate usage across sessions, through the same observability infrastructure you use for your REST APIs.
 
 ## Prerequisites
 
@@ -30,9 +30,28 @@ All four fields are populated only for MCP requests. For non-MCP requests the fi
 |---|---|---|
 | **Metrics** | Custom OTel metric instruments with MCP dimensions for counters and histograms | [MCP metrics](/ai-management/mcp-gateway/mcp-metrics) |
 | **Access logs** | Structured per-request log records with MCP fields included when non-empty | [MCP access logs](/ai-management/mcp-gateway/mcp-access-logs) |
+| **Distributed tracing** | Spans stamped with MCP attributes, with trace context carried in the JSON-RPC body as well as HTTP headers | [Distributed tracing](#distributed-tracing), below |
+
+## Distributed tracing
+
+When [OpenTelemetry tracing](/api-management/traces) is enabled, Tyk stamps every MCP request's span with MCP-specific attributes and propagates trace context over both the standard HTTP `traceparent` header and the MCP JSON-RPC body, so a trace stays intact even through MCP clients or servers that don't preserve custom headers.
+
+### Span attributes
+
+| Attribute | Description |
+|---|---|
+| `mcp.method.name` | JSON-RPC method invoked |
+| `mcp.tool.name`, `mcp.resource.name`, or `mcp.prompt.name` | Name of the specific primitive, keyed by its type |
+| `mcp.trace_source` | Which channel — `header` or `body` — carried the inbound trace context |
+
+### Trace context propagation
+
+Not every MCP client library preserves custom HTTP headers, so the MCP specification allows a client to carry its W3C trace context inside the JSON-RPC request body instead, under `params._meta`. Tyk reads both channels, in a configurable, first-match-wins order set under `opentelemetry.traces.mcp.read_sources` in the gateway config. The default order — the HTTP header first, then the body — matches Tyk's existing header-based behavior, so tracing works unchanged if you don't set this.
+
+Whichever channel Tyk resolves the inbound trace context from, it writes its own current trace context back into the outbound JSON-RPC body before forwarding the request, so the downstream MCP server — which reads the body, not the header — joins the same trace. This is the body-channel equivalent of the `traceparent` header Tyk already injects on ordinary proxied requests.
 
 <Note>
-Distributed tracing is not currently implemented for MCP traffic. The `TRACING_ENABLED` configuration flag exists in the gateway but does not generate spans for MCP requests. Use the metrics and access log signals above to correlate and diagnose MCP traffic.
+This applies to every MCP proxy, whether it fronts a remote MCP server or is [generated directly from a Tyk-managed REST API](/ai-management/mcp-gateway/api-to-mcp). For the latter, the call into the paired REST API is dispatched through Tyk's standard internal request handling, so when tracing is enabled the trace continues into the source API's own request handling — and its own upstream call — without further configuration.
 </Note>
 
 ## MCP analytics
