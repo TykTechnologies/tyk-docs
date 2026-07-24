@@ -32,6 +32,10 @@ The above pages can be edited, but they reference snippets which are imported fr
 
 The Tyk OAS API reference page at `api-management/gateway-config-tyk-oas.mdx` imports `x-tyk-gateway` content from `/snippets/x-tyk-gateway.mdx`, which is auto-generated and must not be edited directly.
 
+### Tyk Operator CRD Reference
+
+The Tyk Operator CRD reference page at `product-stack/tyk-operator/crd-reference.mdx` imports its field content from `/snippets/operator-crd-reference.mdx`, which is auto-generated from the Tyk Operator CRD schemas and must not be edited directly. To change a field description, edit the Go doc-comments in the `tyk-operator-internal` repository.
+
 ---
 
 ## Context
