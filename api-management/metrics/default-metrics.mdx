@@ -13,11 +13,12 @@ sidebarTitle: "Default Metrics"
 
 ## Default Gateway Metrics
 
-When `opentelemetry.metrics.enabled` is set to `true`, Tyk Gateway automatically exports three groups of metrics, no additional configuration required:
+When `opentelemetry.metrics.enabled` is set to `true`, Tyk Gateway automatically exports four groups of metrics, no additional configuration required:
 
 1. [Request metrics](#request-metrics): Rate, Errors, and Duration (RED) for every API request
 2. [Go runtime metrics](#go-runtime-metrics): Memory, goroutines, and GC health
 3. [Configuration state metrics](#configuration-state-metrics): API/policy load counts and reload events
+4. [Token exchange metrics](#token-exchange-metrics): Volume, latency, and cache hit-rate for [token exchange](/api-management/authentication/token-exchange) (Enterprise only)
 
 All metrics are exported as OpenTelemetry-semantic-convention-compliant instruments and include [resource attributes](#resource-attributes) that identify the gateway instance.
 
@@ -79,6 +80,35 @@ These metrics reflect the operational state of the Gateway's loaded configuratio
 | `tyk.gateway.policies.loaded` | Gauge | policies | Number of policies currently loaded and active. |
 | `tyk.gateway.config.reload.total` | Counter | reloads | Cumulative number of configuration reload events since startup. |
 | `tyk.gateway.config.reload.duration` | Histogram | seconds | Time taken to complete each configuration reload cycle. |
+
+### Token Exchange Metrics
+
+<Note>
+Token exchange is an [Enterprise-only](/api-management/authentication/token-exchange) feature, available from Tyk 5.15.0. These metrics are only emitted on APIs with `oauth2.tokenExchange` configured.
+</Note>
+
+These instruments cover every [token exchange](/api-management/authentication/token-exchange) decision the Gateway makes when exchanging an inbound token for a downstream token (RFC 8693).
+
+| Metric Name | Type | Unit | Description |
+|-------------|------|------|-------------|
+| `tyk.oauth2.exchange.requests` | Counter | exchanges | Total token exchange decisions, labelled by outcome and provider. Recorded on every attempt, including cache hits. |
+| `tyk.oauth2.exchange.duration` | Histogram | seconds | Time to obtain the exchanged token — the IdP round-trip on a cache miss, or the cache lookup on a hit. Recorded on every attempt, so cache hits land in the lowest buckets while live IdP calls dominate the upper ones. |
+| `tyk.oauth2.exchange.cache_hit` | Counter | hits | Number of exchange requests served from the token exchange cache. A separate signal, not a distinct outcome — a warm-cache exchange still increments `tyk.oauth2.exchange.requests` with `outcome="ok"`. |
+
+#### Dimensions
+
+| Instrument | `outcome` | `provider` |
+|-----------|:---:|:---:|
+| `tyk.oauth2.exchange.requests` | Yes | Yes |
+| `tyk.oauth2.exchange.duration` | Yes | Yes |
+| `tyk.oauth2.exchange.cache_hit` | - | Yes |
+
+| Dimension | Description |
+|-----------|-------------|
+| `outcome` | One of `ok`, `idp_error`, `misconfig`, `no_matching_provider`, or `step_up_required` (providers using the [`jwt-bearer` grant](/api-management/authentication/token-exchange#grant-type) only). Deliberately bounded to a small enum — the IdP's own error code is never a label (unbounded cardinality); it's available in [structured logs and audit events](/api-management/authentication/token-exchange#observability) instead. |
+| `provider` | The operator-defined `name` of the token exchange provider (`oauth2.tokenExchange.providers[].name`). A handful of values per API, so safe as a label. |
+
+Identity, audience, and requested scopes are never metric labels or dimensions — they're only available in structured logs and audit events, see [Token exchange observability](/api-management/authentication/token-exchange#observability).
 
 ## Resource Attributes
 
