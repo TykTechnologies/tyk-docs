@@ -60,10 +60,13 @@ class DocsMerger:
 
                 for version_info in versions:
                     is_external = version_info.get('isExternal', False)
+                    is_lts = version_info.get('isLts', False)
 
                     if is_external:
                         # Handle external versions
                         label = version_info.get('label', '')
+                        if label and is_lts:
+                            label = f"{label} (LTS)"
                         external_url = version_info.get('externalUrl', '')
                         if label and external_url:
                             # Use label as identifier for external versions
@@ -87,6 +90,8 @@ class DocsMerger:
                             target_folder = source_folder
 
                         label = version_info.get('label', target_folder)
+                        if label and is_lts:
+                            label = f"{label} (LTS)"
                         is_latest = version_info.get('isLatest', False)
                         is_main = version_info.get('isMain', False)
 
