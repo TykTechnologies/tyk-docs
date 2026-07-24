@@ -1,0 +1,507 @@
+---
+title: "Control Plane Pumps"
+description: "Configure the Tyk Pump types that write traffic logs and aggregated analytics into Tyk Dashboard's MongoDB or SQL storage."
+keywords: "Control Plane Pumps, Tyk Pump, Dashboard Analytics, Log Browser, Mongo Pump, SQL Pump, Aggregate Pump, GraphQL, MCP"
+sidebarTitle: "Control Plane Pumps"
+---
+
+## Introduction
+
+This page covers the [Tyk Pump types](/api-management/tyk-pump#pump-type-catalog) that write traffic logs and aggregated analytics into Tyk Dashboard's persistent storage (MongoDB or SQL): the pumps that ultimately feed Tyk Dashboard's Log Browser and Traffic Analytics screens.
+
+How you deploy these pumps depends on your deployment topology:
+
+- In a combined control and data plane, such as the `tyk-stack` chart, you configure them directly: Tyk Pump already has access to both Redis and the persistent storage.
+- In a distributed deployment, with separate control and data planes connected via Tyk MDCB, these same pump types are instead configured as the Control Plane Pump, running on the control plane, which receives data forwarded by the Hybrid Pump on each data plane. See [Data Plane Pump](/api-management/dashboard-analytics/data-plane-pump) for that mechanism.
+
+For an explanation of how traffic logging works in general, including detailed recording and aggregation, see the [Dashboard Analytics overview](/api-management/dashboard-analytics).
+
+For settings common to every pump type, such as `filters` and `timeout`, see [Common Pump Settings](/api-management/tyk-pump#common-pump-settings).
+
+## Choosing a Pump Type
+
+Tyk Pump implements separate pump types for MongoDB and SQL because of how differently the two store data.
+
+- MongoDB groups records into collections, so Tyk Pump has a separate pump type for each way of storing them: one collection holding every Organisation's traffic logs together, one collection per Organisation splitting traffic logs apart, and one collection holding aggregated analytics.
+- SQL databases store records as rows in a single table, so there's no equivalent to Mongo's "one collection per Organisation" pump type: every Organisation's rows live in the same table, distinguished by an indexed `org_id` column.
+
+The pump type that you should deploy depends on which Tyk Dashboard feature you want to populate and the protocol (REST, GraphQL, MCP) the traffic logs come from.
+
+For Tyk Dashboard's Traffic Analytics screens (Traffic Analytics graphs, Activity by Graph, Activity by MCP):
+
+| Protocol | MongoDB | SQL |
+| :-- | :-- | :-- |
+| REST | [`mongo-pump-aggregate`](#mongo-aggregate-pump) | [`sql_aggregate`](#sql-aggregate-pump) |
+| GraphQL | not available | [`sql-graph-aggregate`](#sql-graphql-aggregate-pump) (PostgreSQL only) |
+| MCP | [`mongo-mcp-aggregate`](#mongo-mcp-aggregate-pump) | [`sql-mcp-aggregate`](#sql-mcp-aggregate-pump) |
+
+For Tyk Dashboard's Log Browser:
+
+| Protocol | MongoDB | SQL |
+| :-- | :-- | :-- |
+| REST | [`mongo`](#standard-mongo-pump) (or [`mongo-pump-selective`](#per-organisation-mongo-pump), which splits Log Browser data into a separate collection per Organisation) | [`sql`](#standard-sql-pump) |
+| GraphQL | not available | not available |
+| MCP | not available | not available |
+
+For your own downstream querying:
+
+| Protocol | MongoDB | SQL |
+| :-- | :-- | :-- |
+| REST | already covered by [`mongo`](#standard-mongo-pump)/[`mongo-pump-selective`](#per-organisation-mongo-pump) above | already covered by [`sql`](#standard-sql-pump) above |
+| GraphQL | [`mongo-graph`](#mongo-graphql-pump) | [`sql-graph`](#sql-graphql-pump) |
+| MCP | [`mongo-mcp`](#mongo-mcp-pump) | [`sql-mcp`](#sql-mcp-pump) |
+
+These pumps write the data into a MongoDB collection or SQL table, where it's queryable by your own tooling. For REST, that's the same `mongo`/`mongo-pump-selective`/`sql` pump you're already running for the Log Browser; GraphQL and MCP need a dedicated pump instead, since the plain pumps either pass GraphQL through without the extra structured detail, or exclude MCP entirely. Tyk Dashboard itself doesn't read any of this back out, so you'll need your own tooling, such as a BI tool or a scheduled export job, connected directly to that database. This is different from the [External Data Sink Pumps](/api-management/tyk-pump#external-data-sink-pumps), which actively forward traffic logs to a separate third-party system such as Splunk or Kafka.
+
+## MongoDB
+
+Tyk Pump offers MongoDB pump types for REST, MCP proxy and GraphQL traffic. All share the same connection settings.
+
+The pumps are declared and configured as described in the [Tyk Pump configuration guide](/api-management/tyk-pump#declaring-pumps). Each pump to be deployed has its own entry in that configuration and has both [common](/api-management/tyk-pump#common-pump-settings) and specific configuration options. The specific config is held in the `meta` object - some of this is common, some is dependent on the specific pump as outlined in the following sections.
+
+### Common Mongo Meta
+
+Every Mongo pump type on this page accepts these fields in `meta`, in addition to whatever is listed in its own section below. Each pump's own snippet only shows its additional fields; combine them with these to build a complete `meta` block.
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `mongo_url` | - | Full connection URL to your MongoDB instance, including credentials and database name. Can point at a cluster. |
+| `mongo_use_ssl` | `false` | Enables a TLS connection to MongoDB. |
+| `mongo_ssl_insecure_skip_verify` | `false` | Allows self-signed certificates when `mongo_use_ssl` is enabled. |
+| `mongo_ssl_allow_invalid_hostnames` | `false` | Skips the TLS hostname check, useful when connecting through an SSH tunnel; the rest of TLS verification still applies. |
+| `mongo_ssl_ca_file` | - | Path to a PEM file containing trusted root certificates. |
+| `mongo_ssl_pem_keyfile` | - | Path to a PEM file containing both the client certificate and private key, for mutual TLS. |
+| `mongo_db_type` | `0` | Target database: `0` for MongoDB, `1` for Amazon DocumentDB, `2` for CosmosDB. |
+| `mongo_session_consistency` | `Strong` | Session consistency mode: `strong`, `monotonic`, or `eventual`. |
+| `omit_index_creation` | `false` | If `true`, Tyk Pump never creates indexes. If `false`, it creates them only if the collection doesn't already exist, except on Amazon DocumentDB or Azure CosmosDB, where indexes are always (re-)created, since checking for an existing collection is unreliable on those platforms. |
+| `driver` | `mongo-go` | Underlying MongoDB driver: `mongo-go` (MongoDB v4+) or `mgo` (deprecated, MongoDB v4 and below). |
+| `mongo_direct_connection` | `false` | If `true`, connects only to the host given in `mongo_url` rather than discovering the rest of the cluster. Useful where network restrictions prevent discovery, such as SSH tunneling. |
+
+### Standard Mongo Pump
+
+The `mongo` pump stores every individual traffic log as a separate document in one collection. It's the source for Tyk Dashboard's Log Browser in a single-Organisation deployment.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings) and [common `meta` fields](#common-mongo-meta), the pump has the following settings:
+
+```json
+{
+  "pumps": {
+    "mongo": {
+      "type": "mongo",
+      "meta": {
+        "collection_name": "tyk_analytics",         // required
+        "max_insert_batch_size_bytes": 10485760,
+        "max_document_size_bytes": 10485760,
+        "collection_cap_enable": false,
+        "collection_cap_max_size_bytes": 5368709120,
+        ...
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `collection_name` | - | The collection to write to. Required; there's no default. Set this to `tyk_analytics` unless you're not using the Log Browser at all: Tyk Dashboard has no setting of its own for this name, and always queries `tyk_analytics` directly when `use_sharded_analytics` is `false`, so any other value here means Log Browser finds nothing. |
+| `max_insert_batch_size_bytes` | 10MB | Maximum size of a single insert batch (in bytes); larger batches are split into multiple inserts. |
+| `max_document_size_bytes` | 10MB | Maximum document size (in bytes); documents that would exceed this are skipped rather than written. |
+| `collection_cap_enable` | `false` | If `true`, caps the collection at `collection_cap_max_size_bytes`, turning it into a FIFO buffer. See [Analytics Storage Management](/api-management/dashboard-analytics/analytics-storage-management). |
+| `collection_cap_max_size_bytes` | 5GB | Maximum collection size, in bytes, when `collection_cap_enable` is `true`. |
+
+Because this collection grows with every request, especially with detailed recording enabled, it [should be capped](/api-management/dashboard-analytics/analytics-storage-management).
+
+**Tyk Dashboard Setting:** set [`use_sharded_analytics: false`](/tyk-dashboard/configuration#use_sharded_analytics) in the Tyk Dashboard configuration so that it queries the `tyk_analytics` collections to populate the Log Browser.
+
+### Per-Organisation Mongo Pump
+
+The `mongo-pump-selective` pump stores every individual traffic log as a separate document, in a collection called `z_tyk_analyticz_{ORG_ID}` (i.e. one collection per Organisation). It's the source for Tyk Dashboard's Log Browser in a multi-Organisation deployment, isolating each Organisation's data from the others.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings) and [common `meta` fields](#common-mongo-meta), the pump has the following settings:
+
+```json
+{
+  "pumps": {
+    "mongo-pump-selective": {
+      "type": "mongo-pump-selective",
+      "meta": {
+        "max_insert_batch_size_bytes": 10485760,
+        "max_document_size_bytes": 10485760,
+        ...
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `max_insert_batch_size_bytes` | 10MB | Maximum size of a single insert batch; larger batches are split. |
+| `max_document_size_bytes` | 10MB | Maximum document size; oversized documents are skipped rather than written. |
+
+There's no `collection_name` field: the collection name is always computed per-Organisation. There's also no `collection_cap_*` support, so, unlike the [Standard Mongo Pump](#standard-mongo-pump), Tyk Pump can't cap these collections for you. Given the volume of individual documents, cap each Organisation's collection manually instead, using MongoDB's `convertToCapped` command; see [Analytics Storage Management](/api-management/dashboard-analytics/analytics-storage-management#capped-collections) for the exact command.
+
+**Tyk Dashboard Setting:** set [`use_sharded_analytics: true`](/tyk-dashboard/configuration#use_sharded_analytics) in the Tyk Dashboard configuration so that it queries `z_tyk_analyticz_{ORG_ID}` collections to populate the Log Browser.
+
+### Mongo Aggregate Pump
+
+The `mongo-pump-aggregate` pump computes analytics from traffic logs, aggregating hourly or per minute, and stores them in a collection called `z_tyk_analyticz_aggregate_{ORG_ID}` (i.e. one collection per Organisation). Tyk Dashboard's Traffic Analytics graphs are built on this aggregated analytics.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings) and [common `meta` fields](#common-mongo-meta), the pump has the following settings:
+
+```json
+{
+  "pumps": {
+    "mongo-pump-aggregate": {
+      "type": "mongo-pump-aggregate",
+      "meta": {
+        "use_mixed_collection": true,
+        "track_all_paths": false,
+        "ignore_tag_prefix_list": [],
+        "threshold_len_tag_list": 1000,
+        "store_analytics_per_minute": false,
+        "aggregation_time": 60,
+        "enable_aggregate_self_healing": false,
+        "ignore_aggregations": [],
+        ...
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `use_mixed_collection` | `false` | If `true`, the pump also writes to the org-less `tyk_analytics_aggregates` collection, see note below. |
+| `track_all_paths` | `false` | If `true`, stores aggregated data for every endpoint rather than only [tracked endpoints](/api-management/dashboard-analytics#controlling-which-endpoints-are-tracked). |
+| `ignore_tag_prefix_list` | (none) | Prefixes of [custom aggregation tags](/api-management/dashboard-analytics#custom-aggregation-tags) to exclude from aggregation. |
+| `threshold_len_tag_list` | `1000` | Logs a warning if the number of distinct tag values in an aggregation exceeds this threshold. |
+| `store_analytics_per_minute` | `false` | If `true`, aggregates per minute instead of per hour. Takes precedence over `aggregation_time`. |
+| `aggregation_time` | `60` | Aggregation window, in minutes (1-60). Ignored if `store_analytics_per_minute` is `true`. |
+| `enable_aggregate_self_healing` | `false` | See [Self-Healing](#self-healing) below. |
+| `ignore_aggregations` | (none) | Dimensions to exclude from aggregation, to reduce document size. Valid values (case-insensitive): `APIID`, `Errors`, `Versions`, `APIKeys`, `OauthIDs`, `Geo`, `Tags`, `Endpoints`, `KeyEndpoint`, `OauthEndpoint`, `ApiEndpoint`. |
+
+Because it stores aggregated analytics, this collection needs minimal capping. If an API definition tags unique per-request headers, such as a `request_id`, aggregation creates one document per unique value and the collection can grow rapidly; avoid tagging unique headers where possible, or add them to `ignore_aggregations`.
+
+**Tyk Dashboard Setting:** this pump supplies the **API Usage Data** screens. Set [enable_aggregate_lookups: true](/tyk-dashboard/configuration#enable_aggregate_lookups) in the Tyk Dashboard configuration so it reads this pre-computed data, rather than computing it live from traffic logs on every request; see [Pre-Computed vs Live Aggregation](/api-management/dashboard-analytics#pre-computed-vs-live-aggregation) for the trade-off.
+
+<Note>
+Tyk Dashboard's [`use_sharded_analytics`](/tyk-dashboard/configuration#use_sharded_analytics) controls which collection(s) it queries. If `use_sharded_analytics: false`, you must set `use_mixed_collection: true` so the pump populates the shared collection `tyk_analytics_aggregates`, which Dashboard always reads in this mode. If `use_sharded_analytics: true`, ordinary per-Organisation queries read the per-Organisation collections, which the pump populates regardless of `use_mixed_collection`, but a superuser session not attached to a single Organisation still falls back to the shared collection, so set `use_mixed_collection: true` too if you need those cross-org views to show data.
+</Note>
+
+#### Self-Healing
+
+MongoDB, DocumentDB, and CosmosDB all cap individual document size (16MB for standard MongoDB). The Mongo Aggregate Pump writes one document per `aggregation_time` period, and if that document grows past the limit before the period ends, the database rejects further writes for that period.
+
+The pump's self-healing feature solves this problem by automatically adjusting the aggregation window for each document, resulting in more, smaller documents for a given time period. The performance trade-off is that this can increase the query complexity and load for Tyk Dashboard when it reads and consolidates this data to render the Dashboard Analytics graphs.
+
+Set `enable_aggregate_self_healing: true` to trigger self-healing: when a write fails because the document is too large, Tyk Pump creates a new document immediately and halves `aggregation_time` for subsequent periods, reducing the chance of hitting the limit again. This can repeat, halving `aggregation_time` further each time the limit is hit, down to a minimum of 1 minute. For example, with `aggregation_time: 50`, if the document reaches 16MB, Tyk Pump starts a new document and reduces `aggregation_time` to 25.
+
+<Note>
+`store_analytics_per_minute` takes precedence over `aggregation_time`. If `store_analytics_per_minute` is `true`, `aggregation_time` is fixed at 1 and self-healing has no effect.
+</Note>
+
+### Mongo GraphQL Pump
+
+The `mongo-graph` pump parses GraphQL-specific detail out of the raw request and response of every GraphQL request: types requested, fields requested per type, operation type, variables, root fields, and any errors.
+
+The resultant MongoDB collection exists for your own downstream querying, such as with a BI tool or data warehouse; Tyk Dashboard doesn't read this data back out anywhere.
+
+Enable [detailed recording](/api-management/logs/traffic-logs#detailed-recording) first, so that GraphQL information can be parsed from the request body and response; this applies globally across all APIs on the Gateway.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings) and [common `meta` fields](#common-mongo-meta), the pump has the following settings:
+
+```json
+{
+  "pumps": {
+    "mongo-graph": {
+      "type": "mongo-graph",
+      "meta": {       
+        "collection_name": "tyk_graph_analytics",   // required
+        "max_insert_batch_size_bytes": 10485760,
+        "max_document_size_bytes": 10485760,
+        "collection_cap_enable": false,
+        "collection_cap_max_size_bytes": 5368709120,
+        ...
+      },
+      ...
+    }
+  }
+}
+```
+
+Accepts the same `collection_name`, `max_insert_batch_size_bytes`, `max_document_size_bytes`, and `collection_cap_*` fields as the [Standard Mongo Pump](#standard-mongo-pump); `collection_name` is required, with no default.
+
+<Note>
+The [Standard Mongo Pump](#standard-mongo-pump) doesn't filter out traffic logs for GraphQL requests, so they already reach `tyk_analytics` as ordinary, undifferentiated entries. If you point `mongo-graph`'s `collection_name` at the same collection as your Standard Mongo Pump, you'll get duplicate entries in the Log Browser for every GraphQL request, one plain copy and one GraphQL-enriched copy, without gaining anything: Log Browser can't display the extra fields anyway. Always use a separate, dedicated collection.
+</Note>
+
+Limitations:
+
+- Records can grow quickly, since detailed recording is required.
+- Subgraph requests in a federation setup are not recorded, only supergraph requests.
+- Universal Data Graph requests are recorded, but subsequent requests to data sources are ignored.
+
+### Mongo MCP Pump
+
+The `mongo-mcp` pump stores MCP (Model Context Protocol) tool-call traffic logs in their own collection, mirroring the [Standard Mongo Pump](#standard-mongo-pump). **Unlike GraphQL records, MCP records are excluded from the Standard Mongo Pump, so this is the only way to get MCP traffic logs into MongoDB.**
+
+As with the [Mongo GraphQL Pump](#mongo-graphql-pump), Tyk Dashboard doesn't read this data anywhere, including the Activity by MCP screen; it exists for your own downstream querying.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings) and [common `meta` fields](#common-mongo-meta), the pump has the following settings:
+
+```json
+{
+  "pumps": {
+    "mongo-mcp": {
+      "type": "mongo-mcp",
+      "meta": {
+        "collection_name": "tyk_mcp_analytics",     // required
+        "max_insert_batch_size_bytes": 10485760,
+        "max_document_size_bytes": 10485760,
+        "collection_cap_enable": false,
+        "collection_cap_max_size_bytes": 5368709120,
+        ...
+      },
+      ...
+    }
+  }
+}
+```
+
+Accepts the same `collection_name`, `max_insert_batch_size_bytes`, `max_document_size_bytes`, and `collection_cap_*` fields as the [Standard Mongo Pump](#standard-mongo-pump); `collection_name` is required, with no default.
+
+### Mongo MCP Aggregate Pump
+
+The `mongo-mcp-aggregate` pump computes aggregated MCP analytics, mirroring the [Mongo Aggregate Pump](#mongo-aggregate-pump), and stores them in a collection called `z_tyk_mcp_analyticz_aggregate_{ORG_ID}`. Tyk Dashboard's MCP Traffic Analytics graphs are built on this aggregated analytics.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings) and [common `meta` fields](#common-mongo-meta), the pump has the following settings:
+
+```json
+{
+  "pumps": {
+    "mongo-mcp-aggregate": {
+      "type": "mongo-mcp-aggregate",
+      "meta": {
+        "use_mixed_collection": true,
+        "track_all_paths": false,
+        "ignore_tag_prefix_list": [],
+        "threshold_len_tag_list": 1000,
+        "store_analytics_per_minute": false,
+        "aggregation_time": 60,
+        "enable_aggregate_self_healing": false,
+        "ignore_aggregations": [],
+        ...
+      },
+      ...
+    }
+  }
+}
+```
+
+Accepts the same `use_mixed_collection`, `track_all_paths`, `ignore_tag_prefix_list`, `threshold_len_tag_list`, `store_analytics_per_minute`, `aggregation_time`, `enable_aggregate_self_healing`, and `ignore_aggregations` fields as the [Mongo Aggregate Pump](#mongo-aggregate-pump) above. `use_mixed_collection: true` writes to the org-less `tyk_mcp_analytics_aggregate` collection instead of `tyk_analytics_aggregates`.
+
+**Tyk Dashboard Setting:** this pump supplies the **Activity by MCP** screen. [enable_aggregate_lookups: true](/tyk-dashboard/configuration#enable_aggregate_lookups) is required in the Tyk Dashboard configuration, not just recommended: unlike the REST case, there's no working [live fallback](/api-management/dashboard-analytics#pre-computed-vs-live-aggregation) if it's left `false`, since that fallback has no MCP-specific logic and queries the plain REST traffic log collection, returning nothing useful. See [MCP Analytics](/ai-management/mcp-gateway/mcp-analytics) for the Dashboard side of this feature.
+
+<Note>
+Tyk Dashboard's [`use_sharded_analytics`](/tyk-dashboard/configuration#use_sharded_analytics) controls which collection(s) it queries. If `use_sharded_analytics: false`, you must set `use_mixed_collection: true` so the pump populates the shared collection `tyk_mcp_analytics_aggregate`, which Dashboard always reads in this mode. If `use_sharded_analytics: true`, ordinary per-Organisation queries read the per-Organisation collections, which the pump populates regardless of `use_mixed_collection`, but a superuser session not attached to a single Organisation still falls back to the shared collection, so set `use_mixed_collection: true` too if you need those cross-org views to show data.
+</Note>
+
+## SQL
+
+Tyk Pump offers SQL pump types for REST, MCP proxy and GraphQL traffic. All share the same connection settings.
+
+The pumps are declared and configured as described in the [Tyk Pump configuration guide](/api-management/tyk-pump#declaring-pumps). Each pump to be deployed has its own entry in that configuration and has both [common](/api-management/tyk-pump#common-pump-settings) and specific configuration options. The specific config is held in the `meta` object - some of this is common, some is dependent on the specific pump as outlined in the following sections.
+
+<Note>
+Tyk no longer supports SQLite as of Tyk 5.7.0. Transition to [PostgreSQL](/planning-for-production/database-settings#postgresql), [MongoDB](/planning-for-production/database-settings#mongodb), or a listed compatible alternative.
+</Note>
+
+### Common SQL Meta
+
+Every SQL pump type on this page accepts these fields in `meta`, in addition to whatever is listed in its own section below. Each pump's own snippet only shows its additional fields; combine them with these to build a complete `meta` block.
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `type` | - | `postgres` or `mysql`. |
+| `connection_string` | - | The database connection string, for example `user:password@tcp(hostname:3306)/dbname` for MySQL, or host/port/user/password/dbname for PostgreSQL. |
+| `postgres.prefer_simple_protocol` | `false` | Disables implicit prepared statement usage. PostgreSQL only. |
+| `mysql.default_string_size` | `256` | Default size for string fields. MySQL only. |
+| `mysql.disable_datetime_precision` | `false` | Disables datetime precision, unsupported before MySQL 5.6. |
+| `mysql.dont_support_rename_index` | `false` | Drops and recreates an index instead of renaming it; needed before MySQL 5.7, or on MariaDB. |
+| `mysql.dont_support_rename_column` | `false` | Uses `CHANGE` instead of `RENAME COLUMN`; needed before MySQL 8, or on MariaDB. |
+| `mysql.skip_initialize_with_version` | `false` | Skips auto-configuring behavior based on the connected MySQL version. |
+| `table_sharding` | `false` | If `true`, records are stored in one table per day instead of a single table. See [Table Sharding](/api-management/dashboard-analytics/analytics-storage-management#table-sharding). |
+| `log_level` | `silent` | SQL log verbosity: `debug`, `info`, or `warning`. Any other value, including `error`, is treated as `silent` (no query logging). |
+| `batch_size` | `1000` | Maximum records written per batch. |
+| `migrate_sharded_tables` | `false` | See [Table Sharding](/api-management/dashboard-analytics/analytics-storage-management#table-sharding). |
+
+### Standard SQL Pump
+
+The `sql` pump stores every individual traffic log as a separate row in one table. It's the source for Tyk Dashboard's Log Browser, for both single- and multi-Organisation deployments: unlike MongoDB, there's no separate per-Organisation pump type, since every Organisation's rows already live in the same table, distinguished by an indexed `org_id` column.
+
+It has no pump-specific fields beyond [Common SQL Meta](#common-sql-meta) and the [common pump settings](/api-management/tyk-pump#common-pump-settings): set `type` to `postgres` or `mysql` and configure those.
+
+By default, the pump stores all records in a single table, `tyk_analytics`. With `table_sharding: true`, records are instead stored in per-day tables named `tyk_analytics_YYYYMMDD`.
+
+**Tyk Dashboard Setting:** the **API Usage Data > Log Browser** screen shows requests recorded by the `sql` pump. Unlike MongoDB, there's no Dashboard setting to configure: the same table is always queried, regardless of Organisation.
+
+### SQL Aggregate Pump
+
+The `sql_aggregate` pump computes analytics from traffic logs, aggregating hourly or per minute, and stores them in a table called `tyk_aggregated` by default.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings) and [common `meta` fields](#common-sql-meta), the pump has the following settings:
+
+```json
+{
+  "pumps": {
+    "sql_aggregate": {
+      "type": "sql_aggregate",
+      "meta": {
+        "track_all_paths": false,
+        "ignore_tag_prefix_list": [],
+        "store_analytics_per_minute": false,
+        "omit_index_creation": false,
+        ...
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `track_all_paths` | `false` | If `true`, stores aggregated data for every endpoint rather than only [tracked endpoints](/api-management/dashboard-analytics#controlling-which-endpoints-are-tracked). |
+| `ignore_tag_prefix_list` | (none) | Prefixes of [custom aggregation tags](/api-management/dashboard-analytics#custom-aggregation-tags) to exclude from aggregation. |
+| `store_analytics_per_minute` | `false` | If `true`, aggregates per minute instead of per hour. |
+| `omit_index_creation` | `false` | If `true`, Tyk Pump never creates the default indexes. |
+
+With `table_sharding: true`, records are stored in a `tyk_aggregated_YYYYMMDD` table per day instead of a single `tyk_aggregated` table.
+
+**Tyk Dashboard Setting:** supplies **Activity by API**, **Activity by Key**, and **Errors**. Set [enable_aggregate_lookups: true](/tyk-dashboard/configuration#enable_aggregate_lookups) in the Tyk Dashboard configuration so it reads this pre-computed data, rather than computing it live from traffic logs on every request, and configure matching SQL connection settings, as above. See [Pre-Computed vs Live Aggregation](/api-management/dashboard-analytics#pre-computed-vs-live-aggregation) for the trade-off.
+
+<Note>
+Unlike MongoDB, there's no `use_mixed_collection` equivalent here, and `use_sharded_analytics` has no effect on this pump: Tyk Dashboard always reads the single `tyk_aggregated` table, regardless of Organisation, since SQL storage never splits into per-Organisation tables the way MongoDB can.
+</Note>
+
+### SQL GraphQL Pump
+
+The `sql-graph` pump parses GraphQL-specific detail out of the raw request and response of every GraphQL request, storing it in a dedicated table (`tyk_analytics_graph` by default): types requested, fields requested per type, operation type, variables, root fields, and any errors.
+
+The resultant table exists for your own downstream querying, such as with a BI tool or data warehouse; Tyk Dashboard doesn't read this data back out anywhere.
+
+Enable [detailed recording](/api-management/logs/traffic-logs#detailed-recording) first, so that GraphQL information can be parsed from the request body and response; this applies globally across all APIs on the Gateway.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings) and [common `meta` fields](#common-sql-meta), the pump has the following settings:
+
+```json
+{
+  "pumps": {
+    "sql-graph": {
+      "type": "sql-graph",
+      "meta": {
+        "table_name": "tyk_analytics_graph",
+        ...
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `table_name` | `tyk_analytics_graph` | Used directly for unsharded setups, or as a table prefix for sharded setups, for example `tyk_analytics_graph_20230327`. |
+
+<Note>
+The [Standard SQL Pump](#standard-sql-pump) doesn't filter out traffic logs for GraphQL requests, so they already reach `tyk_analytics` as ordinary, undifferentiated rows. If you point `sql-graph`'s `table_name` at the same table as your Standard SQL Pump, you'll get duplicate rows in the Log Browser for every GraphQL request, one plain copy and one GraphQL-enriched copy, without gaining anything: Log Browser can't display the extra fields anyway. Always use a separate, dedicated table.
+</Note>
+
+The same limitations apply as for the [Mongo GraphQL Pump](#mongo-graphql-pump) above.
+
+### SQL GraphQL Aggregate Pump
+
+The `sql-graph-aggregate` pump computes aggregated GraphQL-specific analytics, mirroring the [SQL Aggregate Pump](#sql-aggregate-pump), and stores them in a fixed table, `tyk_graph_aggregated`. Unlike the GraphQL pumps that store traffic logs, this one does feed Tyk Dashboard. Unlike Mongo, there's no `mongo-graph-aggregate` equivalent.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings) and [common `meta` fields](#common-sql-meta), the pump has the following settings:
+
+```json
+{
+  "pumps": {
+    "sql-graph-aggregate": {
+      "type": "sql-graph-aggregate",
+      "meta": {
+        "track_all_paths": false,
+        "ignore_tag_prefix_list": [],
+        "store_analytics_per_minute": false,
+        "omit_index_creation": false,
+        ...
+      },
+      ...
+    }
+  }
+}
+```
+
+Accepts the same `track_all_paths`, `ignore_tag_prefix_list`, `store_analytics_per_minute`, and `omit_index_creation` fields as the [SQL Aggregate Pump](#sql-aggregate-pump) above. The table name is fixed at `tyk_graph_aggregated`; there's no `table_name` override, though [table sharding](/api-management/dashboard-analytics/analytics-storage-management#table-sharding) still applies, storing per-day tables such as `tyk_graph_aggregated_20230327`.
+
+**Tyk Dashboard Setting:** powers the **Activity by Graph** screen (Popularity by Graph API, Errors by Graph API, All Graph APIs). Tyk Dashboard's Postgres storage driver queries this pump's table directly; there's no separate Dashboard config flag to enable it, and it's PostgreSQL-only.
+
+### SQL MCP Pump
+
+The `sql-mcp` pump stores MCP tool-call traffic logs in a dedicated table, `tyk_analytics_mcp` by default, mirroring the [Standard SQL Pump](#standard-sql-pump). **Unlike GraphQL records, MCP records are excluded from the [Standard SQL Pump](#standard-sql-pump), so this is the only way to get MCP traffic logs into SQL.**
+
+As with the [SQL GraphQL Pump](#sql-graphql-pump), Tyk Dashboard doesn't read this data anywhere, including the Activity by MCP screen; it exists for your own downstream querying.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings) and [common `meta` fields](#common-sql-meta), the pump has the following settings:
+
+```json
+{
+  "pumps": {
+    "sql-mcp": {
+      "type": "sql-mcp",
+      "meta": {
+        "table_name": "tyk_analytics_mcp",
+        ...
+      },
+      ...
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `table_name` | `tyk_analytics_mcp` | Used directly for unsharded setups, or as a table prefix for sharded setups. |
+
+### SQL MCP Aggregate Pump
+
+The `sql-mcp-aggregate` pump computes aggregated MCP analytics, mirroring the [SQL Aggregate Pump](#sql-aggregate-pump), and stores them in a fixed table, `tyk_mcp_aggregated`; unlike the [SQL MCP Pump](#sql-mcp-pump), this table name isn't configurable.
+
+In addition to the [common pump settings](/api-management/tyk-pump#common-pump-settings) and [common `meta` fields](#common-sql-meta), the pump has the following settings:
+
+```json
+{
+  "pumps": {
+    "sql-mcp-aggregate": {
+      "type": "sql-mcp-aggregate",
+      "meta": {
+        "track_all_paths": false,
+        "ignore_tag_prefix_list": [],
+        "store_analytics_per_minute": false,
+        "omit_index_creation": false,
+        ...
+      },
+      ...
+    }
+  }
+}
+```
+
+Accepts the same `track_all_paths`, `ignore_tag_prefix_list`, `store_analytics_per_minute`, and `omit_index_creation` fields as the [SQL Aggregate Pump](#sql-aggregate-pump) above. The table name is fixed at `tyk_mcp_aggregated`; there's no `table_name` override, though [table sharding](/api-management/dashboard-analytics/analytics-storage-management#table-sharding) still applies, storing per-day tables such as `tyk_mcp_aggregated_20230327`.
+
+**Tyk Dashboard Setting:** this pump supplies the **Activity by MCP** screen. [enable_aggregate_lookups: true](/tyk-dashboard/configuration#enable_aggregate_lookups) is required in the Tyk Dashboard configuration, not just recommended: unlike the REST case, there's no working [live fallback](/api-management/dashboard-analytics#pre-computed-vs-live-aggregation) if it's left `false`, since that fallback has no MCP-specific logic and queries the plain REST traffic log table, returning nothing useful. See [MCP Analytics](/ai-management/mcp-gateway/mcp-analytics) for the Dashboard side of this feature.

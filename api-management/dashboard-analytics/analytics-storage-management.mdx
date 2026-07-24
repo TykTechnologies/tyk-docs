@@ -1,0 +1,164 @@
+---
+title: "Analytics Storage Management"
+description: "Manage the size of the persistent analytics storage, with capped MongoDB collections, TTL indexes, and SQL table sharding."
+keywords: "Tyk Pump, Tyk Dashboard, Capping, TTL, MongoDB, SQL, Table Sharding"
+sidebarTitle: "Analytics Storage Management"
+---
+
+Tyk Pump writes two different kinds of data to the Control Plane's persistent storage, from which it's used by Tyk Dashboard's Traffic Analytics and Log Browser, and they behave very differently when it comes to storage growth.
+
+- **Traffic logs** are one record per request, stored close to verbatim, so they grow unbounded: proportional to request volume, with no built-in limit.
+- **Aggregated analytics**, computed by the Aggregate pumps, roll traffic logs up into per-hour (or per-minute) buckets by dimensions such as API and key, so their size is bounded by the number of tracked endpoints and time buckets rather than by request volume; they stay small even at high traffic.
+
+This page offers strategies for managing traffic logs; aggregated analytics don't need it.
+
+As a guideline, every 3 million requests generates roughly 1GB of traffic log data. [Detailed recording](/api-management/logs/traffic-logs#detailed-recording), which captures the full request and response body on every record, multiplies this considerably, and is the single biggest driver of storage growth where it's enabled.
+
+This creates two different problems, not one:
+
+- **Persistent storage** accumulates every record you don't evict, so it needs active management over time, covered below.
+- **Redis** is different: Tyk Pump continuously reads and purges these records, so the analytics buffer doesn't grow indefinitely under normal operation. Its risk is one of throughput instead: a high request rate, or Tyk Pump falling behind, can spike Redis memory and compete with the request path for resources. See [Separate Analytics Storage](/planning-for-production/database-settings#separate-analytics-storage) for information on isolating analytics traffic onto its own Redis instance.
+
+## Managing Analytics Storage
+
+How you control the size of your analytics store depends on which type of storage is in use.
+
+### MongoDB
+
+The techniques on this page target `tyk_analytics`, the collection the [Standard Mongo Pump](/api-management/dashboard-analytics/control-plane-pumps#standard-mongo-pump) writes every traffic log into, one document per request, shared across all Organisations by default. If you're using the [Per-Organisation Mongo Pump](/api-management/dashboard-analytics/control-plane-pumps#per-organisation-mongo-pump) instead, each Organisation gets its own collection, `z_tyk_analyticz_{ORG_ID}`; apply the same techniques to each one individually.
+
+MongoDB gives you two independent ways to bound the size of these collections: cap by size, or evict records after a fixed time with a TTL index. The two are mutually exclusive: MongoDB won't create a TTL index on a collection that's already capped.
+
+#### Capped Collections
+
+You can make use of MongoDB's [capped collection](https://docs.mongodb.com/manual/core/capped-collections/) concept. A capped collection acts as a FIFO buffer: once it reaches its size limit, new records replace the oldest ones rather than the collection continuing to grow. This has no effect on Tyk Dashboard's Traffic Analytics graphs if you're using [pre-computed aggregation](/api-management/dashboard-analytics#pre-computed-vs-live-aggregation); if you're relying on live aggregation instead, capping this collection also shortens the historical window available to those screens.
+
+<Note>
+Capped collections are not supported on Amazon DocumentDB. See the [DocumentDB documentation](https://docs.aws.amazon.com/documentdb/latest/developerguide/mongo-apis.html) for details.
+</Note>
+
+To have Tyk Pump create a capped collection for you, add the following to the `mongo.meta` object in `pump.conf`:
+
+```json
+{
+  "pumps": {
+    "mongo": {
+      "type": "mongo",
+      "meta": {
+        "collection_cap_enable": true,
+        "collection_cap_max_size_bytes": 1048577
+      }
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `collection_cap_enable` | `false` | If `true`, caps the collection at `collection_cap_max_size_bytes`, turning it into a FIFO buffer. |
+| `collection_cap_max_size_bytes` | 5GB | Maximum collection size, in bytes, when `collection_cap_enable` is `true`. |
+
+Tyk Pump only does this for a collection that doesn't exist yet: on startup, if `tyk_analytics` already exists, Tyk Pump logs a warning and leaves it alone rather than risk data loss by capping it retroactively.
+
+<Note>
+The size value is in bytes. We recommend a value just under the amount of RAM on your machine.
+</Note>
+
+To convert an existing collection instead, use MongoDB's [convertToCapped](https://docs.mongodb.com/manual/reference/command/convertToCapped/) command directly:
+
+```javascript
+use tyk_analytics
+db.runCommand({"convertToCapped": "tyk_analytics", size: 100000});
+```
+
+If you're using the [Per-Organisation Mongo Pump](/api-management/dashboard-analytics/control-plane-pumps#per-organisation-mongo-pump), run the equivalent command for each Organisation's collection:
+
+```javascript
+db.runCommand({"convertToCapped": "z_tyk_analyticz_<org-id>", size: 100000});
+```
+
+#### TTL Indexes
+
+As an alternative to capping by size, you can configure MongoDB to delete documents automatically based on a TTL (Time To Live) index. A TTL index can be any date field in a document - once that field's value is in the past, the document will be deleted. This runs in the background, not instantly: MongoDB sweeps for expired documents roughly once a minute.
+
+<Note>
+Unlike capped collections, Tyk never creates a TTL index for you, even on a brand-new collection. It's always a manual step, and you need to repeat it for every collection this applies to (each Organisation's collection, if you're using the Per-Organisation Mongo Pump).
+</Note>
+
+<Note>
+If `tyk_analytics` is already a capped collection, MongoDB won't create the TTL index, and you'll see errors in the MongoDB logs. See the [MongoDB TTL documentation](https://docs.mongodb.com/manual/tutorial/expire-data/) for details.
+</Note>
+
+<Note>
+Azure CosmosDB (`mongo_db_type: 2`) does not support the `expireAt` TTL index; Tyk Pump skips creating it on that target automatically.
+</Note>
+
+The traffic log contains two fields that can be used for the TTL index:
+
+- `timestamp` which is set with the current time when the log record is created
+- `expireAt` which Tyk Gateway calculates based on a retention period set in the Organisation Key; if no retention period is configured, it defaults to 100 years from creation, so the record effectively never expires via this index
+
+**Creating the TTL Index**
+
+You create a TTL index the same way as any other MongoDB index, with:
+
+```javascript
+db.<collection>.createIndex(<field and sort direction>, <options>)
+```
+
+What makes it a TTL index specifically is adding `expireAfterSeconds` to `<options>`.
+
+**Setting a Shared TTL for All Traffic Logs**
+
+If you want the same lifetime for all traffic logs, then use the `timestamp` field for the index, and set `expireAfterSeconds` to the required TTL, in seconds.
+
+This example keeps the entries in the collection for 30 days (2,592,000 seconds) before deletion:
+
+```javascript
+db.tyk_analytics.createIndex( { "timestamp": 1 }, { expireAfterSeconds: 2592000 } )
+```
+
+**Setting Different TTLs per Organisation**
+
+If the collection contains records created for different Organisations that need different retention periods, we take a different approach.
+
+<Note>
+If you're using the [Per-Organisation Mongo Pump](/api-management/dashboard-analytics/control-plane-pumps#per-organisation-mongo-pump), each Organisation already has its own collection. Apply the shared-TTL approach above to each collection individually.
+</Note>
+
+Use the `expireAt` field for the index and set `expireAfterSeconds` to `0`, so MongoDB deletes each document as soon as its own `expireAt` value is in the past:
+
+```javascript
+db.tyk_analytics.createIndex( { "expireAt": 1 }, { expireAfterSeconds: 0 } )
+```
+
+This configures MongoDB to delete the traffic logs once they expire - but you still need to configure Tyk Gateway to set an appropriate retention period in `expireAt` when creating the log.
+
+The value set in `expireAt` combines the creation timestamp with the `data_expires` value taken from the Organisation Key. The Organisation Key is created using the Tyk Gateway API's [Create an Organisation Key](https://tyk.io/docs/api-reference/organisation-quotas/create-an-organisation-key) endpoint (`POST /tyk/org/keys/{org-id}`), passing a payload such as:
+
+```json
+{
+  "org_id": "{your-org-id}",
+  "data_expires": 86400
+}
+```
+
+Traffic logs generated for this Organisation will be retained in MongoDB for 24 hours (86400 seconds).
+
+### SQL
+
+Unlike MongoDB, the SQL pumps (PostgreSQL and MySQL) have no capped-collection or TTL-index equivalent: there's no built-in way to have Tyk Pump automatically evict old rows. The closest tool is table sharding, which doesn't cap anything by itself, but makes it practical to manage size yourself by dropping old dated tables instead of running slow `DELETE` queries against one huge table.
+
+#### Table Sharding
+
+By default, every SQL pump type stores all its records in one table, which becomes slow to query or prune as it grows. Setting `table_sharding: true` switches to one table per day instead, using the pump's table name as a prefix, for example `tyk_analytics_20230327`.
+
+You must ensure that the equivalent `table_sharding` configuration for each relevant section of Tyk Dashboard's `storage` configuration (`main`, `analytics`, `logs`, `uptime`) matches.
+
+**Maintaining Consistency**
+
+When Tyk Pump starts, it checks its sharded tables against the current data model (traffic log schema) and adds any missing columns, for example following an update that adds to the schema; it never drops or renames existing columns.
+
+When using table sharding, by default it only updates the schema for the current day's table, leaving older dated tables exactly as they were when created. Setting `migrate_sharded_tables: true` automatically scans the database for every table matching this pump's prefix on startup, updating the schema for any that are out of date. If a table fails to migrate, Tyk Pump logs a warning and continues.
+
+This search and update takes place on every Pump restart, not just once. There's a clear performance implication from this, so we recommend that you only enable sharded table migration when required (for example, the first restart after a Tyk Pump upgrade).
