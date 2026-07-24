@@ -7,7 +7,7 @@ sidebarTitle: "Tyk Pump"
 
 ## What Is Tyk Pump?
 
-Tyk Gateway writes a traffic log, a structured record of the request and response, for every API call it processes, into Redis. Redis is a temporary, high-throughput buffer, not a long-term store, so something has to move those traffic logs out before they expire.
+Tyk Gateway writes a [traffic log](api-management/logs/traffic-logs), a structured record of the request and response, for every API call it processes, into Redis. Redis is a temporary, high-throughput buffer, not a long-term store, so something has to move those traffic logs out before they expire.
 
 Tyk Pump is the [open source](https://github.com/TykTechnologies/tyk-pump) component that does this. It reads traffic logs out of Redis and writes them to one or more configured destinations, which Tyk calls pumps. Each pump has a type, such as `mongo` or `sql`, from the [Pump Type Catalog](#pump-type-catalog) below: depending on the type, it can forward traffic logs unaltered, or compute aggregated analytics or metrics from them. A single Tyk Pump process can run several pumps at once, so the same traffic data can be sent to multiple destinations in parallel.
 
@@ -23,7 +23,7 @@ Throughout this documentation, "Tyk Pump" (capitalized) always refers to the com
 Tyk Pump serves four distinct outcomes, covered in full elsewhere in the documentation:
 
 - **Populating Tyk Dashboard's built-in Traffic Analytics UI and Log Browser.** These have no other source of data. This is the primary, ongoing purpose of Tyk Pump. See [Dashboard Analytics](/api-management/dashboard-analytics).
-- **Forwarding traffic logs, unaltered, to external systems** such as Splunk or Datadog. See [External Data Sinks](/api-management/traces/external-data-sinks).
+- **Forwarding traffic logs, unaltered, to external systems** such as Splunk or Datadog. See [External Data Sinks](/api-management/logs/external-data-sinks).
 - **Exposing metrics derived from traffic logs** to Prometheus, StatsD, or DogStatsD. See [Metrics Pumps](/api-management/metrics/metrics-pumps).
 - **Storing the results of Tyk Gateway's own uptime tests**, periodic health checks against upstream hosts, for Tyk Dashboard's separate Uptime Tests reporting screen. Unlike the other three, the dedicated uptime pump doesn't work with traffic log data. See [Uptime Tests](/planning-for-production/ensure-high-availability/uptime-tests#monitoring-uptime-tests-in-tyk-dashboard).
 
@@ -89,7 +89,7 @@ Tyk Pump is configured through a JSON file, conventionally called `pump.conf`, o
   "storage_expiration_time": 60,
   "log_level": "info",
   "log_format": "text",
-  "health_check_endpoint_name": "hello",
+  "health_check_endpoint_name": "health",
   "health_check_endpoint_port": 8083,
   "enable_http_profiler": false,
   "statsd_connection_string": "",
@@ -102,7 +102,7 @@ Tyk Pump is configured through a JSON file, conventionally called `pump.conf`, o
 ```
 
 <Note>
-For the full field-by-field reference, environment variable names, and default values for every pump type, see the [Tyk Pump configuration reference](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables). For the fields contained in a traffic log itself, see [Tyk Traffic Log Fields](/api-management/tyk-traffic-log-fields).
+For the full field-by-field reference, environment variable names, and default values for every pump type, see the [Tyk Pump configuration reference](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables). For the fields contained in a traffic log itself, see [Traffic Log Field Reference](/api-management/logs/traffic-logs#traffic-log-field-reference).
 </Note>
 
 ### Connecting to Redis
@@ -131,7 +131,7 @@ For the full field-by-field reference, environment variable names, and default v
 {
   "log_level": "info",
   "log_format": "text",
-  "health_check_endpoint_name": "hello",
+  "health_check_endpoint_name": "health",
   "health_check_endpoint_port": 8083,
   "enable_http_profiler": false
 }
@@ -294,7 +294,7 @@ If a timeout is configured and the pump is still falling behind, it logs: `Pump 
 
 ### Max Record Size
 
-`max_record_size` caps the size, in bytes, of the `RawRequest` and `RawResponse` fields written by a pump. Defaults to `0` (unlimited). Set it at the top level of `pump.conf` to apply a default to every pump:
+`max_record_size` caps the size, in bytes, of the `raw_request` and `raw_response` fields written by a pump. Defaults to `0` (unlimited). Set it at the top level of `pump.conf` to apply a default to every pump:
 
 ```json
 {
@@ -327,7 +327,7 @@ Or set it on a specific pump instead, which takes precedence over the global def
 
 ### Decode Raw Request and Raw Response
 
-When [detailed recording](/api-management/dashboard-analytics#detailed-recording) is configured in Tyk Gateway, the full request and response will be base64-encoded and stored in the [`raw_request`](/api-management/tyk-traffic-log-fields#rawrequest) and [`raw_response`](/api-management/tyk-traffic-log-fields#rawresponse) fields respectively in the traffic log.
+When [detailed recording](/api-management/logs/traffic-logs#detailed-recording) is configured in Tyk Gateway, the full request and response will be base64-encoded and stored in the [`raw_request`](/api-management/logs/traffic-logs#param-raw-request) and [`raw_response`](/api-management/logs/traffic-logs#param-raw-response) fields respectively in the traffic log.
 
 The pump can optionally remove the base64-encoding before writing the record to the target, which avoids the need for post-processing by your analytics package.
 
@@ -343,7 +343,7 @@ Decoding of request and response are individually controlled using `raw_request_
 ```
 
 <Note>
-Do not decode the request and response data when transferring the unaggregated traffic logs to the control plane's persistent storage for Tyk Dashboard's Log Browser. The Dashboard automatically base64-decodes this data when displaying a record; if this decoding has already been performed by Tyk Pump, the result will be nonsense in the Log Browser display.
+Do not decode the request and response data when transferring the unaggregated traffic logs to the control plane's persistent storage for Tyk Dashboard's Log Browser. The Dashboard automatically base64-decodes this data when displaying a record; if this decoding has already been performed by Tyk Pump, the result will be nonsense in the Log Browser display. Only decode for destinations that read the data directly, such as an external sink.
 </Note>
 
 ## Pump Type Catalog
@@ -401,22 +401,22 @@ Forward traffic logs, unaltered, to external tools. Considered the legacy approa
 
 | Type | Description |
 | :-- | :-- |
-| [`csv`](/api-management/traces/external-data-sinks#csv) | Writes traffic logs to local CSV files |
-| [`elasticsearch`](/api-management/traces/external-data-sinks#elasticsearch) | Indexes traffic logs in Elasticsearch |
-| [`graylog`](/api-management/traces/external-data-sinks#graylog) | Forwards traffic logs to Graylog |
-| [`influx`](/api-management/traces/external-data-sinks#influxdb) | Writes traffic logs to InfluxDB v1 |
-| [`influx2`](/api-management/traces/external-data-sinks#influx2) | Writes traffic logs to InfluxDB v2 |
-| [`kafka`](/api-management/traces/external-data-sinks#kafka) | Publishes traffic logs to a Kafka topic |
-| [`kinesis`](/api-management/traces/external-data-sinks#kinesis) | Publishes traffic logs to an Amazon Kinesis stream |
-| [`logzio`](/api-management/traces/external-data-sinks#logzio) | Forwards traffic logs to Logz.io |
-| [`moesif`](/api-management/traces/external-data-sinks#moesif) | Forwards traffic logs to Moesif |
-| [`resurfaceio`](/api-management/traces/external-data-sinks#resurfaceio) | Forwards traffic logs to Resurface.io |
-| [`segment`](/api-management/traces/external-data-sinks#segment) | Forwards traffic logs to Segment |
-| [`splunk`](/api-management/traces/external-data-sinks#splunk) | Forwards traffic logs to Splunk |
-| [`sqs`](/api-management/traces/external-data-sinks#sqs) | Publishes traffic logs to an Amazon SQS queue |
-| [`stdout`](/api-management/traces/external-data-sinks#stdout) | Writes traffic logs to standard output, useful for container log collectors |
-| [`syslog`](/api-management/traces/external-data-sinks#syslog) | Forwards traffic logs to a syslog server |
-| [`timestream`](/api-management/traces/external-data-sinks#timestream) | Writes traffic logs to Amazon Timestream |
+| [`csv`](/api-management/logs/external-data-sinks#csv) | Writes traffic logs to local CSV files |
+| [`elasticsearch`](/api-management/logs/external-data-sinks#elasticsearch) | Indexes traffic logs in Elasticsearch |
+| [`graylog`](/api-management/logs/external-data-sinks#graylog) | Forwards traffic logs to Graylog |
+| [`influx`](/api-management/logs/external-data-sinks#influxdb) | Writes traffic logs to InfluxDB v1 |
+| [`influx2`](/api-management/logs/external-data-sinks#influx2) | Writes traffic logs to InfluxDB v2 |
+| [`kafka`](/api-management/logs/external-data-sinks#kafka) | Publishes traffic logs to a Kafka topic |
+| [`kinesis`](/api-management/logs/external-data-sinks#kinesis) | Publishes traffic logs to an Amazon Kinesis stream |
+| [`logzio`](/api-management/logs/external-data-sinks#logz-io) | Forwards traffic logs to Logz.io |
+| [`moesif`](/api-management/logs/external-data-sinks#moesif) | Forwards traffic logs to Moesif |
+| [`resurfaceio`](/api-management/logs/external-data-sinks#resurface-io) | Forwards traffic logs to Resurface.io |
+| [`segment`](/api-management/logs/external-data-sinks#segment) | Forwards traffic logs to Segment |
+| [`splunk`](/api-management/logs/external-data-sinks#splunk) | Forwards traffic logs to Splunk |
+| [`sqs`](/api-management/logs/external-data-sinks#sqs) | Publishes traffic logs to an Amazon SQS queue |
+| [`stdout`](/api-management/logs/external-data-sinks#stdout) | Writes traffic logs to standard output, useful for container log collectors |
+| [`syslog`](/api-management/logs/external-data-sinks#syslog) | Forwards traffic logs to a syslog server |
+| [`timestream`](/api-management/logs/external-data-sinks#timestream) | Writes traffic logs to Amazon Timestream |
 
 ### Metrics Pumps
 

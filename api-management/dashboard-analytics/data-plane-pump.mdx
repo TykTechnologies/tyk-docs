@@ -79,12 +79,27 @@ The Hybrid Pump is declared and configured like any other pump, as described in 
 | `ssl_insecure_skip_verify` | `false` | Skips TLS certificate verification when `use_ssl` is `true`. |
 | `rpc_key` | - | Unused. |
 | `call_timeout` | `10` | RPC call timeout, in seconds. |
-| `rpc_pool_size` | `5` | RPC connection pool size. |
+| `rpc_pool_size` | `5` | RPC connection pool size, see [Tuning the RPC Connection Pool](#tuning-the-rpc-connection-pool) below. |
 | `aggregated` | `false` | See [Traffic Logs or Aggregated Analytics](#traffic-logs-or-aggregated-analytics) below. |
 | `track_all_paths` | `false` | See [Traffic Logs or Aggregated Analytics](#traffic-logs-or-aggregated-analytics) below. |
 | `store_analytics_per_minute` | `false` | See [Traffic Logs or Aggregated Analytics](#traffic-logs-or-aggregated-analytics) below. |
 | `enable_mcp_aggregation` | `false` | See [Traffic Logs or Aggregated Analytics](#traffic-logs-or-aggregated-analytics) below. |
 | `ignore_tag_prefix_list` | (none) | Prefixes of [custom aggregation tags](/api-management/dashboard-analytics#custom-aggregation-tags) to exclude from aggregation, when `aggregated` is `true`. |
+
+### Tuning the RPC Connection Pool
+
+`rpc_pool_size` controls how many concurrent RPC connections the Hybrid Pump opens to Tyk MDCB. Each connection can carry data independently, so a larger pool lets the pump push more data to Tyk MDCB in parallel.
+
+Consider increasing this value if:
+
+- You're running high API request volumes and the pump can't keep up with sending data to Tyk MDCB.
+- You're sending (non-aggregated) traffic logs, which produce significantly more records than `aggregated` mode.
+
+Each connection has a real cost on both ends: the Hybrid Pump and Tyk MDCB each allocate a 64KB send buffer and a 64KB receive buffer per connection. Tyk MDCB doesn't cap how many connections it will accept, so this cost accumulates across every data plane connected to it, not just your own.
+
+Raising `rpc_pool_size` also has diminishing returns past a point: Tyk MDCB only processes up to 8,192 RPC calls concurrently by default, a limit shared across every connection from every data plane. Once that's saturated, more connections just queue for the same shared budget rather than increasing overall throughput.
+
+There's usually no benefit to raising `rpc_pool_size` beyond your actual concurrency needs.
 
 ## Traffic Logs or Aggregated Analytics
 
@@ -118,7 +133,7 @@ Traffic logs (`aggregated: false`) can be handled in one of two ways, controlled
 | `false` (default) | Tyk MDCB's [built-in writer](#tyk-mdcbs-built-in-writer) processes the data. |
 | `true` | Tyk MDCB stores the traffic logs in the Control Plane Redis instead, for a Control Plane Pump to process. |
 
-If you need to [export the data](/api-management/traces/external-data-sinks) from the Control Plane to a third-party sink such as Splunk or Datadog, you must first store it in the Control Plane Redis by setting `forward_analytics_to_pump: true`.
+If you need to [export the data](/api-management/logs/external-data-sinks) from the Control Plane to a third-party sink such as Splunk or Datadog, you must first store it in the Control Plane Redis by setting `forward_analytics_to_pump: true`.
 
 <Note>
 **`forward_analytics_to_pump` has no effect on aggregated analytics.** Tyk MDCB always writes aggregated analytics straight to persistent storage, whichever way it's set. This means analytics aggregated in the data plane by the Hybrid Pump reliably populate Tyk Dashboard's Traffic Analytics graphs, but cannot be routed onward to a third-party sink through the Control Plane Pump.

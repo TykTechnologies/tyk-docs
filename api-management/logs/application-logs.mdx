@@ -1,0 +1,69 @@
+---
+title: "Application Logs"
+description: "Learn how to configure Tyk's application logs"
+keywords: "Logs, Logging, Tyk Gateway, Tyk Dashboard, Tyk Pump, Tyk MDCB, Application Log, System Log"
+sidebarTitle: "Application Logs"
+---
+
+## Introduction
+
+Every Tyk component writes an Application Log, capturing internal events of the system, such as health-checks, status, configuration changes, and errors, which are typically used for monitoring and debugging.
+
+**Example**
+
+```
+time="2025-02-16T22:48:39Z" level=info message="Using Policies from Dashboard Service" prefix=main
+time="2025-02-16T22:48:39Z" level=info message="Calling dashboard service for policy list" prefix=policy
+time="2025-02-16T22:48:39Z" level=info message="Processing policy list" prefix=policy
+time="2025-02-16T22:48:39Z" level=info message="Policies found (5 total):" prefix=main
+```
+
+Three aspects can be configured:
+
+- **verbosity**: which severity levels are written
+- **format**: the structure and content of each entry
+- **log output**: where logs are sent, for example to a third-party aggregator
+
+See [Configuring Application and Access Logs](/api-management/logs#configuring-application-and-access-logs) for details of these and how to configure them.
+
+The rest of this page covers behavior specific to **Tyk Gateway's Application Log**.
+
+## OpenTelemetry Trace and Span IDs
+
+<Badge color="orange">Gateway Only</Badge>
+
+When OpenTelemetry tracing is enabled, Tyk Gateway automatically injects `trace_id` and `span_id` fields into all request-scoped application log entries, including middleware execution, error handling, and debug output. This lets you correlate an application log line with the corresponding span in your distributed trace.
+
+```
+time="2025-02-16T22:48:39Z" level=error message="Rate limit exceeded" prefix=rate-limit api_id=b1a41c9a89984ffd7bb7d4e3c6844ded trace_id=4bf92f3577b34da6a3ce929d0e0e4736 span_id=00f067aa0ba902b7
+```
+
+Non-request-scoped entries (startup, configuration reload, health-checks) do not carry trace or span IDs because they are not associated with a specific request.
+
+## Tracking HTTP 404 Errors
+
+<Badge color="orange">Gateway Only</Badge>
+
+By default, requests that do not match any configured API listen path return HTTP 404 and are not logged. Because these requests never enter the proxy pipeline, they are not recorded in Access Logs or API Traffic Logs, which only cover requests that are routed and processed by the Gateway.
+
+To track them in the application log, set [`track_404_logs`](/tyk-oss-gateway/configuration#track_404_logs) to `true` in `tyk.conf` (or the equivalent environment variable).
+
+When enabled, a log entry is written at `error` level for each unmatched request.
+
+From **Tyk Gateway 5.14.0**, the entry includes a `host` field when using the `text` or `json` log format. Because Tyk Gateway exposes both a proxy API and a control API, and these can be [configured on a separate hostname and port](/planning-for-production#change-your-control-port), the `host` field identifies which one received the unmatched request:
+
+```
+time="2025-07-15T10:25:30Z" level=error message="Not Found" prefix=gateway request="GET /nonexistent/path HTTP/1.1" origin=192.168.1.5:54321 host=api.example.com:9696
+```
+
+In `legacy` format, the `host` field is omitted:
+
+```
+time="Jul 15 10:25:30" level=error msg="Not Found" prefix=gateway request="GET /nonexistent/path HTTP/1.1" origin=192.168.1.5:54321
+```
+
+## Event Log Handlers
+
+<Badge color="orange">Gateway Only</Badge>
+
+[Event log handlers](/api-management/gateway-events#logging-api-events) can be registered against Gateway events to write a log entry each time a specific event fires, such as an authentication failure or rate limit being exceeded.
