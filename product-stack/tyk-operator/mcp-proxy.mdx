@@ -1,7 +1,7 @@
 ---
 title: "Manage MCP Servers with Tyk Operator"
-description: "Use the TykMcpProxyDefinition CRD in Tyk Operator v1.4.0 to proxy, secure, and apply rate limits to Model Context Protocol (MCP) servers in Kubernetes using a GitOps workflow."
-keywords: "MCP, Model Context Protocol, Tyk Operator, Kubernetes, API Management, Security Policy"
+description: "Use the TykMcpProxyDefinition CRD in Tyk Operator v1.4.0 to proxy, secure, and apply rate limits to Model Context Protocol (MCP) servers in Kubernetes using a GitOps workflow, including MCP proxies generated directly from a Tyk-managed REST API."
+keywords: "MCP, Model Context Protocol, Tyk Operator, Kubernetes, API Management, Security Policy, API to MCP"
 sidebarTitle: "MCP Proxy"
 ---
 
@@ -9,7 +9,7 @@ sidebarTitle: "MCP Proxy"
 
 From Tyk Operator v1.4.0, you can manage [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers declaratively using the `TykMcpProxyDefinition` custom resource. The Operator reconciles the resource into a Tyk-managed MCP proxy, so the same GitOps workflow you use for `ApiDefinition` and `TykOasApiDefinition` resources also applies to MCP servers.
 
-A `TykMcpProxyDefinition` points at a `ConfigMap` that holds the MCP OAS document. The Operator reads the document from the ConfigMap and synchronizes it to Tyk. Access to tools, resources, prompts, and the underlying JSON-RPC methods is controlled through the existing `SecurityPolicy` resource, extended with MCP-specific fields.
+A `TykMcpProxyDefinition` points at a `ConfigMap` that holds the MCP OAS document. The Operator reads the document from the ConfigMap and synchronizes it to Tyk as-is; it does not inspect what kind of MCP proxy the document describes. The same CRD manages a proxy fronting a remote MCP server or a proxy [generated directly from a Tyk-managed REST API](/ai-management/mcp-gateway/api-to-mcp) — only the document's own content differs between the two. Access to tools, resources, prompts, and the underlying JSON-RPC methods is controlled through the existing `SecurityPolicy` resource, extended with MCP-specific fields.
 
 ## Prerequisites
 
@@ -117,6 +117,89 @@ kubectl get tykmcp -o wide
 ```
 
 If you update the `ConfigMap`, the Operator detects the change (via `latestConfigMapHash`) and pushes the new OAS document to Tyk on the next reconciliation.
+
+## Managing a proxy generated from a Tyk-managed REST API
+
+The example above proxies a remote MCP server. The same `TykMcpProxyDefinition` and `ConfigMap` pattern also manages a proxy [generated directly from a Tyk-managed REST API](/ai-management/mcp-gateway/api-to-mcp) — the Operator reconciles it identically. Two things differ in the OAS document itself:
+
+- `upstream.url` is an adapter target (for example `tyk://orders-rest/mcp`) instead of a remote `https://` URL — see [MCP OAS definition: info, server, and upstream](/ai-management/mcp-gateway/mcp-proxy-definitions#info-server-and-upstream) for what this value means and why it takes this form.
+- The document carries an `x-tyk-mcp-server` extension alongside `x-tyk-api-gateway`, holding the tool catalogue: which of the source API's operations are exposed as tools, and any name, description, or parameter overrides.
+
+<Note>
+Authoring this via the Operator means hand-writing the tool catalogue in the `x-tyk-mcp-server` extension yourself. The Dashboard's guided wizard — which selects all valid endpoints by default, lets you deselect unwanted ones, and previews the generated tools before saving — has no Operator equivalent. See [API to MCP: definitions](/ai-management/mcp-gateway/api-to-mcp-definitions) for the full `x-tyk-mcp-server` field reference.
+</Note>
+
+### Example
+
+This assumes a Tyk-managed REST API with ID `orders-rest` already exists — managed via the Dashboard, the Gateway API, or its own `TykOasApiDefinition` resource.
+
+```yaml expandable
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orders-mcp-config
+  namespace: default
+data:
+  mcp.json: |
+    {
+      "info": {
+        "title": "Orders MCP Proxy",
+        "version": "1.0.0"
+      },
+      "openapi": "3.0.3",
+      "components": {},
+      "paths": {},
+      "x-tyk-api-gateway": {
+        "info": {
+          "id": "orders-mcp-api-id-001",
+          "name": "Orders MCP Proxy",
+          "state": {
+            "active": true
+          }
+        },
+        "upstream": {
+          "url": "tyk://orders-rest/mcp"
+        },
+        "server": {
+          "listenPath": {
+            "value": "/orders-mcp/",
+            "strip": true
+          }
+        }
+      },
+      "x-tyk-mcp-server": {
+        "primitives": [
+          {
+            "source": { "operationId": "getOrder" },
+            "name": "get_order",
+            "description": "Look up a single order by ID.",
+            "allow": true
+          },
+          {
+            "source": { "operationId": "listOrders" },
+            "name": "list_orders",
+            "allow": true
+          }
+        ]
+      }
+    }
+```
+
+```yaml
+apiVersion: tyk.tyk.io/v1alpha1
+kind: TykMcpProxyDefinition
+metadata:
+  name: orders-mcp
+  namespace: default
+spec:
+  tykMCP:
+    configmapRef:
+      name: orders-mcp-config
+      namespace: default
+      keyName: mcp.json
+```
+
+Apply both manifests the same way as the Quick Start example above. `SecurityPolicy` resources reference this proxy identically to one fronting a remote MCP server — nothing about policy configuration differs based on the proxy's upstream type.
 
 ## Securing an MCP Proxy with a `SecurityPolicy`
 

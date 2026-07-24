@@ -1,7 +1,7 @@
 ---
 title: "MCP Gateway: FAQ"
 description: "Answers to frequently asked questions about Tyk's MCP Gateway: how it works, what it protects against, how authentication and sessions behave, what you can observe, and how to govern AI agent traffic at scale."
-keywords: "MCP, Model Context Protocol, MCP Gateway FAQ, MCP security, MCP authentication, MCP sessions, MCP rate limiting, AI agent governance, prompt injection, MCP tools, MCP SSE"
+keywords: "MCP, Model Context Protocol, MCP Gateway FAQ, API to MCP, MCP security, MCP authentication, MCP sessions, MCP rate limiting, AI agent governance, prompt injection, MCP tools, MCP SSE"
 sidebarTitle: "FAQ"
 ---
 
@@ -18,6 +18,18 @@ No. Tyk sits in front of your existing MCP server as a reverse proxy. Your upstr
 ### Does Tyk work with both local and remote MCP servers?
 
 Tyk is designed for **remote MCP servers**: servers reachable over HTTP or HTTPS from the gateway. If your MCP server currently runs locally over stdio (the standard desktop configuration), you will need to either deploy it as an HTTP service or use one of the available stdio-to-HTTP bridge tools to expose it as a remote endpoint before Tyk can proxy it.
+
+### Do I need to build or host an MCP server at all?
+
+Not necessarily. If you already have a Tyk-managed REST API with an OpenAPI spec, Tyk can [generate an MCP proxy directly from it](/ai-management/mcp-gateway/api-to-mcp) — operations from the API's OpenAPI spec become MCP tools, with no separate MCP server to build, deploy, or maintain. This is in addition to, not instead of, proxying an existing remote MCP server, which is still fully supported and covered throughout this FAQ.
+
+### My OpenAPI spec has poor operation and parameter names — do I need to fix that before using API to MCP?
+
+Not before. An agent decides which tool to call, and how to call it, based on the tool's name, description, and parameter descriptions. OpenAPI specs are often written for human developers or API-to-API integration, so a cryptic `operationId` or an undocumented parameter can make a perfectly functional operation hard for an LLM to use well, even though nothing is actually broken.
+
+Tyk lets you override the caller-facing tool name, description, and per-parameter name and description directly at the MCP proxy layer, without touching your API's own OpenAPI spec. This means you can make an existing API immediately agent-friendly, entirely from the proxy side. See the Tool mapping tab in [Managing MCP proxies](/ai-management/mcp-gateway/managing-proxies#tool-mapping-tab) and the full override reference in [API to MCP: enrichment](/ai-management/mcp-gateway/api-to-mcp-enrichment).
+
+Improving your API's actual OpenAPI documentation is still worth doing — better naming and descriptions help every consumer of the API, not just AI agents. But with Tyk, that's a separate, lower-urgency effort: you don't have to wait for it, and the two don't need to be kept in sync, since the proxy-layer overrides apply independently of the source spec.
 
 ### Which transport methods does Tyk support?
 
@@ -36,15 +48,19 @@ Tyk passes the `MCP-Protocol-Version` header through to the upstream unchanged; 
 
 Yes. Each remote MCP server gets its own **MCP proxy definition** in Tyk, with its own listen path, upstream URL, authentication configuration, and middleware. An AI agent that needs to reach GitHub's MCP server and an internal database tools server connects to two separate Tyk endpoints, each governed independently. There is no limit on the number of MCP proxies you can create.
 
+### Can one REST API back multiple MCP proxies?
+
+Yes. A single Tyk-managed REST API can be the source for more than one API to MCP proxy, each with its own tool selection, enrichment, and policies. This is useful for slicing a large API into smaller, purpose-built tool catalogues — for example, giving a read-only reporting agent a proxy exposing only `GET` operations, and a separate proxy with write access for an operations agent. See [How to slice one API into multiple MCP proxies](/ai-management/mcp-gateway/how-to-slice-one-api-into-multiple-mcp-proxies).
+
 ---
 
 ## The Dashboard
 
 ### What can I configure for an MCP proxy in the Dashboard?
 
-The MCP Designer has two tabs.
+The MCP Designer has two tabs for a proxy fronting a remote MCP server, and a third for a proxy [generated directly from a Tyk-managed REST API](/ai-management/mcp-gateway/api-to-mcp).
 
-The **Settings** tab covers core proxy configuration (name, upstream server URL, gateway assignment) and proxy-level middleware that applies to all traffic through the proxy:
+The **Settings** tab covers core proxy configuration (name, upstream server URL, gateway assignment) and proxy-level middleware that applies to all traffic through the proxy. For an API to MCP proxy, the upstream and gateway fields are replaced by a read-only Source API panel, since both are inherited from the source API:
 
 | Middleware | What it does |
 |---|---|
@@ -54,6 +70,8 @@ The **Settings** tab covers core proxy configuration (name, upstream server URL,
 | Context Variables | Make Tyk request metadata available in transforms and plugins |
 | Traffic Logs | Configure analytics capture behavior |
 | Plugin Config / Bundle | Configure custom plugin drivers and bundle sources |
+
+The **Tool mapping** tab (API to MCP proxies only) lets you choose which of the source API's operations are exposed as tools, and override their names, descriptions, and parameters. See [Managing MCP proxies: Tool mapping tab](/ai-management/mcp-gateway/managing-proxies#tool-mapping-tab).
 
 The **Primitives** tab lists the tools, resources, and prompts defined for this proxy and lets you manage per-primitive middleware (access control, rate limits, timeouts, circuit breakers, and more) without editing the definition directly.
 
@@ -119,6 +137,18 @@ Tyk makes over-permissioning addressable through three mechanisms:
 Revoke the key from the Tyk Dashboard under **Keys**. Access to every MCP proxy that key was permitted to reach is cut off immediately on the next request, with no grace period and no upstream credential rotation required. The upstream MCP server is unaffected; only requests carrying the revoked Tyk key are blocked.
 
 If the key was scoped to specific MCP proxies via a policy, other agents on the same policy are not affected.
+
+### Does exposing my REST API to AI agents via an MCP proxy affect my existing REST API consumers?
+
+No. An MCP proxy [generated directly from a Tyk-managed REST API](/ai-management/mcp-gateway/api-to-mcp) is itself a consumer of that REST API — it authenticates with its own credential and is governed by its own security policy, entirely separate from the keys and policies your existing REST API consumers use.
+
+- Your existing REST API consumers keep their own credentials, rate limits, and access rights, completely unaffected.
+- The MCP proxy has its own authentication, its own rate limits, its own RBAC, and its own analytics — configured independently of the source API's.
+- Agents connect to the MCP proxy, never directly to your REST API, so nothing about the REST API's existing configuration needs to change to support them.
+
+This separation reflects how differently agents and humans use an API. An agent decides autonomously which operations to call, can be manipulated into calling tools it shouldn't through prompt injection, and typically generates far less predictable call patterns than a human-driven integration. That risk profile calls for its own governance — tool allowlists, tighter rate limits, primitive-level RBAC — applied without touching the access your existing REST consumers already have and trust.
+
+See [Managing MCP proxies](/ai-management/mcp-gateway/managing-proxies) for how a proxy's own authentication is configured, and [MCP proxy policies](/ai-management/mcp-gateway/policies) for governing MCP proxy consumers independently of the source API's own policies.
 
 ---
 
@@ -225,6 +255,10 @@ Yes, and there are two approaches depending on how different the access needs to
 ```
 
 The two approaches compose: a proxy-level allowlist controls what any consumer can ever call; policy ACLs then further restrict what specific consumers can call within that set. Configure `mcp_access_rights` via the Dashboard API. See [MCP proxy policies](/ai-management/mcp-gateway/policies) for details.
+
+### What happens if two tools on an API to MCP proxy end up with the same name?
+
+Tyk validates tool names as it builds the catalogue from the source API's operations. Depending on how the collision arises, it's either resolved automatically or flagged as a build-time error requiring an explicit name override. See [How to resolve tool and parameter collisions](/ai-management/mcp-gateway/how-to-resolve-tool-and-parameter-collisions).
 
 ---
 
@@ -357,13 +391,17 @@ For restrictions that vary by consumer tier, use the policy's MCP-specific acces
 
 ### Does Tyk provide an MCP service registry?
 
-Yes. The Tyk Dashboard's MCP section functions as a central service registry for all MCP servers in your organization. Each MCP proxy is a registry entry; it records the upstream server address, listen path, available tools and resources, and the access policies that govern it.
+Yes. The Tyk Dashboard's MCP section functions as a central service registry for all MCP proxies in your organization. Each MCP proxy is a registry entry; it records its upstream (a remote server address or a paired Tyk API), listen path, available tools and resources, and the access policies that govern it.
 
 Teams have a single authoritative source of truth for what MCP capabilities are available, who can access them, and under what conditions. New MCP servers are onboarded by registering a proxy in the Dashboard; until registered, they are not accessible through the gateway. This directly addresses the ungoverned proliferation problem; MCP servers cannot appear outside oversight if the gateway is the required path for agent access.
 
 Discovery filtering scopes the registry view per consumer: when an agent calls `tools/list`, Tyk returns only the primitives its policy permits. Each agent sees a registry filtered to its own entitlements from the moment it connects.
 
 See [Managing MCP proxies](/ai-management/mcp-gateway/managing-proxies) for the full management interface.
+
+### Is API to MCP available on all Tyk licenses?
+
+No. Pass-through MCP proxies (fronting a remote MCP server) are available on all Tyk Gateway licenses, though some individual features — such as upstream OAuth and token exchange — require Enterprise Edition. API to MCP requires Tyk Enterprise Edition for the proxy type itself, not just individual features. See [MCP Gateway overview: Requirements](/ai-management/mcp-gateway/overview#requirements-and-limitations) for the full licensing table.
 
 ### Do we need a separate Tyk instance for MCP or can it share infrastructure with our REST APIs?
 
