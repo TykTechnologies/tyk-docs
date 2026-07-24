@@ -29,6 +29,7 @@ class DocsMerger:
         self.target_folders = {}  # Maps source_folder -> target_folder
         self.latest_version = None
         self.main_version = None  # Track main branch with most current assets
+        self.lts_versions = []  # target_folders marked isLts in branches-config.json
 
     def load_version_config(self, config_path: str, version: str) -> Dict:
         """Load a single version configuration."""
@@ -56,6 +57,7 @@ class DocsMerger:
                 self.external_versions = {}  # Store external version info
                 self.source_folders = {}  # Maps target_folder -> source_folder
                 self.target_folders = {}  # Maps source_folder -> target_folder
+                self.lts_versions = []
 
                 for version_info in versions:
                     is_external = version_info.get('isExternal', False)
@@ -88,6 +90,7 @@ class DocsMerger:
                         label = version_info.get('label', target_folder)
                         is_latest = version_info.get('isLatest', False)
                         is_main = version_info.get('isMain', False)
+                        is_lts = version_info.get('isLts', False)
 
                         if source_folder and target_folder:
                             # Use target_folder for priority and labels (what appears in navigation)
@@ -102,6 +105,8 @@ class DocsMerger:
                                 self.latest_version = target_folder
                             if is_main:
                                 self.main_version = target_folder
+                            if is_lts:
+                                self.lts_versions.append(target_folder)
 
                             if source_folder != target_folder:
                                 print(f"📁 Version {target_folder}: source='{source_folder}' → target='{target_folder}'")
@@ -113,6 +118,7 @@ class DocsMerger:
                 print(f"🔗 External versions: {len(self.external_versions)} found")
                 print(f"⭐ Latest version: {self.latest_version}")
                 print(f"🔧 Main version: {self.main_version}")
+                print(f"🛡️  LTS versions: {self.lts_versions}")
 
                 return config
         except Exception as e:
@@ -1244,6 +1250,47 @@ class DocsMerger:
                 unified[field] = value
 
         return unified
+
+    def substitute_latest_version_in_banner_scripts(self, base_dir: str = ".") -> None:
+        """Replace {{LATEST_VERSION}} and {{LTS_VERSIONS}} in every copy of
+        outdated-version-banner.js.
+
+        The outdated-version banner widget embeds the latest version number in
+        its message text, and its dismissal handling stores that exact text -
+        so substituting a fresh version number on each release automatically
+        makes a previously-dismissed banner reappear for everyone. It also
+        embeds the list of target_folders marked isLts in branches-config.json,
+        so the widget can show the informational LTS banner instead of the
+        outdated-version warning on those versions.
+
+        Every copy in the output tree is patched (not just the root one):
+        merged deploys duplicate root-level JS into version folders, Mintlify
+        includes all of them globally, and load order between copies is not
+        guaranteed.
+        """
+        if not self.latest_version:
+            return
+
+        lts_versions_json = json.dumps(self.lts_versions)
+
+        for script_path in Path(base_dir).rglob("outdated-version-banner.js"):
+            try:
+                content = script_path.read_text(encoding="utf-8")
+                changed = False
+                if "{{LATEST_VERSION}}" in content:
+                    content = content.replace("{{LATEST_VERSION}}", self.latest_version)
+                    changed = True
+                if "{{LTS_VERSIONS}}" in content:
+                    content = content.replace("{{LTS_VERSIONS}}", lts_versions_json)
+                    changed = True
+                if changed:
+                    script_path.write_text(content, encoding="utf-8")
+                    print(
+                        f"🏷️  Substituted latest version ({self.latest_version}) and "
+                        f"LTS versions ({lts_versions_json}) in {script_path}"
+                    )
+            except Exception as e:
+                print(f"⚠️ Could not substitute version in {script_path}: {e}")
     def merge(self, version_configs: Dict[str, str] = None,
               config_dir: str = None,
               base_dir: str = None,
@@ -1283,6 +1330,9 @@ class DocsMerger:
         # Copy latest version content to root if requested
         if copy_latest:
             self.organize_content_files(configs, base_dir or ".")
+
+        # Stamp the current latest version into the outdated-version banner widget
+        self.substitute_latest_version_in_banner_scripts(base_dir or ".")
 
         # Create unified configuration
         unified_config = self.create_unified_config(configs)
