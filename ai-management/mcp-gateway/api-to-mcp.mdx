@@ -1,0 +1,54 @@
+---
+title: "API to MCP"
+sidebarTitle: "API to MCP"
+description: "How Tyk Gateway generates an MCP proxy directly from a Tyk-managed REST API, without building or hosting a separate MCP server: the tool catalogue, the adapter mechanism, licensing, and v1 limitations."
+keywords: "MCP, Model Context Protocol, API to MCP, REST API, OpenAPI, MCP proxy, x-tyk-mcp-server, tool catalogue, Tyk OAS API, Enterprise Edition"
+---
+
+API to MCP generates an MCP proxy directly from a Tyk-managed REST API's OpenAPI specification, turning its operations into MCP tools without you building, hosting, or maintaining a separate MCP server. This page explains what API to MCP is, how it differs from fronting a remote MCP server, and what it does and doesn't support in this release.
+
+## What it is
+
+Every MCP proxy in Tyk Gateway does one of two things: it fronts a **remote MCP server** that you've built and are hosting elsewhere, or it's **generated directly from a Tyk-managed REST API**, with no remote MCP server involved at all. The second mode is API to MCP.
+
+With API to MCP, you pick an existing [Tyk OAS API](/ai-management/mcp-gateway/mcp-proxy-definitions) that's already onboarded to Tyk, and Tyk derives an MCP tool for each REST operation you choose to expose. Calling that tool sends a JSON-RPC `tools/call` request to the MCP proxy, which Tyk translates into an ordinary REST request against the paired API and wraps the response back into the MCP result format the calling agent expects. Nothing about the source REST API changes: it keeps serving its existing consumers exactly as before.
+
+The MCP proxy is itself a distinct consumer of the source REST API. It authenticates with its own credential and is governed by its own security policy, entirely independent of the keys and policies your existing REST API consumers use. This matters because agents call APIs differently to how humans and services do: an agent decides autonomously which operations to invoke, can be manipulated into calling tools it shouldn't through prompt injection, and generates far less predictable traffic patterns. Governing that traffic separately, with its own tool allowlists, rate limits, and RBAC, doesn't require touching the access your existing REST consumers already have.
+
+## How the tool catalogue works
+
+Tyk builds the tool catalogue by reading the source API's OpenAPI operations. Each operation's `operationId` becomes the tool name; operations without one get a deterministic name derived from their HTTP method and path instead. See [Tool naming and discovery](/ai-management/mcp-gateway/core-concepts#tool-naming-and-discovery) for exactly how names are derived and how collisions are resolved.
+
+Every valid operation is included by default. You deselect the ones you don't want exposed as tools, either in the [Dashboard wizard](/ai-management/mcp-gateway/managing-proxies) when you create the proxy, or by editing the tool selection directly afterwards. You can also override a tool's name, description, and parameter names and descriptions, independently of the source API's own OpenAPI document, which is useful when the source spec's own naming isn't clear enough for an agent to use reliably.
+
+Because the catalogue is derived from the source API's OpenAPI specification at gateway load time, rather than stored as a fixed, independent snapshot, changes you make to the source API's operations are picked up on the next gateway reload.
+
+This tool catalogue configuration lives in an `x-tyk-mcp-server` vendor extension on the MCP proxy's own API definition, alongside the `x-tyk-api-gateway` extension every MCP proxy has. See [MCP proxy definitions](/ai-management/mcp-gateway/mcp-proxy-definitions#api-to-mcp-the-x-tyk-mcp-server-extension) for the full schema.
+
+## Choosing between API to MCP and a remote MCP server
+
+Use API to MCP when the tools you want to expose are a direct wrapper around operations your REST API already performs, and that REST API is already onboarded to Tyk as a Tyk OAS API. You get an MCP proxy with no additional infrastructure to build, deploy, or keep running.
+
+Front a remote MCP server instead when you need tool logic that doesn't map cleanly onto existing REST operations, such as a tool that aggregates several backend calls into one response or applies logic beyond a single request/response, or when your source isn't a Tyk-managed REST API at all.
+
+## Requirements and v1 limitations
+
+API to MCP requires **Tyk Enterprise Edition**, for the proxy type itself rather than for individual features within it. See [Requirements](/ai-management/mcp-gateway/overview#requirements) for the full licensing comparison against pass-through MCP proxies.
+
+The following limitations apply in this release:
+
+| Limitation | Detail |
+|---|---|
+| Source API format | The source must be a Tyk OAS API already onboarded to Tyk. GraphQL APIs and Tyk Classic API definitions aren't supported as a source. |
+| One proxy, one source | An MCP proxy pairs with exactly one source REST API. You can't combine operations from multiple REST APIs behind a single proxy. The reverse, slicing one REST API's operations across several MCP proxies, is supported: see [How to slice one API into multiple MCP proxies](/ai-management/mcp-gateway/how-to-slice-one-api-into-multiple-mcp-proxies). |
+| Request body types | Source operations whose request bodies use multipart, XML, or binary content types can't be exposed as MCP tools. |
+| Response size | Upstream responses are capped at 1 MiB and truncated beyond that. The cap isn't configurable. |
+| Transport | Only `POST /mcp` is supported. `GET /mcp`, SSE streaming, and server-initiated notifications aren't available. |
+| Primitives | API to MCP proxies only ever produce tools. Resources and prompts aren't applicable, since a REST operation has no equivalent primitive. |
+| Behavioural hints | `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint` can be set directly on the `x-tyk-mcp-server` extension, but the Dashboard wizard and designer don't yet expose a control for them. |
+
+## Summary
+
+API to MCP turns an existing Tyk-managed REST API into an MCP proxy without a separate MCP server to build or run. The proxy authenticates against the source API as its own consumer, and its tool catalogue is derived from the source OpenAPI specification and kept in sync on every gateway reload.
+
+See [Managing MCP proxies](/ai-management/mcp-gateway/managing-proxies) to create one, [MCP proxy definitions](/ai-management/mcp-gateway/mcp-proxy-definitions) for the underlying schema, and [MCP Gateway: Core Concepts](/ai-management/mcp-gateway/core-concepts) for how tool naming, discovery, and primitives work across both proxy types.
