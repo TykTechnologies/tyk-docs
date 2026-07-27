@@ -5,7 +5,9 @@ keywords: "MCP, Model Context Protocol, MCP OAS definition, x-tyk-api-gateway, x
 sidebarTitle: "MCP Proxy Definition"
 ---
 
-An MCP proxy definition is the configuration object that tells Tyk how to proxy an MCP server. It is built on the **[Tyk OAS API definition](/api-management/gateway-config-tyk-oas)** format (an OpenAPI 3.0 document extended with the `x-tyk-api-gateway` vendor extension) and adds the MCP-specific structures that allow Tyk to inspect JSON-RPC traffic and apply middleware at the method and primitive level. This page explains the structure of an MCP OAS definition, how MCP concepts (primitives, methods, operations) map to it, and which parts of the extension are specific to MCP.
+An MCP proxy definition is the configuration object that tells Tyk how to front an MCP server. It is built on the **[Tyk OAS API definition](/api-management/gateway-config-tyk-oas)** format (an OpenAPI 3.0 document extended with the `x-tyk-api-gateway` vendor extension) and adds the MCP-specific structures that allow Tyk to inspect JSON-RPC traffic and apply middleware at the method and primitive level.
+
+This page explains the structure of an MCP OAS definition, how MCP concepts (primitives, methods, operations) map to it, and which parts of the extension are specific to MCP.
 
 > If you are not familiar with Tyk OAS API definitions, read [Tyk OAS](/api-management/gateway-config-tyk-oas) first. This page focuses on the MCP-specific aspects and assumes knowledge of the base format.
 
@@ -225,13 +227,13 @@ The `info`, `server`, and `upstream` sections work identically to a standard Tyk
 There are no MCP-specific fields in these three sections. You configure authentication, TLS, load balancing, upstream rate limits, and all other standard gateway capabilities exactly as you would for a REST API. See [Tyk OAS](/api-management/gateway-config-tyk-oas) for the full field reference for these sections.
 
 <Note>
-For an MCP proxy [generated directly from a Tyk-managed REST API](/ai-management/mcp-gateway/api-to-mcp), `upstream.url` holds an adapter target instead of a remote server's `https://` URL — for example `tyk://orders-rest/mcp`.
+For an MCP proxy [generated directly from a Tyk-managed REST API](/ai-management/mcp-gateway/api-to-mcp), `upstream.url` holds an adapter target instead of a remote server's url.
 
 `tyk://` is Tyk's existing internal-routing scheme for addressing another Tyk-managed API without a real network hop, always shaped `tyk://<api-id>/<path>`. For most uses of this scheme, `<path>` is a real path on the target API. Here, it isn't — your REST API doesn't need, and typically won't have, an actual `/mcp` endpoint. `/mcp` is simply the fixed marker value Tyk looks for in that slot to recognize this as a REST-as-MCP adapter target rather than an ordinary internal call; `orders-rest` is the only part that identifies anything real — your paired REST API's own ID.
 
 In the rare case where your REST API's own OpenAPI spec already defines a real path at `/mcp`, Tyk automatically uses a different marker instead (appending `__mcp-server` to the API ID, with no path) to avoid the clash. This happens automatically and isn't something you configure.
 
-See [REST API to MCP x-tyk-mcp-server extension](#rest-api-to-mcp-x-tyk-mcp-server-extension) below for the full field reference.
+See [REST API to MCP x-tyk-mcp-server extension](/ai-management/mcp-gateway/api-to-mcp-definitions) for the full field reference.
 </Note>
 
 The example above uses `bearerAuth` as the security scheme — a simple bearer token check. For full OAuth 2.1 compliance (token validation, scope enforcement, Protected Resource Metadata, and token exchange), use the `oauth2` scheme instead. See [MCP OAuth 2.1](/ai-management/mcp-gateway/oauth-2-1).
@@ -255,7 +257,7 @@ The `middleware` section is where MCP OAS definitions diverge from standard Tyk 
 Each is explained below.
 
 <Note>
-A REST API to MCP proxy only populates `mcpTools`. `mcpResources` and `mcpPrompts` are unused, since a REST API has no resource or prompt primitives to expose. Its tool catalogue is generated from the source API's operations rather than hand-written — see [REST API to MCP x-tyk-mcp-server extension](#rest-api-to-mcp-x-tyk-mcp-server-extension) below.
+A REST API to MCP proxy only populates `mcpTools`. `mcpResources` and `mcpPrompts` are unused, since a REST API has no resource or prompt primitives to expose. Its tool catalogue is generated from the source API's operations rather than hand-written — see [REST API to MCP x-tyk-mcp-server extension](/ai-management/mcp-gateway/api-to-mcp-definitions).
 </Note>
 
 #### global
@@ -373,118 +375,9 @@ An MCP proxy [generated directly from a Tyk-managed REST API](/ai-management/mcp
 
 `x-tyk-mcp-server` can only be present when `upstream.url` is a REST API adapter target. Tyk rejects the extension outright on a proxy that fronts a remote MCP server.
 
-### Structure
-
-`x-tyk-mcp-server` holds a single field, `primitives`, an array with one entry per tool you want to configure:
-
-| Field | Type | Description |
-|---|---|---|
-| `primitives[].source` | object | Identifies the source REST operation this entry configures. See "Source" below. |
-| `primitives[].name` | string | Overrides the derived MCP-facing tool name. |
-| `primitives[].description` | string | Overrides the derived MCP-facing tool description. |
-| `primitives[].annotations` | object | Overrides the tool's behavioural hints. See "Behavioural hints" below. |
-| `primitives[].parameters` | array | Per-parameter name and description overrides. See "Parameter overrides" below. |
-| `primitives[].allow` | boolean | Whether this tool is exposed. See "Selecting which operations become tools" below. |
-
-You only need to list a source operation here if you want to override something about it or explicitly select it — an operation with no entry at all still becomes a tool under the default (no-allow-list) behaviour described below.
-
-### Source
-
-`source` identifies which REST operation a primitive entry configures, using one of two forms:
-
-| Field | Type | Description |
-|---|---|---|
-| `source.operationId` | string | Selects the source operation by its OpenAPI `operationId`. Use this whenever the operation has one. |
-| `source.method` + `source.path` | string | Selects the source operation by HTTP method and OAS path template, for operations with no `operationId`. |
-
-### Selecting which operations become tools
-
-All operations become tools by default. To explicitly declare what operations are exposed as tools, add entries with `allow: true` for only the operations you want exposed — as soon as one entry has `allow: true`, Tyk switches to that explicit allow-list and every other operation is excluded.
-
-### Overriding tool and parameter names and descriptions
-
-`name` and `description` override the tool's caller-facing identity; `parameters` overrides individual arguments:
-
-| Field | Type | Description |
-|---|---|---|
-| `parameters[].param` | string | The derived MCP argument name to override. |
-| `parameters[].name` | string | The caller-facing replacement name. |
-| `parameters[].description` | string | The caller-facing replacement description. |
-
-Tool names must be non-empty, no more than 128 characters, and contain only ASCII letters, digits, underscores, hyphens, and dots (`^[A-Za-z0-9_.-]+$`). Tyk rejects an invalid name outright rather than silently sanitizing it.
-
-### Behavioural hints
-
-`annotations` sets the tool's MCP behavioural hints:
-
-| Field | Type | Description |
-|---|---|---|
-| `annotations.title` | string | A human-readable display name for the tool. |
-| `annotations.readOnlyHint` | boolean | Whether the tool is expected to avoid modifying state. |
-| `annotations.destructiveHint` | boolean | Whether the tool may perform destructive updates. |
-| `annotations.idempotentHint` | boolean | Whether repeated calls with the same arguments have the same effect. |
-| `annotations.openWorldHint` | boolean | Whether the tool interacts with external systems. |
-
 <Note>
-These fields are configurable directly in the OAS definition, but the Tyk Dashboard's wizard and designer don't yet expose a UI control for them.
+See [REST API to MCP x-tyk-mcp-server extension](/ai-management/mcp-gateway/api-to-mcp-definitions) for the full field reference, the allow-list selection rule, tool name validation limits, and worked examples.
 </Note>
-
-### Compact and expanded shapes
-
-The fields above are all Tyk persists. Requesting the definition with `expand=true` returns additional read-only fields computed from the source operation, useful for previewing the final tool shape before saving: `inputSchema`, `outputSchema`, `parameterLocations`, `parameterSourceNames`, `parameterSerializations`, `parameterOrder`, and `requestBodyContentType`. These expanded fields are never accepted on write; sending them back has no effect.
-
-### Example
-
-```json
-{
-  "x-tyk-mcp-server": {
-    "primitives": [
-      {
-        "source": { "operationId": "getOrderStatus" },
-        "name": "get_order_status",
-        "description": "Look up the current status of a customer order by ID.",
-        "annotations": { "readOnlyHint": true },
-        "allow": true
-      },
-      {
-        "source": { "method": "POST", "path": "/orders/{id}/cancel" },
-        "name": "cancel_order",
-        "description": "Cancel an order that hasn't shipped yet.",
-        "parameters": [
-          { "param": "id", "name": "order_id", "description": "The order to cancel." }
-        ],
-        "annotations": { "destructiveHint": true }
-      }
-    ]
-  }
-}
-```
-
-This proxy exposes exactly one tool, `get_order_status`, because at least one entry has `allow: true`. `cancel_order` has a metadata entry — its `description` and `annotations` overrides are defined — but since it isn't marked `allow: true`, it isn't exposed. Every other operation on the source API is excluded too.
-
-Remove `allow: true` from every entry, and the same definition behaves differently:
-
-```json
-{
-  "x-tyk-mcp-server": {
-    "primitives": [
-      {
-        "source": { "method": "POST", "path": "/orders/{id}/cancel" },
-        "name": "cancel_order",
-        "description": "Cancel an order that hasn't shipped yet.",
-        "parameters": [
-          { "param": "id", "name": "order_id", "description": "The order to cancel." }
-        ],
-        "annotations": { "destructiveHint": true }
-      }
-    ]
-  }
-}
-```
-
-With no `allow: true` anywhere, every operation on the source API becomes a tool — not just `cancel_order`. Its entry still applies its `description`, `parameters`, and `annotations` overrides as metadata, but it no longer controls exposure.
-
-To build up an explicit allow-list, add `allow: true` to each operation you want exposed, one at a time; to go back to exposing everything, remove `allow: true` from every entry in the definition.
 
 ---
 
