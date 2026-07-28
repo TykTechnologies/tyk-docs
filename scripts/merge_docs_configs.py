@@ -30,6 +30,8 @@ class DocsMerger:
         self.target_folders = {}  # Maps source_folder -> target_folder
         self.latest_version = None
         self.main_version = None  # Track main branch with most current assets
+        self.lts_versions = []  # target_folders marked isLts in branches-config.json
+        # PROTOTYPE - not wired into the real deploy pipeline (see inject_outdated_version_banner)
 
     def load_version_config(self, config_path: str, version: str) -> Dict:
         """Load a single version configuration."""
@@ -57,6 +59,7 @@ class DocsMerger:
                 self.external_versions = {}  # Store external version info
                 self.source_folders = {}  # Maps target_folder -> source_folder
                 self.target_folders = {}  # Maps source_folder -> target_folder
+                self.lts_versions = []
 
                 for version_info in versions:
                     is_external = version_info.get('isExternal', False)
@@ -108,6 +111,8 @@ class DocsMerger:
                                 self.latest_version = target_folder
                             if is_main:
                                 self.main_version = target_folder
+                            if is_lts:
+                                self.lts_versions.append(target_folder)
 
                             if source_folder != target_folder:
                                 print(f"📁 Version {target_folder}: source='{source_folder}' → target='{target_folder}'")
@@ -1380,12 +1385,132 @@ class DocsMerger:
                 unified[field] = value
 
         return unified
+
+    # PROTOTYPE (2026-07-24): exploring a React-component alternative to the
+    # standalone outdated-version-banner.js widget shipped in PR #2602. Not
+    # wired into the real deploy pipeline - only invoked when
+    # --prototype-mdx-banner / prototype_mdx_banner=True is passed to merge().
+    OUTDATED_VERSION_BANNER_SNIPPET = '''export const OutdatedVersionBanner = ({ kind, latestHref }) => {
+  const [dismissed, setDismissed] = useState(false);
+
+  useEffect(() => {
+    try {
+      if (localStorage.getItem('tykBannerDismissed:' + kind) === '1') {
+        setDismissed(true);
+      }
+    } catch (e) {}
+  }, [kind]);
+
+  if (dismissed) return null;
+
+  const isLts = kind === 'lts';
+  const color = isLts ? '#2563eb' : '#d97706';
+  const title = isLts ? 'Long Term Support (LTS) Version' : 'Outdated Version';
+  const icon = isLts ? 'ℹ️' : '⚠️';
+  const body = isLts
+    ? "If you'd like to see what's new, the "
+    : 'This page refers to an older version of our documentation. We recommend using the ';
+  const suffix = isLts ? ' is available here.' : ' for the most up-to-date guidance.';
+
+  const dismiss = () => {
+    try {
+      localStorage.setItem('tykBannerDismissed:' + kind, '1');
+    } catch (e) {}
+    setDismissed(true);
+  };
+
+  return (
+    <div style={{ position: 'relative', background: color, color: '#fff', textAlign: 'center', fontSize: 14, lineHeight: 1.5, padding: '10px 44px', borderRadius: 8, margin: '0 0 20px 0' }}>
+      <span>{icon} <strong>{title}</strong> - {body}<a href={latestHref} style={{ color: '#fff', fontWeight: 600, textDecoration: 'underline' }}>latest release</a>{suffix}</span>
+      <button aria-label="Dismiss banner" onClick={dismiss} style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: '#fff', fontSize: 16, cursor: 'pointer', padding: 4 }}>✕</button>
+    </div>
+  );
+};
+'''
+
+    FRONTMATTER_RE = re.compile(r'^(---\n.*?\n---\n)', re.DOTALL)
+
+    def inject_outdated_version_banner(self, base_dir: str = ".") -> None:
+        """PROTOTYPE: injects a real React banner component (instead of a
+        standalone client script) into every .mdx page of every non-latest,
+        non-main version folder, right after its frontmatter.
+
+        Writes the component to snippets/<version>/OutdatedVersionBanner.mdx -
+        snippet imports in this repo are version-namespaced under a top-level
+        snippets/ folder (e.g. snippets/5.10/AIStudioCards.mdx), NOT
+        <version>/snippets/ - and computes the "latest release" link at build
+        time by stripping the version prefix from each file's own relative
+        path, rather than doing it at runtime from window.location like the
+        JS widget does.
+        """
+        if not self.latest_version:
+            return
+
+        old_versions = [
+            v for v in self.version_priority
+            if v != self.latest_version and v != self.main_version
+        ]
+
+        for version in old_versions:
+            version_dir = Path(base_dir) / version
+            if not version_dir.is_dir():
+                continue
+
+            kind = 'lts' if version in self.lts_versions else 'outdated'
+
+            snippet_dir = Path(base_dir) / 'snippets' / version
+            snippet_dir.mkdir(parents=True, exist_ok=True)
+            (snippet_dir / 'OutdatedVersionBanner.mdx').write_text(
+                self.OUTDATED_VERSION_BANNER_SNIPPET, encoding='utf-8'
+            )
+            import_path = f'/snippets/{version}/OutdatedVersionBanner.mdx'
+
+            injected_count = 0
+            skipped_count = 0
+            for mdx_path in version_dir.rglob('*.mdx'):
+                try:
+                    content = mdx_path.read_text(encoding='utf-8')
+                except Exception as e:
+                    print(f"⚠️ Could not read {mdx_path}: {e}")
+                    skipped_count += 1
+                    continue
+
+                match = self.FRONTMATTER_RE.match(content)
+                if not match:
+                    print(f"⚠️ No frontmatter found, skipping banner injection: {mdx_path}")
+                    skipped_count += 1
+                    continue
+
+                # Strip the version segment to link to the equivalent latest page.
+                rel_path = mdx_path.relative_to(version_dir).as_posix()
+                rel_path = re.sub(r'\.mdx$', '', rel_path)
+                if rel_path == 'index':
+                    rel_path = ''
+                elif rel_path.endswith('/index'):
+                    rel_path = rel_path[: -len('/index')]
+                latest_href = f'https://tyk.io/docs/{rel_path}' if rel_path else 'https://tyk.io/docs'
+
+                injection = (
+                    f"\nimport {{ OutdatedVersionBanner }} from '{import_path}';\n\n"
+                    f'<OutdatedVersionBanner kind="{kind}" latestHref="{latest_href}" />\n'
+                )
+
+                new_content = content[: match.end()] + injection + content[match.end():]
+                mdx_path.write_text(new_content, encoding='utf-8')
+                injected_count += 1
+
+            print(
+                f"🏷️  [prototype] Injected {kind} banner into {injected_count} pages in "
+                f"{version}/ ({skipped_count} skipped - no frontmatter match)"
+            )
+
     def merge(self, version_configs: Dict[str, str] = None,
               config_dir: str = None,
               base_dir: str = None,
               branches_config: str = None,
               default_page: str = None,
-              copy_latest: bool = True) -> None:
+              copy_latest: bool = True,
+              prototype_mdx_banner: bool = False) -> None:
         """
         Main merge method.
 
@@ -1419,6 +1544,10 @@ class DocsMerger:
         # Copy latest version content to root if requested
         if copy_latest:
             self.organize_content_files(configs, base_dir or ".")
+
+        # PROTOTYPE - not part of the real pipeline, see inject_outdated_version_banner
+        if prototype_mdx_banner:
+            self.inject_outdated_version_banner(base_dir or ".")
 
         # Create unified configuration
         unified_config = self.create_unified_config(configs)
@@ -1488,6 +1617,8 @@ def main():
                         help="Subfolder to place documentation (e.g., 'docs'). Latest version will be in /subfolder/, older versions in /subfolder/version/")
     parser.add_argument("--additional-assets", nargs="*",
                         help="Additional files/directories to copy to root (added to defaults: style.css, images, img, logo, favicon.ico, favicon.png, snippets)")
+    parser.add_argument("--prototype-mdx-banner", action="store_true",
+                        help="PROTOTYPE: inject the OutdatedVersionBanner React component into every old-version .mdx page instead of relying on the outdated-version-banner.js widget")
 
     args = parser.parse_args()
 
@@ -1511,7 +1642,8 @@ def main():
         base_dir=args.base_dir,
         branches_config=args.branches_config,
         default_page=args.default_page,
-        copy_latest=not args.no_copy
+        copy_latest=not args.no_copy,
+        prototype_mdx_banner=args.prototype_mdx_banner
     )
 
 if __name__ == "__main__":
