@@ -20,7 +20,7 @@
   var DISMISS_DAYS = 7;
   var DISMISS_MS = DISMISS_DAYS * 24 * 60 * 60 * 1000;
 
-  // {{LATEST_VERSION}} and {{LTS_VERSIONS}} are substituted at deploy time by
+  // The two string literals below are substituted at deploy time by
   // scripts/merge_docs_configs.py: LATEST_VERSION from whichever version
   // branches-config.json marks isLatest, LTS_VERSIONS as a JSON array of every
   // target_folder marked isLts. Dismissal is keyed to LATEST_VERSION, so both
