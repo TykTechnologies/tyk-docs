@@ -13,6 +13,12 @@
   var SPACER_ID = 'tyk-outdated-banner-spacer';
   var DISMISS_KEY_PREFIX = 'tykBannerDismissed:';
   var HEIGHT_VAR = '--tyk-outdated-banner-height';
+  // A dismissal also expires after a fixed number of days, on top of being
+  // keyed to LATEST_VERSION below - otherwise someone who dismisses right
+  // after a release ships would not see the banner again until the *next*
+  // release, however long that takes.
+  var DISMISS_DAYS = 7;
+  var DISMISS_MS = DISMISS_DAYS * 24 * 60 * 60 * 1000;
 
   // {{LATEST_VERSION}} and {{LTS_VERSIONS}} are substituted at deploy time by
   // scripts/merge_docs_configs.py: LATEST_VERSION from whichever version
@@ -53,9 +59,23 @@
     return DISMISS_KEY_PREFIX + kind;
   }
 
+  function setDismissed(kind) {
+    try {
+      localStorage.setItem(
+        dismissKey(kind),
+        JSON.stringify({ version: LATEST_VERSION, dismissedAt: Date.now() })
+      );
+    } catch (e) {}
+  }
+
   function isDismissed(kind) {
     try {
-      return localStorage.getItem(dismissKey(kind)) === LATEST_VERSION;
+      var record = JSON.parse(localStorage.getItem(dismissKey(kind)));
+      return (
+        !!record &&
+        record.version === LATEST_VERSION &&
+        Date.now() - record.dismissedAt < DISMISS_MS
+      );
     } catch (e) {
       return false;
     }
@@ -118,9 +138,7 @@
       'position:absolute;right:12px;top:50%;transform:translateY(-50%);' +
       'background:none;border:none;color:#fff;font-size:16px;cursor:pointer;padding:4px;';
     close.onclick = function () {
-      try {
-        localStorage.setItem(dismissKey(kind), LATEST_VERSION);
-      } catch (e) {}
+      setDismissed(kind);
       removeBanner();
     };
     el.appendChild(close);
