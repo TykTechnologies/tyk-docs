@@ -89,13 +89,13 @@ The chart ships with hardened defaults for the Portal pod that satisfy the Kuber
 
 ```yaml
 securityContext:
-  runAsNonRoot: true
-  runAsUser: 1000
+  enabled: true
   fsGroup: 2000
+  runAsNonRoot: true
 
 containerSecurityContext:
+  enabled: true
   runAsNonRoot: true
-  runAsUser: 1000
   allowPrivilegeEscalation: false
   privileged: false
   readOnlyRootFilesystem: true
@@ -108,12 +108,26 @@ containerSecurityContext:
 
 Override these in your `values.yaml` to match your cluster's PSS policy.
 
+<Note>
+From Tyk Helm Chart v5.4.0, no `runAsUser` is set by default. Kubelet uses the `USER` declared in the image, which is a non-root numeric UID, and `runAsNonRoot: true` continues to be enforced. If you pin an older Portal image tag that declares no numeric `USER`, set `runAsUser` explicitly or the pod fails admission with `CreateContainerConfigError`.
+
+To omit a block entirely so that the cluster assigns its own IDs, set `enabled: false` on it. Setting `securityContext: {}` does not work, because Helm deep-merges the defaults back in. See [Deploy Tyk on OpenShift](/deployment-and-operations/openshift).
+</Note>
+
+The bootstrap job has its own independent security context, configured under `bootstrapJob`. It is empty by default, so nothing is rendered:
+
+```yaml
+bootstrapJob:
+  securityContext:
+    enabled: true
+  containerSecurityContext:
+    enabled: true
+```
+
 <Warning>
-**Bootstrap job security context limitation**
+**The bootstrap job does not inherit the Portal pod's security context.** Because its own blocks are empty by default, the job pod is rendered with no security context at all, and clusters enforcing PSS Restricted or Baseline profiles will reject it.
 
-The bootstrap job does not inherit `securityContext` or `containerSecurityContext` from `values.yaml`. On clusters enforcing PSS Restricted or Baseline profiles, the job will fail with a security policy violation.
-
-**Workaround:** Disable the automatic bootstrap and run it manually after deployment. See [Bootstrap Job](#bootstrap-job) below.
+Populate `bootstrapJob.securityContext` and `bootstrapJob.containerSecurityContext` with the fields your policy requires. Alternatively, disable the automatic bootstrap and run it manually after deployment. See [Bootstrap Job](#bootstrap-job) below.
 </Warning>
 
 ### Bootstrap Job
@@ -129,7 +143,7 @@ kubectl logs job/dev-portal-job-<release-name> -n <namespace>
 
 A successful run logs: `API call completed.`
 
-**To disable automatic bootstrap and bootstrap manually** (required on clusters with strict Pod Security Standards):
+**To disable automatic bootstrap and bootstrap manually**, which is one way to handle clusters with strict Pod Security Standards:
 
 1. Set `global.components.bootstrap: false` in your `values.yaml` and deploy.
 2. Wait for the Portal pod to be ready, then send the bootstrap request:
@@ -171,6 +185,52 @@ storage:
 
 <Note>
 `storage.type: fs` with multiple replicas requires a storage class that supports `ReadWriteMany`. Use `db` or `s3` to avoid this constraint.
+</Note>
+
+#### S3 Credentials
+
+For `s3` storage, the Portal reads its AWS credentials from a Kubernetes Secret. By default it looks for the keys `DevPortalAwsAccessKeyId` and `DevPortalAwsSecretAccessKey`, in the Secret named by `useSecretName` if you set one, or otherwise in the Secret the chart generates for the release.
+
+When the Secret is managed by an external tool such as Crossplane, those key names are usually not under your control. Use `storage.s3.secretRef` to point at a different Secret and name its keys:
+
+```yaml
+storage:
+  type: s3
+  s3:
+    secretRef:
+      name: portal-s3-credentials
+      accessKeyIdKey: aws_access_key_id
+      secretAccessKeyKey: aws_secret_access_key
+```
+
+`secretRef.name` takes precedence over `useSecretName` for S3 credentials only. If `accessKeyIdKey` or `secretAccessKeyKey` is omitted, the defaults above apply.
+
+<Note>
+Custom key names apply only when `secretRef.name` is set. If you fall back to `useSecretName` or to the chart's generated Secret, the key names are fixed and cannot be overridden.
+</Note>
+
+### Environment Variables
+
+Use `extraEnvs` to set any of the variables described in the [configuration section](/product-stack/tyk-enterprise-developer-portal/deploy/configuration). Full Kubernetes environment variable syntax is supported, including `valueFrom`, so you can source values from Secrets and ConfigMaps rather than committing them to your values file:
+
+```yaml
+extraEnvs:
+  - name: PORTAL_REFRESHINTERVAL
+    value: "10"
+  - name: PORTAL_API_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: my-secret
+        key: apiSecret
+  - name: PORTAL_LOG_LEVEL
+    valueFrom:
+      configMapKeyRef:
+        name: portal-settings
+        key: logLevel
+```
+
+<Note>
+`valueFrom` support requires Tyk Helm Chart v5.4.0 or later. Earlier versions rendered only the `name` and `value` fields and silently dropped anything else.
 </Note>
 
 ### Scaling and Replicas
