@@ -1,0 +1,350 @@
+---
+title: "JavaScript API Reference"
+description: "Reference for the request, session, and config objects available to JavaScript middleware, the JavaScript system API, and the Underscore.js library."
+sidebarTitle: "JavaScript API Reference"
+---
+
+### JavaScript resources
+
+JavaScript (JS) functions have access to a [system API](/api-management/plugins/javascript-api-reference#javascript-api) and [library of functions](/api-management/plugins/javascript-api-reference#underscore-js-library). They can also be given access to certain Tyk data objects relating to the API request.
+
+The system API provides access to resources outside of the JavaScript Virtual Machine sandbox, the ability to make outbound HTTP requests and access to the key management REST API functions.
+
+#### The `request` object
+
+The `request` object provides a set of arrays that describe the API request. These can be manipulated and, when changed, will affect the request as it passes through the middleware pipeline. For [virtual endpoints](/api-management/traffic-transformation/virtual-endpoints) the request object has a [different structure](#VirtualEndpoint-Request).
+
+The structure of the `request` object is:
+
+```typesecript
+class ReturnOverrides {
+  ResponseCode: number = 200;
+  ResponseBody: string = "";
+  ResponseHeaders: string[] = [];
+}
+
+class Request {
+  Headers: { [key: string]: string[] } = {};
+  SetHeaders: { [key: string]: string } = {};
+  DeleteHeaders: string[] = [];
+  Body: string = "";
+  URL: string = "";
+  AddParams: { [key: string]: string } = {};
+  DeleteParams: string[] = [];
+  ReturnOverrides: ReturnOverrides = new ReturnOverrides();
+  IgnoreBody: boolean = false;
+  Method: string = "";
+  RequestURI: string = "";
+  Scheme: string = "";
+}
+```
+
+{/* ```go
+struct {
+  Headers       map[string][]string
+  SetHeaders    map[string]string
+  DeleteHeaders []string
+  Body          string
+  URL           string
+  AddParams     map[string]string
+  DeleteParams  []string
+  ReturnOverrides {
+    ResponseCode: int
+    ResponseBody: string
+    ResponseHeaders []string
+  }
+  IgnoreBody    bool
+  Method        string
+  RequestURI    string
+  Scheme        string
+}
+``` */}
+
+- `Headers`: this is an object of string arrays, and represents the current state of the request header; this object cannot be modified directly, but can be used to read header data
+- `SetHeaders`: this is a key-value map that will be set in the header when the middleware returns the object; existing headers will be overwritten and new headers will be added
+- `DeleteHeaders`: any header name that is in this list will be deleted from the outgoing request; note that `DeleteHeaders` happens before `SetHeaders`
+- `Body`: this represents the body of the request, if you modify this field it will overwrite the request
+- `URL`: this represents the path portion of the outbound URL, you can modify this to redirect a URL to a different upstream path
+- `AddParams`: you can add parameters to your request here, for example internal data headers that are only relevant to your network setup
+- `DeleteParams`: these parameters will be removed from the request as they pass through the middleware; note `DeleteParams` happens before `AddParams`
+- `ReturnOverrides`: values stored here are used to stop or halt middleware execution and return an error code
+- `IgnoreBody`: if this parameter is set to `true`, the original request body will be used; if set to `false` the `Body` field will be used (`false` is the default behavior)
+- `Method`: contains the HTTP method (`GET`, `POST`, etc.)
+- `RequestURI`: contains the request URI, including the query string, e.g. `/path?key=value`
+- `Scheme`: contains the URL scheme, e.g. `http`, `https`
+
+
+##### Using `ReturnOverrides`
+
+If you configure values in `request.ReturnOverrides` then Tyk will terminate the request and provide a response to the client when the function completes. The request will not be proxied to the upstream.
+
+The response will use the parameters configured in `ReturnOverrides`:
+
+- `ResponseCode`
+- `ResponseBody`
+- `ResponseHeaders`
+
+In this example, if the condition is met, Tyk will return `HTTP 403 Access Denied` with the custom header `"X-Error":"the-condition"`:
+
+```js
+var testJSVMData = new TykJS.TykMiddleware.NewMiddleware({});
+
+testJSVMData.NewProcessRequest(function(request, session, config) {
+  // Logic to determine if the request should be overridden
+  if (someCondition) {
+      request.ReturnOverrides.ResponseCode = 403;
+      request.ReturnOverrides.ResponseBody = "Access Denied";
+      request.ReturnOverrides.headers = {"X-Error": "the-condition"};
+      // This stops the request from proceeding to the upstream
+  }
+    return testJSVMData.ReturnData(request, session.meta_data);
+});
+```
+
+##### The virtual endpoint `request` object
+<a id="VirtualEndpoint-Request"></a>
+
+For [virtual endpoint](/api-management/traffic-transformation/virtual-endpoints) functions the structure of a Javascript `request` object is:
+
+```typescript
+class VirtualEndpointRequest {
+  Body: string = "";
+  Headers: { [key: string]: string[] } = {};
+  Params: { [key: string]: string[] } = {};
+  Scheme: string = "";
+  URL: string = "";
+}
+```
+
+- `Body`: HTTP request body, e.g. `""`
+- `Headers`: HTTP request headers, e.g. `"Accept": ["*/*"]`
+- `Params`: Decoded query and form parameters, e.g. `{ "confirm": ["true"], "userId": ["123"] }`
+- `Scheme`: The scheme of the URL ( e.g. `http` or `https`)
+- `URL`: The full URL of the request, e.g `/vendpoint/anything?user_id=123\u0026confirm=true`
+
+<br />
+
+
+<Note>
+Each query and form parameter within the request is stored as an array field in the `Params` field of the request object.
+
+Repeated parameter assignments are appended to the corresponding array. For example, a request against `/vendpoint/anything?user_id[]=123&user_id[]=234` would result in a Javascript request object similar to that shown below:
+
+```javascript
+const httpRequest = {
+  Headers: {
+    "Accept": ["*/*"],
+    "User-Agent": ["curl/8.1.2"]
+  },
+  Body: "",
+  URL: "/vendpoint/anything?user_id[]=123\u0026user_id[]=234",
+  Params: {
+    "user_id[]": ["123", "234"]
+  },
+  Scheme: "http"
+};
+```
+</Note>
+
+
+#### The `session` object
+
+Tyk uses an internal [session object](/api-management/access-control/sessions-and-keys/understanding-sessions) to handle the quota, rate limits, access allowances and auth data of a specific key. JS middleware can be granted access to the session object but there is also the option to disable it as deserialising it into the JSVM is computationally expensive and can add latency. Other than the `meta_data` field, the session object itself cannot be directly edited as it is crucial to the correct functioning of Tyk.
+
+##### Limitations
+
+- Custom JS plugins at the [pre-](/api-management/plugins/plugin-types#request-plugins) stage do not have access to the session object (as it has not been created yet)
+- When scripting for Virtual Endpoints, the `session` data will only be available to the JS function if enabled in the middleware configuration. To enable this, set `requireSession` to `true` in the `virtualEndpoint` object of your Tyk OAS API definition (or `use_session` to `true` in the `virtual` object for Tyk Classic APIs).
+
+###### Tyk OAS API Definition example:
+```
+"virtualEndpoint": {
+  "enabled": true,
+  "functionName": "myVirtualEndpoint",
+  "path": "my_script.js",
+  "requireSession": true
+}
+```
+###### Tyk Classic API Definition example:
+```
+"extended_paths": {
+  "virtual": [
+    {
+      "path": "/my-endpoint",
+      "method": "GET",
+      "response_function_name": "myVirtualEndpoint",
+      "function_source_type": "file",
+      "function_source_uri": "my_script.js",
+      "use_session": true
+    }
+  ]
+}
+```
+
+
+##### Sharing data between middleware using the `session` object
+
+For different middleware to be able to transfer data between each other, the session object makes available a `meta_data` key/value field that is written back to the session store (and can be retrieved by the middleware down the line) - this data is permanent, and can also be retrieved by the REST API from outside of Tyk using the `/tyk/keys/` method.
+
+
+<Note>
+A new JSVM instance is created for *each* API that is managed. Consequently, inter-API communication is not possible via shared methods, since they have different bounds. However, it *is* possible using the session object if a key is shared across APIs.
+</Note>
+
+
+#### The `config` object
+
+The third Tyk data object that is made available to the script running in the JSVM contains data from the API Definition. This is read-only and cannot be modified by the JS function. The structure of this object is:
+
+- `APIID`: the unique identifier for the API
+- `OrgID`: the organization identifier
+- `config_data`: custom attributes defined in the API description
+
+##### Adding custom attributes to the API Definition
+
+When working with Tyk OAS APIs, you can add custom attributes in the `data` object in the `x-tyk-api-gateway.middleware.global.pluginConfig` section of the API definition, for example:
+
+```json {linenos=true, linenostart=1}
+{
+  "x-tyk-api-gateway": {  
+    "middleware": {
+      "global": {
+        "pluginConfig": {
+          "data": {
+            "enabled": true,
+            "value": {
+              "foo": "bar"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+When working with Tyk Classic APIs, you simply add the attributes in the `config_data` object in the root of the API definition:
+
+```json {linenos=true, linenostart=1}
+{
+  "config_data": {
+    "foo": "bar"
+  }
+}
+```
+
+#### Underscore.js Library
+
+In addition to our Tyk JavaScript API functions, you also have access to all the functions from the [underscore](http://underscorejs.org) library.
+
+Underscore.js is a JavaScript library that provides a lot of useful functional programming helpers without extending any built-in objects. Underscore provides over 100 functions that support your favorite functional helpers:
+
+- map
+- filter
+- invoke
+
+There are also more specialized goodies, including:
+
+- function binding
+- JavaScript templating
+- creating quick indexes
+- deep equality testing
+
+### Example
+
+In this basic example, we show the creation and initialisation of a middleware object. Note how the three Tyk data objects (`request`, `session`, `config`) are made available to the function and the two objects that are returned from the function (in case the external objects need to be updated).
+
+```js {linenos=true, linenostart=1}
+/* --- sampleMiddleware.js --- */
+
+// Create new middleware object
+var sampleMiddleware = new TykJS.TykMiddleware.NewMiddleware({});
+
+// Initialise the object with your functionality by passing a closure that accepts
+// two objects into the NewProcessRequest() function:
+sampleMiddleware.NewProcessRequest(function(request, session, config) {
+    log("This middleware does nothing, but will print this to your terminal.")
+
+    // You MUST return both the request and session metadata
+    return sampleMiddleware.ReturnData(request, session.meta_data);
+});
+```
+
+## JavaScript API
+
+This system API provides access to resources outside of the JavaScript Virtual Machine sandbox, the ability to make outbound HTTP requests and access to the key management REST API functions.
+
+Embedded JavaScript interpreters offer the bare bones of a scripting language, but not necessarily the functions that you would expect, especially with JavaScript, where objects such as `XMLHttpRequest()` are a given. However, those interfaces are actually provided by the browser / DOM that the script engine are executing in. In a similar vein, we have included a series of functions to the JSVM for convenience and give the interpreter more capability.
+
+This list is regularly revised and any new suggestions should be made in our [Github issue tracker](https://github.com/TykTechnologies/tyk/issues).
+
+Below is the list of functions currently provided by Tyk.
+
+- `log(string)`: Calling `log("this message")` will cause Tyk to log the string to Tyk's default logger output in the form `JSVM Log: this message` as an INFO statement. This function is especially useful for debugging your scripts. It is recommended to put a `log()` call at the end of your middleware and event handler module definitions to indicate on load that they have been loaded successfully - see the [example scripts](https://github.com/TykTechnologies/tyk/tree/master/middleware) in your Tyk installation `middleware` directory for more details.
+- `rawlog(string)`: Calling `rawlog("this message")` will cause Tyk to log the string to Tyk's default logger output without any additional formatting, like adding prefix or date. This function can be used if you want to have own log format, and parse it later with custom tooling.
+- `b64enc` - Encode string to base64
+- `b64dec` - Decode base64 string
+- `TykBatchRequest` this function is similar to `TykMakeHttpRequest` but makes use of Tyk's [batch request feature](/api-management/batch-processing).
+- `TykMakeHttpRequest(JSON.stringify(requestObject))`: This method is used to make an HTTP request, requests are encoded as JSON for deserialisation in the min binary and translation to a system HTTP call. The request object has the following structure:
+
+```js
+newRequest = {
+  "Method": "POST",
+  "Body": JSON.stringify(event),
+  "Headers": {},
+  "Domain": "http://foo.com",
+  "Resource": "/event/quotas",
+  "FormData": {"field": "value"}
+};
+```
+
+
+<Note>
+If you want to include querystring values, add them as part of the `Domain` property.
+</Note>
+
+
+Tyk passes a simplified response back which looks like this:
+
+```go
+type TykJSHttpResponse struct {
+	Code    int
+	Body    string
+	Headers map[string][]string
+}
+```
+
+The response is JSON string encoded, and so will need to be decoded again before it is usable:
+
+```js
+usableResponse = JSON.parse(response);
+log("Response code: " + usableResponse.Code);
+log("Response body: " + usableResponse.Body);
+```
+
+This method does not execute asynchronously, so execution will block until a response is received.
+
+### Working with the key session object
+
+To work with the key session object, two functions are provided: `TykGetKeyData` and `TykSetKeyData`:
+
+- `TykGetKeyData(api_key, api_id)`: Use this method to retrieve a [session object](/api-management/access-control/sessions-and-keys/understanding-sessions) for the key and the API provided:
+
+  ```js
+  // In an event handler, we can get the key idea from the event, and the API ID from the context variable.
+  var thisSession = JSON.parse(TykGetKeyData(event.EventMetaData.Key, context.APIID))
+  log("Expires: " + thisSession.expires)
+  ```
+
+- `TykSetKeyData(api_key, api_id)`: Use this method to write data back into the Tyk session store:
+
+  ```js
+  // You can modify the object just like with the REST API
+  thisSession.expires = thisSession.expires + 1000;
+
+  // Use TykSetKeyData to set the key data back in the session store
+  TykSetKeyData(event.EventMetaData.Key, JSON.stringify(thisSession));
+  ```
+
+All of these methods are described in functional examples in the Tyk `middleware/` and `event_handlers/` folders.
+
