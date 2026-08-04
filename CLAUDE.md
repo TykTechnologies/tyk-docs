@@ -75,7 +75,7 @@ Apply these rules to all content in this repository.
 
 ### API Definition Types
 
-- Always use the full names "Tyk OAS" and "Tyk Classic". Never shorten to "OAS" or "Classic" alone. "OAS" in isolation could be confused with the OpenAPI Specification standard, which is a distinct concept.
+- Always use the full names "Tyk OAS APIs" and "Tyk Classic APIs". Never shorten to "OAS APIs" or "Classic APIs" alone. "OAS" in isolation could be confused with the OpenAPI Specification standard, which is a distinct concept.
 - When content covers both Tyk OAS and Tyk Classic API definitions, always present Tyk OAS first.
 - Tyk Classic is the legacy approach. Do not state this explicitly, but structure content to guide users towards Tyk OAS.
 - Write as if Tyk OAS is the default. Introduce Tyk Classic behaviour with "If using Tyk Classic, ..." rather than labelling both options symmetrically.
