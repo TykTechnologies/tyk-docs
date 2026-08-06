@@ -1,19 +1,19 @@
 ---
 title: "Performance Monitoring"
-description: "How to analyze Tyk Performance"
+description: "Learn how to monitor and analyze the performance of your Tyk Gateway"
 keywords: "Performance, Monitoring, Observability"
 sidebarTitle: "Performance Monitoring"
 ---
 
 ## What is the performance impact of analytics
 
-Tyk Gateway allows analytics to be recorded and stored in a persistent data store (MongoDB/SQL) for all APIs by default, via [Tyk Pump](/api-management/tyk-pump#tyk-analytics-record-fields).
+Tyk Gateway allows analytics to be recorded and stored in a persistent data store (MongoDB/SQL) for all APIs by default, via [Tyk Pump](/api-management/tyk-pump).
 
-Tyk Gateway generates transaction records for each API request and response, containing [analytics data](/api-management/tyk-pump#tyk-analytics-record-fields) relating to: the originating host (where the request is coming from), which Tyk API version was used, the HTTP method requested and request path etc.
+Tyk Gateway generates transaction records for each API request and response, containing [analytics data](/api-management/logs/traffic-logs) relating to: the originating host (where the request is coming from), which Tyk API version was used, the HTTP method requested and request path etc.
 
-The transaction records are transmitted to Redis and subsequently transferred to a persistent [data store](/api-management/tyk-pump#external-data-stores) of your choice via Tyk Pump. Furthermore, Tyk Pump can also be configured to [aggregate](/api-management/tyk-pump#aggregated-analytics) the transaction records (using different data keys - API ID, access key, endpoint, response status code, location) and write to a persistent data store. Tyk Dashboard uses this data for:
-- [Aggregated analytics](/api-management/dashboard-configuration#traffic-analytics) - Displaying analytics based on the aggregated data.
-- [Log Browser](/api-management/dashboard-configuration#activity-logs) to display raw transaction records.
+The transaction records are transmitted to Redis and subsequently transferred to a persistent [data store](/api-management/logs/external-data-sinks) of your choice via Tyk Pump. Furthermore, Tyk Pump can also be configured to [aggregate](/api-management/dashboard-analytics#how-aggregation-works) the transaction records (using different data keys - API ID, access key, endpoint, response status code, location) and write to a persistent data store. Tyk Dashboard uses this data for:
+- [Aggregated analytics](/api-management/dashboard-analytics#traffic-analytics) - Displaying analytics based on the aggregated data.
+- [Log Browser](/api-management/dashboard-analytics#activity-logs) to display raw transaction records.
 
 ### How Do Analytics Impact Performance?
 
@@ -49,7 +49,7 @@ Users can selectively prevent the generation of analytics for
 - **Per API**: Tyk Gateway will not create records for requests/responses for any endpoints of an API.
 - **Per Endpoint**: Tyk Gateway will not create records for requests/responses for specific endpoints.
 
-When set, this prevents Tyk Gateway from generating the transaction records. Without transaction records, Tyk Pump will not transfer analytics to the chosen persistent data store. It's worth noting that the [track middleware](/api-management/dashboard-configuration#activity-by-endpoint) exclusively influences the generation of *endpoint popularity* aggregated data by Tyk Pump.
+When set, this prevents Tyk Gateway from generating the transaction records. Without transaction records, Tyk Pump will not transfer analytics to the chosen persistent data store. It's worth noting that the [track middleware](/api-management/dashboard-analytics#activity-by-endpoint) exclusively influences the generation of *endpoint popularity* aggregated data by Tyk Pump.
 
 ### Conclusion
 
@@ -61,7 +61,7 @@ Subsequently, it is worthwhile monitoring traffic and system load and using this
 
 ## What is the performance impact of OpenTelemetry metrics
 
-Tyk Gateway can emit RED (Rate, Errors, Duration) metrics, Go runtime metrics, and distributed traces via [OpenTelemetry](/api-management/traces#opentelemetry). Enabling these signals adds a per-request cost that shows up as higher latency and resource usage, not as lost throughput.
+Tyk Gateway can emit RED (Rate, Errors, Duration) metrics, Go runtime metrics, and distributed traces via [OpenTelemetry](/api-management/traces). Enabling these signals adds a per-request cost that shows up as higher latency and resource usage, not as lost throughput.
 
 For a broader overview of what Tyk exposes, see [Logs and Metrics](/api-management/logs-metrics).   These numbers go alongside those in [What is the performance impact of analytics](/api-management/performance-monitoring#what-is-the-performance-impact-of-analytics). Most production deployments run both pipelines, and the costs add up rather than multiply.
 
@@ -94,7 +94,7 @@ These are internal benchmark numbers. Absolute figures won't transfer to differe
 
 - **Enable runtime metrics.** They add GC, goroutine, and heap data at no measurable cost. The load test shows CPU +0.5% and memory +0% versus metrics-only. There's no reason to leave them off.
 - **Treat custom metrics as a memory problem, not a CPU one.** In load tests, 3 custom metric definitions across 50 routes pushed mean memory up +28% and peak memory up +32%, with no CPU change. Avoid high-cardinality label values like user IDs, JWT subjects, full URLs, or trace IDs. Each unique combination creates a new time series held in memory until export. Before adding custom metrics, estimate `routes × instruments × dimension cardinality`.
-- **Sample traces aggressively, but don't expect linear savings.** Configure [opentelemetry.sampling.type](/tyk-oss-gateway/configuration#opentelemetry-sampling-type) as `TraceIDRatioBased` and set [opentelemetry.sampling.rate](/tyk-oss-gateway/configuration#opentelemetry-sampling-rate) to 0.05–0.1 for high-RPS gateways. Use [opentelemetry.sampling.parent_based](/tyk-oss-gateway/configuration#opentelemetry-sampling-parent_based) to keep spans coherent. See [Sampling Strategies](/api-management/traces#sampling-strategies) for all options. Since dropping from 100% to 50% only saves ~17% at p99 and nothing on CPU/memory, the real fix is to disable tracing for APIs that don't need it.
+- **Sample traces aggressively, but don't expect linear savings.** Configure [opentelemetry.sampling.type](/tyk-oss-gateway/configuration#opentelemetry-sampling-type) as `TraceIDRatioBased` and set [opentelemetry.sampling.rate](/tyk-oss-gateway/configuration#opentelemetry-sampling-rate) to 0.05–0.1 for high-RPS gateways. Use [opentelemetry.sampling.parent_based](/tyk-oss-gateway/configuration#opentelemetry-sampling-parent_based) to keep spans coherent. See [Sampling Strategies](/api-management/traces#sampling) for all options. Since dropping from 100% to 50% only saves ~17% at p99 and nothing on CPU/memory, the real fix is to disable tracing for APIs that don't need it.
 - **Enable detailed tracing per API, not globally.** The Tyk OAS API [server.detailedTracing](/api-management/gateway-config-tyk-oas#detailedtracing) field (and its [Tyk Classic equivalent](/api-management/gateway-config-tyk-classic#opentelemetry)) turns on middleware-level spans for specific APIs only. Use it to limit span volume to where it's useful.
 - **Keep the default 5s export interval.** Gateway-side cost stays under +5% even at 1,000 APIs. Changing the interval doesn't help the gateway; it only shifts pressure to the collector. Tune [opentelemetry.span_batch_config](/tyk-oss-gateway/configuration#opentelemetry-span_batch_config) (`max_queue_size`, `max_export_batch_size`, `batch_timeout`) only if traces are being dropped because the collector can't keep up.
 - **Don't run both signal pipelines unless you need to.** Running OTel metrics alongside Tyk analytics adds about +3% p75 and +12% p99 over analytics alone. If a Pump-driven Prometheus pipeline already covers your KPIs, the overlap may not be worth it.
@@ -102,7 +102,7 @@ These are internal benchmark numbers. Absolute figures won't transfer to differe
 
 ### Conclusion
 
-The default RED instruments and Go runtime metrics are safe to enable in production. The cost is small, throughput barely moves, and adding more dimensions or instruments doesn't compound overhead. Tracing is the expensive part: the cost is largely fixed, and the only real way to eliminate it is to disable tracing, not to sample it low. Keep sample rates low, use per-API detailed tracing where possible, and size pod memory against your API count. For more detail on OTel configuration, see [Distributed Tracing with OpenTelemetry](/api-management/traces#opentelemetry) and [Sampling Strategies](/api-management/traces#sampling-strategies).
+The default RED instruments and Go runtime metrics are safe to enable in production. The cost is small, throughput barely moves, and adding more dimensions or instruments doesn't compound overhead. Tracing is the expensive part: the cost is largely fixed, and the only real way to eliminate it is to disable tracing, not to sample it low. Keep sample rates low, use per-API detailed tracing where possible, and size pod memory against your API count. For more detail on OTel configuration, see [Distributed Tracing with OpenTelemetry](/api-management/traces) and [Sampling Strategies](/api-management/traces#sampling).
 
 ## How to reduce CPU usage in a Redis Cluster
 
@@ -141,7 +141,7 @@ Follow these steps:
     Confirm that the `enable_cluster` configuration option is set to true in the [Tyk Gateway](/tyk-oss-gateway/configuration#storage-enable_cluster), [Tyk Dashboard](/tyk-dashboard/configuration#enable_cluster) and [Tyk Pump](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables#analytics_storage_config-enable_cluster) configuration files. This setting 
     informs Tyk that a Redis Cluster is in use for key storage.
 
-    Ensure that the `addrs` array is populated in the [Tyk Gateway](/tyk-oss-gateway/configuration#storage-addrs) and [Tyk Pump](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables#analytics_storage_config-addrs) configuration files (*tyk.conf* and *pump.conf*) with the addresses of all Redis Cluster nodes. If you are using Tyk Self Managed (the licensed product), also update [Tyk Dashboard](/tyk-dashboard/configuration#redis_addrs) configuration file (*tyk_analytics.conf*). This ensures that the Tyk components can interact with the entire Redis Cluster. Please refer to the [configure Redis Cluster](/tyk-configuration-reference/redis-cluster-sentinel#redis-cluster-and-tyk-gateway) guide for further details.
+    Ensure that the `addrs` array is populated in the [Tyk Gateway](/tyk-oss-gateway/configuration#storage-addrs) and [Tyk Pump](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables#analytics_storage_config-addrs) configuration files (*tyk.conf* and *pump.conf*) with the addresses of all Redis Cluster nodes. If you are using Tyk Self Managed (the licensed product), also update [Tyk Dashboard](/tyk-dashboard/configuration#redis_addrs) configuration file (*tyk_analytics.conf*). This ensures that the Tyk components can interact with the entire Redis Cluster. Please refer to the [configure Redis Cluster](/tyk-configuration-reference/redis-cluster-sentinel#configure-redis-cluster) guide for further details.
 
 2. **Configure Tyk to distribute analytics keys to multiple Redis shards**
 
@@ -149,7 +149,7 @@ Follow these steps:
 
     1. **Optimize Analytics Configuration**: In the Tyk Gateway configuration (tyk.conf), set [analytics_config.enable_multiple_analytics_keys](/tyk-oss-gateway/configuration#analytics_config-enable_multiple_analytics_keys) to true. This option allows Tyk to distribute analytics data across Redis nodes, using multiple keys for the analytics. There's a corresponding option for Self Managed MDCB, also named [enable_multiple_analytics_keys](/tyk-multi-data-centre/mdcb-configuration-options#enable_multiple_analytics_keys). Useful only if the gateways in the data plane are configured to send analytics to MDCB.
     2. **Optimize Connection Pool Settings**: Adjust the [optimization_max_idle](/tyk-oss-gateway/configuration#storage-optimisation_max_idle) and [optimization_max_active](/tyk-oss-gateway/configuration#storage-optimisation_max_active) settings in the configuration files to ensure that the connection pool can handle the analytics workload without overloading any Redis shard.
-    3. **Use a Separate Analytics Store**: For high analytics traffic, you can opt to use a dedicated *Redis Cluster* for analytics by setting [enable_separate_analytics_store](/tyk-oss-gateway/configuration#enable_separate_analytics_store) to true in the Tyk Gateway configuration file (*tyk.conf*) and specifying the separate Redis cluster configuration in the `analytics_storage` section. Please consult the [separated analytics storage](/api-management/tyk-pump#separated-analytics-storage) guide for an example with *Tyk Pump* that can equally be applied to *Tyk Gateway*.
+    3. **Use a Separate Analytics Store**: For high analytics traffic, you can opt to use a dedicated *Redis Cluster* for analytics by setting [enable_separate_analytics_store](/tyk-oss-gateway/configuration#enable_separate_analytics_store) to true in the Tyk Gateway configuration file (*tyk.conf*) and specifying the separate Redis cluster configuration in the `analytics_storage` section. See [Separate Analytics Storage](/planning-for-production/database-settings#separate-analytics-storage) for a worked example.
     4. **Review and Test**: After implementing these changes, thoroughly review your configurations and conduct load testing to verify that the analytics traffic is now evenly distributed across all Redis shards.
 
     By following these steps you can enhance the distribution of analytics traffic across the Redis shards. This should lead to improved scalability and performance of your Tyk deployment.

@@ -1,0 +1,115 @@
+---
+title: "Identity Provider Registry"
+description: "Manage Identity Providers centrally with the Tyk Identity Provider Registry for JWT authentication and Dynamic Client Registration"
+keywords: "IdP, Identity Provider, JWKS, JWT, Dynamic Client Registration, DCR, scope-to-policy, identity provider registry"
+sidebarTitle: "Identity Provider Registry"
+---
+
+## Availability
+
+| Component | Version | Edition |
+| :-------- | :------ | :------ |
+| Tyk Gateway | Available since [v5.14.0](/developer-support/release-notes/gateway#5-14-0-release-notes) | Enterprise |
+| Tyk Dashboard | Available since [v5.14.0](/developer-support/release-notes/dashboard#5-14-0-release-notes) | Enterprise |
+| Tyk Sync | Available since [v2.2.0](/developer-support/release-notes/sync#2-2-0-release-notes) | Enterprise |
+
+## Introduction
+
+When using JWT authentication, Tyk needs to know which Identity Providers (IdPs) are trusted to issue tokens for an API. Specifically, it needs to know where to fetch the JWKS to validate signatures, and how to map token scopes to Tyk policies. Traditionally this configuration was stored directly inside the API definition.
+
+Embedding IdP config in the API definition causes problems at scale:
+
+- The Tyk Dashboard and Tyk Developer Portal can overwrite each other's changes when both write to the same API definition concurrently.
+- Deleting an [API Product using Dynamic Client Registration (DCR)](/tyk-stack/tyk-developer-portal/enterprise-developer-portal/api-access/dynamic-client-registration) from the Developer Portal does not reliably clean up the IdP config it added, leaving orphaned JWKS URLs and scope mappings.
+- Changes to an IdP's configuration must be separately applied to all APIs accessed with tokens issued by that provider.
+
+The Identity Provider Registry solves these problems by managing IdP records as a standalone resource in the Tyk Dashboard, separate from API definitions. Tyk Gateway loads the registry at startup alongside API definitions and applies it during JWT validation.
+
+<Note>
+The Identity Provider Registry manages IdPs used to authenticate *clients accessing your APIs* (inbound JWT validation). It is not related to the configuration of upstream services that the Gateway authenticates to, which is covered in [Upstream Authentication](/api-management/upstream-authentication).
+</Note>
+
+## What Is the Identity Provider Registry
+
+The Identity Provider Registry is a collection of IdP records managed by the Tyk Dashboard. Each record describes a single Identity Provider and its relationship to one or more APIs:
+
+| Field | Description |
+|-------|-------------|
+| `name` | A human-readable label for the IdP |
+| `issuer` | The issuer claim (`iss`) expected in tokens from this IdP |
+| `jwks_uri` | The URL of the IdP's JSON Web Key Set endpoint, used to fetch public keys for JWT signature validation |
+| `scope_claim_name` | The JWT claim that contains the token scopes, such as `scope` or `scp` |
+| `api_mappings` | A map of API IDs to scope-to-policy mappings, defining which Tyk policies should be applied when a token from this IdP is presented to each API |
+
+Adopting the registry is a non-breaking change. Any JWKS or scope configuration already present in an API definition continues to take precedence over registry-sourced config, which means existing API definitions keep working correctly on Gateways that predate 5.14.0. APIs that have no registry entries are unaffected. The registry is supported by both Tyk OAS and Tyk Classic API definitions.
+
+The Gateway caches JWKS fetched via registry entries the same way as those configured directly in an API definition.
+
+<Note>
+Registry JWKS URIs always use the gateway-level `jwks.cache.timeout` setting (defaulting to 240 seconds) and cannot currently be individually tuned per IdP.
+</Note>
+
+In distributed deployments, the registry is served to Data Plane Gateways by MDCB alongside API definitions. No additional configuration is required. Registry entries reach the Gateways that load the APIs they are mapped to, and are automatically pruned to include only the relevant `api_mappings` for each Data Plane.
+
+## When to Use the Identity Provider Registry
+
+The registry is the recommended approach when:
+
+- The Tyk Developer Portal manages API Product access via [Dynamic Client Registration](/tyk-stack/tyk-developer-portal/enterprise-developer-portal/api-access/dynamic-client-registration), where multiple systems write IdP config for the same API.
+- Multiple IdPs need to be trusted for a single API (the registry supports many-to-many relationships between IdPs and APIs).
+- IdP lifecycle (creation, update, and deletion) needs to be decoupled from API definition management.
+
+If you configure a single JWKS URI directly in the API definition and do not use DCR, the registry is not required.
+
+## Managing IdPs
+
+The IdP registry is managed exclusively via the Tyk Dashboard API or the [Tyk Developer Portal](/tyk-stack/tyk-developer-portal/enterprise-developer-portal/api-access/dynamic-client-registration). There is no Dashboard UI for the registry at this time.
+
+The Dashboard API exposes the following operations on the `/api/clientidps` endpoint:
+
+- **Create** an IdP record with a name, issuer, and JWKS URI.
+- **Retrieve** a single IdP or list all IdPs for the organisation.
+- **Update** an IdP record.
+- **Delete** an IdP record, which removes all its API mappings.
+- **Manage API mappings** in bulk using a `PATCH` request with JSON Merge Patch (RFC 7386) semantics: present keys upsert the mapping, null-valued keys remove it.
+
+Full endpoint reference and request/response schemas are available in the [Tyk Dashboard API reference](/tyk-dashboard-api).
+
+### API Mappings
+
+The `api_mappings` field is a map of API IDs to scope-to-policy configuration. Each entry defines how token scopes from this IdP are translated into Tyk policy IDs when the token is presented to that API.
+
+A single IdP can be mapped to multiple APIs, and a single API can have mappings from multiple IdPs.
+
+To add or update the mapping for a specific API without affecting other mappings on the same IdP, use the `PATCH /api/clientidps/{id}/mappings` endpoint with a JSON Merge Patch body:
+
+```json
+{
+  "<api_id>": {
+    "scope_to_policy": {
+      "read": "policy-id-for-read",
+      "write": "policy-id-for-write"
+    }
+  }
+}
+```
+
+To remove a mapping for a specific API, set its value to `null`:
+
+```json
+{
+  "<api_id>": null
+}
+```
+
+## Tyk Sync
+
+From **Tyk Sync 2.2.0** the full IdP lifecycle is supported alongside APIs and policies:
+
+- `tyk-sync dump` exports each IdP to a `clientidp-{id}.json` file and adds a `client_idps` array to `.tyk.json`.
+  - Use the `--idps` flag to export a specific subset.
+- `tyk-sync publish` and `tyk-sync update` push IdP files to the registry in Tyk Dashboard.
+- `tyk-sync sync` reconciles the full create, update, and delete lifecycle for IdPs.
+
+Referential integrity warnings are printed when an IdP's `api_mappings` references an API ID or policy ID not included in the current dump.
+

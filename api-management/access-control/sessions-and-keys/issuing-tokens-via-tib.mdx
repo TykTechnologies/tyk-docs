@@ -1,0 +1,212 @@
+---
+title: "API Token Generation via Tyk Identity Broker"
+description: "Learn how to use Tyk Identity Broker (TIB) to authenticate users against external identity providers and issue API tokens for API access."
+keywords: "Tyk Identity Broker, TIB, OAuth, API Tokens, LDAP, Social Provider, Authentication, Access Keys"
+sidebarTitle: "Issue Access Tokens via TIB"
+---
+
+## Introduction
+
+[Tyk Identity Broker](/tyk-identity-broker/overview) (TIB) can act as a bridge between external identity providers (such as Okta, GitHub, or Entra ID) and Tyk Gateway to issue API tokens for client applications (such as Single Page Applications or mobile apps). 
+
+<Note>
+This is distinct from using TIB to log into the [Tyk Dashboard](/tyk-identity-broker/dashboard-sso) or [Developer Portal](/tyk-stack/tyk-developer-portal/enterprise-developer-portal/managing-access/enable-sso).
+</Note>
+
+Depending on how your API is secured, TIB supports two distinct flows for issuing tokens:
+1. **Standard API Tokens (Auth Tokens)**
+2. **OAuth 2.0 Tokens (Tyk as OAuth Provider)**
+
+## Issuing Standard API Tokens (Auth Tokens)
+
+When your API is secured with standard [Auth Token](/api-management/authentication/bearer-token) authentication you can use TIB to authenticate the user against an identity provider before directly generating a Tyk Session and associated Key (auth token), attaching a specific policy to it.
+
+### Prerequisites
+
+- An API configured to use [Auth Token authentication](/api-management/authentication/bearer-token).
+- A [Tyk policy](/api-management/policies) to attach to generated tokens; this becomes the `MatchedPolicyID`.
+- A [TIB service account](/tyk-identity-broker/dashboard-sso#tib-service-account) - a dedicated Tyk Dashboard user whose API key is used as `DashboardCredential`.
+
+This flow uses the `GenerateTemporaryAuthToken` [action](/tyk-identity-broker/overview#actions) and works with both embedded and [standalone](/tyk-identity-broker/standalone-tib) TIB. It is configured in the TIB profile as follows:
+
+```json expandable
+{
+  "ActionType": "GenerateTemporaryAuthToken",
+  "ID": "{profile-id}",
+  "IdentityHandlerConfig": {
+    "DashboardCredential": "{tib-service-user-api-key}",
+    "DisableOneTokenPerAPI": false,
+    "TokenAuth": {
+        "BaseAPIID": "{API-ID-TO-GRANT-ACCESS-TO}",
+        "Expires": 3600
+    }
+  },
+  "MatchedPolicyID": "{POLICY-ID}",
+  "OrgID": "{tyk-org-id}",
+  "ProviderConfig": { ... },
+  "ProviderName": "{provider-name}",
+  "Type": "passthrough"
+}
+```
+
+| Parameter | Required | Description |
+|---|---|---|
+| `ActionType` | Required | Must be `GenerateTemporaryAuthToken`. |
+| `ID` | Required | Unique identifier for this profile. Forms part of the TIB authentication URL; see [Profile](/tyk-identity-broker/overview#profile). |
+| `IdentityHandlerConfig.DashboardCredential` | Required | The [TIB service account's](/tyk-identity-broker/dashboard-sso#tib-service-account) Dashboard API key. Although the token grants access to Tyk Gateway, TIB creates it by calling the Tyk Dashboard API (`POST /api/keys`). |
+| `IdentityHandlerConfig.TokenAuth.BaseAPIID` | Required | The ID of the API to which the generated token grants access. |
+| `IdentityHandlerConfig.TokenAuth.Expires` | Optional | Token expiry in seconds. Defaults to `3600`. |
+| `IdentityHandlerConfig.DisableOneTokenPerAPI` | Optional | Set to `true` to allow multiple active tokens per user. Defaults to `false`. See [Controlling Concurrent Sessions](#controlling-concurrent-sessions). |
+| `MatchedPolicyID` | Required | The ID of the policy to apply to the generated session. |
+| `OrgID` | Required | The Tyk Organisation ID. |
+| `ProviderConfig` | Required | IdP-specific connection settings. See the [Identity Provider guides](/tyk-identity-broker/overview#what-would-you-like-to-do). |
+| `ProviderName` | Required | The authentication method. Can be `SocialProvider`, `ADProvider`, `SAMLProvider`, or `ProxyProvider`. |
+| `Type` | Required | Determined by provider: `redirect` for Social/SAML, `passthrough` for LDAP/Proxy. |
+
+## Issuing OAuth Tokens
+
+When your API is secured with [Tyk's built-in OAuth 2.0 authorization server](/api-management/authentication/oauth-2) you can use TIB as the [identity server](/api-management/authentication/oauth-2#integration-with-identity-server), authenticating the user against an external IdP and then handling the authorization code exchange with Tyk Dashboard on their behalf.
+
+<Note>
+[This flow](/tyk-identity-broker/overview#api-token-generation) requires Tyk Gateway's built-in OAuth 2.0 authorization server. It does not apply if you are using an external OAuth authorization server such as Auth0 or Okta.
+</Note>
+
+
+### Prerequisites
+
+- An API configured to use [Tyk's OAuth 2.0 authentication method](/api-management/authentication/oauth-2#configuring-your-api-proxy).
+- An OAuth client app [registered](/api-management/authentication/oauth-2#client-app-registration) for the target API in Tyk Dashboard.
+- A [TIB service account](/tyk-identity-broker/dashboard-sso#tib-service-account) - a dedicated Tyk Dashboard user whose API key is used as `DashboardCredential`.
+- TIB must be running as a [standalone instance](/tyk-identity-broker/standalone-tib), as this flow requires TIB to communicate directly with Tyk Gateway.
+
+This flow uses the `GenerateOAuthTokenForClient` [action](/tyk-identity-broker/overview#actions). Requests for tokens go via the base API's listen path (`{listen_path}/tyk/oauth/authorize-client/`), so TIB needs to know the listen path and ID of this API to make the correct API calls on your behalf. It is configured in the TIB profile as follows:
+
+```json expandable
+{
+  "ActionType": "GenerateOAuthTokenForClient",
+  "ID": "{profile-id}",
+  "IdentityHandlerConfig": {
+    "DashboardCredential": "{tib-service-user-api-key}",
+    "DisableOneTokenPerAPI": false,
+    "OAuth": {
+      "APIListenPath": "{API-LISTEN-PATH}",
+      "BaseAPIID": "{BASE-API-ID}",
+      "ClientId": "{TYK-OAUTH-CLIENT-ID}",
+      "RedirectURI": "http://{APP-DOMAIN}:{PORT}/{AUTH-SUCCESS-PATH}",
+      "ResponseType": "token",
+      "Secret": "{TYK-OAUTH-CLIENT-SECRET}"
+    }
+  },
+  "MatchedPolicyID": "{policy-id}",
+  "OrgID": "{tyk-org-id}",
+  "ProviderConfig": { ... },
+  "ProviderName": "SocialProvider",
+  "Type": "redirect"
+}
+```
+
+| Parameter | Required | Description |
+|---|---|---|
+| `ActionType` | Required | Must be `GenerateOAuthTokenForClient`. |
+| `ID` | Required | Unique identifier for this profile. Forms part of the TIB authentication URL; see [Profile](/tyk-identity-broker/overview#profile). |
+| `IdentityHandlerConfig.DashboardCredential` | Required | The [TIB service account's](/tyk-identity-broker/dashboard-sso#tib-service-account) Dashboard API key, used to invalidate previous tokens on re-authentication. |
+| `IdentityHandlerConfig.DisableOneTokenPerAPI` | Optional | Set to `true` to allow multiple active tokens per user. Defaults to `false`. See [Controlling Concurrent Sessions](#controlling-concurrent-sessions). |
+| `IdentityHandlerConfig.OAuth.APIListenPath` | Required | The listen path of the API; TIB uses this to call the OAuth authorize endpoint (`{listen_path}/tyk/oauth/authorize-client/`). |
+| `IdentityHandlerConfig.OAuth.BaseAPIID` | Required | The ID of the API secured with Tyk's built-in OAuth 2.0 authorization server. |
+| `IdentityHandlerConfig.OAuth.ClientId` | Required | The client ID of the Tyk OAuth client registered for this API. |
+| `IdentityHandlerConfig.OAuth.RedirectURI` | Required | The redirect URI registered for the Tyk OAuth client. The token is returned to the client as a URL fragment at this address. |
+| `IdentityHandlerConfig.OAuth.ResponseType` | Required | `token` or `authorization_code`. Use `token` for SPAs and mobile apps. |
+| `IdentityHandlerConfig.OAuth.Secret` | Required | The client secret of the Tyk OAuth client. |
+| `IdentityHandlerConfig.OAuth.NoRedirect` | Optional | Set to `true` to return the token as JSON in the response body instead of redirecting. Useful for non-browser clients. Defaults to `false`. |
+| `MatchedPolicyID` | Required | The ID of the policy to apply to the generated OAuth token. |
+| `OrgID` | Required | The Tyk Organisation ID. |
+| `ProviderConfig` | Required | IdP-specific connection settings. See the [Identity Provider guides](/tyk-identity-broker/overview#what-would-you-like-to-do). |
+| `ProviderName` | Required | The authentication method. Can be `SocialProvider`, `ADProvider`, `SAMLProvider`, or `ProxyProvider`. |
+| `Type` | Required | Determined by provider: `redirect` for Social/SAML, `passthrough` for LDAP/Proxy. |
+
+## Handling the Token Response
+
+When TIB successfully authorizes the user and generates the token, it delivers it back to the client application as follows:
+
+- **For `redirect` provider types** (such as Social providers or SAML): TIB redirects the user back to the application's `RedirectURI` with the token or auth code appended as a URL fragment (for example, `http://app-domain/callback#access_token=...`). The client app decodes and uses it as needed.
+- **For `passthrough` provider types** (such as LDAP): TIB returns the token directly in the response or redirect, depending on the configuration.
+
+## Controlling Concurrent Sessions
+
+When a user authenticates, TIB checks a Redis cache to see whether a token has already been issued for that user and invalidates it before generating a new one. This means re-authentication automatically revokes the previous token, which is useful if a token is compromised.
+
+Set `"DisableOneTokenPerAPI": true` to skip this check and allow multiple active tokens per user. This is useful when users need concurrent sessions across multiple devices or applications. The trade-off is that old tokens accumulate until they expire via the policy TTL, rather than being revoked on re-authentication.
+
+## Worked Examples
+
+### GitHub (OAuth Token via Social Provider)
+
+The following video demonstrates this flow end-to-end:
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/gqUaDM4aJTw" title="Issuing OAuth 2.0 tokens via Tyk Identity Broker" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+1. Register a GitHub OAuth Application
+
+    - In GitHub, go to **Settings > Developer settings > OAuth Apps** and create a new OAuth app.
+    - Set the **Authorization callback URL** to: `http://{tib-host}/auth/{profile-id}/github/callback`
+    - Note the **Client ID** and **Client Secret**.
+
+2. Register an OAuth Client in Tyk Dashboard
+
+    Before TIB can request a token on the user's behalf, you need an OAuth client registered in Tyk Dashboard for the target API. See [Client App Registration](/api-management/authentication/oauth-2#client-app-registration) for details.
+
+3. IdP-Specific Profile Configuration
+
+    Configure the TIB profile for the [OAuth token flow](#issuing-oauth-tokens) setting `ProviderName` to `SocialProvider` and `Type` to `redirect`. The GitHub-specific settings go in `ProviderConfig`:
+
+```json expandable
+    {
+      "ProviderName": "SocialProvider",
+      "Type": "redirect",
+      "ProviderConfig": {
+        "CallbackBaseURL": "http://{tib-host}",
+        "FailureRedirect": "http://{app-domain}/login?fail=true",
+        "UseProviders": [
+          {
+            "Name": "github",
+            "Key": "{github-client-id}",
+            "Secret": "{github-client-secret}"
+          }
+        ]
+      }
+    }
+```
+
+
+### OAuth Token via LDAP
+
+This example authenticates the user against LDAP before issuing the OAuth token. It is useful for internal APIs that require valid OAuth tokens but where user identity is managed in an LDAP directory such as Active Directory, rather than a web-based IdP.
+
+Because LDAP is a passthrough flow, users submit their credentials via a form `POST` directly to TIB; no browser redirect to an external IdP is involved. See [Login Page](/api-management/single-sign-on-ldap#login-page) for how to create the login form.
+
+1. Register an OAuth Client in Tyk Dashboard
+
+    As with the GitHub example, you need an OAuth client registered in Tyk Dashboard for the target API. See [Client App Registration](/api-management/authentication/oauth-2#client-app-registration) for details.
+
+2. IdP-Specific Profile Configuration
+
+    Configure the TIB profile for the [OAuth token flow](#issuing-oauth-tokens) setting `ProviderName` to `ADProvider` and `Type` to `passthrough`. The LDAP-specific settings go in `ProviderConfig`:
+
+```json expandable
+{
+  "ProviderName": "ADProvider",
+  "Type": "passthrough",
+  "ProviderConfig": {
+    "LDAPServer": "{ldap-server}",
+    "LDAPPort": "389",
+    "LDAPUserDN": "cn=*USERNAME*,dc=example,dc=com",
+    "LDAPAttributes": [],
+    "FailureRedirect": "http://{app-domain}/failure",
+    "GetAuthFromBAHeader": true
+  }
+}
+```
+
+The key difference from the generic template is `Type: "passthrough"` and the LDAP-specific `ProviderConfig`. Set `GetAuthFromBAHeader: true` if your login form submits credentials via HTTP Basic Auth. Set `LDAPUserDN` to match your LDAP directory structure, keeping `*USERNAME*` as a literal placeholder; TIB replaces it with the submitted username at runtime.
+
+See the [LDAP field reference](/api-management/single-sign-on-ldap#tib-profile) for all available `ProviderConfig` options.
