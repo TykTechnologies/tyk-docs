@@ -1,6 +1,6 @@
 ---
 title: "Microsoft Entra ID On-Behalf-Of"
-description: "Configure Tyk token exchange to use Microsoft Entra ID's On-Behalf-Of flow via the RFC 7523 jwt-bearer grant."
+description: "Configure Tyk token exchange to use Microsoft Entra ID's On-Behalf-Of (OBO) flow via the RFC 7523 jwt-bearer grant, including multi-tenant Entra applications."
 keywords: "Microsoft Entra, Azure AD, On-Behalf-Of, OBO, JWT Bearer, RFC 7523, AADSTS, Conditional Access, token exchange"
 sidebarTitle: "Microsoft Entra ID (OBO)"
 ---
@@ -11,27 +11,30 @@ sidebarTitle: "Microsoft Entra ID (OBO)"
 |:---|:---|
 | Token exchange | Enterprise |
 
-*Available from Tyk 5.15.0*
+**Available from Tyk 5.15.0.**
 
 ## Introduction
 
-Microsoft Entra ID solves delegated, on-behalf-of authentication with its **On-Behalf-Of (OBO)** flow. Entra rejects the [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693) token exchange grant outright — a request using it fails with `unsupported_grant_type` (`AADSTS70003`) — so Entra cannot be configured as a standard [token exchange](/api-management/authentication/token-exchange) provider.
+Microsoft Entra ID solves delegated, on-behalf-of authentication with its **On-Behalf-Of (OBO)** flow. Entra rejects the [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693) token exchange grant outright, failing with `unsupported_grant_type` (`AADSTS70003`), so Entra cannot be configured as a standard [token exchange](/api-management/authentication/token-exchange) provider.
 
-On the wire, OBO is the standard [RFC 7523](https://www.rfc-editor.org/rfc/rfc7523) JWT bearer grant plus a small number of Microsoft conventions. Every one of those conventions maps onto configuration Tyk's token exchange already has: the [`grantType: jwt-bearer`](/api-management/authentication/token-exchange#grant-type) provider setting, the existing `customParams` mechanism, and the existing `defaultTarget` audience/scopes fields. Nothing Entra-specific is built into Tyk — this page is a configuration recipe, not a separate feature.
+On the wire, OBO is the standard [RFC 7523](https://www.rfc-editor.org/rfc/rfc7523) JWT bearer grant plus a small number of Microsoft conventions, each of which maps onto existing token exchange configuration: the [`grantType: jwt-bearer`](/api-management/authentication/token-exchange#grant-type) provider setting, `customParams`, and the `defaultTarget` audience and scopes fields.
+
+Token exchange runs under the [OAuth 2.0 (External IdP)](/api-management/authentication/oauth2-authentication) security scheme.
 
 ## Prerequisites
 
 Before configuring token exchange against Entra, you need:
 
-- An Entra app registration for the middle-tier API — the application Tyk authenticates as when it calls the downstream API on the caller's behalf.
+- An Entra app registration for the middle-tier API, which is the application Tyk Gateway authenticates as when it calls the downstream API on the caller's behalf.
 - That app registration's **Application (client) ID**.
-- Either a **client secret**, or a **certificate** uploaded to the Tyk Gateway's certificate store if you want to authenticate with `private_key_jwt` instead of a shared secret.
+- Either a **client secret**, or a **certificate** uploaded to Tyk Gateway's certificate store if you want to authenticate with `private_key_jwt` instead of a shared secret.
 - The downstream API's exposed scopes, as they appear on the app registration's **Expose an API** page (for example `Orders.Read`).
 
-## Configure the provider
+## Configure the Provider
 
 Set `grantType: jwt-bearer` on the provider and point it at your tenant's Entra endpoints:
 
+```yaml expandable highlight={12}
 x-tyk-api-gateway:
   server:
     authentication:
@@ -63,13 +66,13 @@ x-tyk-api-gateway:
 
 A few fields are worth calling out:
 
-- `clientAuth.method: client_secret_post` is the simplest path. For production, Microsoft recommends certificate-based authentication — set `method: private_key_jwt` and `certId` to a certificate already uploaded to the gateway's certificate store instead of `clientSecret`. See [Client authentication](/api-management/authentication/token-exchange#grant-type) for the `private_key_jwt` fields and its RSA-only constraint.
-- `customParams.requested_token_use: on_behalf_of` is Entra's own OBO switch. It's plain configuration, not something Tyk hardcodes — any IdP-specific form parameter travels through `customParams` the same way.
-- `defaultTarget.audience` and `defaultTarget.scopes` are the same fields RFC 8693 providers use. Under `jwt-bearer`, Tyk renders them into the wire request differently — see [Scope rendering](/api-management/authentication/token-exchange#grant-type).
+- `clientAuth.method: client_secret_post` is the simplest path. For production, Microsoft recommends certificate-based authentication: set `method: private_key_jwt` and `certId` to a certificate already uploaded to Tyk Gateway's certificate store instead of `clientSecret`. See [Client Authentication](/api-management/authentication/token-exchange#client-authentication) for the `private_key_jwt` fields and its RSA-only constraint.
+- `customParams.requested_token_use: on_behalf_of` is Entra's OBO switch. Any IdP-specific form parameter travels through `customParams` the same way.
+- `defaultTarget.audience` and `defaultTarget.scopes` are the same fields RFC 8693 providers use. Under `jwt-bearer`, Tyk Gateway renders them into the wire request differently, see [Scope Rendering](/api-management/authentication/token-exchange#scope-rendering).
 
-### The request Entra receives
+### The Request Entra Receives
 
-Given the configuration above, Tyk sends:
+Given the configuration above, Tyk Gateway sends:
 
 ```
 POST /oauth2/v2.0/token
@@ -81,9 +84,9 @@ client_id             = <MIDDLE_TIER_APP_ID>
 client_secret         = <resolved secret>
 ```
 
-This matches Microsoft's own OBO documentation character-for-character — Tyk isn't reinterpreting the flow, it's rendering standard configuration onto the grant Entra expects.
+This is the request described in Microsoft's [On-Behalf-Of flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-on-behalf-of-flow) documentation.
 
-### Requesting all consented permissions
+### Requesting All Consented Permissions
 
 To request every permission your application has been statically granted on an API, rather than naming scopes individually, write the fully-qualified `.default` scope directly:
 
@@ -93,20 +96,21 @@ defaultTarget:
     - https://graph.microsoft.com/.default
 ```
 
-Because this scope already contains a `/`, Tyk's [scope rendering rule](/api-management/authentication/token-exchange#grant-type) passes it through verbatim instead of prefixing it with `audience/`.
+Because this scope already contains a `/`, Tyk's [scope rendering rule](/api-management/authentication/token-exchange#scope-rendering) passes it through verbatim instead of prefixing it with `audience/`.
 
-### Entra's scope grammar is an IdP rule, not a Tyk rule
+### Scope Grammar Constraints
 
-Entra allows only one downstream resource per token request, and rejects a request that mixes `.default` with named permissions. Tyk does not validate or lint another vendor's scope grammar — if your configuration violates one of Entra's rules, the exchange fails at runtime with a descriptive `AADSTS` error (for example `AADSTS70011`), relayed through the normal `idp_error` outcome. Check the [structured logs](/api-management/authentication/token-exchange#observability) for the relayed error code and description.
+Entra allows only one downstream resource per token request, and rejects a request that mixes `.default` with named permissions. Tyk Gateway does not validate Entra's scope grammar. A configuration that violates one of these rules fails at runtime with an `AADSTS` error, for example `AADSTS70011`, reported through the `idp_error` outcome. Check the [structured logs](/api-management/authentication/token-exchange#structured-logs) for the relayed error code and description.
 
-## Conditional Access and step-up authentication
+## Conditional Access and Step-Up Authentication
 
-If the downstream API sits behind a Conditional Access policy or requires MFA, Entra responds to the exchange with `interaction_required`. This needs no configuration on your part: Tyk's [step-up authentication relay](/api-management/authentication/token-exchange#grant-type) is always active for the `jwt-bearer` grant. It returns a `401` challenge to the original caller instead of failing the exchange, so an MSAL-based (or similar) client can complete the step-up and retry.
+If the downstream API sits behind a Conditional Access policy or requires MFA, Entra responds to the exchange with `interaction_required`. Tyk's [step-up authentication relay](/api-management/authentication/token-exchange#step-up-authentication) is always active for the `jwt-bearer` grant and needs no configuration. It returns a `401` challenge to the original caller instead of failing the exchange, so an MSAL-based (or similar) client can complete the step-up and retry.
 
-## Multi-tenant applications
+## Multi-Tenant Applications
 
-If your API serves users from multiple Entra tenants and you can't enumerate every tenant ID up front, use a `regex:` issuer entry and a claim variable in `tokenEndpoint` instead of listing each tenant explicitly:
+If your API serves users from multiple Entra tenants and you cannot enumerate every tenant ID up front, use a `regex:` issuer entry and a claim variable in `tokenEndpoint` instead of listing each tenant explicitly:
 
+```yaml expandable
 providers:
   - name: entra-obo
     grantType: jwt-bearer
@@ -125,13 +129,8 @@ providers:
       requested_token_use: on_behalf_of
 ```
 
-See [Multi-tenant issuer matching](/api-management/authentication/token-exchange#grant-type) for how the `regex:` prefix and the `$tyk_context.jwt_claims_tid` token endpoint variable work.
+See [Multi-Tenant Issuer Matching](/api-management/authentication/token-exchange#multi-tenant-issuer-matching) for how the `regex:` prefix and the `$tyk_context.jwt_claims_tid` token endpoint variable work.
 
 <Note>
-A `regex:` issuer entry controls which provider a token is routed to — it does not decide which tenants are trusted. That decision belongs to the JWT authentication scheme's `allowedIssuers` list, which validates the token's signature before token exchange runs. Pairing a permissive `regex:` entry here with an empty or permissive `allowedIssuers` on the JWT scheme accepts any tenant of Entra. Set `allowedIssuers` deliberately to the tenants you actually want to trust.
+A `regex:` issuer entry controls which provider a token is routed to, not which tenants are trusted. Trust is decided by the JWT authentication scheme's `allowedIssuers` list. Pairing a permissive `regex:` entry with an empty or permissive `allowedIssuers` accepts any Entra tenant, so set `allowedIssuers` deliberately to the tenants you want to trust.
 </Note>
-
-## See also
-
-- [Token exchange](/api-management/authentication/token-exchange) — the full configuration reference, including the `jwt-bearer` grant, scope rendering rule, caching, and observability.
-- [OAuth 2.0 (External IdP)](/api-management/authentication/oauth2-authentication) — the `oauth2` security scheme that token exchange runs under.

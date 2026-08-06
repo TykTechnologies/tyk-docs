@@ -100,12 +100,12 @@ Each entry in `providers` matches inbound tokens by `iss` claim and routes excha
 | `timeout` | duration string | No | Per-call timeout for requests to `tokenEndpoint`. Accepts values such as `"5s"` or `"500ms"`. Defaults to `"15s"`. |
 | `customParams` | map | No | Additional form parameters appended to the exchange request. Standard RFC 8693 keys (`grant_type`, `subject_token`, `audience`, and others) are reserved and cannot be overridden. |
 
-### Grant type
+### Grant Type
 
-*Available from Tyk 5.15.0.*
+**Available from Tyk 5.15.0.**
 
-By default, a provider sends an RFC 8693 token exchange request. Some authorization servers (Microsoft Entra ID) reject that grant outright and instead implement delegation using the [RFC 7523](https://www.rfc-editor.org/rfc/rfc7523) JWT bearer grant.
 
+```yaml expandable highlight={3}
 providers:
   - name: corp-idp
     grantType: jwt-bearer
@@ -132,22 +132,30 @@ See [Microsoft Entra ID On-Behalf-Of](/api-management/authentication/token-excha
 
 Under `grantType: jwt-bearer`, the exchange request differs from RFC 8693 in three ways:
 
-- The gateway sends the inbound token as `assertion`, not `subject_token`. None of the RFC 8693 subject-token fields are sent under this grant.
+- Tyk Gateway sends the inbound token as `assertion`, not `subject_token`. None of the RFC 8693 subject-token fields are sent under this grant.
 - No `audience` or `resource` wire parameter is ever sent. The audience is folded into `scope` instead, using the rendering rule below.
-- `customParams` reserved keys are scoped to the grant in use: under `jwt-bearer`, only `assertion` is reserved, so — unlike under the default `token-exchange` grant — you can pass a literal `audience` or `resource` custom parameter through if your IdP expects one on this grant.
+- Only `assertion` is a reserved `customParams` key, so a literal `audience` or `resource` custom parameter is forwarded if your authorization server expects one on this grant.
 
-**Scope rendering.** The configured `audience` and `scopes` describe the same logical target under both grants, but `jwt-bearer` renders them differently: each scope that doesn't already contain a `/` is prefixed with `audience/`; a scope that already contains `/` is treated as fully qualified and passed through verbatim; and if no scopes are configured, no `scope` parameter is sent at all — Tyk never invents one.
+#### Scope Rendering
 
-| Configured target | `scope` sent under `jwt-bearer` |
+The configured `audience` and `scopes` describe the same logical target under both grants, but `jwt-bearer` renders them differently:
+
+- Each scope that does not already contain a `/` is prefixed with `audience/`.
+- A scope that already contains a `/` is treated as fully qualified and passed through verbatim.
+- If no scopes are configured, no `scope` parameter is sent.
+
+| Configured Target | Scope Sent Under jwt-bearer |
 |---|---|
 | `audience: api://orders`, `scopes: [Orders.Read]` | `scope=api://orders/Orders.Read` |
-| `audience: api://orders`, `scopes: [Orders.Read, https://graph.microsoft.com/.default]` | `scope=api://orders/Orders.Read https://graph.microsoft.com/.default` (the second scope already contains `/`, so it passes through unprefixed) |
-| No `audience`, `scopes: [read, write]` | `scope=read write` (nothing to prefix) |
+| `audience: api://orders`, `scopes: [Orders.Read, https://graph.microsoft.com/.default]` | `scope=api://orders/Orders.Read https://graph.microsoft.com/.default` |
+| No `audience`, `scopes: [read, write]` | `scope=read write` |
 | `audience: api://orders`, no `scopes` | No `scope` parameter is sent |
 
-**Example: plain jwt-bearer provider.** Not every authorization server using this grant needs Entra's conventions. A provider such as Keycloak that implements plain RFC 7523 needs no `customParams` at all — leave `audience` out and write the scopes your authorization server defines exactly as it expects them:
+#### Example: Provider Without an Audience
 
-```yaml
+An authorization server that implements plain RFC 7523, such as Keycloak, needs no `customParams`. Leave `audience` out and write the scopes exactly as your authorization server defines them:
+
+```yaml expandable
 providers:
   - name: keycloak-jwt-bearer
     grantType: jwt-bearer
@@ -164,43 +172,49 @@ providers:
         - orders.write
 ```
 
-This sends `scope=orders.read orders.write` — with no `audience` configured, the rendering rule has nothing to prefix, so the scopes pass through verbatim.
+This sends `scope=orders.read orders.write`.
 
 <Note>
-RFC 7523 §3 requires the inbound token's `aud` claim to already name this authorization server's token endpoint. That's a precondition on how the token was issued, not something this configuration controls.
+[RFC 7523 Section 3](https://www.rfc-editor.org/rfc/rfc7523#section-3) requires the inbound token's `aud` claim to already name this authorization server's token endpoint. That is a precondition on how the token was issued, not something this configuration controls.
 </Note>
 
-If your authorization server also expects an explicit downstream resource ([RFC 8707](https://www.rfc-editor.org/rfc/rfc8707)), pass it through `customParams` — `resource` isn't reserved under `jwt-bearer`, so it's forwarded unchanged alongside the rendered `scope`:
+If your authorization server also expects an explicit downstream resource ([RFC 8707](https://www.rfc-editor.org/rfc/rfc8707)), pass it through `customParams`. Under `jwt-bearer`, `resource` is not reserved, so it is forwarded unchanged alongside the rendered `scope`:
 
 ```yaml
 customParams:
   resource: https://orders.example.com
 ```
 
-**Client authentication.** `clientAuth.method` supports the same options under both grants — `client_secret_basic` (default), `client_secret_post` — plus **`private_key_jwt`**, which authenticates using a signed client-assertion JWT ([RFC 7523 §2.2](https://www.rfc-editor.org/rfc/rfc7523#section-2.2)) instead of a shared secret:
+#### Client Authentication
+
+`clientAuth.method` supports `client_secret_basic` (default) and `client_secret_post` under both grants, plus `private_key_jwt`, which authenticates using a signed client-assertion JWT ([RFC 7523 Section 2.2](https://www.rfc-editor.org/rfc/rfc7523#section-2.2)) instead of a shared secret:
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `clientAuth.method` | string | No | Adds `private_key_jwt` to the existing `client_secret_basic` / `client_secret_post` options. |
-| `clientAuth.certId` | string | Required when `method` is `private_key_jwt` | References a certificate already uploaded to the gateway's certificate store. Its private key signs the client assertion. |
+| `clientAuth.method` | string | No | One of `client_secret_basic` (default), `client_secret_post`, or `private_key_jwt`. |
+| `clientAuth.certId` | string | Conditional | Required when `method` is `private_key_jwt`. References a certificate already uploaded to Tyk Gateway's certificate store. Its private key signs the client assertion. |
 
-The assertion is short-lived (5 minutes) and generated fresh for every exchange request, with a random `jti` and a JOSE header carrying the certificate's SHA-256 thumbprint (`x5t#S256`) so the authorization server can select the matching registered key.
+The client assertion is short-lived (5 minutes) and its JOSE header carries the certificate's SHA-256 thumbprint (`x5t#S256`), so the authorization server can select the matching registered key.
 
 <Note>
 `private_key_jwt` supports RSA-signed certificates only (RS256). EC keys are not supported.
 </Note>
 
-**Step-up authentication.** Under `grantType: jwt-bearer`, if the authorization server responds with `"error":"interaction_required"` — meaning the end user must sign in again — Tyk does not treat this as an ordinary exchange failure. Instead, it returns `401 Unauthorized` to the original caller with a `WWW-Authenticate: Bearer error="insufficient_claims"` header, relaying the authorization server's `claims` challenge (base64-standard-encoded) and `authorization_uri` when supplied. No upstream call is made and nothing is cached. This lets a caller such as an MSAL-based client complete the required step-up — for example, an Entra Conditional Access or MFA challenge — and retry; the gateway has no way to complete that step itself.
+#### Step-Up Authentication
 
-This relay is scoped to the `jwt-bearer` grant. The same `interaction_required` error under the default `token-exchange` grant is treated as an ordinary `idp_error` failure, unchanged. The relay records a fifth outcome value, `step_up_required`, alongside the four described in [Observability](#observability) — it is never cached and never audited as a failure.
+Under `grantType: jwt-bearer`, if the authorization server responds with `"error":"interaction_required"`, meaning the end user must sign in again, Tyk Gateway does not treat this as an ordinary exchange failure. It returns `401 Unauthorized` to the original caller with a `WWW-Authenticate: Bearer error="insufficient_claims"` header, relaying the authorization server's `claims` challenge (base64-standard-encoded) and `authorization_uri` when supplied. No upstream call is made and nothing is cached. A caller such as an MSAL-based client can then complete the required step-up, for example an Entra Conditional Access or MFA challenge, and retry.
 
-**Multi-tenant issuer matching.** Some authorization servers issue a different `iss` per tenant, with no way to enumerate every tenant up front. Two additive, opt-in mechanisms cover this:
+This relay is scoped to the `jwt-bearer` grant. The same `interaction_required` error under the default `token-exchange` grant is treated as an ordinary `idp_error` failure. The relay records the `step_up_required` outcome described in [Observability](#observability).
 
-- An `issuers` entry prefixed with `regex:` is matched as a compiled regular expression against the inbound token's `iss` claim. Entries without the prefix keep today's exact-match semantics unchanged — this is a purely additive change. Dispatch is deterministic: exact-match entries are checked first, across all providers; only if none match does Tyk try `regex:` entries, in provider order, first match wins.
-- `tokenEndpoint` accepts Tyk's standard `$tyk_context.*` request-time variables, so one provider entry can serve many tenants from a single per-tenant token endpoint template — for example `$tyk_context.jwt_claims_tid` to read a `tid` claim from the validated JWT. The resolved endpoint is re-validated as an absolute `http(s)` URL at request time, and when a substitution occurs, Tyk keys the token cache by the resolved endpoint so a cached token is never served to the wrong tenant.
+#### Multi-Tenant Issuer Matching
+
+Some authorization servers issue a different `iss` per tenant, with no way to enumerate every tenant up front. Two opt-in mechanisms cover this:
+
+- An `issuers` entry prefixed with `regex:` is matched as a compiled regular expression against the inbound token's `iss` claim. Entries without the prefix keep exact-match semantics. Dispatch is deterministic: exact-match entries are checked first, across all providers; only if none match does Tyk Gateway try `regex:` entries, in provider order, first match wins.
+- `tokenEndpoint` accepts Tyk's standard `$tyk_context.*` request-time variables, so one provider entry can serve many tenants from a single token endpoint template. For example, `$tyk_context.jwt_claims_tid` reads a `tid` claim from the validated JWT. The resolved endpoint is re-validated as an absolute `http(s)` URL at request time, and Tyk Gateway keys the token cache by the resolved endpoint so a cached token is never served to the wrong tenant.
 
 <Note>
-A `regex:` issuer entry controls routing to a provider, not trust. Which tenants are actually allowed to authenticate is decided by the JWT authentication scheme's `allowedIssuers` list — the scheme that verifies the token's signature before token exchange ever runs. Pairing a permissive `regex:` entry with an empty or permissive `allowedIssuers` accepts any tenant of that authorization server; set `allowedIssuers` deliberately.
+A `regex:` issuer entry controls routing to a provider, not trust. Which tenants are allowed to authenticate is decided by the JWT authentication scheme's `allowedIssuers` list, which verifies the token's signature before token exchange runs. Pairing a permissive `regex:` entry with an empty or permissive `allowedIssuers` accepts any tenant of that authorization server, so set `allowedIssuers` deliberately.
 </Note>
 
 ### Caching
