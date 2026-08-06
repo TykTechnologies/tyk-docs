@@ -104,9 +104,8 @@ Each entry in `providers` matches inbound tokens by `iss` claim and routes excha
 
 *Available from Tyk 5.15.0.*
 
-By default, a provider sends an RFC 8693 token exchange request. Some authorization servers — most notably Microsoft Entra ID — reject that grant outright and instead implement delegation using the [RFC 7523](https://www.rfc-editor.org/rfc/rfc7523) JWT bearer grant. Set `grantType` on a provider to switch:
+By default, a provider sends an RFC 8693 token exchange request. Some authorization servers (Microsoft Entra ID) reject that grant outright and instead implement delegation using the [RFC 7523](https://www.rfc-editor.org/rfc/rfc7523) JWT bearer grant.
 
-```yaml
 providers:
   - name: corp-idp
     grantType: jwt-bearer
@@ -128,7 +127,7 @@ providers:
 | `grantType` | string | No | `token-exchange` (default) sends the RFC 8693 token-exchange grant; `jwt-bearer` sends the RFC 7523 jwt-bearer grant. |
 
 <Note>
-See [Microsoft Entra ID On-Behalf-Of](/api-management/authentication/token-exchange-microsoft-entra-obo) for a complete, vendor-specific walkthrough of configuring `grantType: jwt-bearer` against Entra.
+See [Microsoft Entra ID On-Behalf-Of](/api-management/authentication/token-exchange-microsoft-entra-obo) for a walkthrough of configuring `grantType: jwt-bearer`.
 </Note>
 
 Under `grantType: jwt-bearer`, the exchange request differs from RFC 8693 in three ways:
@@ -293,17 +292,15 @@ The following limitations apply in Tyk 5.15.0:
 
 ## Observability
 
-*Available from Tyk 5.15.0.*
+**Available from Tyk 5.15.0.**
 
-Every token exchange decision emits an OpenTelemetry metric, a structured log line, and — for authorization outcomes — an audit event, and runs inside a dedicated trace span. This turns token exchange from a feature that works in a demo into one you can operate at scale: you can see exchange volume and IdP latency, alert on error rates by provider, and trace a single request through the exchange step and the IdP round-trip it triggered.
+Every token exchange decision emits an OpenTelemetry metric, a structured log line, a dedicated trace span and an audit event for authorization outcomes. You can see exchange volume and IdP latency, alert on error rates by provider, and trace a single request through the exchange step and the IdP round-trip it triggered.
 
-These signals are bounded and non-PII by design. None of them ever carry the inbound token, the exchanged token, a client secret, the token's `jti` (token ID), or its `sub` (end-user subject identity) claim. Where an application identity is useful for correlation, Tyk records the OAuth client identifiers (`azp`) instead, which name the calling application rather than a person.
 
 ### Metrics
 
-Tyk exports three OpenTelemetry instruments for token exchange: `tyk.oauth2.exchange.requests`, `tyk.oauth2.exchange.duration`, and `tyk.oauth2.exchange.cache_hit`. See [Token Exchange Metrics](/api-management/metrics/default-metrics#token-exchange-metrics) for the full instrument and dimension reference.
+See [Token Exchange Metrics](/api-management/metrics/default-metrics#token-exchange-metrics) for the full instrument and dimension reference.
 
-Every exchange attempt is classified into one of four outcomes: `ok`, `idp_error`, `misconfig`, or `no_matching_provider`. Providers using the [`jwt-bearer` grant](#grant-type) can also produce a fifth outcome, `step_up_required`, when the authorization server asks the caller to complete a step-up authentication — see [Step-up authentication](#grant-type). A cache hit is not a distinct outcome — a warm-cache exchange still records `outcome="ok"` on `tyk.oauth2.exchange.requests`, with `tyk.oauth2.exchange.cache_hit` incrementing alongside it. This keeps a "successful exchanges" query from under-counting cache-served traffic, while cache hit-rate remains queryable on its own.
 
 ### Structured logs
 
@@ -339,7 +336,9 @@ Tyk writes one JSON log line per exchange decision, using stable, `oauth2_`-name
 }
 ```
 
-Tyk deliberately omits the inbound token's `jti` and `sub` claims from this log line rather than hashing them. A token ID is a correlation handle and a subject claim can carry personal data such as an email address or username — exactly the values [OWASP's logging guidance](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html) recommends you mask, hash, or omit rather than log raw. The `azp` fields above already answer which application acted, for which audience, with what scopes, and with what outcome, without exposing an end user's identity. No raw token material — access tokens, refresh tokens, client secrets, or raw JWTs — appears in this log line or anywhere else in the exchange's observability output.
+Following [OWASP's logging guidance](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html) best practices, Tyk omits the inbound token's `jti` and `sub` claims from the log line. 
+
+The `azp` fields above already answer which application acted, for which audience, with what scopes, and with what outcome, without exposing an end user's identity.
 
 ### Audit events
 
@@ -356,7 +355,7 @@ Tyk fires an audit event for every exchange decision that represents an authoriz
 A cache hit still fires `OAuth2ExchangeSucceeded`, because a backend call is still being made on the subject's behalf even though the exchanged token itself came from cache rather than a fresh round-trip to the authorization server.
 
 <Note>
-`misconfig` does not produce an audit event. An unresolvable client secret or other configuration fault is an operational error, not an authorization decision made by the IdP, so it's surfaced through the metric and log line only. If you're building compliance reporting on the audit trail, don't expect misconfiguration failures to appear there — check the structured logs or the `tyk.oauth2.exchange.requests{outcome="misconfig"}` metric instead.
+`misconfig` does not produce an audit event. An unresolvable client secret or other configuration fault is an operational error, not an authorization decision made by the IdP, so it's surfaced only through the metric and log line.
 </Note>
 
 The audit event's metadata carries the same `oauth2_`-namespaced fields as the structured log line: the provider, outcome, audience, requested scopes, the `azp` client identifiers, and the IdP error code and description when applicable. As with the logs, no raw token material, `jti`, or `sub` ever appears in audit metadata.
@@ -365,7 +364,7 @@ The audit event's metadata carries the same `oauth2_`-namespaced fields as the s
 
 Token exchange opens a dedicated `oauth2.exchange` span for every attempt, nested inside the request's existing trace after the inbound token is identified and before the request reaches the upstream proxy. This is a real child span from the OpenTelemetry tracer, not attributes stamped onto the inbound request span, so the exchange step shows up as its own node in the trace.
 
-The span carries three attributes, using the same bounded values as the metric labels and log fields — no tokens or identities:
+The span carries three attributes, using the same bounded values as the metric labels and log fields:
 
 | Attribute | Description |
 |---|---|
