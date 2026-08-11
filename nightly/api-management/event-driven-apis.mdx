@@ -105,7 +105,7 @@ The following sections will guide you through the prerequisites and steps to con
 
 - **Docker**: We will run the entire Tyk Stack on Docker. For installation, refer to this [guide](https://docs.docker.com/desktop/setup/install/mac-install/).
 - **Git**: A CLI tool to work with git repositories. For installation, refer to this [guide](https://git-scm.com/downloads)
-- **Dashboard License**: We will configure Streams API using Dashboard. [Contact our team](https://tyk.io/contact/) to obtain a license or get self-managed trial license by completing the registration on our [website](https://tyk.io/self-managed-trial/)
+- **Dashboard License**: We will configure Streams API using Dashboard. [Contact our team](https://tyk.io/contact/) to obtain a license or get self-managed trial license by completing the registration on our [website](https://tyk.io/self-managed-trial/). **Note:** To use the dashboard to design streams APIs, the dashboard license must include the `streams` scope.
 - **Curl and JQ**: These tools will be used for testing.
 
 ### Instructions
@@ -522,6 +522,14 @@ Let's look at each level in detail.
 
 Before you can define streams in your APIs, you must enable the core Streams feature in both the Tyk Gateway and, if you're using it for management, the Tyk Dashboard.
 
+#### Installation / Deployment
+
+Tyk Streams is available as part of the Enterprise Edition of the Gateway.
+
+- **Helm**: Use `--set tyk-gateway.gateway.image.repository=tykio/tyk-gateway-ee --set global.streaming.enabled=true`
+- **Docker/Kubernetes**: Use the `tykio/tyk-gateway-ee` image.
+- **OS packages**: Available via Package cloud in the `tyk-ee` repo.
+
 #### Tyk Gateway
 
 Enable the Streams processing engine within the Gateway by setting `enabled` to `true` in the `streaming` section of your `tyk.conf` file or via environment variables.
@@ -546,6 +554,8 @@ export TYK_GW_STREAMING_ENABLED=true
 </Tabs>
 
 Refer to the [Tyk Gateway Configuration Reference](/nightly/tyk-oss-gateway/configuration#streaming-enabled) for more details on this setting.
+
+**Note on WebSockets:** To use WebSockets as a streaming protocol, you must also enable `TYK_GW_HTTPSERVEROPTIONS_ENABLEWEBSOCKETS=true` in your Gateway configuration.
 
 #### Tyk Dashboard
 
@@ -680,6 +690,24 @@ Tyk Streams provides out-of-the-box connectors for popular event brokers and asy
 - [Server-Sent Events](https://en.wikipedia.org/wiki/Server-sent_events) (SSE)
 - [Webhooks](https://en.wikipedia.org/wiki/Webhook)
 
+When configuring HTTP-based outputs, keep the following behavior in mind:
+- **REST**: A simple GET request to the path retrieves one entry and exits. This is subject to `http_server_options.write_timeout` and `read_timeout`.
+- **SSE**: Stream results for `http_server_options.write_timeout` seconds (defaults to 120s).
+- **WebSocket**: Not subject to the same timeout issues as REST and SSE, and will continue indefinitely.
+
+You can expose all three protocols from a single `http_server` output by defining all three paths together:
+
+```yaml
+output:
+  http_server:
+    allowed_verbs:
+      - GET
+    path: /output
+    stream_path: /output/stream
+    ws_path: /output/subscribe
+```
+
+This makes the same data available as a single REST response at `/output`, an SSE stream at `/output/stream`, and a WebSocket connection at `/output/subscribe`.
 
 ---
 ## Use Cases
@@ -700,6 +728,13 @@ Refer to these docs, to know more about [Authentication](/nightly/api-management
 
 - **[Transformation](/nightly/api-management/traffic-transformation)**: Use Tyk's powerful middleware and plugin system to transform message payloads on the fly. You can convert between different data formats (e.g., JSON to XML), filter fields, or apply custom logic.
 - **[Enrichment](/nightly/api-management/plugins/overview)**: Enrich your async API messages with additional data from external sources. For example, you can lookup customer information from a database and append it to the message payload.
+- **Bloblang**: Bloblang can be used in the `pipeline.processors` section to transform the body of the request. For example:
+  ```yaml
+  pipeline:
+    processors:
+      - bloblang: |
+          root.name = "jim"
+  ```
 
 ### Monetization
 
@@ -987,6 +1022,52 @@ A broker is an intermediary system that receives events from publishers, stores 
 
 A topic is a named destination within a broker where events are published. Subscribers can subscribe to specific topics to receive relevant events.
 
+## Troubleshooting and Gotchas
+
+When working with Tyk Streams, keep the following points in mind:
+
+<AccordionGroup>
+<Accordion title='Dashboard HTTP Access'>
+Streams APIs cannot be edited over HTTP unless the dashboard is hosted on the localhost interface.
+</Accordion>
+
+<Accordion title='Upstream Attribute'>
+The `upstream` attribute is not used by streams APIs.
+</Accordion>
+
+<Accordion title='Missing Streaming Tab'>
+If streams are not enabled in the dashboard config, the option to create streams APIs is present, but the "Streaming" tab is missing in the API designer.
+</Accordion>
+
+<Accordion title='Gateway Proxy Error'>
+If streams are not enabled in the gateway config, the client gets `{"error": "There was a problem proxying the request"}` and the gateway logs `http: proxy error: unsupported protocol scheme ""`.
+</Accordion>
+
+<Accordion title='Analytics'>
+Analytics are not available for Streams APIs in the dashboard (only connection attempts are tracked).
+</Accordion>
+
+<Accordion title='Message Distribution'>
+Streams round-robins output between listeners. Tyk is not a broker, so messages are not sent to all consumers unless a broker such as Kafka is configured.
+</Accordion>
+
+<Accordion title='Missing License Scope'>
+If the dashboard license does not include the `streams` scope, the Streaming tab still appears and the API can be created. Saving or publishing the API fails with `"Message":"Your license does not support adding/modifying streams API configuration"`.
+</Accordion>
+
+<Accordion title='Malformed Stream Definition'>
+If the stream definition is invalid or uses an unsupported input or output, the dashboard does not catch this when the API is saved. The gateway logs `Failed to set YAML: lint errors: (2,1) unable to infer component type` in addition to the Gateway Proxy Error above.
+</Accordion>
+
+<Accordion title='Load Balancing with http_server'>
+The `http_server` input and output used in the [Getting Started](/nightly/#getting-started) example tie each request and its reply to the Tyk Gateway instance that received it. If multiple Tyk Gateway instances sit behind a load balancer without a shared broker, only requests routed to the instance holding the matching connection succeed, and others fail. Use a broker such as Kafka to distribute messages reliably across multiple Tyk Gateway instances.
+</Accordion>
+
+<Accordion title='Active Connections During API Changes'>
+Editing a Streams API does not affect connections that are already open. They keep running with the previous configuration. New connections pick up the updated configuration after a short delay (around 10 seconds). Deactivating the API does not stop active connections.
+</Accordion>
+</AccordionGroup>
+
 ---
 ## FAQ
 
@@ -1008,7 +1089,9 @@ Yes, as of Tyk v5.7.0, you can publish Tyk Streams APIs to the Tyk Developer Por
 </Accordion>
 
 <Accordion title='What deployment considerations should I keep in mind for Tyk Streams?'>
-Tyk Streams is embedded within the Tyk Gateway and scales with your existing Tyk infrastructure. No additional infrastructure is required.
+Tyk Streams is embedded within the Tyk Gateway and scales with your existing Tyk infrastructure. No additional infrastructure is required for broker-based inputs and outputs, such as Kafka.
+
+If you use the `http_server` input or output without a broker, requests and their replies are tied to a single Tyk Gateway instance. Running multiple Tyk Gateway instances behind a load balancer can then cause inconsistent results. See [Troubleshooting and Gotchas](/nightly/#troubleshooting-and-gotchas) for details.
 </Accordion>
 
 <Accordion title='Is Tyk Streams available in all Tyk editions?'>
