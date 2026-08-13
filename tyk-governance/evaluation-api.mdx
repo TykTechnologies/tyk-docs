@@ -1,0 +1,166 @@
+---
+title: "Governance Evaluation API"
+description: "Reference for the Tyk Governance sandbox evaluation endpoint: request body, query parameters, response fields, limits, and error handling."
+keywords: "Tyk Governance, API Governance, Sandbox API, Evaluation API"
+sidebarTitle: "Governance Evaluation API"
+---
+
+This page documents the sandbox evaluation endpoint that Tyk Governance exposes for evaluating an OAS document that is not saved in Tyk Dashboard.
+
+For the task of wiring this into a pipeline, including a ready-to-use reference script, see [CI/CD Governance Checks](/tyk-governance/cicd-checks). Use this reference when you need more than the script gives you, for example calling the endpoint from a language other than bash, from a CI system's native HTTP step, or from your own tooling.
+
+## Endpoint
+
+```
+POST /api/evaluations/sandbox/oas
+```
+
+Evaluates an OAS document submitted directly in the request body, for example a spec checked into a Git repo that has not been imported into Tyk Dashboard. Nothing is saved: no API is created and no evaluation record is written. Each call is a synchronous, one-off check.
+
+Requires a Tyk license with API Governance enabled. Without the governance scope, the endpoint returns `403 Forbidden` regardless of the token's own permissions.
+
+## Authentication
+
+Authenticate with a Tyk Dashboard API token in the Authorization header:
+
+```
+Authorization: Bearer <token>
+```
+
+This is the standard Tyk Dashboard user API token, not a governance-specific credential. Because the endpoint is a `POST`, the token's user needs `apis: write` permission, not just `apis: read`.
+
+No CSRF header is required when authenticating with a token, which is what makes the endpoint usable from a non-interactive pipeline. See [Configure Authentication](/tyk-governance/cicd-checks#step-3-configure-authentication) for where to find the token.
+
+## Request Body
+
+The endpoint accepts the OAS document in one of two ways.
+
+**Raw content.** Send the document itself as the body, and set `Content-Type` to match its format:
+
+- `application/json`: the OAS document as JSON.
+- `application/yaml` or `application/x-yaml`: the OAS document as YAML. `text/yaml` is also accepted.
+
+This is the mode the reference script uses, and the simplest option for a pipeline step that already has the spec as a file.
+
+**JSON envelope.** For JSON-native clients or generated SDKs that would rather send everything as `application/json`, wrap the document as a string under a `content` key:
+
+```bash
+jq -Rs '{content: .}' openapi.yaml | curl -sS -X POST \
+  "https://<your-tyk-dashboard>/api/evaluations/sandbox/oas?ruleset_ids=rs-payments-v1" \
+  -H "Authorization: Bearer $TYK_DASHBOARD_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data-binary @-
+```
+
+The `content` string can be YAML or JSON, and the format is auto-detected. Do not include any other field alongside `content`; the request is rejected if you do.
+
+## Query Parameters
+
+| Parameter | Required | Notes |
+|---|---|---|
+| `ruleset_ids` | One of `ruleset_ids` or `categories` | Comma-separated list of specific ruleset IDs to run. Accepts both active and inactive rulesets, and rulesets marked as templates, since passing an ID is an explicit choice. |
+| `categories` | One of `ruleset_ids` or `categories` | Comma-separated list of categories to resolve rulesets from. Resolves only active rulesets, and excludes ruleset templates, since this path means "find whatever currently applies" rather than an explicit selection. |
+| `api_id` | Optional, recommended for CI | A stable identifier for the submitted API. See below for why this matters. |
+| `api_name` | Optional | A display name for the submitted document. Cosmetic only. |
+
+Exactly one of `ruleset_ids` or `categories` must be set. A file submitted this way carries no category metadata of its own: categories are stored against the API record inside Tyk Dashboard, not inside an OAS file, so a spec that has not been imported has no way to declare which categories it belongs to. You have to tell the endpoint explicitly which rulesets or categories to check it against.
+
+Repeated list-style parameters such as `ruleset_ids=a&ruleset_ids=b` are accepted in addition to comma-separated lists.
+
+### Why `api_id` Matters
+
+The endpoint identifies the submitted document in this order:
+
+1. The `api_id` query parameter, if you pass one.
+2. The `id` field inside the document's `x-tyk-api-gateway.info` vendor extension, if the spec has one.
+3. A deterministic hash of the canonicalized document, as a last resort.
+
+That hash is stable across formatting changes, meaning YAML against JSON, or raw body against envelope, but it still changes on any real edit to the spec. Without either of the first two, the same rule violation gets a different issue ID on every commit that touches the file, making it hard to track a known issue, suppress it, or compare results across pipeline runs.
+
+In practice: if you are checking a plain OpenAPI file with no Tyk extension, pass `api_id` explicitly. If you are checking a spec exported from Tyk Dashboard, which already carries `x-tyk-api-gateway.info.id`, issue IDs are already stable across commits without it, though passing `api_id` explicitly is still the clearest way to guarantee it.
+
+## Response Fields
+
+```json expandable
+{
+  "rulesets": [
+    {
+      "id": "rs-api-auth",
+      "name": "API Authentication",
+      "resource_type": "oas-api",
+      "active": true,
+      "action": "warn",
+      "error_count": 1,
+      "warn_count": 0,
+      "info_count": 0,
+      "hint_count": 0
+    }
+  ],
+  "issues": [
+    {
+      "_id": "9f4c2e1a8b3d4f5a",
+      "api_id": "checkout-api",
+      "ruleset_id": "rs-api-auth",
+      "ruleset_name": "API Authentication",
+      "rule_id": "authentication_required",
+      "rule_summary": "This endpoint is missing proper authentication mechanisms.",
+      "how_to_fix": "Add an OAuth2 or API key security requirement to this operation.",
+      "message": "Operation must have authentication enforced.",
+      "severity": "error",
+      "path": "paths./checkout.post",
+      "location": { "start_line": 42, "start_char": 4, "end_line": 42, "end_char": 20 },
+      "created_at": "2026-07-20T09:15:23Z"
+    }
+  ],
+  "total": 1,
+  "truncated": false,
+  "error_count": 1,
+  "warn_count": 0,
+  "info_count": 0,
+  "hint_count": 0,
+  "evaluated_apis": 1,
+  "elapsed_ms": 456,
+  "error": null
+}
+```
+
+- **`rulesets[]`**: every ruleset that was actually run, each with its configured `action`, currently `none` or `warn` on this endpoint, and its own Error and Warn counts for this spec. The response also carries `info_count` and a reserved `hint_count`. `hint` is not one of the three severity levels the Tyk Dashboard UI exposes, but the underlying Vacuum engine supports it as a fourth level: a rule with `severity: hint` set directly in a ruleset's raw definition, for example an imported or hand-written Spectral ruleset, produces issues with `"severity": "hint"` and increments `hint_count`.
+- **`issues[]`**: every individual rule failure, including which rule, which ruleset, the severity, the path and location in the spec, the message, and "how to fix" guidance. The raw JSON also includes a few fields not shown above, `org_id` and `severity_order`, that are safe to ignore for CI purposes.
+- **`total`**: the un-truncated count of issues found.
+- **`truncated`**: `true` if there were more than 1,000 issues. See [Limits](#limits). Treat this as its own failure condition.
+- **Root-level `error_count`, `warn_count`, `info_count`, `hint_count`**: run-wide totals across every ruleset, computed before truncation, so they stay accurate even when `issues[]` is capped.
+- **`evaluated_apis`**: always `1` on this endpoint, since you submit exactly one document.
+- **`elapsed_ms`**: how long the evaluation took to run.
+- **`error`**: `null` or absent on a clean run. If part of the evaluation failed, for example one ruleset's definition could not be applied, this carries a summary string. Treat a non-null `error` as a failed check.
+
+## Gating Correctly
+
+If you write your own client rather than using the reference script, there are two traps. Both make a naive implementation pass every build.
+
+**The status code is not the result.** The endpoint returns `200` whenever the evaluation itself ran successfully, even when it found Error-severity issues. Violations live in the JSON body, not the status code. A pipeline step that only checks `curl -f`, failing on non-2xx, passes every build, compliant or not, because a non-compliant spec still comes back `200`.
+
+**The root-level counts include non-gating rulesets.** The root `error_count` and `warn_count` fields total issues across every ruleset that ran, including ones configured with `action: "none"`. A `none` ruleset is visibility-only in Tyk Dashboard too, with no Deployment Warning, so gating on the root counts alone would fail a build over a ruleset that Tyk Dashboard itself never treats as blocking.
+
+Replicate both checks: do not trust the HTTP status alone, and sum `error_count` and `warn_count` only across `rulesets[]` entries where `action != "none"`, using that for the pass or fail decision instead of the root totals.
+
+## Limits
+
+| Limit | Value | Behavior when exceeded |
+|---|---|---|
+| Request body size | 5 MB | `413` |
+| `ruleset_ids` per call | 20 | `400` |
+| `categories` per call | 20 | `400` |
+| Rulesets resolved from categories | 20 | `400`, with the resolved count named in the error message |
+| Issues per response | 1,000 | Response is capped to the top 1,000, by severity then location. `total` still reports the full count, and `truncated: true` is set |
+
+These limits apply to this endpoint only, not to evaluation inside Tyk Dashboard. A service in Tyk Dashboard can be governed by any number of rulesets.
+
+## Error Handling
+
+| Status | Cause |
+|---|---|
+| `400` | Malformed body; body is not a valid OAS document; both `ruleset_ids` and `categories` set, or neither set; an envelope body with extra fields alongside `content`; `ruleset_ids` or `categories` over the limit; category resolution matched more rulesets than the limit |
+| `401` | Missing or invalid token |
+| `403` | The token's user lacks the required API permission, or API Governance is not licensed for your organization |
+| `404` | A `ruleset_ids` entry does not exist, or was deleted, in your organization |
+| `413` | Request body over the 5 MB limit |
