@@ -317,7 +317,7 @@ We have addressed CVEs reported in dependent libraries, providing increased prot
 
 #### Release Highlights
 
-This patch
+This release fixes several Dashboard issues affecting user and API key management under load, corrects a Host header problem that broke the API Debugger behind strict service meshes like Istio, adds Dashboard-side validation to prevent APIs with an invalid Listen Path from silently failing to load on the Gateway, masks additional secrets in the Dashboard UI, and improves performance on policy updates involving many Tyk OAS APIs. This release also migrates off an unmaintained security library and updates the underlying Go toolchain to Go 1.26. This release also addresses several CVEs in dependent libraries.
 
 For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-v5.13.2) below.
 
@@ -343,7 +343,7 @@ There are no breaking changes in this release
 
 | Third Party Dependency                                    | Tested Versions     | Compatible Versions | Comments | 
 | :-------------------------------------------------------- | :------------------ | :------------------ | :------- | 
-| [Golang](https://go.dev/dl/)                              | 1.25                |  1.25               | [Go plugins](/api-management/plugins/golang) must be built using Go 1.25 | 
+| [Golang](https://go.dev/dl/)                              | 1.26                |  1.26               | [Go plugins](/api-management/plugins/golang) must be built using Go 1.26 | 
 | [Redis](https://redis.io/download/)                       | 6.2.x, 7.x, 7.4.x, 8.x (up to 8.4)   | 6.2.x, 7.x, 7.4.x, 8.x (up to 8.4)   | | 
 | [Valkey](https://valkey.io/download/)                     | 7.2.x, 8.0.x, 8.1.x | 7.2.x, 8.0.x, 8.1.x | | 
 | [MongoDB](https://www.mongodb.com/try/download/community)  | 7.0.x, 8.0.x  | 6.0.x, 7.0.x, 8.0.x  | |
@@ -374,14 +374,52 @@ If you are upgrading to 5.13.2, please follow the detailed [upgrade instructions
 #### Changelog
 <a id="Changelog-v5.13.2" data-scroll-offset></a>
 
+##### Changed
+
+<AccordionGroup>
+<Accordion title='Updated Golang version to 1.26'>
+{/* TT-17868 */}
+Tyk Dashboard has been updated to build with Go 1.26, keeping the toolchain current with upstream Go security and performance updates.
+</Accordion>
 </AccordionGroup>
 
 ##### Fixed
 
 <AccordionGroup>
 
-<Accordion title=''>
+<Accordion title='Fixed API Debugger requests failing behind a service mesh'>
+{/* TT-10248 */}
+We have resolved an issue where the Dashboard's API Debugger forwarded requests to the Gateway's `/tyk/debug` endpoint carrying the Dashboard's own Host header rather than the Gateway's. Strict routing layers such as Istio could reject these requests before they reached the Gateway. The Dashboard now sets the correct Host header when proxying debug requests, so the API Debugger works without custom service mesh workarounds.
+</Accordion>
 
+<Accordion title='Fixed HTTP 403 error when creating users or user groups with separate read/write database connections'>
+{/* TT-15506 */}
+We have resolved an issue affecting Dashboard deployments configured with separate read and write database connection strings (SQL databases only). Creating a user or user group could return a `403` error if replication lag meant the newly written record wasn't yet visible on the read replica, even though the record had been created successfully. The Dashboard no longer performs this redundant read-after-write check, so creation succeeds reliably regardless of replication lag. This applies to user, user group, and admin user creation.
+</Accordion>
+
+<Accordion title='Added `key_hash` field to API key update responses'>
+{/* TT-16433 */}
+When updating an API key by its hash (`?hashed=1`), the Dashboard API previously returned the hash value in the `key_id` field of the response, rather than in `key_hash` as it does for create and get operations. The response now always includes a `key_hash` field alongside `key_id`, so key hash and key ID are consistently distinguishable across all key operations. Existing integrations that read the hash from `key_id` continue to work unchanged.
+</Accordion>
+
+<Accordion title='Fixed redundant default port in generated Tyk OAS API server URLs'>
+{/* TT-16721 */}
+We have resolved an issue where, if the Gateway hostname used a default port (443 for HTTPS, 80 for HTTP), the Dashboard generated a server URL that included the redundant port explicitly (for example `https://api.example.com:443` instead of `https://api.example.com`). Non-default ports (such as 8080 or 8443) continue to be included as before. New Tyk OAS APIs no longer generate this redundant default-port entry.
+</Accordion>
+
+<Accordion title='Improved performance of policy updates involving many Tyk OAS APIs'>
+{/* TT-16937 */}
+We have resolved a performance issue where updating a Policy containing a large number of Tyk OAS APIs (for example, 60 or more) caused high latency, due to the Dashboard repeatedly re-parsing each API's OpenAPI document for validation, audit logging, and response serialization. Policy updates and the Gateway's `/system/policies` synchronization endpoint now scale linearly with the number of APIs in a policy instead of degrading sharply as policies grow.
+</Accordion>
+
+<Accordion title='Masked secrets in Identity Profiles and the Dashboard API access token'>
+{/* TT-17160 */}
+Building on the sensitive-value masking already applied to the API Designer, the Provider Configuration Secret in Identity Profiles (the OAuth/OIDC client secret used by Social and OpenID Connect providers) and a user's Dashboard API Access Token are now masked by default in the Dashboard UI, with a reveal/hide toggle. Existing permission checks for who can view the access token are unchanged — masking only applies to users who could already see the value.
+</Accordion>
+
+<Accordion title='Dashboard now validates that Listen Path includes a leading slash'>
+{/* TT-17631 */}
+We have resolved an issue where the Dashboard accepted and saved a Listen Path without a leading slash — through the API Designer, the legacy Classic API designer, and all import flows (Blueprint, Swagger, WSDL, and OpenAPI/AsyncAPI data source import). A Listen Path missing its leading slash causes the Gateway to fail to load that API, so every request to it silently returns HTTP 404. The Dashboard now validates this at both the UI and API level, and rejects the save or import with a clear error message before an invalid definition can reach the Gateway. An existing API is left unchanged if an update with an invalid Listen Path is attempted.
 </Accordion>
 
 </AccordionGroup>
@@ -391,12 +429,14 @@ If you are upgrading to 5.13.2, please follow the detailed [upgrade instructions
 <AccordionGroup>
 
 <Accordion title='Resolved CVEs'>
-We have addressed CVEs reported in dependent libraries, providing increased protection against security
-vulnerabilities, including, but not limited to:
-
-- <a href="" target="_blank"></a>
-
-
+We have addressed CVEs reported in dependent libraries, providing increased protection against security vulnerabilities, including, but not limited to:
+- <a href="https://osv.dev/vulnerability/GHSA-r277-6w6q-xmqw" target="_blank">GHSA-r277-6w6q-xmqw</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-39822" target="_blank">CVE-2026-39822</a>
+- <a href="https://osv.dev/vulnerability/GHSA-hrxh-6v49-42gf" target="_blank">GHSA-hrxh-6v49-42gf</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-46384" target="_blank">CVE-2026-46384</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-46385" target="_blank">CVE-2026-46385</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-71556" target="_blank">CVE-2026-71556</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2025-46721" target="_blank">CVE-2025-46721</a>.
 </Accordion>
 
 </AccordionGroup>
