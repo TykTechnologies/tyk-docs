@@ -407,7 +407,8 @@ We have addressed CVEs reported in dependent libraries, providing increased prot
 
 #### Release Highlights
 
-This patch 
+This release introduces the next-generation (`-ng`) plugin compiler with native arm64 support, alongside a set of fixes: request validation error responses are now always valid JSON, the GraphQL Playground now loads the schema for authenticated APIs, a race condition that could prevent session deletion under heavy load is resolved, shutdown signal log entries now follow the configured log format, and JWT scope-to-policy mapping produces less noisy error logging. The underlying Go toolchain has been updated to Go 1.26. This release also addresses several CVEs in dependent libraries. For a comprehensive list of changes, please refer to the detailed changelog below.
+
 
 For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-v5.13.2) below.
 
@@ -433,7 +434,7 @@ There are no breaking changes in this release.
 
 | Third Party Dependency                   | Tested Versions     | Compatible Versions | Comments | 
 | :--------------------------------------- | :------------------ | :------------------ | :------- | 
-| [Golang](https://go.dev/dl/)             | 1.25                |  1.25               | [Go plugins](/api-management/plugins/golang) must be built using Go 1.25 | 
+| [Golang](https://go.dev/dl/)             | 1.26                |  1.26               | [Go plugins](/api-management/plugins/golang) must be built using Go 1.26 | 
 | [Redis](https://redis.io/download/)      | 6.2.x, 7.x, 7.4.x, 8.x (up to 8.4)   | 6.2.x, 7.x, 7.4.x, 8.x (up to 8.4)   | | 
 | [Valkey](https://valkey.io/download/)    | 7.2.x, 8.0.x, 8.1.x | 7.2.x, 8.0.x, 8.1.x | | 
 | [OpenAPI Specification](https://spec.openapis.org/oas/v3.1.2.html) | 3.1.x, 3.0.x | 3.1.x, 3.0.x | Supported by [Tyk OAS](/api-management/gateway-config-tyk-oas)|
@@ -463,12 +464,56 @@ If you are upgrading to 5.13.2, please follow the detailed [upgrade instructions
 #### Changelog
 <a id="Changelog-v5.13.2" data-scroll-offset></a>
 
+##### Changed
+
+<AccordionGroup>
+
+<Accordion title='Updated Golang version to 1.26'>
+{/* TT-17868 */}
+Tyk Gateway has been updated to build with Go 1.26, keeping the toolchain current with upstream Go security and performance updates.
+</Accordion>
+
+</AccordionGroup>
+
+##### Added
+
+<AccordionGroup>
+
+<Accordion title='Next-generation (-ng) plugin compiler with native arm64 support'>
+{/* TT-9550, TT-17641 */}
+A new next-generation (`-ng`) plugin compiler is now available alongside the existing plugin compiler, as an opt-in parallel option. It is a dual-layer, BusyBox-based image that significantly reduces the OS-level CVE surface compared to the current compiler, and adds native `linux/arm64` support — plugins built on Apple Silicon or other arm64 hosts no longer need to run the compiler under emulation.
+CE, EE, and FIPS variants are available under the `-ng` tag suffix for both 5.15.0 (latest) and 5.13.2 (LTS) releases, giving you a safe path to evaluate the new compiler before any eventual replacement of the current one.
+</Accordion>
+ 
+</AccordionGroup>
+
 ##### Fixed
 
 <AccordionGroup>
 
-<Accordion title=''>
+<Accordion title='Fixed invalid JSON in request validation error responses'>
+{/* TT-14798 */}
+We've resolved an issue where error responses from Tyk's OAS request validation middleware could contain invalid JSON when the underlying error message included an apostrophe or other special character — for example, when an OpenAPI schema's regex pattern contained a single quote. These responses are now valid JSON by default, so downstream systems parsing them no longer fail. If you rely on the previous JavaScript-style escaping, set the `X-Skip-Escaper: 1` request header, or the new `error_message_escaper: skip` configuration option, to restore it. XML and SOAP+XML error responses are unaffected.
+</Accordion>
 
+<Accordion title='Fixed GraphQL Playground failing to load the schema for authenticated APIs'>
+{/* TT-15516 */}
+We've resolved an issue where the bundled GraphQL Playground could not load the schema (Docs and Explorer) for a GraphQL API that requires authentication, even after supplying valid credentials in the Playground's Request Headers editor. The Playground now re-runs schema introspection whenever the selected API or the supplied headers change, and clears the schema if credentials are invalid, removed, or introspection is disabled for that key. As part of this fix, the Playground's bundled GraphiQL asset has also been upgraded, resolving a known cross-site scripting vulnerability (CVE-2021-41248) present in the previous version.
+</Accordion>
+
+<Accordion title='Reduced noisy error logging for JWT scope-to-policy mapping'>
+{/* TT-5893 */}
+When using JWT scope-to-policy mapping, a token's scopes that don't match any policy are now logged at `debug` level, provided at least one scope successfully matched a policy. Previously, an `error` log was generated for every unmatched scope even when the request was authorized successfully, flooding logs unnecessarily. If none of a token's scopes match any policy, this is still logged as an `error` and the request is rejected. Unmatched scopes are now consolidated into a single log entry rather than one per scope.
+</Accordion>
+
+<Accordion title='Fixed inability to delete a Session using a quota under heavy load'>
+{/* TT-16259 */}
+We have resolved a race condition between session update and session deletion operations that, under heavy load, could either prevent a session (API key) with an associated quota from being deleted, or leave it appearing deleted on the Control Plane while still valid on the Data Plane. Session deletion now completes reliably under load, and deleted sessions are immediately invalidated across both planes.
+</Accordion>
+
+<Accordion title='Fixed shutdown signal log entry not following the configured log format'>
+{/* TT-17316 */}
+We have resolved an issue where the log entry produced when the Gateway received a `SIGINT`, `SIGTERM`, or `SIGQUIT` shutdown signal did not follow the configured `log_format`. With JSON logging enabled, this unstructured entry could cause downstream log parsers to fail on an unparseable line. The shutdown signal is now logged in the configured format like any other application log entry.
 </Accordion>
 
 </AccordionGroup>
@@ -476,16 +521,14 @@ If you are upgrading to 5.13.2, please follow the detailed [upgrade instructions
 ##### Security Fixes
 
 <AccordionGroup>
-
 <Accordion title='Resolved CVEs'>
-We have addressed CVEs reported in dependent libraries, providing increased protection against security
-vulnerabilities, including, but not limited to:
-
-- <a href="" target="_blank"></a>
-
-
+We have addressed CVEs reported in dependent libraries, providing increased protection against security vulnerabilities, including, but not limited to:
+- <a href="https://osv.dev/vulnerability/GHSA-r277-6w6q-xmqw" target="_blank">GHSA-r277-6w6q-xmqw</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-39822" target="_blank">CVE-2026-39822</a>
+- <a href="https://osv.dev/vulnerability/GHSA-hrxh-6v49-42gf" target="_blank">GHSA-hrxh-6v49-42gf</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-46384" target="_blank">CVE-2026-46384</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-46385" target="_blank">CVE-2026-46385</a>
 </Accordion>
-
 </AccordionGroup>
 
 
