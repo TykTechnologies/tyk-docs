@@ -1,0 +1,116 @@
+---
+title: "In-Memory Database"
+description: "Learn how Tyk uses an in-memory database for the Control Plane and Data Plane, and how to protect, size, and tune it."
+keywords: "Redis, Valkey, in-memory database, Control Plane, Data Plane, sizing, connection pool"
+sidebarTitle: "In-Memory Database"
+---
+
+import RedisCalculator from '/snippets/RedisCalculator.mdx';
+
+Redis is Tyk's in-memory database engine - fast, frequently-accessed data, some of it recoverable elsewhere and some of it (Control Plane Sessions, in particular) not. See [Compatible Engines](#compatible-engines) for supported alternative engines.
+
+See [Database Management](/planning-for-production/database-settings) for how this fits alongside the persistent storage, used as source of truth for API definitions and other longer-lived data.
+
+## How Tyk Uses Redis
+
+Redis is central to Tyk's operation. Its role differs depending on whether it is serving a Control Plane or a Data Plane.
+
+**Control Plane Redis** is shared between Tyk Dashboard and the Management Gateway. It stores:
+
+- Tyk Dashboard user sessions.
+- API client [Session](/api-management/access-control/sessions-and-keys/understanding-sessions) data (the source of truth for the deployment).
+- [OAuth tokens issued by Tyk's OAuth 2.0 authorization server](/api-management/authentication/oauth-2#client-application).
+- [Tyk Certificate Store](/api-management/certificates#tyk-certificate-store).
+- Distributed locks, for example to ensure OAuth token purging runs on only one node at a time.
+- The pub/sub channel used to push hot-reload notifications from Tyk Dashboard to connected Data Plane Gateways.
+
+**Data Plane Redis** (used in distributed deployments) is local to each Data Plane cluster. Data Plane Gateways handle API traffic and use their local Redis for:
+
+- Rate limiting counters.
+- API response caching.
+- Webhook deduplication, preventing duplicate events from firing within the configured timeout.
+- [Traffic logs](/api-management/logs/traffic-logs) buffered before Tyk Pump processes them.
+- A local copy of API client Sessions and certificates, synced from the Control Plane.
+- API definition and policy backups, providing resilience when the Control Plane is unavailable.
+
+In deployments without Tyk MDCB, there is no Control Plane / Data Plane split. A single Redis instance covers all of the above, shared between Tyk Gateway, Tyk Dashboard and Tyk Pump.
+
+For connection configuration, see [Configure Redis](/tyk-configuration-reference/redis-cluster-sentinel).
+
+## Protecting Redis Data
+
+The consequences of losing Redis differ between the Control Plane and Data Plane:
+
+**Control Plane Redis** is the source of truth for your deployment and cannot be recovered from any other Tyk component. Deploy it with persistence enabled and a high-availability topology such as Redis Sentinel or Redis Cluster. If you are using Amazon ElastiCache, also configure read replicas and regular snapshots.
+
+**Data Plane Redis** is recoverable in a way that Control Plane Redis is not: if it's lost, Sessions re-sync from the Control Plane on reconnection, and API definition backups rebuild on the next hot reload. High availability is still recommended to avoid disruption during a node failure, but the impact of loss is temporary rather than catastrophic.
+
+## Managing Redis Memory
+
+Redis memory requirements depend on where the instance is deployed:
+
+- **Control Plane Redis** memory is driven primarily by the number and size of Sessions, API definitions, and security policies stored. Session size is typically small (around 1KB), but large numbers of Sessions or large API definition payloads can add up quickly.
+- **Data Plane Redis** memory is driven by traffic volume and feature usage. The main contributors are:
+  - [**Traffic log buffering**](/api-management/logs/traffic-logs): traffic logs accumulate in Redis between purge intervals. Basic analytics records are typically around 2KB. Detailed logging includes the full base64-encoded request and response body, so record size scales directly with payload size and has no fixed ceiling.
+  - **Response caching**: cached API responses are held in Redis for the duration of their TTL. Memory usage depends on cache hit rate, TTL, and average payload size.
+  - **API definitions and policies**: in distributed deployments a local copy is stored in Data Plane Redis for resilience.
+
+If Data Plane Redis memory becomes a constraint, there are two ways to bring it under control: reduce how much you store, or isolate high-volume workloads onto their own Redis instances so they stop competing with rate limiting and session data for the same memory. [Compressing API Definitions and Policies](#compressing-api-definitions-and-policies) takes the first approach; [Separate Analytics Storage](#separate-analytics-storage) and [Separate Cache Storage](#separate-cache-storage) take the second.
+
+### Redis Sizing Calculator
+
+<RedisCalculator />
+
+### Compressing API Definitions and Policies
+
+In [distributed deployments](/api-management/mdcb), Data Plane Gateways store API definition and policy backups in Redis to ensure resilience when the Control Plane is unavailable. For deployments with many or large API definitions, this can consume significant Redis memory.
+
+You can reduce the size of these backups using optional Zstandard compression, which typically achieves around 75% reduction, though results vary depending on the size and complexity of your API definitions and policies.
+
+Set the following fields in your Data Plane Gateway configuration:
+
+```json
+"storage": {
+  "compress_api_definitions": true,
+  "compress_policies": true
+}
+```
+
+- [`storage.compress_api_definitions`](/tyk-oss-gateway/configuration#storage-compress_api_definitions) is available from Tyk 5.12.0.
+- [`storage.compress_policies`](/tyk-oss-gateway/configuration#storage-compress_policies) is available from Tyk 5.13.0.
+
+Tyk Gateway reads uncompressed data already in Redis seamlessly. On the next hot reload, definitions and policies are compressed before being stored.
+
+To mitigate the risk of decompression bombs, the maximum combined uncompressed size is limited to the value of `storage.max_decompressed_size`.
+
+### Separate Analytics Storage
+
+By default, Tyk Gateway writes traffic logs to the same Redis instance used for rate limiting, session data, and other gateway operations. Under high traffic, this can place significant pressure on your primary Redis. You can offload traffic log buffering to a dedicated Redis instance by enabling a separate analytics store:
+
+```json
+"enable_separate_analytics_store": true,
+"analytics_storage": {
+  "host": "analytics-redis-server",
+  "port": 6379
+}
+```
+
+The `analytics_storage` block accepts the same fields as the main `storage` block. See [Configure Redis](/tyk-configuration-reference/redis-cluster-sentinel) for the full field reference.
+
+### Separate Cache Storage
+
+API response caching can consume significant Redis memory, particularly for large payloads or high cache hit rates. You can isolate cache storage in a dedicated Redis instance, keeping it separate from session and rate limiting data:
+
+```json
+"enable_separate_cache_store": true,
+"cache_storage": {
+  "host": "cache-redis-server",
+  "port": 6379
+}
+```
+
+The `cache_storage` block accepts the same fields as the main `storage` block. See [Configure Redis](/tyk-configuration-reference/redis-cluster-sentinel) for the full field reference.
+
+## Compatible Engines
+
+[Valkey](https://valkey.io/) is supported as a Redis-compatible alternative engine, for fresh environments - there is no migration path from an existing Redis deployment to Valkey.

@@ -1,0 +1,193 @@
+---
+title: "Configure MongoDB"
+description: "Learn how to configure MongoDB for use with Tyk Dashboard, Tyk MDCB and Tyk Pump, including connection settings, TLS, connection pool tuning, and sizing."
+keywords: "configuration, mongodb, tyk-dashboard, tyk-mdcb, tyk-pump, persistent database"
+sidebarTitle: "Configure MongoDB"
+---
+
+import MongodbVersionsInclude from '/snippets/mongodb-versions-include.mdx';
+
+Tyk Dashboard, Tyk MDCB and Tyk Pump connect to the same MongoDB instance as part of the Core Platform's shared [persistent database](/api-management/persistent-database). This page covers how to point each component at MongoDB.
+
+<Note>
+Tyk Developer Portal does not support MongoDB for storage. See [Configure SQL Storage](/tyk-configuration-reference/sql) for its supported engines.
+</Note>
+
+## Supported Versions
+
+<MongodbVersionsInclude />
+
+<Note>
+Capped collections are not supported on Amazon DocumentDB. See the [DocumentDB documentation](https://docs.aws.amazon.com/documentdb/latest/developerguide/mongo-apis.html) for details.
+</Note>
+
+Tyk also connects to a managed [MongoDB Atlas](https://www.mongodb.com/atlas/database) cluster the same way as any other MongoDB instance - see [MongoDB Atlas](#mongodb-atlas) below for connection details.
+
+## Configuration Reference
+
+Each component configures MongoDB differently:
+
+- Tyk Dashboard uses a `storage.<category>` block per category of data. `<category>` is one of `main`, `analytics`, `logs`, or `uptime` - each of the [four categories of data](/api-management/persistent-database#how-tyk-uses-persistent-storage) is configured independently, though all four normally point at the same database instance. Note that Aggregate Analytics is configured as `analytics`, not `aggregate_analytics`.
+- Tyk MDCB uses a top-level `analytics` block.
+- Tyk Pump uses its own [Mongo pump types](/api-management/dashboard-analytics/control-plane-pumps#mongodb), each with a `meta` object.
+
+<Note>
+Tyk Dashboard uses the `main` category's configuration when no corresponding configuration is available for `logs`, `uptime` or `analytics`.
+</Note>
+
+The underlying options are equivalent:
+
+| Purpose | Tyk Dashboard field | Tyk MDCB field | Tyk Pump field |
+|---|---|---|---|
+| Storage type | `type` = `mongo` | `type` = `mongo` | Implied by pump type (`mongo`, `mongo-pump-selective`, `mongo-pump-aggregate`, and so on) - see [Choosing a Pump Type](/api-management/dashboard-analytics/control-plane-pumps#choosing-a-pump-type) |
+| Connection string | `connection_string` | `connection_string` | `mongo_url` |
+| Driver | `mongo.driver` | `driver` | `driver` |
+| Session consistency | `mongo.session_consistency` | `mongo_session_consistency` | `mongo_session_consistency` |
+| Direct connection | `mongo.direct_connection` | `mongo_direct_connection` | `mongo_direct_connection` |
+
+Driver selects between `mongo-go` (the official [MongoDB Go driver](https://www.mongodb.com/docs/drivers/go/v1.12/)) and `mgo` (the legacy [mgo driver](https://github.com/go-mgo/mgo)). `mongo-go` has been the default since Tyk Dashboard 5.3 and Tyk MDCB 2.4.3, and is also Tyk Pump's default; there's no reason to choose `mgo` for a new deployment.
+
+<Note>
+Tyk Dashboard also has an older, top-level way to configure MongoDB (`mongo_url`, `mongo_driver`, `mongo_use_ssl`, `mongo_ssl_ca_file`, `mongo_ssl_allow_invalid_hostnames`, `mongo_ssl_insecure_skip_verify`, `mongo_session_consistency`, and `mongo_batch_size`), predating the `storage.<category>` structure above. These only take effect as a complete set, and only when `mongo_url` is set and `storage.main.connection_string` is empty - once `storage.main.connection_string` is set, this legacy block is ignored entirely. New deployments should use `storage.<category>` fields directly.
+</Note>
+
+### Session Consistency
+
+MongoDB lets a client trade off read consistency against how well reads distribute across a replica set. This setting controls that trade-off for each component's own connection:
+
+- `strong` (the default): every read and write goes to the primary over a dedicated connection, so reads are always fully up to date and correctly ordered. This gives the strongest guarantees, but none of the read load is distributed to secondaries.
+- `monotonic`: reads start on a secondary, so they may lag slightly behind the primary, but they never go backwards in time within a session, and once the session writes, its own subsequent reads reflect that write. After a write, the session switches to the primary.
+- `eventual`: reads can go to any secondary, and consecutive reads aren't guaranteed to use the same one, so data can be observed out of order with no read-your-writes guarantee. This distributes read load the most, at the cost of the weakest guarantees.
+
+Most deployments should leave this at the default.
+
+### Direct Connection
+
+By default, the MongoDB driver uses the seed address in your connection string to discover the rest of your replica set or cluster, then connects to every member it finds. Direct connection skips that discovery and connects only to the host given in the connection string.
+
+This matters most when discovery would otherwise fail: for example, if you're connecting through an SSH tunnel, only the one address you've tunneled is reachable - the other replica set members, advertised to the driver under their own internal addresses, aren't. Enabling direct connection stops the driver trying, and failing, to reach them.
+
+### TLS
+
+MongoDB connections can be encrypted with TLS and, optionally, authenticated with mutual TLS (mTLS) using a client certificate. The same set of settings applies across all three components, just under each component's own field naming.
+
+| Purpose | Tyk Dashboard field | Tyk MDCB field | Tyk Pump field |
+|---|---|---|---|
+| Enable TLS | `mongo.ssl.enabled` | `mongo_use_ssl` | `mongo_use_ssl` |
+| Skip server certificate verification | `mongo.ssl.insecure_skip_verify` | `mongo_ssl_insecure_skip_verify` | `mongo_ssl_insecure_skip_verify` |
+| Allow invalid hostnames | `mongo.ssl.allow_invalid_hostnames` | `mongo_ssl_allow_invalid_hostnames` | `mongo_ssl_allow_invalid_hostnames` |
+| Certificate Authority file | `mongo.ssl.ca_file` | `mongo_ssl_ca_file` | `mongo_ssl_ca_file` |
+| Client certificate and key (mTLS) | `mongo.ssl.key_file` | `mongo_ssl_pem_keyfile` | `mongo_ssl_pem_keyfile` |
+
+- The client certificate/key field expects a single PEM file containing both the client certificate and private key, for mutual TLS.
+- Allowing invalid hostnames skips the TLS hostname check, useful when connecting through an SSH tunnel; the rest of TLS verification still applies.
+
+<Warning>
+Only skip server certificate verification for local development or testing. It disables all TLS certificate validation for the connection to MongoDB, not just the hostname check that allowing invalid hostnames skips, exposing the connection to man-in-the-middle attacks. If you need to connect to a MongoDB instance with a self-signed certificate in production, add that certificate to the Certificate Authority file field instead.
+</Warning>
+
+## Connection Pool Management
+
+Tyk does not expose connection pool tuning for a MongoDB backend - only [PostgreSQL](/tyk-configuration-reference/sql#connection-pool-management) has configurable pool settings. Instead, each connection uses its [driver's](#configuration-reference) own default, unmodified:
+
+| Driver | `mongo-go` (default) | `mgo` (legacy) |
+|---|---|---|
+| Pool size | 100 connections per pool | 4096 connections per server |
+| Idle connections | Unbounded - idle connections are never evicted | Unbounded - idle connections are never evicted |
+| Connection lifetime | Unbounded - connections are reused indefinitely | Unbounded - connections are reused indefinitely |
+
+## MongoDB Atlas
+
+To integrate with [MongoDB Atlas](https://www.mongodb.com/atlas/database), whitelist your Tyk components' IP addresses on the Atlas side, then use Atlas's provided connection string in whichever field your component uses (`storage.<category>.connection_string` for Tyk Dashboard, `analytics.connection_string` for Tyk MDCB, `meta.mongo_url` for Tyk Pump), and enable TLS (`storage.<category>.mongo.ssl.enabled`, `analytics.mongo_use_ssl`, or `meta.mongo_use_ssl`).
+
+For example, using Tyk Dashboard's `storage.main` block:
+
+```json
+{
+  "storage": {
+    "main": {
+      "type": "mongo",
+      "connection_string": "mongodb+srv://admin:password@cluster0.mongodb.net/tyk_analytics?retryWrites=true&w=majority",
+      "mongo": {
+        "ssl": {
+          "enabled": true
+        }
+      }
+    }
+  }
+}
+```
+
+<Note>
+The `mongodb+srv://` scheme, which Atlas provides by default, resolves your cluster's full replica set topology from DNS - you don't need to list individual shard hosts.
+</Note>
+
+## Configuration Examples
+
+### Tyk Dashboard
+
+In `tyk_analytics.conf` (or via environment variables), MongoDB is configured inside the `storage` block, per category of data:
+
+```json
+{
+  "storage": {
+    "main": {
+      "type": "mongo",
+      "connection_string": "mongodb://db_host_name:27017/tyk_analytics",
+      "mongo": {
+        "driver": "mongo-go",
+        "session_consistency": "strong",
+        "direct_connection": false,
+        "ssl": {
+          "enabled": true,
+          "insecure_skip_verify": false,
+          "allow_invalid_hostnames": false,
+          "ca_file": "/path/to/ca.crt",
+          "key_file": "/path/to/client.pem"
+        }
+      }
+    }
+  }
+}
+```
+
+### Tyk MDCB
+
+In `tyk_sink.conf` (or via environment variables), MongoDB is configured inside the `analytics` block:
+
+```json
+{
+  "analytics": {
+    "type": "mongo",
+    "connection_string": "mongodb://db_host_name:27017/tyk_analytics",
+    "driver": "mongo-go",
+    "mongo_session_consistency": "strong",
+    "mongo_direct_connection": false,
+    "mongo_use_ssl": true,
+    "mongo_ssl_insecure_skip_verify": false,
+    "mongo_ssl_allow_invalid_hostnames": false,
+    "mongo_ssl_ca_file": "/path/to/ca.crt",
+    "mongo_ssl_pem_keyfile": "/path/to/client.pem"
+  }
+}
+```
+
+### Tyk Pump
+
+Tyk Pump connects to MongoDB through its [Mongo pump types](/api-management/dashboard-analytics/control-plane-pumps#choosing-a-pump-type), each declared in `pump.conf` (or using equivalent environment variables).
+
+For full details of the MongoDB pump types and their configuration see [Control Plane Pumps](/api-management/dashboard-analytics/control-plane-pumps#mongodb).
+
+## Sizing
+
+MongoDB recommends keeping the commonly-used part of your indexes in memory alongside your working set. Index size varies by collection: for Aggregate Analytics, the average index size is around 6% of the overall collection; for Logs, it's around 30%.
+
+**Sizing Example**
+
+For 1 million requests per day - roughly 1GB of Traffic Logs per day and 30MB of Aggregate Analytics per month (see [Sizing Guidelines](/api-management/persistent-database#sizing-guidelines)) - keeping 7 days of Traffic Logs and 3 months of Aggregate Analytics in your working set requires:
+
+- Traffic Logs index: 30% × (1GB × 7 days) ≈ 2.1GB
+- Aggregate Analytics: 3 months × 30MB ≈ 90MB
+- Total: ≈ 2.2GB
+
+MongoDB also needs memory for its own internal data structures on top of this. Doubling the result is a reasonable rule of thumb - in this example, provision around 4.4GB.

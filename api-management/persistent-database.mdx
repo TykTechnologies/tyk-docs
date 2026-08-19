@@ -1,0 +1,105 @@
+---
+title: "Core Platform Persistent Database"
+description: "Learn how Tyk Dashboard, Tyk MDCB and Tyk Pump share a persistent database, and how to configure and tune it."
+keywords: "persistent database, Tyk Dashboard, Tyk MDCB, Tyk Pump, connection pool, MongoDB, SQL, PostgreSQL"
+sidebarTitle: "Persistent Database"
+---
+
+import DatabaseCalculator from '/snippets/DatabaseCalculator.mdx';
+
+In the Control Plane, the core platform (Tyk Dashboard, Tyk MDCB and Tyk Pump) share a single persistent database - the durable source of truth for your Tyk estate: definitions, policies, users, and analytics history. 
+
+Tyk Developer Portal is the one exception, maintaining its own separate database - see [Configure SQL Storage](/tyk-configuration-reference/sql) for its supported engines and connection configuration.
+
+See [Database Management](/planning-for-production/database-settings) for how this fits alongside Redis, used for other data such as rate limits and response caching.
+
+## How Tyk Uses Persistent Storage
+
+Tyk stores four categories of data, each independently configurable to use a supported database engine:
+
+| Category | Contents | Written by | Read by |
+|---|---|---|---|
+| [**Main Storage**](#main-storage) | APIs, Policies, Users, User Groups, Certificates, Webhooks, Portal settings | Tyk Dashboard | Tyk Dashboard; Tyk MDCB (to sync down to Data Plane Gateways) |
+| [**Aggregate Analytics**](#aggregate-analytics) | Summarized traffic statistics powering [Traffic Analytics](/api-management/dashboard-analytics#traffic-analytics) | [Tyk Pump](/api-management/dashboard-analytics/control-plane-pumps); Tyk MDCB (from [Data Plane Hybrid Pumps](/api-management/dashboard-analytics/data-plane-pump)) | Tyk Dashboard |
+| [**Traffic Logs**](#traffic-logs) | [Traffic Logs](/api-management/logs/traffic-logs) - one record per tracked request | Tyk Pump; Tyk MDCB (from Data Plane Hybrid Pumps) | Tyk Dashboard |
+| [**Uptime Test Results**](#uptime-test-results) | [Uptime test](/planning-for-production/ensure-high-availability/uptime-tests) results | Tyk Pump | Tyk Dashboard |
+
+These four categories cover everything Tyk Dashboard reads back out of the persistent database. Tyk Pump can also write additional data here that Tyk Dashboard never reads: dedicated GraphQL and MCP collections or tables, for your own [downstream querying](#downstream-querying-data).
+
+For connection configuration, see [Configure MongoDB](/tyk-configuration-reference/mongodb) or [Configure SQL Storage](/tyk-configuration-reference/sql).
+
+## Protecting Your Persistent Database
+
+This database is the source of truth for your deployment, and Tyk has no built-in replication or backup mechanism for it. Protect it the same way you would any production database: enable your engine's own high-availability topology (MongoDB replica sets, PostgreSQL streaming replication, or your managed cloud provider's equivalent) and take regular backups.
+
+## Connection Pool Management
+
+A connection pool is a set of open connections to the database that a component keeps ready to reuse, rather than opening a new connection for every operation. Pool size matters in both directions: too few connections can bottleneck throughput under load, while too many can exhaust the database's own connection limit or leave idle connections consuming resources unnecessarily.
+
+| Component | Connections | Why |
+|---|---|---|
+| Tyk Dashboard | 8, always | One read and one write pool for each of its four categories of data (Main Storage, Aggregate Analytics, Traffic Logs, Uptime Test Results) |
+| Tyk MDCB | 1 to 7, depending on configuration | One main connection, plus up to six more if it's writing analytics directly rather than forwarding them to a separate Tyk Pump |
+| Tyk Pump | Varies | One connection per configured pump type - a deployment running several pump types (for example, separate pumps for raw logs, aggregates, and uptime) opens one connection each |
+
+Managing these pools - which settings are available, and what they do - is both per-component and per-engine. See [Configure SQL Storage](/tyk-configuration-reference/sql#connection-pool-management) or [Configure MongoDB](/tyk-configuration-reference/mongodb#connection-pool-management) depending on the type of database you are using.
+
+## Sizing Guidelines
+
+Sizing depends on which category of data you're looking at. One recurring factor across categories is your database's **working set** - the data it's actively using for current queries. A working set that fits in available memory keeps queries fast; one that doesn't forces more frequent, slower disk access.
+
+Sizing your database's memory - choosing an instance size, or tuning your engine's own cache settings such as MongoDB's WiredTiger cache or PostgreSQL's `shared_buffers` - is your responsibility, not something Tyk configures. What follows estimates how much of that working set is Tyk's own data, so you know what to provision for.
+
+Indexes are part of your working set too, across every category, and their size depends on your database engine. See [Configure MongoDB](/tyk-configuration-reference/mongodb#sizing) or [Configure SQL Storage](/tyk-configuration-reference/sql) for engine-specific sizing detail.
+
+### Main Storage
+
+Category label: `main`
+
+Main Storage scales with how many APIs, Policies, and Users you've configured, not with traffic, so unlike the other categories there's no per-day growth rate to estimate. Approximate sizes of individual records, estimated from Tyk's data structures rather than measured:
+
+- **API Definition (Tyk OAS)**: highly variable. A Tyk OAS API definition combines the full OpenAPI description of your API with the Tyk Vendor Extension (`x-tyk-api-gateway`), which uses `omitempty` so only configured settings serialize. Total size is dominated by your OpenAPI document's complexity - a minimal single-endpoint API might total a few KB, a moderately complex API (Swagger's Petstore example, for instance, comes to around 20KB including its Tyk configuration) is common, and large enterprise APIs with many paths and schemas can run to 100KB or more.
+- **API Definition (Tyk Classic)**: roughly 5-8KB for a simple API with a handful of endpoints. Unlike Tyk OAS, Tyk Classic doesn't use `omitempty` - every field in the definition always serializes, so size is driven primarily by endpoint count and `extended_paths` configuration rather than by omission.
+- **Policy**: roughly 0.7-2KB, depending mainly on how many APIs the policy grants access to.
+- **User**: roughly 0.3-0.6KB - Dashboard user accounts are a small, mostly fixed-size record.
+
+Main Storage is read constantly - by Tyk Dashboard's own UI, and by Tyk Gateway and Tyk MDCB on every hot-reload cycle - so it's part of your working set by default. For most deployments its total size is trivial compared to [Traffic Logs](#traffic-logs) or [Aggregate Analytics](#aggregate-analytics), so this isn't usually a sizing concern.
+
+One exception: if the Dashboard's Audit Log is configured to send the log to the persistent database, its records are stored in `main`. These accumulate with Dashboard API usage rather than staying roughly fixed to your configuration size, and Tyk doesn't manage their lifetime automatically - retention is entirely up to you. See [Audit Log Storage](/api-management/logs/audit-logs#audit-log-storage) for sizing guidance.
+
+### Aggregate Analytics
+
+Category label: `analytics`
+
+An aggregate record's size scales with the cardinality of what it tracks, not with request volume directly. Tyk Pump's aggregate record keeps a separate counter for each distinct value across [several dimensions](/api-management/dashboard-analytics#how-aggregation-works) - APIs, API versions, access keys, OAuth clients, geographic locations, and endpoints (including per-key and per-OAuth-client endpoint breakdowns) - plus any [custom aggregation tags](/api-management/dashboard-analytics#custom-aggregation-tags) you've configured. A deployment with many APIs, high API-key cardinality, endpoint-level tracking enabled, or high-cardinality custom tags produces larger records than one with few of each.
+
+The average aggregate record is about ~40KB on our cloud, across a typical mix of these dimensions. By default, aggregation runs hourly - for 1 million requests per day, that's 24 records, roughly 1MB per day or 30MB per month. Configuring a shorter aggregation interval (down to per-minute) increases record volume accordingly. This applies whether the underlying database is MongoDB or PostgreSQL.
+
+Aggregate Analytics powers most Dashboard graphs directly, so it benefits from staying in your working set.
+
+### Traffic Logs
+
+Category label: `logs`
+
+Traffic logs accumulate until you actively manage them with no built-in size limit. For 1 million requests per day, that's roughly 1KB per record - about 1GB per day, or 30GB per month. See [Analytics Storage Management](/api-management/dashboard-analytics/analytics-storage-management) for capping strategies: MongoDB capped collections, TTL indexes, and SQL table sharding.
+
+[Log Browser](/api-management/dashboard-analytics#activity-logs) access is usually random, so - unlike Aggregate Analytics - Traffic Logs doesn't need to be part of your working set; it's fine to serve from disk.
+
+### Uptime Test Results
+
+Category label: `uptime`
+
+Unlike the other three categories, the uptime test results' growth profile depends on which engine you're using:
+
+- For MongoDB, the Uptime Pump stores one small document per test run - URL, response time, a status or failure flag, and a timestamp - so volume grows with the number of configured checks times how often they run (`time_wait`), with no built-in size limit; it should be [capped](/api-management/dashboard-analytics/analytics-storage-management) the same way as Traffic Logs.
+- For SQL, results are aggregated per hour instead, broken down by URL and response code - bounded growth, closer to how Aggregate Analytics behaves.
+
+Individual records are small either way, so working-set treatment follows whichever category Uptime Test Results resembles on your engine: fine to serve from disk on MongoDB, small enough to sit in the working set on SQL.
+
+### Downstream Querying Data
+
+GraphQL and MCP downstream-querying collections and tables fall outside the four categories above, so the estimates in this section don't cover them. Their volume depends entirely on your own traffic and detailed recording settings, not on a fixed Tyk record shape - see [Choosing a Pump Type](/api-management/dashboard-analytics/control-plane-pumps#choosing-a-pump-type) for more information. Like Traffic Logs, they're typically fine to serve from disk, since your own querying tools drive access patterns rather than Tyk.
+
+### Database Sizing Calculator
+
+<DatabaseCalculator />
