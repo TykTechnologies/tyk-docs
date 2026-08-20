@@ -1,0 +1,524 @@
+---
+title: "Plugin Bundles"
+description: "Package custom plugin source code into a signed zip bundle and serve it from a remote web server, using the Tyk Bundler CLI tool."
+sidebarTitle: "Plugin Bundles"
+---
+
+## Plugin Deployment Types
+
+There are a variety of scenarios relating to the deployment of plugins for an API, concerning the location of the plugin source code and its associated configuration.
+
+### Local Plugins
+
+The plugin source code and associated configuration are co-located with Tyk Gateway in the same file system. The configuration is located within the API Definition. For further details please consult [API configuration](/api-management/plugins/configuring-plugins#api-configuration).
+
+### Plugin Bundles (Remote)
+
+The plugin source code and associated configuration are bundled into a zip file and uploaded to a remote webserver. Multiple plugins can be stored in a single *plugin bundle*. Tyk Gateway will download the plugin bundle from the remote webserver and then extract, cache and execute plugins for each of the configured phases of the API request / response lifecycle. For further details on plugin bundles and how to configure them, please refer to the [plugin bundles](/api-management/plugins/plugin-bundles#plugin-bundles) page.
+
+### gRPC Plugins (Remote)
+
+Custom plugins can be hosted on a remote server and executed from the Tyk Gateway middleware chain via gRPC. These plugins can be written in any language you prefer, as they are executed on the gRPC server. You'll configure your API definition so that Tyk Gateway will send requests to your gRPC server at the appropriate points in the API request / response lifecycle. For further details please consult our [gRPC](/api-management/plugins/rich-plugins-grpc#overview) documentation.
+
+## Plugin Bundles
+
+For Tyk Gateway to execute local custom plugins during the processing of API requests and responses, the plugin source code must be loaded into the Gateway. The source is usually stored in files and the API definition is used to point the Gateway at the correct file for each [plugin type](/api-management/plugins/plugin-types#plugin-types). To simplify the management of plugins, you can group (or *bundle*) multiple plugin files together in a ZIP file that is referred to as a *plugin bundle*.
+
+### When To Use Plugin Bundles
+
+Plugin bundles are intended to simplify the process of attaching and loading custom middleware. Multiple API definitions can refer to the same plugin bundle (containing the source code and configuration) if required. Having this common, shared resource avoids you from having to duplicate plugin configuration for each of your APIs definitions. 
+
+### How Plugin Bundles Work
+
+The source code and a [manifest file](#manifest) are bundled into a zip file and uploaded to an external remote web server. The manifest file references the source code file path and the function name within the code that should be invoked for each [plugin type](/api-management/plugins/plugin-types#plugin-types). Within the API definition, custom plugins are configured simply using the name of the bundle (zip file). Tyk Gateway downloads, caches, extracts and executes plugins from the downloaded bundle according to the configuration in the manifest file. 
+
+<img src="/img/plugins/plugin-bundles-overview.png" alt="plugin bundles architectural overview" />
+
+#### Caching plugin bundles
+
+Tyk downloads a plugin bundle on startup based on the configuration in the API definition, e.g. `http://my-bundle-server.com/bundles/bundle-latest.zip`. The bundle contents will be cached so that, when a Tyk reload event occurs, the Gateway does not have to retrieve the bundle from the server again each time. If you want to use a different bundle then you must update your API to retrieve a different bundle filename and then trigger a reload. It is not sufficient simply to replace the bundle file on your server with an updated version with the same name - the caching ensures this will not be retrieved during a reload event.
+
+As a suggestion, you may organize your plugin bundle files using a Git commit reference or version number, e.g. `bundle-e5e6044.zip`, `bundle-48714c8.zip`, `bundle-1.0.0.zip`, `bundle-1.0.1.zip`, etc.
+
+Alternatively, you may delete the cached bundle from Tyk manually and then trigger a hot reload to tell Tyk to fetch a new one.  By default, Tyk will store downloaded bundles in this path:
+`{ TYK_ROOT } / { CONFIG_MIDDLEWARE_PATH } / bundles`
+
+#### Gateway configuration
+
+To configure Tyk Gateway to load plugin bundles the following parameters must be specified in your `tyk.conf`:
+
+```yaml
+"enable_bundle_downloader": true,
+"bundle_base_url": "http://my-bundle-server.com/bundles/",
+"public_key_path": "/path/to/my/pubkey",
+```
+
+- `enable_bundle_downloader`: Enables the bundle downloader.
+- `bundle_base_url`: A base URL that will be used to download the bundle. For example if we have `bundle-latest.zip` specified in the API definition, Tyk will fetch the following file: `http://my-bundle-server.com/bundles/bundle-latest.zip` (see the next section for details).
+-  `public_key_path`: Sets a public key, used for verifying signed bundles. If unsigned bundles are used you may omit this.
+
+
+
+    <Note>
+    Remember to set `"enable_coprocess": true` in your `tyk.conf` when using [rich plugins](/api-management/plugins/plugin-bundles#plugin-bundles)!
+    </Note>
+
+
+#### The manifest file
+<a id="manifest"></a>
+
+A plugin bundle must include a manifest file (called `manifest.json`). The manifest file contains important information like the configuration block and the list of source code files that will be included as part of the bundle file. If a file isn't specified in the list, it won't be included in the resulting file, even if it's present in the current directory.
+
+A sample manifest file looks like this:
+
+```json
+{
+  "file_list": [
+    "middleware.py",
+    "mylib.py"
+  ],
+  "custom_middleware": {
+    "pre": [
+      {
+        "name": "PreMiddleware"
+      }
+    ],
+    "post": [
+      {
+        "name": "PostMiddleware"
+      }
+    ],
+    "driver": "python"
+  },
+  "checksum": "",
+  "signature": ""
+}
+```
+
+You may leave the `checksum` and `signature` fields empty, the bundler tool will fill these during the build process.
+
+The `custom_middleware` block follows the standard syntax we use for Tyk plugins. In Tyk Community Edition, where file-based API configuration is used by default, a `custom_middleware` block is located/added to the API configuration file.
+
+#### Creating plugin bundles
+
+Tyk provides the Bundle CLI tool as part of the `tyk` binary. For further details please visit the [Bundle CLI tool](/api-management/plugins/plugin-bundles#bundler-cli-tool) page.
+
+### Tyk OAS API Configuration
+
+For API plugins that are deployed as [plugin bundles](/api-management/plugins/plugin-bundles#plugin-bundles), the API should be configured with the name of the plugin bundle file to download from your remote web server. Furthermore, the Gateway should be [configured](/api-management/plugins/plugin-bundles#gateway-configuration) to enable downloading plugin bundles.
+
+You can configure your API with the name of the plugin bundle file to download within the Tyk OAS API definition or API Designer.
+
+If you’re using the legacy Tyk Classic APIs, then check out the [Tyk Classic](/api-management/plugins/plugin-bundles#tyk-classic-api-configuration) page.
+
+#### Using API Definition
+
+The configuration for a Tyk OAS API to fetch the download of a plugin bundle from a remote web server is encapsulated within the `pluginConfig` section within the `middleware.global` section of the `x-tyk-api-gateway` part of a Tyk OAS API Definition.
+
+The `pluginConfig` section is structured as follows:
+
+- `bundle`: A JSON entity that contains the following configuration parameters:
+  - `enabled`: When `true`, enables the plugin.
+  - `path`: The relative path of the zip file in relation to the base URL configured on the remote webserver that hosts plugin bundles.
+- `driver`: Indicates the type of plugin, e.g. `golang`, `grpc`, `lua`, `otto` or `python`.
+
+An illustrative example is listed below:
+
+```json{hl_lines=["37-45"], linenos=true, linenostart=1}
+{
+    "components": {},
+    "info": {
+        "title": "example-oas-plugin-configuration",
+        "version": "1.0.0"
+    },
+    "openapi": "3.0.3",
+    "paths": {
+        "/anything": {
+            "put": {
+                "operationId": "anythingput",
+                "responses": {
+                    "200": {
+                        "description": ""
+                    }
+                }
+            }
+        }
+    },
+    "x-tyk-api-gateway": {
+        "info": {
+            "name": "example-oas-plugin-configuration",
+            "state": {
+                "active": true
+            }
+        },
+        "upstream": {
+            "url": "http://httpbin.org/"
+        },
+        "server": {
+            "listenPath": {
+                "value": "/example-oas-plugin-configuration/",
+                "strip": true
+            }
+        },
+        "middleware": {
+            "global": {
+              "pluginConfig": {
+                "bundle": {
+                  "enabled": true,
+                  "path": "plugin.zip"
+                },
+                "driver": "goplugin"
+              }
+            } 
+        }
+    }
+}
+```
+
+In this example we can see that bundle plugin has been configured within the `middleware.global.pluginConfig.bundle` object. The plugin is enabled and bundled within file `plugin.zip`. The plugin bundle is a Go plugin, i.e. `middleware.global.pluginConfig.driver` has been configured with value `goplugin`.
+
+The configuration above is a complete and valid Tyk OAS API Definition that you can import into Tyk to try out custom plugin bundles, assuming that you have provided a valid bundle file named `plugin.zip`.
+
+#### Using API Designer
+
+To configure plugin bundles for Tyk OAS APIs click on the APIs menu item in the *API Management* menu of Dashboard and select your API to display the editor screen. Subsequently, follow the steps below:
+
+1. **Access plugin options**
+
+    Scroll down until the *Enable Plugin* section is displayed.
+
+    <img src="/img/plugins/plugins_oas_api_bundles_config.png" alt="Tyk OAS API Bundle section" />
+
+2. **Enable plugin bundle for you API**
+
+    Enable a plugin bundle for your API by activating the toggle switch. 
+
+3. **Enter relative path to plugin bundle file**
+
+    Enter the relative path of the plugin bundle file in the *Plugin Bundle ID* field that Tyk Gateway should download from the web server that hosts your plugin bundles.
+
+4. **Save the API**
+
+    Select **Save API** to apply the changes to your API.
+
+### Tyk Classic API Configuration
+
+For custom plugins that are deployed as [plugin bundles](/api-management/plugins/plugin-bundles#plugin-bundles), the API should be configured with the name of the plugin bundle file to download from your remote web server. Furthermore, the Gateway should be [configured](/api-management/plugins/plugin-bundles#gateway-configuration) to enable downloading plugin bundles.
+
+You can configure your API with the name of the plugin bundle file to download within the Tyk Classic API definition or API Designer.
+
+If you’re using the newer Tyk OAS APIs, then check out the [Tyk OAS](/api-management/plugins/plugin-bundles#tyk-oas-api-configuration) page.
+
+#### Using API Definition
+
+The configuration for an API to fetch and download a plugin bundle from a remote server is encapsulated within the `custom_middleware_bundle` field of the Tyk Classic API Definition. An illustrative example is listed below:
+
+```json {hl_lines=["33"], linenos=true, linenostart=1}
+{
+  "name": "Tyk Classic Bundle API",
+  "api_id": "1",
+  "org_id": "default",
+  "definition": {
+    "location": "header",
+    "key": "version"
+  },
+  "auth": {
+    "auth_header_name": "authorization"
+  },
+  "use_keyless": true,
+  "version_data": {
+    "not_versioned": true,
+    "versions": {
+      "Default": {
+        "name": "Default",
+        "expires": "3000-01-02 15:04",
+        "use_extended_paths": true,
+        "extended_paths": {
+          "ignored": [],
+          "white_list": [],
+          "black_list": []
+        }
+      }
+    }
+  },
+  "proxy": {
+    "listen_path": "/quickstart/",
+    "target_url": "http://httpbin.org",
+    "strip_listen_path": true
+  },
+  "custom_middleware_bundle": "bundle-latest.zip"
+}
+```
+
+With the configuration given in the example above, calls to the API will invoke the custom plugins defined in the `manifest.json` file contained within `bundle-latest.zip` uploaded to your remote webserver, e.g. `http://your-example-plugin-server.com/plugins`.
+
+Tyk Gateway should be configured for downloading plugin bundles from a secured web server. Please consult the [plugin bundles](/api-management/plugins/plugin-bundles#plugin-bundles) documentation for further details.
+
+#### Using API Designer
+
+To configure plugin bundles for Tyk Classic APIs click on the APIs menu item in the *API Management* menu of Dashboard and select your API to display the API editor screen. Subsequently, follow the steps below:
+
+1. **Access plugin options**
+
+    Click on the *Advanced Options* tab and scroll down until the *Plugin Options* section is displayed.
+
+    <img src="/img/plugins/plugins_classic_api_bundles_config.png" alt="Tyk Classic Plugin Options section" />
+
+2. **Enter relative path to bundle file**
+
+    Enter the relative path of the plugin bundle file in the *Plugin Bundle ID* field that Tyk Gateway should download from the web server hosting plugin bundles.
+
+3. **Save the API**
+
+    Select the **save** or **update** button to apply the changes to your API.
+
+### Bundler CLI Tool
+
+The bundler tool is a CLI service, provided by _Tyk Gateway_ as part of its binary since v2.8. This lets you generate
+[plugin bundles](/api-management/plugins/plugin-bundles#plugin-bundles).
+
+
+<Note>
+Generated plugin bundles must be served using your own web server.
+</Note>
+
+
+Issue the following command to see more details on the `bundle` command:
+
+```bash
+/opt/tyk-gateway/bin/tyk bundle -h
+```
+
+---
+
+#### Prerequisites
+
+To create plugin bundles you will need the following:
+
+- **Manifest.json**: The [manifest.json](/api-management/plugins/plugin-bundles#the-manifest-file) file
+  contains the paths to the plugin source files and the name of the function implementing each plugin. The
+  _manifest.json_ file is mandatory and must exist on the Tyk Gateway file system. By default the bundle CLI looks for
+  a file named _manifest.json_ in the current working directory where the bundle command is run from. The exact location
+  can be specified using the `--manifest` command option.
+- **Plugin source code files**: The plugin source code files should be contained relative to the directory in which the
+  _manifest.json_ file is located. The _manifest.json_ should contain relative path references to source code files.
+
+  
+<Note>
+Source code files are not required when creating a plugin bundle for gRPC plugins since the plugin
+  source code is located at the gRPC server.
+</Note>
+
+
+- **Certificate key**: Plugin bundles can optionally be signed with an RSA private key. The corresponding public key
+  should be located in the file configured in environmental variable `TYK_GW_PUBLICKEYPATH` or the `public_key_path`
+  parameter in `tyk.conf`:
+
+```json
+{
+  "enable_bundle_downloader": true,
+  "bundle_base_url": "http://my-bundle-server.com/bundles/",
+  "public_key_path": "/path/to/my/pubkey.pem"
+}
+```
+
+---
+
+#### Directory Structure
+
+A suggested directory structure is shown below for Golang, Javascript and Python bundles in the tabs below.
+
+
+<Note>
+Sub-directories (folders) are not supported inside the `bundle-directory` location.
+</Note>
+
+
+<Tabs> <Tab title="Golang">
+
+```bash
+/bundle-directory
+├── manifest.json               # Manifest file with plugin references
+└── plugin.so                   # Compiled Golang plugin
+```
+
+</Tab> <Tab title="Javascript">
+
+```bash
+/bundle-directory
+├── manifest.json               # Manifest file with plugin references
+├── plugin1.js                  # First JavaScript plugin source file
+└── plugin2.js                  # Second JavaScript plugin source file
+```
+
+</Tab>
+
+<Tab title="Python">
+
+```bash
+/bundle-directory
+├── manifest.json               # Manifest file with plugin references
+├── plugin1.py                  # First Python plugin source file
+└── plugin2.py                  # Second Python plugin source file
+```
+
+</Tab>
+
+</Tabs>
+
+The `manifest.json` will reference the files located in the `bundle-directory`, ensure plugin source files are organized relative to the manifest. The Tyk Gateway will load and execute these plugins based on the paths defined in the `manifest.json` file.
+
+Sample `manifest.json` is shown below for Golang, Javascript and Python bundles in the tabs below.
+
+<Tabs> <Tab title="Golang">
+
+```json
+{
+  "file_list": [
+    "plugin.so"
+  ],
+  "custom_middleware": {
+    "pre": [
+      {
+        "name": "PreMiddleware",
+        "path": "./plugin.so"
+      }
+    ],
+    "post": [
+      {
+        "name": "PostMiddleware",
+        "path": "./plugin.so"
+      }
+    ],
+    "driver": "goplugin"
+  },
+  "checksum": "",
+  "signature": ""
+}
+
+```
+
+</Tab> <Tab title="Javascript">
+
+```json
+{
+  "file_list": [
+    "plugin1.js",
+    "plugin2.js"
+  ],
+  "custom_middleware": {
+    "pre": [
+      {
+        "name": "PreMiddleware",
+        "path": "./plugin1.js"
+      }
+    ],
+    "post": [
+      {
+        "name": "PostMiddleware",
+        "path": "./plugin2.js"
+      }
+    ],
+    "driver": "otto"
+  },
+  "checksum": "",
+  "signature": ""
+}
+```
+
+</Tab>
+
+<Tab title="Python">
+
+```json
+{
+  "file_list": [
+    "plugin1.py",
+    "plugin2.py"
+  ],
+  "custom_middleware": {
+    "pre": [
+      {
+        "name": "PreMiddleware",
+        "path": "./plugin1.py"
+      }
+    ],
+    "post": [
+      {
+        "name": "PostMiddleware",
+        "path": "./plugin2.py"
+      }
+    ],
+    "driver": "python"
+  },
+  "checksum": "",
+  "signature": ""
+}
+```
+
+</Tab>
+
+</Tabs>
+
+---
+
+#### Creating a plugin bundle
+
+Run the following command to create the bundle:
+
+```bash
+$ tyk bundle build
+```
+
+The resulting file will contain all your specified files and a modified `manifest.json` with the checksum and signature
+(if required) applied, in ZIP format.
+
+By default, Tyk will attempt to sign plugin bundles for improved security. If no private key is specified, the program
+will prompt for a confirmation. Use `-y` to override this (see options below).
+
+---
+
+#### Command Options
+
+Instructions on how to create plugin bundles is displayed by issuing the following command:
+
+```bash
+/opt/tyk-gateway/bin/tyk bundle build -h
+```
+
+The following options are supported:
+
+- `--manifest`: Specifies the path to the manifest file. This defaults to `manifest.json` within the current working
+  directory.
+- `--output`: Specifies the name of the bundle file e.g. `--output bundle-latest.zip`. If this flag is not specified,
+  `bundle.zip` will be used.
+- `-y`: Force tool to create unsigned bundle without prompting e.g. `$ tyk bundle build --output bundle-latest.zip -y`.
+- `--key`: Specifies the path to your private key which is used to generate signed bundle e.g.
+  `$ tyk bundle build --output bundle-latest.zip --key=mykey.pem`.
+
+---
+
+#### Docker Example
+
+Since v5.5 Tyk Gateway uses distroless docker images.
+
+For Gateway version < v5.5 it is possible to use Docker to create plugin bundles as shown in the example below.
+
+```bash
+docker run --rm -it \
+  --name bundler \
+  -v `pwd`:/plugin-source \
+  -v `pwd`/../../../confs/keys:/keys \
+  -w /plugin-source \
+  --entrypoint /bin/bash \
+  tykio/tyk-gateway:v5.4.0 \
+  -c 'export PATH="/opt/tyk-gateway:$$PATH"; tyk bundle build -o bundle.zip -k /keys/key.pem'
+```
+
+This Docker command runs a container using the `tykio/tyk-gateway:v5.4.0` image to build a Tyk plugin bundle. It mounts
+the current directory from the host as `/plugin-source` and a directory containing keys as `/keys` inside the container.
+The working directory within the container is set to `/plugin-source`, and the default entrypoint is overridden to use
+`/bin/bash`. The command executed in the container exports a modified `PATH` to include the Tyk Gateway binaries, then
+runs `tyk bundle build` to generate a plugin bundle named `bundle.zip`, using the specified key for authentication. The
+container is automatically removed after the command completes, and the operation is conducted interactively.
+
