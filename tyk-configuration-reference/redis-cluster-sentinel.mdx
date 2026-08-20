@@ -27,11 +27,15 @@ All Tyk components that connect to the same Redis instance must use identical Re
 
 ## Configuration Reference
 
-Tyk Gateway and Tyk Pump configure Redis inside a named object (`storage` for Tyk Gateway, `analytics_storage_config` for Tyk Pump). Tyk Dashboard uses top-level fields prefixed with `redis_`. The underlying options are equivalent.
+The various components that use Redis all contain similar configuration options within their config files (or equivalent environment variables):
+
+- Tyk Gateway and Tyk MDCB configure Redis inside a `storage` block
+- Tyk Pump uses `analytics_storage_config`
+- Tyk Dashboard uses top-level fields prefixed with `redis_`
 
 The table below covers all common configuration fields. TLS-specific fields are covered separately in [TLS Encryption](#tls-encryption).
 
-| Purpose | Tyk Gateway / Tyk Pump field | Tyk Dashboard field |
+| Purpose | Tyk Gateway / Tyk Pump / Tyk MDCB field | Tyk Dashboard field |
 |---|---|---|
 | Single host address | `host` | `redis_host` |
 | Port | `port` | `redis_port` |
@@ -53,9 +57,16 @@ The table below covers all common configuration fields. TLS-specific fields are 
 
 ### Connection Pool
 
-Each Tyk component maintains a pool of connections to Redis. Two settings control this pool: the maximum number of active connections (`optimisation_max_active`) and the connection timeout (`timeout`), after which an attempt to connect to Redis is abandoned.
+Each Tyk component maintains a pool of connections to Redis. Two settings control this pool:
 
-The defaults (`optimisation_max_active: 500`, `timeout: 5` seconds) are suitable for most deployments. If you are running Tyk under high load and see connection pool timeouts, raise `optimisation_max_active` (or `redis_max_active` for Tyk Dashboard) incrementally until the timeouts stop. Avoid setting it excessively high, as opening too many connections can place unnecessary load on Redis. Keep `timeout` low so that failures are detected quickly rather than queuing behind slow connections.
+- **`optimisation_max_active`:** the maximum number of active connections (this is called `redis_max_active` for Tyk Dashboard)
+- **`timeout`:** the connection timeout, after which an attempt to connect to Redis is abandoned
+
+The defaults (`optimisation_max_active: 500`, `timeout: 5` seconds) are suitable for most deployments.
+
+If you are running Tyk under high load and see connection pool timeouts, raise the maximum number of active connections incrementally until the timeouts stop. Avoid setting it excessively high, as opening too many connections can place unnecessary load on Redis.
+
+Keep the connection timeout low so that failures are detected quickly rather than queuing behind slow connections.
 
 ## Single Node Configuration
 
@@ -96,6 +107,22 @@ In `pump.conf` (or via environment variables), Redis is configured inside the `a
 
 ```json
 "analytics_storage_config": {
+  "type": "redis",
+  "host": "redis-server",
+  "port": 6379,
+  "username": "",
+  "password": "",
+  "database": 0,
+  "optimisation_max_active": 500
+}
+```
+
+### Tyk MDCB
+
+In `tyk_sink.conf` (or via environment variables), Redis is configured inside the `storage` block:
+
+```json
+"storage": {
   "type": "redis",
   "host": "redis-server",
   "port": 6379,
@@ -170,6 +197,26 @@ In `pump.conf` (or via environment variables), Redis is configured inside the `a
 
 ```json
 "analytics_storage_config": {
+  "type": "redis",
+  "enable_cluster": true,
+  "addrs": [
+    "server1:6379",
+    "server2:6380",
+    "server3:6381"
+  ],
+  "username": "",
+  "password": "",
+  "database": 0,
+  "optimisation_max_active": 4000
+}
+```
+
+### Tyk MDCB
+
+In `tyk_sink.conf` (or via environment variables), Redis is configured inside the `storage` block. Set `enable_cluster` to `true` and list all cluster nodes under `addrs`:
+
+```json
+"storage": {
   "type": "redis",
   "enable_cluster": true,
   "addrs": [
@@ -271,45 +318,64 @@ In `pump.conf` (or via environment variables), Redis is configured inside the `a
 
 - If your Sentinel nodes require a password, set `sentinel_password`.
 
+### Tyk MDCB
+
+In `tyk_sink.conf` (or via environment variables), Redis is configured inside the `storage` block. Point `addrs` at your Sentinel nodes and set `master_name` to the name of the monitored primary:
+
+```json
+"storage": {
+  "type": "redis",
+  "addrs": [
+    "sentinel1:26379",
+    "sentinel2:26379",
+    "sentinel3:26379"
+  ],
+  "master_name": "mymaster",
+  "username": "",
+  "password": "",
+  "database": 0,
+  "optimisation_max_active": 4000,
+  "sentinel_password": ""
+}
+```
+
+- If your Sentinel nodes require a password, set `sentinel_password`.
+
 ## TLS Encryption
 
 Redis supports TLS encryption from version 6. TLS configuration uses the same fields regardless of whether you are using single-node, Cluster, or Sentinel mode.
 
 ### Configuration Fields
 
-TLS fields are configured inside the `storage` block for Tyk Gateway, the `analytics_storage_config` block for Tyk Pump, and as top-level fields prefixed with `redis_` for Tyk Dashboard. Note that Tyk Pump uses different field names from Tyk Gateway for most TLS settings.
-
-| Purpose | Tyk Gateway field | Tyk Pump field | Tyk Dashboard field |
-|---|---|---|---|
-| Enable TLS | `use_ssl` | `use_ssl` | `redis_use_ssl` |
-| Skip server certificate verification | `ssl_insecure_skip_verify` | `ssl_insecure_skip_verify` | `redis_ssl_insecure_skip_verify` |
-| Certificate Authority file | `ca_file` | `ssl_ca_file` | `redis_ca_file` |
-| Client certificate file (mTLS) | `cert_file` | `ssl_cert_file` | `redis_cert_file` |
-| Client private key file (mTLS) | `key_file` | `ssl_key_file` | `redis_key_file` |
-| Minimum TLS version | `tls_min_version` | `ssl_min_version` | `redis_tls_min_version` |
-| Maximum TLS version | `tls_max_version` | `ssl_max_version` | `redis_tls_max_version` |
-
-- Valid values for min/max version: `"1.0"`, `"1.1"`, `"1.2"`, `"1.3"`. Defaults: minimum `"1.2"`, maximum `"1.3"`.
-- Setting `ssl_insecure_skip_verify` to `true` is not recommended for production.
-
-### Example: Mutual TLS
-
-The following example configures Tyk Gateway to use mutual TLS (mTLS) when connecting to Redis:
+TLS fields are named here as Tyk Gateway configures them, nested inside its `storage` block. The other three components use the same fields, though not always under the same names - see below.
 
 ```json
 "storage": {
   "use_ssl": true,
+  "ssl_insecure_skip_verify": false,
   "ca_file": "/path/to/ca.crt",
   "cert_file": "/path/to/client.crt",
-  "key_file": "/path/to/client.key"
+  "key_file": "/path/to/client.key",
+  "tls_min_version": "1.2",
+  "tls_max_version": "1.3"
 }
 ```
 
-- TLS is enabled with `use_ssl`.
-- The Redis server's certificate is verified against the provided CA with `ca_file`.
-- Tyk Gateway's client certificate (`cert_file`) and private key (`key_file`) are used to satisfy Redis's client authentication requirement.
+| Field | Description |
+|---|---|
+| `use_ssl` | Enables TLS for this connection. |
+| `ssl_insecure_skip_verify` | Skips server certificate verification. Not recommended for production. |
+| `ca_file` | Path to the Certificate Authority file. |
+| `cert_file` | Path to the client certificate file, for mutual TLS (mTLS). |
+| `key_file` | Path to the client private key file, for mutual TLS (mTLS). |
+| `tls_min_version` | Minimum TLS version. Valid values: `"1.0"`, `"1.1"`, `"1.2"`, `"1.3"`. Defaults to `"1.2"`. |
+| `tls_max_version` | Maximum TLS version. Valid values: `"1.0"`, `"1.1"`, `"1.2"`, `"1.3"`. Defaults to `"1.3"`. |
 
-For Tyk Dashboard, the equivalent fields are prefixed with `redis_` (for example, `redis_use_ssl`, `redis_ca_file`). For Tyk Pump, these fields sit inside the `analytics_storage_config` block, but use different field names: for example, `ssl_ca_file` instead of `ca_file`. See the table above for the full field mapping.
+The other components rename these fields:
+
+- **Tyk Dashboard**: prefix every field with `redis_` (for example, `redis_use_ssl`, `redis_tls_min_version`).
+- **Tyk MDCB**: identical to Tyk Gateway, except the TLS version fields drop the `tls_` prefix (`min_version`, `max_version`).
+- **Tyk Pump**: identical to Tyk Gateway for `use_ssl` and `ssl_insecure_skip_verify`; every other field swaps its prefix for `ssl_` (`ssl_ca_file`, `ssl_cert_file`, `ssl_key_file`, `ssl_min_version`, `ssl_max_version`).
 
 For background on TLS and mTLS concepts, see [TLS and Certificate Management](/api-management/certificates).
 
