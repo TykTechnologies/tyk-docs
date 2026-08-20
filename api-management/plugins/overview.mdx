@@ -562,6 +562,29 @@ There are a variety of scenarios relating to the deployment of plugins for an AP
 
 The plugin source code and associated configuration are co-located with Tyk Gateway in the same file system. The configuration is located within the API Definition. For further details please consult [API configuration](/api-management/plugins/overview#api-configuration).
 
+Local plugins can be supplied to Tyk Gateway in one of two ways:
+
+- **Volume-mounted files**: the plugin file is mounted into the Gateway's file system at runtime, for example using a Kubernetes ConfigMap, Secret, or CSI volume. See [Custom Plugins with Tyk Operator](/product-stack/tyk-operator/advanced-configurations/custom-plugins) for an example that mounts a plugin this way.
+- **Baked into the container image**: the plugin file is copied into a custom Tyk Gateway image at build time, so that it ships as part of the container.
+
+Both variants share the same underlying constraint: Tyk Gateway only loads the plugin file that is present in its file system when the API definition referencing it is loaded. Any change to the plugin therefore requires the file to be replaced and the affected API definition to be reloaded. If the plugin is baked into the container image, that still means restarting or rolling out the Gateway pods, since the image itself has to change. If it is volume-mounted, updating the file in place followed by a Gateway reload can be enough, without a pod restart.
+
+#### Advantages Of Local Plugins
+
+- No external bundle server, network access, or signing keys are required, as the plugin ships with the Gateway.
+- Tyk Gateway fails to load the API if the plugin file is missing, which makes startup issues easy to spot.
+- You can roll out a new plugin version alongside the old one, for example during an upgrade, by shipping both files and pointing the relevant API definitions at the new file path. This avoids rebuilding a shared bundle for every API.
+
+#### Trade-Offs Of Local Plugins
+
+- Every plugin change requires the file to be replaced and the API definition reloaded. If the plugin is baked into the image, this also means restarting or rolling out the Gateway pods to deploy the new image, which can interrupt live traffic if it is not managed carefully.
+- Each cluster or Gateway deployment needs its own copy of the image or mounted files, so a multi-cluster fleet can end up with several copies to keep in sync.
+- Tyk Gateway does not version local plugins for you, so tracking which Gateway is running which plugin build depends on your own image or file naming discipline.
+
+<Note>
+Tyk Cloud Data Planes only support plugin bundles for custom plugins. If you use Tyk Cloud, see [Configure Custom Plugins in Tyk Cloud](/tyk-cloud/using-plugins).
+</Note>
+
 ### Plugin Bundles (Remote)
 
 The plugin source code and associated configuration are bundled into a zip file and uploaded to a remote webserver. Multiple plugins can be stored in a single *plugin bundle*. Tyk Gateway will download the plugin bundle from the remote webserver and then extract, cache and execute plugins for each of the configured phases of the API request / response lifecycle. For further details on plugin bundles and how to configure them, please refer to the [plugin bundles](/api-management/plugins/overview#plugin-bundles) page.
@@ -569,6 +592,27 @@ The plugin source code and associated configuration are bundled into a zip file 
 ### gRPC Plugins (Remote)
 
 Custom plugins can be hosted on a remote server and executed from the Tyk Gateway middleware chain via gRPC. These plugins can be written in any language you prefer, as they are executed on the gRPC server. You'll configure your API definition so that Tyk Gateway will send requests to your gRPC server at the appropriate points in the API request / response lifecycle. For further details please consult our [gRPC](/api-management/plugins/rich-plugins#overview-1) documentation.
+
+### Choosing Between Local Plugins And Plugin Bundles
+
+Neither approach is universally better. Use the table below to compare them against your operational requirements.
+
+| Dimension | Local Plugins (Volume-Mounted Or Baked-In) | Plugin Bundles (Remote) |
+| --- | --- | --- |
+| Distribution scope | Per Gateway deployment. The image or mounted files must be duplicated across clusters | Shared. Any Gateway that can reach the bundle server uses the same bundle |
+| Update workflow | Rebuild the image and roll out the Gateway, or update the mounted files and reload the Gateway | Publish a new bundle file, update the API definition, then trigger a Gateway reload |
+| External dependencies | None beyond your own image registry or cluster storage | Requires an HTTP(S) server to host the bundle, and optionally signing keys |
+| Adding or changing a single plugin file | Copy or mount the new file directly | Rebuild and republish the entire bundle, as all files in a bundle are fixed by its `manifest.json` at build time |
+| Rollback | Roll the Gateway back to the previous image or mounted files | Point the API definition back to the previous bundle filename |
+| Behavior if the plugin source is unavailable at startup | The Gateway fails to load the affected API | Tyk Gateway can keep using a previously cached copy of the same bundle if the download fails. A first-time download or a new bundle filename still fails to load the affected API |
+| Best fit | Air-gapped or restricted-network environments, or teams with a mature image or configuration promotion workflow | Fleets that share plugins across many APIs or Gateways, or that need frequent plugin updates without restarting pods |
+
+Consider the following when deciding between the two:
+
+- Use **local plugins** if you operate in a restricted network, want to avoid a runtime dependency on an external server, or already have a strong image or configuration promotion workflow.
+- Use **plugin bundles** if you need the same plugin shared across many APIs or Gateways, want to roll out plugin changes without restarting pods, or require [signed bundles](/api-management/plugins/overview#gateway-configuration) for supply-chain integrity.
+- The two approaches are not mutually exclusive. Different APIs on the same Tyk Gateway fleet can use either approach, as long as each API definition clearly states where its plugin lives.
+- If you use [Tyk Cloud](/tyk-cloud/using-plugins), plugin bundles are the only supported option for custom plugins.
 
 ## Plugin Bundles
 
