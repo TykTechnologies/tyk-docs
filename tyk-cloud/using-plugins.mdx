@@ -7,16 +7,11 @@ sidebarTitle: "Custom Plugins"
 
 ## Introduction
 
-This section explains that you can use plugins with Tyk Cloud and links to details of Python, JSVM and Golang based plugins.
+Tyk Cloud allows you to take advantage of Tyk's plugin architecture to write custom middleware that can be used to extend the functionality of your APIs.
 
-Tyk Cloud allows you to take advantage of Tyk's plugin architecture that allows you to write powerful middleware. For this version of Tyk Cloud, we support the use of Python, JavaScript Middleware and Golang based plugins.
+Tyk Cloud supports the use of [Python](/api-management/plugins/rich-plugins#overview), [JavaScript Middleware](/api-management/plugins/javascript) and [Golang](/tyk-cloud/using-plugins) based plugins.
 
-For more details, see: 
-* [Python Plugins](/api-management/plugins/rich-plugins#overview)
-* [JSVM](/api-management/plugins/javascript#)
-* [Golang](/tyk-cloud/using-plugins)
-
-Next you'll set up an Tyk Cloud Control Plane to use a Python Authentication Plugin.
+This page explains how to set up a Tyk Cloud Control Plane to use a Python Authentication Plugin.
 
 <Note>
 The S3 bucket method described on this page distributes plugin bundles to **Cloud Data Planes** only. Tyk hosts and manages Cloud Data Planes for you.
@@ -24,44 +19,7 @@ The S3 bucket method described on this page distributes plugin bundles to **Clou
 If you use a **Hybrid Data Plane** (a self-managed gateway that you deploy and connect to your Tyk Cloud Control Plane), use the Gateway's built-in [plugin bundle downloader](/api-management/plugins/overview#plugin-bundles) instead. You can either host your own bundle on your own web server or S3 bucket, or point the Hybrid Gateway directly at your Tyk Cloud Control Plane's File Server. See [Serving Plugin Bundles To Hybrid Gateways](#serving-plugin-bundles-to-hybrid-gateways) for the File Server option.
 </Note>
 
-## Serving Plugin Bundles To Hybrid Gateways
-
-If you have already configured custom plugins for your Tyk Cloud Control Plane, you can also configure your Hybrid or self-managed Data Planes to load the same plugin bundles from the Tyk Cloud File Server, instead of hosting a separate web server or S3 bucket for them.
-
-Plugins must be enabled on your Tyk Cloud Control Plane, as described in [Setup Control Plane](#setup-control-plane). Tyk Cloud only deploys the File Server, and exposes its API, once plugins are enabled on the Control Plane.
-
-To enable this, add the following to the Hybrid Gateway's `tyk.conf`:
-
-```yaml
-"enable_bundle_downloader": true,
-"bundle_base_url": "your-control-plane-file-server-url/mserv/api/mw/bundle?api_key=your_fileserver_api_key"
-```
-
-`bundle_base_url` must point at your Tyk Cloud Control Plane's File Server endpoint, with the `/mserv/api/mw/bundle` path and your File Server API key passed as the `api_key` query parameter. You can find both values on your Control Plane, as described in [Uploading your Bundle](#uploading-your-bundle).
-
-<Note>
-Treat this URL as a secret. Because the API key is passed as a query parameter rather than a header, it can end up in Gateway startup logs or any proxy/load balancer logs sitting in front of the File Server. Restrict access to those logs, and rotate the key if it may have been exposed.
-</Note>
-
-If your plugin bundle includes rich plugins (Python, Lua, or gRPC), also set `"enable_coprocess": true` in the Hybrid Gateway's `tyk.conf`, as described in [Gateway configuration](/api-management/plugins/overview#gateway-configuration).
-
-For example:
-
-```yaml
-"bundle_base_url": "https://solid-month-mgw.aws-use1.cloud-ara.tyk.io/mserv/api/mw/bundle?api_key=abcd1234"
-```
-
-<Note>
-- File server traffic from Hybrid Gateways is billable and counts toward your monthly traffic quota.
-- If you rotate the File Server API key, update it in every Hybrid Gateway configuration that references it.
-- On startup, Tyk Gateway downloads plugin bundles from the File Server before the affected APIs become available. Depending on the Hybrid Gateway's location and its latency to the File Server, this can increase the time taken for APIs to become ready.
-</Note>
-
 ## Setup Control Plane
-
-This page explains how to set up a control plane with plugins to customize it on Tyk Cloud, so that you can ensure your API management solution is as effective as possible. 
-
-**What do I need to do to use Plugins?**
 
 <img src="/img/plugins/plugins_enable.png" alt="Plugins Settings" />
 
@@ -71,64 +29,176 @@ This page explains how to set up a control plane with plugins to customize it on
    * Your AWS Secret
    * Your AWS Region
 
-
-
     <Note>
     For this release of Tyk Cloud, you need to enter your AWS Region manually. You also need to consider that uploading a custom plugin bundle to Tyk Cloud results in a new bucket being created for each bundle uploaded.  It also requires that Tyk Cloud has permissions in the form of an AWS IAM policy to have create rights on AWS.
     </Note>
 
+3. Create an AWS IAM policy that grants Tyk Cloud the permissions it needs to create and manage the S3 bucket, for example:
 
-**AWS IAM Policy**
+    ```json expandable
+    {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "VisualEditor0",
+                "Effect": "Allow",
+                "Action": [
+                    "s3:CreateBucket",
+                    "s3:ListBucket",
+                    "s3:GetBucketLocation",
+                    "s3:DeleteBucket"
+                ],
+                "Resource": "arn:aws:s3:::mserv-plugin-*"
+            },
+            {
+                "Effect": "Allow",
+                "Action": "s3:ListAllMyBuckets",
+                "Resource": "*"
+            },
+            {
+                "Sid": "VisualEditor1",
+                "Effect": "Allow",
+                "Action": [
+                    "s3:PutObject",
+                    "s3:GetObject",
+                    "s3:DeleteObject"
+                ],
+                "Resource": "arn:aws:s3:::mserv-plugin-*/*"
+            }
+        ]
+    }
+    ```
 
-**What is an IAM Policy?**
+    See the [AWS IAM documentation](https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_create-console.html) for more information on creating IAM policies.
 
-- A policy is an entity that, when attached to an identity or resource, defines their permissions. IAM policies define permissions for an action regardless of the method that you use to perform the operation.
+Next you'll [set up your plugin development environment](#set-up-your-plugin-development-environment).
 
-- We have included a sample IAM policy that you need to create in AWS to allow the plugin bundle to work. For more information on creating IAM policies, see the [AWS Documentation](https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_create-console.html).
+## Set Up Your Plugin Development Environment
+
+Before you can build a Python plugin bundle, you need a local environment to write and package it in.
+
+**What do I need to build a plugin bundle?**
+
+1. A local Tyk Gateway installation to create your Python plugin bundle. We recommend [installing our Self-Managed version on Ubuntu Bionic 18.04](/tyk-self-managed/install/linux#install-tyk-on-debian-or-ubuntu).
+2. A currently stable [Python 3.x version](https://www.python.org/downloads/) installed.
+3. The build tools, installed with `apt-get install -y build-essential`.
+4. Our required modules, installed with:
+
+```{.copyWrapper}
+apt install python3 python3-dev python3-pip
+pip3 install protobuf grpcio
+```
+
+Next you'll [create a Python code bundle](#create-a-python-code-bundle).
+
+## Create a Python Code Bundle
+
+This section demonstrates how to create a Python code bundle as part of the custom authentication process for Tyk Cloud, so that you can ensure your API management solution is as effective as possible.
 
 
+**What do I need to do to create my Plugin?**
 
-    <Warning>
-    We recommend you restrict your IAM user as much as possible before sharing the credentials with any 3rd party, including Tyk Cloud. See [IAM User Permissions](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_users_change-permissions.html) for more details.
-    </Warning>
+* You need to create the Python code bundle on your locally installed Gateway (not an Tyk Cloud Cloud Data Plane stack).
+* You will create 2 files, a manifest file (`manifest.json`) and the python file (`middleware.py`)
+* You then create a zipped bundle via our Tyk CLI tool that is built in to your local Gateway instance.
+  
+**Creating the Plugin bundle**
 
+**Step 1: Create your working directory**
+
+The first step is to create a directory for your plugin bundle files:
+
+```.copyWrapper
+mkdir ~/my-tyk-plugin
+cd ~/my-tyk-plugin
+```
+
+**Step 2: Creating the Manifest File**
+
+The manifest file contains information about your plugin file structure and how we expect it to interact with the API that will load it. This file should be named `manifest.json` and needs to have the following contents:
 
 ```.json
 {
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Sid": "VisualEditor0",
-            "Effect": "Allow",
-            "Action": [
-                "s3:CreateBucket",
-                "s3:ListBucket",
-                "s3:GetBucketLocation",
-                "s3:DeleteBucket"
-            ],
-            "Resource": "arn:aws:s3:::mserv-plugin-*"
-        },
-        {
-            "Effect": "Allow",
-            "Action": "s3:ListAllMyBuckets",
-            "Resource": "*"
-        },
-        {
-            "Sid": "VisualEditor1",
-            "Effect": "Allow",
-            "Action": [
-                "s3:PutObject",
-                "s3:GetObject",
-                "s3:DeleteObject"
-            ],
-            "Resource": "arn:aws:s3:::mserv-plugin-*/*"
-        }
-    ]
+  "custom_middleware": {
+    "auth_check": {
+      "name": "MyAuthMiddleware"
+    },
+    "pre": [
+      {
+        "name": "MyAuthMiddleware"
+      }
+    ],
+    "driver": "python"
+  },
+  "file_list": [
+    "middleware.py"
+  ]
 }
 ```
+**File description**
 
-Next you'll [set up the Python authentication code bundle](#create-a-python-code-bundle).
+| File              | Description                                                                                                                                                                                                                                                                                       |
+| :------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| custom_middleware | contains the middleware settings like the plugin driver you want to use (driver) and the hooks that your plugin will expose. We use the   **auth_check** for this tutorial. For other hooks see [here](/api-management/plugins/rich-plugins#coprocess-dispatcher-hooks). |
+| file_list         | contains the list of files to be included in the bundle. The CLI tool expects to find these files in the current working directory.                                                                                                                                                               |
+| name              | references the name of the function that you implement in your plugin code: **MyAuthMiddleware**                                                                                                                                                                                                  |
+| middleware.py     | an additional file that contains the main implementation of our middleware.                                                                                                                                                                                                                       |
 
+**Step 3: Creating the middleware.py file**
+
+* You import decorators from the Tyk module that gives us the Hook decorator, and we import [Tyk Python API helpers](/api-management/plugins/rich-plugins#tyk-python-api-methods)
+
+* You implement a middleware function and register it as a hook. The input includes the request object, the session object, the API meta data and its specification. The hook checks the authorization header for a specified value. In this tutorial we have called it `Authorization`.
+
+```.python
+from tyk.decorators import *
+from gateway import TykGateway as tyk
+
+@Hook
+def MyAuthMiddleware(request, session, metadata, spec):
+    auth = request.get_header('Authorization')
+    if not auth:
+        auth = request.object.params.get('authorization', None)
+
+    if auth == '47a0c79c427728b3df4af62b9228c8ae':
+        session.rate = 1000.0
+        session.per = 1.0
+        metadata["token"] = auth
+    return request, session, metadata
+
+@Hook
+def MyPostMiddleware(request, session, spec):
+    tyk.log("This is my post middleware", "info")
+    request.object.set_headers["x-tyk-request"] = "something"
+    return request, session
+  ```
+
+**File description**
+
+| File                      | Description                                                                    |
+| :--------------------------- | :-------------------------------------------------------------------------------- |
+| `MyAuthMiddleware`  @hook | checks for a value. If it is found it is treated as your authentication token. |
+| `MyPostMiddleware`  @hook | adds a header to the request. In this tutorial  `something`                    |                                                                             |
+
+**Step 4: Create the Plugin Bundle**
+
+* You create a bundle to cater for a number of plugins connected to the one API, and using a bundle makes this more manageable.
+
+* To bundle your plugin we run the following command in your working directory where your manifest.json and plugin code is.
+
+```.bash
+docker run \
+  --rm \
+  -v $(pwd):/cloudplugin \
+  --entrypoint "/bin/sh" -it \
+  -w "/cloudplugin" \
+  tykio/tyk-gateway:v3.1.2 \
+  -c '/opt/tyk-gateway/tyk bundle build -y'
+```
+
+* A plugin bundle is a packaged version of the plugin, it may also contain a cryptographic signature of its contents. The -y flag tells the Tyk CLI tool to skip the signing process in order to simplify this tutorial. For more information on the Tyk CLI tool, see [here](/api-management/plugins/overview#how-plugin-bundles-work).
+* You should now have a `bundle.zip` file in the plugin working directory.
+* Next you will configure [uploading your plugin bundle file](#uploading-your-bundle) to your Amazon S3 bucket.
 
 ## Uploading your Bundle
 
@@ -312,137 +382,35 @@ You now need to test your API to show how the Python Authorization middleware wo
 
 <img src="/img/plugins/postman_all_get_requests.png" alt="Postman All Get Requests" />
 
+## Serving Plugin Bundles To Hybrid Gateways
 
-## Create a Python Code Bundle
+If you have already configured custom plugins for your Tyk Cloud Control Plane, you can also configure your Hybrid or self-managed Data Planes to load the same plugin bundles from the Tyk Cloud File Server, instead of hosting a separate web server or S3 bucket for them.
 
-This section demonstrates how to create a Python code bundle as part of the custom authentication process for Tyk Cloud, so that you can ensure your API management solution is as effective as possible.
+Plugins must be enabled on your Tyk Cloud Control Plane, as described in [Setup Control Plane](#setup-control-plane). Tyk Cloud only deploys the File Server, and exposes its API, once plugins are enabled on the Control Plane.
 
+To enable this, add the following to the Hybrid Gateway's `tyk.conf`:
 
-**What do I need to do to create my Plugin?**
-
-* You need to create the Python code bundle on your locally installed Gateway (not an Tyk Cloud Cloud Data Plane stack).
-* You will create 2 files, a manifest file (`manifest.json`) and the python file (`middleware.py`)
-* You then create a zipped bundle via our Tyk CLI tool that is built in to your local Gateway instance.
-  
-**Creating the Plugin bundle**
-
-**Step 1: Create your working directory**
-
-The first step is to create a directory for your plugin bundle files:
-
-```.copyWrapper
-mkdir ~/my-tyk-plugin
-cd ~/my-tyk-plugin
+```yaml
+"enable_bundle_downloader": true,
+"bundle_base_url": "your-control-plane-file-server-url/mserv/api/mw/bundle?api_key=your_fileserver_api_key"
 ```
 
-**Step 2: Creating the Manifest File**
+`bundle_base_url` must point at your Tyk Cloud Control Plane's File Server endpoint, with the `/mserv/api/mw/bundle` path and your File Server API key passed as the `api_key` query parameter. You can find both values on your Control Plane, as described in [Uploading your Bundle](#uploading-your-bundle).
 
-The manifest file contains information about your plugin file structure and how we expect it to interact with the API that will load it. This file should be named `manifest.json` and needs to have the following contents:
+<Note>
+Treat this URL as a secret. Because the API key is passed as a query parameter rather than a header, it can end up in Gateway startup logs or any proxy/load balancer logs sitting in front of the File Server. Restrict access to those logs, and rotate the key if it may have been exposed.
+</Note>
 
-```.json
-{
-  "custom_middleware": {
-    "auth_check": {
-      "name": "MyAuthMiddleware"
-    },
-    "pre": [
-      {
-        "name": "MyAuthMiddleware"
-      }
-    ],
-    "driver": "python"
-  },
-  "file_list": [
-    "middleware.py"
-  ]
-}
-```
-**File description**
+If your plugin bundle includes rich plugins (Python, Lua, or gRPC), also set `"enable_coprocess": true` in the Hybrid Gateway's `tyk.conf`, as described in [Gateway configuration](/api-management/plugins/overview#gateway-configuration).
 
-| File              | Description                                                                                                                                                                                                                                                                                       |
-| :------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| custom_middleware | contains the middleware settings like the plugin driver you want to use (driver) and the hooks that your plugin will expose. We use the   **auth_check** for this tutorial. For other hooks see [here](/api-management/plugins/rich-plugins#coprocess-dispatcher-hooks). |
-| file_list         | contains the list of files to be included in the bundle. The CLI tool expects to find these files in the current working directory.                                                                                                                                                               |
-| name              | references the name of the function that you implement in your plugin code: **MyAuthMiddleware**                                                                                                                                                                                                  |
-| middleware.py     | an additional file that contains the main implementation of our middleware.                                                                                                                                                                                                                       |
+For example:
 
-**Step 3: Creating the middleware.py file**
-
-* You import decorators from the Tyk module that gives us the Hook decorator, and we import [Tyk Python API helpers](/api-management/plugins/rich-plugins#tyk-python-api-methods)
-
-* You implement a middleware function and register it as a hook. The input includes the request object, the session object, the API meta data and its specification. The hook checks the authorization header for a specified value. In this tutorial we have called it `Authorization`.
-
-```.python
-from tyk.decorators import *
-from gateway import TykGateway as tyk
-
-@Hook
-def MyAuthMiddleware(request, session, metadata, spec):
-    auth = request.get_header('Authorization')
-    if not auth:
-        auth = request.object.params.get('authorization', None)
-
-    if auth == '47a0c79c427728b3df4af62b9228c8ae':
-        session.rate = 1000.0
-        session.per = 1.0
-        metadata["token"] = auth
-    return request, session, metadata
-
-@Hook
-def MyPostMiddleware(request, session, spec):
-    tyk.log("This is my post middleware", "info")
-    request.object.set_headers["x-tyk-request"] = "something"
-    return request, session
-  ```
-
-**File description**
-
-| File                      | Description                                                                    |
-| :--------------------------- | :-------------------------------------------------------------------------------- |
-| `MyAuthMiddleware`  @hook | checks for a value. If it is found it is treated as your authentication token. |
-| `MyPostMiddleware`  @hook | adds a header to the request. In this tutorial  `something`                    |                                                                             |
-
-**Step 4: Create the Plugin Bundle**
-
-* You create a bundle to cater for a number of plugins connected to the one API, and using a bundle makes this more manageable.
-
-* To bundle your plugin we run the following command in your working directory where your manifest.json and plugin code is.
-
-```.bash
-docker run \
-  --rm \
-  -v $(pwd):/cloudplugin \
-  --entrypoint "/bin/sh" -it \
-  -w "/cloudplugin" \
-  tykio/tyk-gateway:v3.1.2 \
-  -c '/opt/tyk-gateway/tyk bundle build -y'
+```yaml
+"bundle_base_url": "https://solid-month-mgw.aws-use1.cloud-ara.tyk.io/mserv/api/mw/bundle?api_key=abcd1234"
 ```
 
-* A plugin bundle is a packaged version of the plugin, it may also contain a cryptographic signature of its contents. The -y flag tells the Tyk CLI tool to skip the signing process in order to simplify this tutorial. For more information on the Tyk CLI tool, see [here](/api-management/plugins/overview#how-plugin-bundles-work).
-* You should now have a `bundle.zip` file in the plugin working directory.
-* Next you will configure [uploading your plugin bundle file](#uploading-your-bundle) to your Amazon S3 bucket.
-
-
-## Add Custom Authentication
-
-This section introduces the process of configuring a custom authentication plugin, so that you can override the default Tyk authentication mechanism with your own authentication logic. 
-
-**What are we going to do?**
-
-We are going to configure an Tyk Cloud Control Plane to use a custom authentication plugin built in Python.
-
-**What do I need to configure the Tyk Cloud Control Plane?**
-
-Here are the requirements:
-
-1. Firstly you will need a local Tyk Gateway installation that allows you to create your Python plugin bundle. We recommend [installing our Self-Managed version on Ubuntu Bionic 18.04](/tyk-self-managed/install/linux#install-tyk-on-debian-or-ubuntu).
-2. Ensure you have a currently stable [Python 3.x version](https://www.python.org/downloads/) installed 
-3. You need install the build tools `apt-get install -y build-essential`
-4. Install our required modules:
-
-```{.copyWrapper}
-apt install python3 python3-dev python3-pip
-pip3 install protobuf grpcio
-```
-
-
+<Note>
+- File server traffic from Hybrid Gateways is billable and counts toward your monthly traffic quota.
+- If you rotate the File Server API key, update it in every Hybrid Gateway configuration that references it.
+- On startup, Tyk Gateway downloads plugin bundles from the File Server before the affected APIs become available. Depending on the Hybrid Gateway's location and its latency to the File Server, this can increase the time taken for APIs to become ready.
+</Note>
