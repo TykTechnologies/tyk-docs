@@ -336,18 +336,70 @@ In addition to the [common pump settings](/api-management/tyk-pump#common-pump-s
 | `timeout` | - | Maximum time, in seconds, to wait for a connect or write to complete. |
 | `compressed` | `false` | Compresses Kafka messages using the Snappy codec. |
 | `meta_data` | - | Custom metadata to attach to each Kafka message. |
-| `batch_bytes` | `0` | Maximum request size, in bytes, before it's sent to a partition. If `0`, uses the `kafka-go` library's own default (1MB). |
+| `batch_bytes` | `0` | Maximum request size, in bytes, before it's sent to a partition. If `0`, uses the `kafka-go` library's own default (1MB). If Tyk Pump logs `unable to write message` with a `Message Size Too Large` error, raise this to match your broker's `message.max.bytes`. |
 | `use_ssl` | `false` | Enables an SSL connection. |
 | `ssl_insecure_skip_verify` | `false` | Skips verifying the Kafka server's certificate chain and host name. |
-| `ssl_cert_file`, `ssl_key_file` | - | PEM client certificate and private key for authenticating with the Kafka server. |
-| `ssl_ca_file` | - | Path to the PEM file of trusted CA certificates used to verify the Kafka server's certificate. |
-| `sasl_mechanism` | - | Enables SASL authentication: `plain` or `scram`. |
-| `sasl_username`, `sasl_password` | - | SASL credentials. |
-| `sasl_algorithm` | `sha-256` | Hash algorithm for SCRAM: `sha-256` or `sha-512`. |
+| `ssl_cert_file`, `ssl_key_file` | - | PEM client certificate and private key for authenticating with the Kafka server. Mount the files into the Tyk Pump container or pod and set these to their file paths; Tyk Pump reads the files from disk, it doesn't accept certificate content directly. |
+| `ssl_ca_file` | - | Path to the PEM file of trusted CA certificates used to verify the Kafka server's certificate. Same rule as above: mount the file and point this at its path. |
+| `sasl_mechanism` | - | Enables SASL authentication: `plain` or `scram`. Set `use_ssl: true` alongside it for a SASL\_SSL connection, the combination required by Confluent Cloud, Amazon MSK, and most managed Kafka clusters. |
+| `sasl_username`, `sasl_password` | - | SASL credentials. As environment variables these are `TYK_PMP_PUMPS_KAFKA_META_USERNAME` and `_PASSWORD`, not `_SASLUSERNAME` / `_SASLPASSWORD` as the usual dot-notation rule would suggest. |
+| `sasl_algorithm` | `sha-256` | Hash algorithm for SCRAM: `sha-256` or `sha-512`. As an environment variable this is `TYK_PMP_PUMPS_KAFKA_META_ALGORITHM`, for the same reason as above. |
 
 <Warning>
 `ssl_insecure_skip_verify` disables all TLS certificate validation for this connection. Only use it for local development or testing, never in production, it exposes the connection to man-in-the-middle attacks.
 </Warning>
+
+<Tip>
+  Kafka brokers commonly auto-create a topic on its first use. If you point Tyk Pump at a topic that doesn't exist yet, its first write attempt can fail with `Unknown Topic Or Partition` while the broker creates it, silently dropping that batch. Create the topic before starting Tyk Pump against it, so no records are lost.
+</Tip>
+
+#### Working Example
+
+The example below connects to a Kafka cluster secured with SASL\_SSL and SCRAM-SHA-256 authentication, the setup used by Confluent Cloud, Amazon MSK, and most managed Kafka clusters:
+
+<Tabs>
+<Tab title="pump.conf">
+```json
+{
+  "pumps": {
+    "kafka": {
+      "type": "kafka",
+      "meta": {
+        "broker": ["your-cluster.kafka.example.com:9092"],
+        "topic": "tyk-pump",
+        "client_id": "tyk-pump",
+        "timeout": 30,
+        "use_ssl": true,
+        "ssl_ca_file": "/etc/tyk-pump/certs/ca.pem",
+        "sasl_mechanism": "scram",
+        "sasl_username": "tyk-pump",
+        "sasl_password": "<password>",
+        "sasl_algorithm": "sha-256"
+      }
+    }
+  }
+}
+```
+</Tab>
+<Tab title="Environment variables">
+```bash
+TYK_PMP_PUMPS_KAFKA_TYPE=kafka
+TYK_PMP_PUMPS_KAFKA_META_BROKER=your-cluster.kafka.example.com:9092
+TYK_PMP_PUMPS_KAFKA_META_TOPIC=tyk-pump
+TYK_PMP_PUMPS_KAFKA_META_CLIENTID=tyk-pump
+TYK_PMP_PUMPS_KAFKA_META_TIMEOUT=30
+TYK_PMP_PUMPS_KAFKA_META_USESSL=true
+TYK_PMP_PUMPS_KAFKA_META_SSLCAFILE=/etc/tyk-pump/certs/ca.pem
+TYK_PMP_PUMPS_KAFKA_META_SASLMECHANISM=scram
+TYK_PMP_PUMPS_KAFKA_META_USERNAME=tyk-pump
+TYK_PMP_PUMPS_KAFKA_META_PASSWORD=<password>
+TYK_PMP_PUMPS_KAFKA_META_ALGORITHM=sha-256
+```
+Set `TYK_PMP_OMITCONFIGFILE=true` if you're configuring Tyk Pump purely from environment variables, with no `pump.conf` at all.
+</Tab>
+</Tabs>
+
+Once Tyk Pump starts, `Kafka Pump Initialized` in its log output confirms the pump loaded this configuration. To confirm records are actually reaching Kafka before pointing this at live traffic, run Tyk Pump in [Demo Mode](/api-management/tyk-pump#demo-mode) against the topic above, then read it back with a consumer, for example `kafka-console-consumer.sh --bootstrap-server <broker> --topic tyk-pump --from-beginning`.
 
 ## Commercial and SaaS Data Sinks
 
