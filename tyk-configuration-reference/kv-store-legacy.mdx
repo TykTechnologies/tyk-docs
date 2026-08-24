@@ -6,19 +6,21 @@ sidebarTitle: "Legacy KV Syntax"
 
 ## Introduction
 
-Before [Secrets Management](/tyk-configuration-reference/kv-store)'s `kv://` and `$kv{}` notation, Tyk Gateway used a set of URL-scheme prefixes and `$secret_*` labels to read external values into `tyk.conf` and API definitions. This notation is **exclusive to Tyk Gateway** - it was never available in Tyk Dashboard, Tyk Portal or Tyk MDCB, which only support the newer syntax.
+Before [Secrets Management](/tyk-configuration-reference/kv-store)'s `kv://` and `$kv{}` notation, Tyk Gateway used a set of URL-scheme prefixes and `$secret_*` labels to read external values into `tyk.conf` and API definitions. This notation is **exclusive to Tyk Gateway's configuration**.
 
-It continues to work alongside the new approach - it can be freely mixed with the newer syntax in the same API definition or the same running Gateway. This page is a reference for that existing behavior; if you're setting up secrets for the first time, use [Secrets Management](/tyk-configuration-reference/kv-store) instead.
+API definitions are a Gateway artifact regardless of what created them, so this legacy notation still works in an API definition edited through the Dashboard UI, since it's resolved by the Gateway that loads the API, not by the Dashboard itself.
+
+It continues to work alongside the new approach, and can be freely mixed with the newer syntax in the same API definition or the same running Gateway. This page is a reference for that existing behavior; if you're setting up secrets for the first time, use [Secrets Management](/tyk-configuration-reference/kv-store) instead.
 
 ## Notation
 
 There are two forms, depending on where a reference is used.
 
-API definitions (any string field) and a fixed set of Tyk Gateway configuration file fields (the [same fields](/tyk-configuration-reference/kv-store#when-references-are-resolved) that support the new `kv://` syntax) - can use **whole-value prefixes**, where the entire value is the secret:
+API definitions (any string field) and a fixed set of Tyk Gateway configuration file fields (the [same fields](/tyk-configuration-reference/kv-store#when-references-are-resolved) that support the new `kv://` syntax) can use **whole-value prefixes**, where the entire value is the secret:
 
 | Prefix | Reads From |
 | :--- | :--- |
-| `env://<VAR>` | The environment variable `<VAR>`, read exactly as named. |
+| `env://<VAR>` | The environment variable `<VAR>`. See the note below for exceptions. |
 | `secrets://<key>` | The `secrets` map in `tyk.conf`. |
 | `consul://<key>` | Consul, from a fixed `tyk-apis` key prefix. |
 | `vault://<key>` | Vault, from a fixed `secret/tyk-apis` path. |
@@ -30,14 +32,17 @@ Specific [transformation middleware](#transformation-middleware) can use **`$sec
 
 | Label | Reads From |
 | :--- | :--- |
-| `$secret_env.<VAR>` | The environment variable `<VAR>`. |
+| `$secret_env.<VAR>` | The environment variable `TYK_SECRET_<VAR>` (`<VAR>` uppercased). |
 | `$secret_conf.<key>` | The `secrets` map in `tyk.conf`. |
 | `$secret_consul.<key>` | Consul. |
 | `$secret_vault.<key>` | Vault. |
 | `$secret_file.<path>` | A local file. |
 
 <Note>
-`env://` reads the environment variable name exactly as written. This differs from the newer [`kv://env/...`](/tyk-configuration-reference/kv-store-providers#environment-variables-env) notation, which adds a `TYK_SECRET_` prefix and uppercases the key. If you switch an environment-variable reference from the old notation to the new one, be careful to ensure you account for this difference, or the reference may resolve to nothing.
+`env://` does not read the same environment variable everywhere, and this matters when migrating to the newer [`kv://env/...`](/tyk-configuration-reference/kv-store-providers#environment-variables-env) notation, whose built-in default reads `TYK_SECRET_<VAR>` (uppercased):
+
+- `$secret_env.<VAR>`, and `env://<VAR>` used in the **Target URL** or **Listen Path** fields or in the Gateway configuration file, already read `TYK_SECRET_<VAR>` (uppercased), so migrating these to `kv://env/<VAR>` needs no change to the environment variable itself.
+- `env://<VAR>` used in any other API definition field reads `<VAR>` exactly as written, with no prefix or case change. Migrating one of these to `kv://env/<VAR>` instead looks up `TYK_SECRET_<VAR>`, which resolves to nothing unless you rename the variable or register a separate `env` store with `allow_no_prefix: true` and no `uppercase`.
 </Note>
 
 ### Transformation Middleware
@@ -47,9 +52,14 @@ The following transformation middleware accept the `$secret_*` notation:
 - [Request Body Transform](/api-management/traffic-transformation/request-body)
 - [Request Header Transform](/api-management/traffic-transformation/request-headers)
 - [URL Rewrite](/transform-traffic/url-rewriting)
+- [Response Body Transform](/api-management/traffic-transformation/response-body)
 - [Response Header Transform](/api-management/traffic-transformation/response-headers)
 
 These references are re-resolved on every request, reading the store fresh each time. The newer `kv://` and `$kv{}` notation doesn't do this: those references are resolved once when the API definition loads. If you need a secret's current value looked up on every request rather than fixed at the last reload, `$secret_*` is the only notation that does that. Please contact your Tyk representative if this is key functionality for your use case.
+
+<Warning>
+Resolving on every request means every request pays the latency of a round trip to the store, and sustained traffic can put significant load on it, particularly for Vault or Consul. Prefer the `kv://` / `$kv{}` notation, which resolves once per API load, unless per-request resolution is a strict requirement.
+</Warning>
 
 ## Configuring Legacy Secrets Stores
 
@@ -68,7 +78,7 @@ Each legacy store type is configured under its own dedicated block in `tyk.conf`
 }
 ```
 
-`consul://` and `$secret_consul.` read from a fixed key prefix of `tyk-apis` in Consul's key/value store - store your data under that prefix, for example `tyk-apis/my-secret-key`, and reference it as `consul://my-secret-key`.
+`consul://` and `$secret_consul.` read from a fixed key prefix of `tyk-apis` in Consul's key/value store. Store your data under that prefix, for example `tyk-apis/my-secret-key`, and reference it as `consul://my-secret-key`.
 
 ### HashiCorp Vault
 
@@ -98,6 +108,8 @@ Each legacy store type is configured under its own dedicated block in `tyk.conf`
 ```
 
 `file://` and `$secret_file.` read a file relative to `base_path`, with its contents (trailing newlines trimmed) used as the value. This is the mechanism behind referencing a Kubernetes Secret mounted as a file into a component's container: mount the Secret, set `base_path` to the mount directory, and reference each entry by its filename.
+
+For security, the same constraints apply as for the newer `file` provider: keys used in `file://` and `$secret_file.` references cannot be absolute paths, cannot contain `..`, and cannot resolve through a symlink to somewhere outside `base_path`. See [Local Files](/tyk-configuration-reference/kv-store-providers#local-files-file) for the full field reference.
 
 ### Local Secrets
 

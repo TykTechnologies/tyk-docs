@@ -10,6 +10,8 @@ Secrets Management lets you keep sensitive values, such as passwords, API keys a
 
 This keeps sensitive values in one place you control access to, lets the same API definition move between environments (development, staging, production) unchanged, and means the people editing API definitions don't need to see the secrets those definitions use.
 
+**Available from Tyk Gateway and Tyk Dashboard 5.15.0, Tyk Portal 1.19.0, Tyk MDCB 2.13.0, and Tyk Pump 1.17.0.** Earlier versions only support the [legacy syntax](/tyk-configuration-reference/kv-store-legacy), which continues to work unchanged alongside this on all newer versions too.
+
 ## Supported Secret Stores
 
 Each store is registered under a name you choose, with a `type` that selects which backend it talks to:
@@ -19,8 +21,8 @@ Each store is registered under a name you choose, with a `type` that selects whi
 | `env` | All users | Environment variables |
 | `inline` | All users | A literal key/value map written directly into the component's configuration |
 | `file` | All users | Local files, including Kubernetes Secrets mounted as files |
-| `hashicorp_vault` | All users | A Hashicorp Vault instance |
-| `hashicorp_consul` | All users | A Hashicorp Consul instance |
+| `hashicorp_vault` | All users | A HashiCorp Vault instance |
+| `hashicorp_consul` | All users | A HashiCorp Consul instance |
 | `aws_secrets_manager` | Enterprise Edition | AWS Secrets Manager |
 | `azure_key_vault` | Enterprise Edition | Azure Key Vault |
 | `gcp_secret_manager` | Enterprise Edition | GCP Secret Manager |
@@ -31,7 +33,7 @@ See [Secret Store Providers](/tyk-configuration-reference/kv-store-providers) fo
 
 There are three parts to using Secrets Management:
 
-1. **Register a store.** Add an entry under the `kv.stores` section of the component's configuration, naming the store and giving it a `type` from the table above and whatever connection details that type needs. A store can also be marked `required` - see [Error Handling](#error-handling) below for what that changes. Stores are not shared between components: each component only sees the stores registered in its own configuration, so a Vault instance you want both Tyk Gateway and Tyk Dashboard to read from needs registering separately in each.
+1. **Register a store.** Add an entry under the `kv.stores` section of the component's configuration, naming the store and giving it a `type` from the table above and whatever connection details that type needs. A store can also be marked `required`. See [Error Handling](#error-handling) below for what that changes. Stores are not shared between components: each component only sees the stores registered in its own configuration, so a Vault instance you want both Tyk Gateway and Tyk Dashboard to read from needs registering separately in each.
 2. **Write a reference to it.** Anywhere a config value would normally be written, use one of two equivalent notations instead:
 
    | Notation | Form | Use when |
@@ -39,7 +41,7 @@ There are three parts to using Secrets Management:
    | Whole-value reference | `kv://<store>/<path>` | The entire field is the secret. |
    | Inline token | `$kv{<store>:<path>}` | The secret is part of a larger string, such as a hostname embedded in a URL. |
 
-3. **The component resolves it.** Exactly when this happens depends on the component and where the reference sits - see [When References Are Resolved](#when-references-are-resolved). What happens if a reference can't be resolved is explained in [Error Handling](#error-handling).
+3. **The component resolves it.** Exactly when this happens depends on the component and where the reference sits. See [When References Are Resolved](#when-references-are-resolved) for details. What happens if a reference can't be resolved is explained in [Error Handling](#error-handling).
 
 ## Getting Started
 
@@ -63,7 +65,7 @@ This example registers an inline store, a literal key/value map written directly
 }
 ```
 
-Any config field or API definition field can now reference it. For example, a token used to authenticate with the upstream:
+Any API definition string field, and the supported fields in a component's configuration file, can now reference it. For example, a token used to authenticate with the upstream:
 
 ```json
 {
@@ -79,9 +81,25 @@ Any config field or API definition field can now reference it. For example, a to
 }
 ```
 
+The inline-token form resolves the same store but only replaces part of the value, for example a token embedded in a URL:
+
+```json
+{
+  "upstream_url": "https://api.example.com/v1?token=$kv{myvals:token}"
+}
+```
+
+which resolves to:
+
+```json
+{
+  "upstream_url": "https://api.example.com/v1?token=xyz"
+}
+```
+
 ## When References Are Resolved
 
-Exactly when a reference is resolved, and what happens if it can't be, is not the same everywhere - it depends on the component, and on where in that component's configuration the reference sits:
+Exactly when a reference is resolved, and what happens if it can't be, depends on the component, and on where in that component's configuration the reference sits:
 
 | Location | Scope | When Resolved |
 | :--- | :--- | :--- |
@@ -93,7 +111,7 @@ Exactly when a reference is resolved, and what happens if it can't be, is not th
 
 Two things are different about `tyk.conf` compared to the other components above.
 
-First, it only supports a reference on a fixed, named set of fields - a reference written into any other field is never resolved:
+First, it only supports a reference on a fixed, named set of fields. A reference written into any other field is never resolved:
 
 | Field | When Resolved |
 | :--- | :--- |
@@ -169,12 +187,18 @@ Marking a store `required` controls what happens if the *store itself* fails to 
 - `required` left unset, or `false` (the default): a failed store logs a warning and is skipped. The component keeps starting; any reference to that store then fails when something tries to resolve it, following whichever behavior applies to that location (see below).
 - `required: true`: a failed store is reported as an error, and the component refuses to start.
 
+Set `required: true` on any store that provides secrets essential to secure operation, such as authentication credentials or TLS material. With the default `false`, a component can start and keep serving traffic even though a security-critical secret silently failed to load.
+
 ### Failed References
 
-An unresolvable reference (an unknown store, a missing key, a malformed reference) in a component's **configuration file** is treated as a fatal configuration error at startup: the component logs the failure and refuses to start. The three `external_services.oauth.mtls` fields on Tyk Gateway are the one exception, since they're also re-resolved on every hot reload rather than only at startup - if one of these references fails to resolve during a hot reload, an error is logged and the previous value is used.
+An unresolvable reference (an unknown store, a missing key, a malformed reference) in a component's **configuration file** is treated as a fatal configuration error at startup: the component logs the failure and refuses to start. The three `external_services.oauth.mtls` fields on Tyk Gateway are the one exception, since they're also re-resolved on every hot reload rather than only at startup. If one of these references fails to resolve during a hot reload, an error is logged and the previous value is used.
 
-An unresolvable reference in an **API definition** field is different: it is logged as an error but does not stop the API loading. What this means in practice depends on the field: an unresolved reference in `target_url`, for example, still parses as a syntactically valid URL, so the API loads and only fails when a request tries to reach that upstream, returning a `500`. A reference left unresolved in a header added by transformation middleware is not an error at all - the literal reference string is just sent as the header's value.
+An unresolvable reference in an **API definition** field is different: it is logged as an error but does not stop the API loading. What this means in practice depends on the field: an unresolved reference in `target_url`, for example, still parses as a syntactically valid URL, so the API loads and only fails when a request tries to reach that upstream, returning a `500`. A reference left unresolved in a header added by transformation middleware is not an error at all: the literal reference string is just sent as the header's value.
+
+<Warning>
+An unresolved reference string sent as a header or body value (for example `kv://my-store/db/password`) can reveal your store names and secret paths to whatever receives it: an upstream service, or the client, if the field is echoed back in a response. Treat an unresolved reference found in a live environment as a configuration bug to fix immediately, not a benign fallback.
+</Warning>
 
 ## Legacy Key-Value Syntax
 
-If you have existing API definitions or Tyk Gateway configuration using the older `vault://`, `consul://`, `env://`, `secrets://`, `file://` or `$secret_*` notation, they continue to work unchanged alongside this - see [Legacy Key-Value Syntax](/tyk-configuration-reference/kv-store-legacy).
+If you have existing API definitions or Tyk Gateway configuration using the older `vault://`, `consul://`, `env://`, `secrets://`, `file://` or `$secret_*` notation, they continue to work unchanged alongside this. See [Legacy Key-Value Syntax](/tyk-configuration-reference/kv-store-legacy) for details.
