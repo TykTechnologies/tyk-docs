@@ -1,0 +1,328 @@
+---
+title: "Secret Store Providers"
+description: "Configuration reference for every Secrets Management store type: environment variables, local files, HashiCorp Vault, HashiCorp Consul, AWS, Azure and GCP."
+sidebarTitle: "Providers"
+---
+
+## Introduction
+
+See [Secrets Management](/tyk-configuration-reference/kv-store) for how to register a store and reference it. This page covers the `config` object for each store `type`, registered under `kv.stores` in the configuration file for each Tyk component:
+
+```json
+{
+  "kv": {
+    "stores": {
+      "<store-name>": {
+        "type": "<provider type>",
+        "config": { }
+      }
+    }
+  }
+}
+```
+
+## Environment Variables (`env`)
+
+Reads secrets from environment variables of the Tyk component process.
+
+```json
+{
+  "kv": {
+    "stores": {
+      "env-store": {
+        "type": "env",
+        "config": {
+          "prefix": "MYAPP_",
+          "uppercase": true,
+          "allow_no_prefix": false
+        }
+      }
+    }
+  }
+}
+```
+
+| Field | Description |
+| :--- | :--- |
+| `prefix` | Prepended to every key to form the environment variable name. With `prefix` set to `"MYAPP_"`, `kv://<store>/db_password` reads `MYAPP_db_password`. This is required, unless `allow_no_prefix` is set. |
+| `uppercase` | Uppercases the key before it's appended to `prefix`. With `prefix` `"MYAPP_"` and `uppercase` `true`, `kv://<store>/db_password` reads `MYAPP_DB_PASSWORD`. Defaults to `false`. |
+| `allow_no_prefix` | Allows `prefix` to be left empty. Defaults to `false`. |
+
+The `prefix` is required unless explicitly omitted using `allow_no_prefix`. This is a security feature to avoid references from reaching arbitrary process variables such as cloud credentials or `PATH`. You should always enforce a prefix unless every reference is as trusted as the host itself.
+
+<Note>
+Tyk Gateway automatically registers a built-in store named `env`, in addition to any store you register yourself, configured with `prefix: "TYK_SECRET_"` and `uppercase: true`. This matches the legacy `$secret_env.` notation, and the legacy `env://` notation as used in the Target URL, Listen Path, and Gateway configuration file fields. A reference `kv://env/MY_VAR` (or `$kv{env:MY_VAR}`) therefore reads the environment variable `TYK_SECRET_MY_VAR`. It does **not** match legacy `env://` used in other API definition fields, which reads the variable name exactly as written with no prefix. See [Legacy Key-Value Syntax](/tyk-configuration-reference/kv-store-legacy#notation) for the full breakdown before migrating an existing reference.
+</Note>
+
+## Inline (`inline`)
+
+Reads secrets from a literal key/value map in the configuration file within the store's own config block:
+
+```json
+{
+  "kv": {
+    "stores": {
+      "myvals": {
+        "type": "inline",
+        "config": {
+          "data": {
+            "db_password": "s3cret"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+| Field | Description |
+| :--- | :--- |
+| `data` | An object of key/value pairs. `kv://<store>/db_password` with `{"data": {"db_password": "s3cret"}}` resolves to `s3cret`. |
+
+Because the values sit in the configuration in plain text, this suits development, testing and values that aren't genuinely sensitive. It's the direct replacement for the [local secrets](/tyk-configuration-reference/kv-store-legacy#local-secrets) functionality of the legacy syntax.
+
+## Local Files (`file`)
+
+Reads secrets from files on the Tyk component's filesystem, including Kubernetes Secrets mounted as files.
+
+```json
+{
+  "kv": {
+    "stores": {
+      "local-secrets": {
+        "type": "file",
+        "config": {
+          "base_path": "/etc/tyk/secrets"
+        }
+      }
+    }
+  }
+}
+```
+
+| Field | Description |
+| :--- | :--- |
+| `base_path` | The absolute directory from which the store reads, and the boundary keys cannot leave. Required. |
+
+A reference `kv://<store>/db/password` with `base_path` set to `/etc/tyk/secrets` reads the file `/etc/tyk/secrets/db/password`, with trailing newlines trimmed from the value. For security reasons, the keys used in references cannot be absolute paths, contain `..`, or resolve through a symlink to somewhere outside `base_path`.
+
+This is also how a [Kubernetes Secret mounted into a component's container](/api-management/certificates#inline-pem-content) can be used to supply a certificate: point `base_path` at the mount directory and reference the mounted file by name.
+
+## HashiCorp Vault (`hashicorp_vault`)
+
+```json
+{
+  "kv": {
+    "stores": {
+      "vault-prod": {
+        "type": "hashicorp_vault",
+        "config": {
+          "address": "https://vault.example.com:8200",
+          "agent_address": "http://127.0.0.1:8100",
+          "token": "<vault-token>",
+          "max_retries": 2,
+          "timeout": "5s",
+          "kv_version": 2,
+          "mount_path": "secret",
+          "namespace": "team-a"
+        }
+      }
+    }
+  }
+}
+```
+
+| Field | Description |
+| :--- | :--- |
+| `address` | The Vault server URL, for example `https://vault.example.com:8200`. Falls back to the `VAULT_ADDR` environment variable, then to `https://127.0.0.1:8200`. |
+| `agent_address` | The URL of a Vault Agent to send requests through instead of `address`, for example `http://127.0.0.1:8100`. Falls back to `VAULT_AGENT_ADDR`. |
+| `token` | The Vault token to authenticate with. Required, unless supplied via the `VAULT_TOKEN` environment variable. Vault has no usable "no token" mode. |
+| `max_retries` | Additional attempts on a Vault server error (HTTP 5xx). `0` keeps the client default of 2, or `VAULT_MAX_RETRIES` if set. |
+| `timeout` | How long to wait for a single Vault request, as a Go duration string (for example `"5s"`). Defaults to `5s`. |
+| `kv_version` | The Vault KV secrets engine version holding the data. `1` for version 1; any other value, including omitting the field, means version 2 (the current Vault default). |
+| `mount_path` | Where the KV engine is mounted in Vault, for example `"secret"` or a nested `"tenants/a/kv"`. Only used for KV version 2, and only needed when the mount has more than one path segment. |
+| `namespace` | Confines requests to a Vault namespace. Vault Enterprise / HCP Vault only, setting this against Community Vault fails every request. Falls back to `VAULT_NAMESPACE`. |
+
+Keys in references must always include the `mount_path`, for example if `mount_path` is set to `secret` a reference must take the form `kv://vault-prod/secret/my-app/db`. A key that doesn't sit under `mount_path` is rejected.
+
+## HashiCorp Consul (`hashicorp_consul`)
+
+Every field is optional; an empty `config` connects to a Consul agent on the same host.
+
+```json
+{
+  "kv": {
+    "stores": {
+      "consul-prod": {
+        "type": "hashicorp_consul",
+        "config": {
+          "address": "consul.example.com:8500",
+          "scheme": "https",
+          "datacenter": "eu-west-1",
+          "token": "<consul-acl-token>",
+          "http_auth": {
+            "username": "",
+            "password": ""
+          },
+          "wait_time": "0s",
+          "tls_config": {
+            "address": "",
+            "ca_file": "/etc/tyk/consul/ca.pem",
+            "ca_path": "",
+            "cert_file": "/etc/tyk/consul/client.pem",
+            "key_file": "/etc/tyk/consul/client-key.pem",
+            "insecure_skip_verify": false
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+| Field | Description |
+| :--- | :--- |
+| `address` | The Consul HTTP API endpoint, host and port with no scheme, for example `"consul.example.com:8500"`. Falls back to `CONSUL_HTTP_ADDR`, then `127.0.0.1:8500`. |
+| `scheme` | `"http"` or `"https"`. Falls back to `CONSUL_HTTP_SSL`. |
+| `datacenter` | The Consul datacenter to read from. Defaults to the configured agent's own datacenter. |
+| `token` | The Consul ACL token to authenticate with. Falls back to `CONSUL_HTTP_TOKEN` / `CONSUL_HTTP_TOKEN_FILE`. |
+| `http_auth.username` / `http_auth.password` | HTTP Basic auth credentials, for a Consul API sitting behind a proxy that requires them, not Consul's own access control. |
+| `wait_time` | A Go duration string for Consul's blocking-query wait. Doesn't affect secret reads, which are ordinary (non-blocking) requests fixed at a 5 second timeout. |
+| `tls_config.address` | The hostname expected in the Consul server's certificate, when it differs from the host in `address` (for example when connecting through a load balancer). Used only when `scheme` is `"https"`. |
+| `tls_config.ca_file` / `ca_path` | The CA that signed the Consul server's certificate, as a single PEM file or a directory of them. Used only when `scheme` is `"https"`. |
+| `tls_config.cert_file` / `key_file` | Tyk's own client certificate and key, in PEM form, for a Consul cluster that requires mutual TLS. Used only when `scheme` is `"https"`. |
+| `tls_config.insecure_skip_verify` | Disables server certificate verification. Defaults to `false`. Test clusters only, never production. |
+
+## AWS Secrets Manager (`aws_secrets_manager`)
+
+<Info>Enterprise Edition only.</Info>
+
+```json
+{
+  "kv": {
+    "stores": {
+      "aws-prod": {
+        "type": "aws_secrets_manager",
+        "config": {
+          "region": "eu-west-2",
+          "endpoint": "",
+          "access_key_id": "",
+          "secret_access_key": "",
+          "session_token": "",
+          "profile": "",
+          "role_arn": "",
+          "external_id": "",
+          "role_session_name": "",
+          "version_stage": "AWSCURRENT",
+          "version_id": "",
+          "timeout": "5s",
+          "trim_trailing_newline": false
+        }
+      }
+    }
+  }
+}
+```
+
+| Field | Description |
+| :--- | :--- |
+| `region` | The AWS region holding the secrets, for example `"eu-west-2"`. Required. A store reads one region only. |
+| `endpoint` | Send requests to an alternate endpoint (a VPC interface endpoint, or a local emulator) instead of the standard AWS endpoint for the region. |
+| `access_key_id` / `secret_access_key` | Static IAM credentials. Optional and must be set together. Left empty (as above), Tyk falls back to the host's environment variables, shared AWS config files, or an attached IAM role (EC2/ECS/EKS IRSA). Leaving both empty is the recommended setup on a host that already carries an IAM role. |
+| `session_token` | The session token for short-lived STS credentials. Only valid alongside `access_key_id`/`secret_access_key`. |
+| `profile` | A named profile from the host's AWS shared config files. Cannot be combined with `access_key_id`/`secret_access_key`. |
+| `role_arn` | An IAM role for Tyk to assume before reading secrets. |
+| `external_id` / `role_session_name` | Only valid alongside `role_arn`. |
+| `version_stage` | Read the secret version carrying this staging label. Defaults to `AWSCURRENT`. Cannot combine with `version_id`; any label other than `AWSCURRENT` makes the store read-only. |
+| `version_id` | Pin to one exact, unchanging secret version. Cannot combine with `version_stage`; makes the store read-only. |
+| `timeout` | A Go duration string. Defaults to `5s`. |
+| `trim_trailing_newline` | Strip a trailing newline from the value. Defaults to `false`. |
+
+`profile`, `access_key_id`/`secret_access_key`, `role_arn` and `version_id` are shown above only to give their field names. Each is an alternative to the field(s) next to it above, not something to combine with them.
+
+## Azure Key Vault (`azure_key_vault`)
+
+<Info>Enterprise Edition only.</Info>
+
+```json
+{
+  "kv": {
+    "stores": {
+      "azure-prod": {
+        "type": "azure_key_vault",
+        "config": {
+          "vault_url": "https://my-vault.vault.azure.net",
+          "credential_type": "managed_identity",
+          "tenant_id": "",
+          "client_id": "",
+          "client_secret": "",
+          "client_certificate_file": "",
+          "client_certificate_password": "",
+          "federated_token_file": "",
+          "timeout": "5s",
+          "trim_trailing_newline": false
+        }
+      }
+    }
+  }
+}
+```
+
+| Field | Description |
+| :--- | :--- |
+| `vault_url` | The vault's address, for example `https://my-vault.vault.azure.net`. A bare host with no path or query. Required. Only the global Azure cloud is supported. |
+| `credential_type` | How Tyk authenticates: `managed_identity` (the default: an identity Azure attaches to the host Tyk runs on, no credential stored by Tyk), `workload_identity` (Kubernetes, via a federated token), `client_secret` (an app registration and its secret), or `client_certificate` (an app registration and a certificate). |
+| `tenant_id` | The Microsoft Entra ID directory ID. Required for `client_secret`, `client_certificate` and `workload_identity`; ignored for `managed_identity`. |
+| `client_id` | The application or identity Tyk authenticates as. Required for `client_secret`, `client_certificate` and `workload_identity`. Optional for `managed_identity`, where it selects a user-assigned identity (omit it to use the resource's system-assigned identity). |
+| `client_secret` | The app registration's secret value. Required for `client_secret`, ignored otherwise. |
+| `client_certificate_file` | Path to a PEM or PKCS#12 certificate file (matching the certificate uploaded to the app registration), read on the host running the component. Required for `client_certificate`, ignored otherwise. |
+| `client_certificate_password` | Password for the certificate file, if it has one. Optional. |
+| `federated_token_file` | Path to the short-lived token file Kubernetes projects for workload identity. Required for `workload_identity`, ignored otherwise. |
+| `timeout` | A Go duration string. Defaults to `5s`. |
+| `trim_trailing_newline` | Strip a trailing newline from the value. Defaults to `false`. |
+
+`tenant_id` through `federated_token_file` above are left empty because the example uses `managed_identity`, which needs none of them. Fill in only the fields required by whichever `credential_type` you choose.
+
+## GCP Secret Manager (`gcp_secret_manager`)
+
+<Info>Enterprise Edition only.</Info>
+
+```json
+{
+  "kv": {
+    "stores": {
+      "gcp-prod": {
+        "type": "gcp_secret_manager",
+        "config": {
+          "project_id": "my-company-prod",
+          "quota_project_id": "",
+          "location": "",
+          "credentials_type": "",
+          "credentials_file": "",
+          "credentials_json": "",
+          "impersonate_service_account": "",
+          "impersonate_delegates": [],
+          "timeout": "5s",
+          "trim_trailing_newline": false,
+          "transport": "grpc"
+        }
+      }
+    }
+  }
+}
+```
+
+| Field | Description |
+| :--- | :--- |
+| `project_id` | The Google Cloud project holding the secrets, for example `my-company-prod`. Use the project ID, not its display name or number. Required. A store reads one project only. |
+| `quota_project_id` | Bills API requests to a different project than the one that owns the secrets. Optional, only needed where billing is deliberately separated from the secrets project. |
+| `location` | Confines the store to a single region, for example `europe-west1`, using Secret Manager's regional service instead of the global one. Must match how the secrets were created. Optional. |
+| `credentials_type` | The kind of credential in `credentials_file`/`credentials_json`: `service_account`, `authorized_user`, or `external_account` (Workload Identity Federation). Required whenever one of those fields is set; leave everything empty (as above) to use Application Default Credentials instead. |
+| `credentials_file` / `credentials_json` | A Google Cloud credentials file, as a path or inline JSON. Mutually exclusive. Leaving both empty (the recommended setup on Google Cloud) uses Application Default Credentials: the environment's own service account, `gcloud auth login` credentials, or `GOOGLE_APPLICATION_CREDENTIALS`. |
+| `impersonate_service_account` | The email of a service account for Tyk to act as instead of its own identity. Optional. |
+| `impersonate_delegates` | A chain of intermediate service accounts to reach `impersonate_service_account` through. Optional, and only valid alongside it. |
+| `timeout` | A Go duration string. Defaults to `5s`. |
+| `trim_trailing_newline` | Strip a trailing newline from the value. Defaults to `false`. |
+| `transport` | `grpc` (the default) or `rest`. Switch to `rest` only if the network between Tyk and Google can't carry gRPC. |
+
+`quota_project_id` through `impersonate_delegates` above are left empty because the example uses Application Default Credentials. Fill in only the fields your authentication approach needs.
