@@ -4,25 +4,34 @@ description: "Manage Tyk Governance rulesets as Kubernetes Custom Resources with
 keywords: "Tyk Governance, API Governance, Tyk Operator, Kubernetes, GitOps, TykRuleset, Admission Webhook"
 sidebarTitle: "Governance via Tyk Operator"
 ---
-This page covers how to manage Tyk Governance [rulesets](/tyk-governance/core-concepts) as Kubernetes Custom Resources with Tyk Operator, and how Operator enforces and reports on governance compliance for the APIs it manages, as part of a GitOps workflow (Argo CD, Flux, or plain `kubectl apply`).
 
-Three other pages cover the rest of Tyk Governance. [Managing Rulesets](/tyk-governance/rulesets) covers defining rulesets through the Dashboard UI. [Service Compliance and Evaluation](/tyk-governance/service-compliance) covers reviewing and resolving compliance issues for APIs already saved in Tyk Dashboard. [CI/CD Governance Checks](/tyk-governance/cicd-checks) covers checking a spec file against rulesets from a pipeline, independently of Operator. This page is for teams who manage both their APIs and their governance configuration as Kubernetes manifests, with rulesets and the `TykOasApiDefinition` resources they govern living in the same Git repository.
+This page is for teams who manage both their APIs and their governance configuration as Kubernetes manifests. Their rulesets and the `TykOasApiDefinition` resources they govern live in the same Git repository.
+
 Operator's governance integration is two independent pieces, and you can use either on its own:
-- **Managing rulesets as code.** The `TykRuleset` custom resource lets a ruleset definition live in Git next to the APIs it applies to, so it can be reviewed in a pull request and rolled back with `git revert`, the same as any other Operator-managed resource.
-- **Enforcing and reporting on compliance for the APIs Operator manages.** An admission webhook can stop a non-compliant `TykOasApiDefinition` from ever being saved, and the reconciler always records the current compliance state on the resource's status, whether or not the webhook is enabled.
+- **Ruleset management as code.** The `TykRuleset` custom resource lets a ruleset definition live in Git next to the APIs it applies to. 
+- **Compliance enforcement and reporting for the APIs Operator manages.** An admission webhook can reject a non-compliant `TykOasApiDefinition` outright, so Kubernetes never saves it.
 
 **Currently supported:** `TykOasApiDefinition` only.
-> **Before you start:**
-> - This requires a Tyk license with API Governance enabled. Without the license's `governance` scope, every governance endpoint returns `403 Forbidden`. Operator treats this as "not licensed" and skips governance handling rather than failing (see [Licensing and skip conditions](#licensing-and-skip-conditions)). Contact your Tyk account team to have it enabled.
-> - The `OperatorContext` your `TykRuleset` and `TykOasApiDefinition` resources reference needs a Dashboard token with `write` or `admin` on the Governance permission group to manage rulesets, and `read` on Governance to run compliance checks.
 
-> **A note on "blocking":** everywhere else in Tyk Governance, saving an API in Dashboard, or a [CI/CD sandbox check](/tyk-governance/cicd-checks), a ruleset's `action` is either `none` or `warn`, and nothing is ever stopped outright, only flagged. Tyk Operator is the exception: a `TykRuleset` can be set to `action: block`, which is enforced at the Kubernetes admission layer and can stop an API manifest from ever being saved, to Kubernetes or to Dashboard. See [Action semantics](#action-semantics) for exactly how that works, and what it does and doesn't affect.
+**Before you start:**
+
+- This requires a Tyk license with API Governance enabled. Without the license's `governance` scope, every governance endpoint returns `403 Forbidden`. Operator treats this as "not licensed": it skips governance handling and does not fail (see [Licensing and skip conditions](#licensing-and-skip-conditions)). Contact your Tyk account team to have it enabled.
+- The `OperatorContext` your `TykRuleset` and `TykOasApiDefinition` resources reference needs a Dashboard token with `write` or `admin` on the Governance permission group to manage rulesets. It also needs `read` on Governance to run compliance checks.
+
+<Note>
+
+**A note on "blocking":** elsewhere in Tyk Governance, a ruleset's `action` is either `none` or `warn`. That's true whether you save an API in Dashboard or run a [CI/CD sandbox check](/tyk-governance/cicd-checks). Nothing is ever stopped outright, only flagged. Tyk Operator is the exception.
+
+You can set a `TykRuleset` to `action: block`. The Kubernetes admission layer enforces this and can stop an API manifest before it ever reaches Kubernetes or Dashboard. See [Action semantics](#action-semantics) for exactly how that works, and what it does and doesn't affect.
+
+</Note>
 
 ## Manage Rulesets as Code
 
 ### Step 1: Write a `TykRuleset` Resource
+
 The Spectral rule body can live inline in the resource, or in a separate `ConfigMap` or `Secret`. Inline is the simplest option for small rulesets and keeps a ruleset change to a one-file diff:
-```yaml
+```yaml expandable
 apiVersion: tyk.tyk.io/v1alpha1
 kind: TykRuleset
 metadata:
@@ -45,9 +54,13 @@ spec:
         operation-operationId:
           severity: error
 ```
-`contextRef` is optional in both source modes (it falls back to the default `OperatorContext` for the namespace when omitted); it's included here for clarity, not because inline `raw` rulesets need it any more than `objRef` ones do. `action` also defaults to `none` if you leave it out entirely, meaning the ruleset is evaluated for visibility only and never surfaces a warning or blocks anything, until you explicitly set it to `warn` or `block`.
-For a larger ruleset, one shared by several `TykRuleset` resources, or one whose content shouldn't sit in a plain `ConfigMap` (internal endpoint names, naming patterns), reference an object instead:
-```yaml
+
+- `contextRef` is optional in both source modes. It falls back to the default `OperatorContext` for the namespace when omitted. It's included here for clarity, not because inline `raw` rulesets need it any more than `objRef` ones do. 
+- `action` also defaults to `none` if you leave it out entirely. Tyk then evaluates the ruleset for visibility only. It never surfaces a warning or blocks anything until you explicitly set `action` to `warn` or `block`.
+
+Reference an object instead of an inline rule body when the ruleset is larger, or shared by several `TykRuleset` resources. Do the same if the content shouldn't sit in a plain `ConfigMap`, for example internal endpoint names or naming patterns:
+
+```yaml expandable
 apiVersion: v1
 kind: Secret
 metadata:
@@ -80,26 +93,32 @@ spec:
       name: payments-ruleset-spec
       keyName: ruleset.yaml
 ```
-Exactly one of `ruleset.raw` or `ruleset.objRef` must be set. A resource that sets both, or neither, is rejected by the cluster before it's ever created, so Operator never has to guess which one you meant.
+
+Exactly one of `ruleset.raw` or `ruleset.objRef` must be set. The cluster rejects a resource that sets both, or neither, before it's ever created, so Operator never has to guess which one you meant.
 
 ### Step 2: Apply It
+
 ```bash
 kubectl apply -f payments-ruleset.yaml
 ```
-Operator creates the matching ruleset in Tyk Dashboard and keeps it in sync with the resource, and with the referenced `ConfigMap` or `Secret` if you used `objRef`. Editing either triggers an update; deleting the `TykRuleset` deletes the ruleset from Dashboard.
+Operator creates the matching ruleset in Tyk Dashboard and keeps it in sync with the resource, and with the referenced `ConfigMap` or `Secret` if you used `objRef`. If you edit either one, Operator triggers an update. If you delete the `TykRuleset`, Operator deletes the ruleset from Dashboard.
 
 ### Step 3: Verify
+
 ```bash
 kubectl get tykruleset -n tyk
 ```
+
 ```
 NAME                RULESETID   ACTIVE   ACTION   SYNCSTATUS
 payments-ruleset    rs-a1b2c3   true     warn     Successful
 ```
-`RulesetID` is assigned by Dashboard and only appears after the first successful reconcile. `kubectl describe tykruleset payments-ruleset` shows the full status, including `ObjectID`, `Owner`, and `OrgID`, all read back from Dashboard, never set from the spec.
+Dashboard assigns `RulesetID`, and it only appears after the first successful reconcile. `kubectl describe tykruleset payments-ruleset` shows the full status, such as `ObjectID`, `Owner`, and `OrgID`, all read back from Dashboard, never set from the spec.
 
 ### Step 4: Link It to the APIs It Governs
+
 Rulesets apply to APIs through **categories**, the same mechanism used everywhere else in Tyk Governance. Add the matching category to the `TykOasApiDefinition` you want this ruleset to check. There's no new field for this; `spec.categories` is the same field Operator already supports:
+
 ```yaml
 apiVersion: tyk.tyk.io/v1alpha1
 kind: TykOasApiDefinition
@@ -111,25 +130,32 @@ spec:
   tykOAS:
     # ... your OAS document
 ```
+
 On a fresh org, apply the categorized `TykOasApiDefinition` _before_ the `TykRuleset` that references that category. Dashboard rejects a ruleset's categories if no API carries them yet.
 
 ## Enforce and Observe Compliance at Apply Time
 
 ### Step 1: Enable the Webhook (Optional)
-The admission webhook is an optional part of Operator's existing webhook infrastructure, enabled by default, so teams that don't need enforcement see no behaviour change. Enable it in your Helm values:
+
+The admission webhook is an optional part of Operator's existing webhook infrastructure, enabled by default. Teams that don't need enforcement see no behavior change. Enable it in your Helm values:
+
 ```yaml
 webhooks:
   enabled: true
   governanceFailurePolicy: Ignore # or Fail, see Failure policy below
 ```
+
 If you don't enable it, Operator still reports compliance on every `TykOasApiDefinition` (see Step 4); you just don't get a hard stop at `kubectl apply` time.
 
 ### Step 2: Apply an API With Matching Categories
-Using the `payments-api` resource from the previous section, `kubectl apply` now runs it against every **active** `TykRuleset` in the same namespace whose categories intersect the API's `spec.categories` (`resourceType: oas-api` only).
+
+Take the `payments-api` resource from the previous section. `kubectl apply` now runs it against every **active** `TykRuleset` in the same namespace whose categories intersect the API's `spec.categories` (`resourceType: oas-api` only).
 
 ### Step 3: See the Outcome
+
 With the webhook enabled, one of three things happens:
 **Denied**, when a matching `block` ruleset has error-level findings:
+
 ```
 $ kubectl apply -f payments-api.yaml
 Error from server (Forbidden): admission webhook "vtykoasapidefinition.kb.io" denied the request: governance preflight blocked this API (2 error(s)):
@@ -138,24 +164,30 @@ Error from server (Forbidden): admission webhook "vtykoasapidefinition.kb.io" de
  
 Fix the violations or relax the ruleset action; the full violation list is available on the Dashboard.
 ```
+
 The object is never saved, not to Kubernetes, not to Dashboard. Fix the spec and re-apply.
 **Admitted with warnings**, when findings exist but nothing at error severity against a `block` ruleset:
+
 ```
 $ kubectl apply -f payments-api.yaml
 Warning: preflight warned: 0 error(s), 3 warning(s)
 tykoasapidefinition.tyk.io/payments-api created
 ```
-The API is admitted and reconciled normally.
-The warning doesn't name the ruleset. If the evaluation results were truncated, the message appends `(results truncated)`. Violation details are only inlined for error-level findings, so a warnings-only case is just the summary line above; see `status.governancePreflight` or the Dashboard for the actual violations.
+
+Tyk admits and reconciles the API normally.
+The warning doesn't name the ruleset. If the evaluation truncates the results, the message appends `(results truncated)`. Violation details are only inlined for error-level findings. For a warnings-only case, you only get the summary line above. See `status.governancePreflight` or the Dashboard for the actual violations.
 **Admitted silently**, when there are no categories, no matching active `oas-api` rulesets in the namespace, or nothing to flag:
+
 ```
 $ kubectl apply -f payments-api.yaml
 tykoasapidefinition.tyk.io/payments-api created
 ```
+
 If the webhook isn't enabled at all, every apply looks like this, and compliance is only visible on the resource's status (next step).
 
 ### Step 4: Check Compliance Status
-Whether or not the webhook is enabled, the reconciler records the result on every reconcile that resolves an OAS document:
+
+Whether or not you enable the webhook, the reconciler records the result on every reconcile that resolves an OAS document:
 ```bash
 kubectl get tykoasapidefinitions -n tyk
 ```
@@ -179,7 +211,7 @@ Status:
     Evaluated At:      2026-08-15T10:22:00Z
     Message:           ruleset payments-ruleset: 3 warnings found
 ```
-This is a status-only reflection of the last evaluation, not a live feed. It updates on reconcile, and reconciles are hash-gated (see [Reconciler behaviour](#reconciler-behaviour-visibility) below), so an unchanged API in a steady state produces no new Dashboard calls.
+This is a status-only reflection of the last evaluation, not a live feed. It updates on reconcile, and reconciles are hash-gated (see [Reconciler behavior](#reconciler-behavior-visibility) below), so an unchanged API in a steady state produces no new Dashboard calls.
 
 ## Detailed Reference
 
@@ -206,8 +238,8 @@ Exactly one of `ruleset.raw` / `ruleset.objRef` must be set, enforced by cluster
 | `none` (default) | Nothing, visibility only, everywhere | `none` |
 | `warn` | Nothing, surfaced in status/`kubectl describe`, never blocks | `warn` |
 | `block` | Operator's admission webhook, and only at `kubectl apply` time | `warn` |
-`block` is an Operator-only concept. Dashboard's ruleset model only knows `none` and `warn`: when a `TykRuleset` with `action: block` syncs to Dashboard, Operator maps it to `warn` there. This keeps Dashboard's own compliance data and the [CI/CD sandbox check](/tyk-governance/cicd-checks) consistent (neither ever blocks), while giving GitOps environments a stronger enforcement option at the point where it's actually actionable: before the object is saved.
-When more than one active ruleset matches an API, the **effective action** is the strictest action among rulesets that have **error-level** findings: `block > warn > none`. A `block` ruleset with only warn-level findings does not block; only error-severity findings drive enforcement. A ruleset with no matching `TykRuleset` resource in the namespace (for example, one that only exists in Dashboard) is treated as `none`.
+`block` is an Operator-only concept. Dashboard's ruleset model only knows `none` and `warn`: when a `TykRuleset` with `action: block` syncs to Dashboard, Operator maps it to `warn` there. This keeps Dashboard's own compliance data and the [CI/CD sandbox check](/tyk-governance/cicd-checks) consistent, since neither one ever blocks. It also gives GitOps environments a stronger enforcement option at the point where it's actually actionable: before Kubernetes saves the object.
+When more than one active ruleset matches an API, the **effective action** is the strictest action among rulesets that have **error-level** findings: `block > warn > none`. A `block` ruleset with only warn-level findings does not block; only error-severity findings drive enforcement. Operator treats a ruleset with no matching `TykRuleset` resource in the namespace, for example one that only exists in Dashboard, as `none`.
 
 ### `status.governancePreflight` Fields
 Populated on `TykOasApiDefinition` by the reconciler on every reconcile that resolves an OAS document.
@@ -223,19 +255,19 @@ Populated on `TykOasApiDefinition` by the reconciler on every reconcile that res
 Print column: `PreflightStatus`. The full violation list (paths, messages, remediation guidance) lives in Tyk Dashboard, not in `status`. `etcd` isn't the place for a violation log. See [Service Compliance and Evaluation](/tyk-governance/service-compliance) for that view.
 
 ### How Evaluation Gets Triggered
-Governance is **opt-in via categories**: an API is only evaluated when its `spec.categories` intersect the categories of **active** `TykRuleset` resources (`resourceType: oas-api`) in the same namespace.
+Governance is **opt-in via categories**. An API is only evaluated when its `spec.categories` intersect the categories of **active** `TykRuleset` resources (`resourceType: oas-api`) in the same namespace.
 1. No categories on the `TykOasApiDefinition` → skipped, no Dashboard call.
-2. No matching active `TykRuleset` resources in the namespace → skipped, no Dashboard call. This is checked against the Kubernetes API directly, so it works even when governance isn't licensed (see below).
+2. No matching active `TykRuleset` resources in the namespace → skipped, no Dashboard call. Operator checks this against the Kubernetes API directly, so it works even when governance isn't licensed (see below).
 3. Otherwise, Operator resolves the matching ruleset set locally and evaluates against it.
-Operator always resolves rulesets to explicit ruleset IDs itself; it never asks Dashboard to resolve by category the way the [CI/CD sandbox check](/tyk-governance/cicd-checks) can. This is because `block` only exists inside the `TykRuleset` resource, not on Dashboard's copy of the ruleset (which Operator stores as `warn`), so the set of `TykRuleset` resources in the namespace has to be the source of truth for what actually enforces.
+Operator always resolves rulesets to explicit ruleset IDs itself; it never asks Dashboard to resolve by category the way the [CI/CD sandbox check](/tyk-governance/cicd-checks) can. That's because Dashboard only ever sees `block` rulesets as `warn` (see [Action semantics](#action-semantics)). So the set of `TykRuleset` resources in the namespace has to be the source of truth for what actually enforces.
 
-### Reconciler Behaviour (Visibility)
+### Reconciler Behavior (Visibility)
 The reconciler never blocks or withholds the Dashboard sync based on a governance result; that's the webhook's job. It only ever updates status and emits a Kubernetes Event (`GovernancePreflightPassed` / `Warned` / `Blocked` / `Error`):
 - A `blocked` result does **not** fail the reconcile. The API still syncs to Dashboard, with `status.governancePreflight.status: blocked` recorded for visibility.
 - A transport error or empty response from the evaluation call sets `status: error` and **does** fail the reconcile, which requeues. A cached `error` result is always re-evaluated on the next reconcile rather than trusted.
-- Evaluation is hash-gated: if neither the OAS document nor the matched ruleset set (which resources, their `action`, their rule content) has changed since the last evaluation, no call is made. In steady state, a reconcile that resolves an already-evaluated API makes zero governance calls.
+- Evaluation is hash-gated. Operator skips the call if nothing has changed since the last evaluation. That means the OAS document, and the matched ruleset set: which resources, their `action`, their rule content. In steady state, a reconcile that resolves an already-evaluated API makes zero governance calls.
 - A `TykRuleset` create, update, or delete requeues every `TykOasApiDefinition` in the namespace whose categories intersect it, for a status-only re-evaluation. The API is never re-pushed to Dashboard just because a ruleset changed.
-This also means the reconciler only reacts to `TykRuleset` changes made through Kubernetes. A ruleset edited directly in the Dashboard UI doesn't trigger a re-evaluation of already-synced APIs on its own; see [Best practices](#best-practices).
+This also means the reconciler only reacts to `TykRuleset` changes made through Kubernetes. A ruleset edited directly in the Dashboard UI doesn't trigger a re-evaluation of already-synced APIs on its own.
 
 ### Admission Outcomes
 | Sandbox result | Webhook outcome |
@@ -248,19 +280,19 @@ This also means the reconciler only reacts to `TykRuleset` changes made through 
 
 ### Licensing and Skip Conditions
 Governance is a licensed feature. If your org's license doesn't include the `governance` scope, every governance endpoint, ruleset CRUD and evaluation alike, returns `403 Forbidden`. Operator treats this as a permanent, expected condition rather than an infrastructure failure:
-- A `TykRuleset` whose Create/Update call gets `403` stays in a `Failed` transaction state with no `RulesetID`. In an unlicensed org, namespaces end up with zero working `TykRuleset` resources, so step 2 above (no matching active rulesets) skips evaluation automatically without Operator needing a separate license check.
-- If a `TykRuleset` resource _is_ present and licensed but the evaluation call itself returns `403` (for example, a license change), both the webhook and the reconciler admit/continue and log a warning, recording `status: skipped` rather than treating it as blocked or erroring.
+- A `TykRuleset` whose Create/Update call gets `403` stays in a `Failed` transaction state with no `RulesetID`. In an unlicensed org, namespaces end up with zero working `TykRuleset` resources. So step 2 above (no matching active rulesets) skips evaluation automatically, and Operator never needs a separate license check.
+- Sometimes a `TykRuleset` resource _is_ present and licensed, but the evaluation call itself returns `403`. This can happen after a license change. When that happens, both the webhook and the reconciler admit or continue anyway. They log a warning and record `status: skipped`, not `blocked` or `error`.
 
 ### Failure Policy
-The webhook depends on the evaluation call reaching Tyk Dashboard. `webhooks.governanceFailurePolicy` controls what happens when it can't, and covers two distinct failure points with the same setting: the `kube-apiserver` being unable to reach the webhook pod at all, and the webhook pod being unable to reach Dashboard.
-| Policy | Behaviour |
+The webhook needs its evaluation call to reach Tyk Dashboard. `webhooks.governanceFailurePolicy` controls what happens when it can't. This one setting covers two distinct failure points: the `kube-apiserver` unable to reach the webhook pod, and the webhook pod unable to reach Dashboard.
+| Policy | Behavior |
 | --- | --- |
 | `Ignore` (default) | Webhook or Dashboard unreachable → object admitted. Operator's availability isn't coupled to Dashboard's. |
 | `Fail` | Webhook or Dashboard unreachable → object rejected. For environments that need strict enforcement over availability. |
 A fail-open admission under `Ignore` isn't a silent miss: the reconciler still evaluates on the next reconcile and records the real compliance state in `status.governancePreflight`. The check just didn't block that particular apply.
 
 ### RBAC
-The Operator manager role needs `events: create;patch` in addition to its existing `tykrulesets` read access. Without it, the Kubernetes event recorder used for `GovernancePreflight*` events is rejected by the API server. This is cluster-side RBAC for the Operator's own service account, separate from the Dashboard-side `OperatorContext` token permissions listed under **Before you start**.
+The Operator manager role needs `events: create;patch` in addition to its existing `tykrulesets` read access. Without it, the API server rejects the Kubernetes event recorder used for `GovernancePreflight*` events. This is cluster-side RBAC for the Operator's own service account, separate from the Dashboard-side `OperatorContext` token permissions listed under **Before you start**.
 
 ### Sample Manifests
 Operator ships sample manifests to apply as a starting point:
