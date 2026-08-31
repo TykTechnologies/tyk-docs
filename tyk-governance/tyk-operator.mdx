@@ -272,32 +272,3 @@ Operator ships sample manifests to apply as a starting point:
 | `03-tykoas-ungoverned.yaml` | A `TykOasApiDefinition` with no categories, to show the skip path |
 Remember the apply-order note from above: apply the categorized API before the ruleset that references its category on a fresh org.
 
-## Best Practices
-- **On a fresh org, apply the API before the ruleset that categorizes it.** Dashboard rejects a ruleset's categories if no API carries them yet, so apply `02-tykoas-governed.yaml` before `00-tykruleset-payments-warn.yaml`, not the other way round.
-- **Reserve `action: block`** for namespaces where the webhook is actually enabled. A `block` ruleset in a namespace without the webhook still evaluates and reports through the reconciler, but nothing stops the apply. Don't rely on `block` alone as your enforcement signal without checking `webhooks.enabled`.
-- **Use `ruleset.objRef` with a `Secret`** for anything sensitive, such as internal endpoint names or naming conventions that reveal architecture, rather than `ruleset.raw` or a plain `ConfigMap`, both of which store the body in the clear.
-- **Manage all governance-relevant rulesets through `TykRuleset` resources**, not the Dashboard UI, in a GitOps environment. The reconciler only re-evaluates already-synced APIs when a `TykRuleset` changes _through Kubernetes_. A ruleset edited directly in Dashboard won't trigger that requeue, and affected APIs' status goes stale until their next natural reconcile.
-- **Treat `status: error` and `status: skipped` as different problems.** `error` means the evaluation call failed and the reconcile is retrying, worth investigating if it persists. `skipped` usually just means no categories, no matching ruleset, or no license, and is expected in plenty of namespaces.
-- **Use a dedicated `OperatorContext` token scoped to Governance**, rather than reusing one with broader Dashboard access, the same principle as using a dedicated CI token for the [sandbox check](/tyk-governance/cicd-checks).
-
-## FAQ
-<AccordionGroup>
-<Accordion title="Does enabling governance for my APIs also enable enforcement?">
-No. Categorizing a `TykOasApiDefinition` and having a matching active `TykRuleset` is what makes it _evaluated_. Whether that evaluation can actually stop an apply depends on the admission webhook being enabled (`webhooks.enabled: true`) and at least one matching ruleset having `action: block`. Without the webhook, the same evaluation still runs, and still gets recorded in `status.governancePreflight`, it just never blocks.
-</Accordion>
-<Accordion title="If someone edits a ruleset in Dashboard directly, does that affect APIs I've already applied?">
-Not automatically. The reconciler watches for `TykRuleset` changes made through Kubernetes to know when to re-evaluate already-synced APIs. A change made directly in the Dashboard UI doesn't trigger that; the affected API's status stays as it was until its next reconcile for an unrelated reason.
-</Accordion>
-<Accordion title="If a ruleset change makes an already-synced API non-compliant, does Operator remove it?">
-No. Operator never deletes or modifies a live API in Dashboard based on a compliance result; that would be a destructive, autonomous action on something that may be serving traffic. It updates `status.governancePreflight` and emits a Kubernetes Event so the change is visible. Fixing the API or adjusting the ruleset is a decision for a person to make.
-</Accordion>
-<Accordion title="Do I pass categories or ruleset_ids for Operator, like I do for the CI/CD check?">
-Neither, directly. You set `categories` on the `TykOasApiDefinition` as usual; Operator resolves which `TykRuleset` resources match and evaluates against those specific rulesets itself.
-</Accordion>
-<Accordion title="What happens to TykRuleset resources if governance isn't licensed?">
-They stay in a failed state with no `RulesetID`, since every create/update call to Dashboard's ruleset endpoint returns `403`. Any `TykOasApiDefinition` that would have matched them is treated as having no matching rulesets, and evaluation is skipped.
-</Accordion>
-<Accordion title="Can a TykOasApiDefinition be evaluated against a ruleset that only exists in Dashboard, not as a TykRuleset?">
-No. Operator only enforces and evaluates against rulesets it can see as active `TykRuleset` resources in the same namespace. A ruleset that exists only in Dashboard is invisible to this path, though it's still evaluated normally through the Dashboard save flow and the CI/CD sandbox check.
-</Accordion>
-</AccordionGroup>
