@@ -39,7 +39,7 @@ info:
     name: Mozilla Public License Version 2.0
     url: https://github.com/TykTechnologies/tyk/blob/master/LICENSE.md
   title: Tyk Dashboard API
-  version: 5.13.0
+  version: "5.15"
 servers:
 - url: https://{tenant}
   variables:
@@ -185,6 +185,8 @@ tags:
   name: System
 - description: Notifications for an organisation
   name: Organisation Notifications
+- description: Manage client Identity Providers (IdPs) for API-level JWT authentication.
+  name: Client IdPs
 paths:
   /api/activity/keys/{keyHash}/{startDay}/{startMonth}/{startYear}/{EndDay}/{EndMonth}/{EndYear}:
     get:
@@ -567,6 +569,36 @@ paths:
         required: false
         schema:
           type: string
+      - description: Comma separated list of gateway segment tags to filter APIs by.
+        example: us-east,eu-west
+        in: query
+        name: tags
+        required: false
+        schema:
+          type: string
+      - description: Filter APIs by their governance compliance status.
+        example: compliant
+        in: query
+        name: compliance_status
+        required: false
+        schema:
+          enum:
+          - compliant
+          - non_compliant
+          - in_process
+          - not_evaluated
+          type: string
+      - description: >-
+          When true, the response includes a top-level `stats` object with aggregate
+          governance compliance counts over the full filtered set. Omit or set to false
+          for the standard response (backward compatible). Has no effect when governance
+          is disabled.
+        example: true
+        in: query
+        name: include_stats
+        required: false
+        schema:
+          type: boolean
       - allowEmptyValue: true
         description: For versioned APIs, return only the base versions.If any value
           is sent in this query parameter only the base version will be returned
@@ -4115,7 +4147,18 @@ paths:
         validated against the MCP JSON schema and rejected if it uses any restricted
         middleware (transformRequestMethod, transformResponseBody, urlRewrite,
         internal, cache, validateRequest, mockResponse).
+
+        When `dryRun=true`, the definition is validated and returned without being
+        persisted. When `expand=true` is also supplied for an internal
+        REST-as-MCP proxy target such as `tyk://orders-rest/mcp`, the response
+        includes the full derived `x-tyk-mcp-server.primitives` catalogue with
+        selected tools marked `allow: true` and unselected tools marked
+        `allow: false`. `expand=true` has no effect for remote MCP proxy
+        upstreams.
       operationId: addMCPAPI
+      parameters:
+      - { in: query, name: dryRun, required: false, schema: { type: boolean, default: false }, description: Validate and render the MCP Proxy definition without persisting it. }
+      - { in: query, name: expand, required: false, schema: { type: boolean, default: false }, description: Expand an internal REST-as-MCP proxy response with the full configurable tool catalogue. }
       requestBody:
         required: true
         content:
@@ -4153,8 +4196,13 @@ paths:
           content:
             application/json:
               example: { Status: OK, Message: MCP Proxy definition created, ID: e30bee13ad4248c3b529a4c58bb7be4e }
-              schema: { $ref: '#/components/schemas/ApiResponse' }
-          description: MCP Proxy definition created.
+              schema:
+                oneOf:
+                - { $ref: '#/components/schemas/ApiResponse' }
+                - allOf:
+                  - $ref: '#/components/schemas/OpenAPI3Schema'
+                  - $ref: '#/components/schemas/TykVendorExtension'
+          description: MCP Proxy definition created, or validated dry-run OAS returned.
         "400":
           content:
             application/json:
@@ -4170,8 +4218,15 @@ paths:
     - { in: path, name: apiId, required: true, schema: { type: string }, description: MCP Proxy definition ID. }
     get:
       description: Retrieve a single MCP Proxy definition by its ID. Returns 400 if
-        the ID refers to a definition that is not an MCP Proxy definition.
+        the ID refers to a definition that is not an MCP Proxy definition. When
+        `expand=true` is supplied for an internal REST-as-MCP proxy target, the
+        response includes the full derived `x-tyk-mcp-server.primitives`
+        catalogue with selected and unselected tools marked by `allow`. Normal
+        reads return the stored definition exactly. `expand=true` has no effect
+        for remote MCP proxy upstreams.
       operationId: getMCPAPI
+      parameters:
+      - { in: query, name: expand, required: false, schema: { type: boolean, default: false }, description: Expand an internal REST-as-MCP proxy response with the full configurable tool catalogue. }
       responses:
         "200":
           content:
@@ -10028,6 +10083,1043 @@ paths:
       summary: Search user with email.
       tags:
       - Users
+  /api/evaluations/sandbox:
+    post:
+      summary: Run a sandbox evaluation against saved rulesets and saved APIs.
+      description: >
+        Synchronously evaluate one or more **saved** APIs against a selected
+        set of rulesets and return the violations inline. No persistence.
+        Used by the Ruleset Test Sandbox UI ("Test ruleset" on the ruleset
+        detail screen and the API Governance Tab).
+
+
+        Rulesets are selected via either `ruleset_ids` (explicit) or
+        `categories` (executes every active ruleset whose categories
+        intersect the input) — exactly one of the two. APIs are selected via
+        `api_ids` (required). This endpoint takes references only — to
+        evaluate an API definition submitted in the request (CI/CD file, UI
+        draft), use `POST /api/evaluations/sandbox/oas`. Caps: 10 APIs,
+        20 resolved rulesets, 20 input categories, 1,000 issues per response.
+      operationId: sandboxEvaluation
+      tags:
+        - Evaluations
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SandboxEvaluationRequest'
+            examples:
+              saved-ruleset-saved-api:
+                summary: UI sandbox — saved ruleset, saved API (Governance Tab "Test ruleset")
+                value:
+                  ruleset_ids: ["rs-payments-v1"]
+                  api_ids: ["petstore"]
+              by-category-saved-api:
+                summary: UI sandbox — run all rulesets in a category against this API
+                value:
+                  categories: ["payments", "internal"]
+                  api_ids: ["petstore"]
+      responses:
+        "200":
+          description: >
+            Evaluation completed. The response may include a non-empty `error`
+            string when the engine returned failures for some
+            `(ruleset, api)` pairs while others succeeded; successful pairs'
+            issues are still present in `issues`. An empty `rulesets[]`
+            indicates no rulesets matched (category resolution returned none,
+            or all matching rulesets had a different `resource_type` than the
+            APIs).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxEvaluationResponse'
+        "400":
+          description: >
+            Validation failed: both or neither of `ruleset_ids` /
+            `categories` set, `api_ids` missing or empty, removed `apis`
+            field present (use `/api/evaluations/sandbox/oas`), classic API
+            in set, batch over caps (`MaxSandboxAPIs`, `MaxSandboxRulesets`,
+            `MaxSandboxCategories`), or invalid ruleset definition
+            (whole-call engine transform error).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiResponse'}
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiResponse'}
+        "403":
+          description: Forbidden — governance is disabled at deployment level (license / config feature flag), the user lacks the APIs permission, or (with API ownership enabled) a requested api_id is not owned by the caller. Sandbox evaluations are read-only previews, so `apis:read` is sufficient; `apis:deny` or a permissions map without an `apis` entry is rejected.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiResponse'}
+        "404":
+          description: Any `ruleset_ids` or `api_ids` entry not found within the org.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiResponse'}
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiResponse'}
+
+  /api/evaluations/sandbox/oas:
+    post:
+      summary: Run a sandbox evaluation for one submitted OAS definition.
+      description: >
+        Synchronously evaluate one OpenAPI/Tyk OAS API definition submitted
+        as content — either the raw file as the request body
+        (`--data-binary @openapi.yaml`) or a `{"content": "..."}` JSON
+        envelope. The definition is treated as a transient inline API:
+        no import, no persistence. Used by CI/CD pipelines (API token) and
+        the UI draft-OAS flow (session + CSRF).
+
+
+        Shape detection is deterministic: a JSON body whose top-level object
+        has a `content` key is an envelope (no valid OpenAPI document has
+        one); everything else is a raw document. The envelope's `content`
+        string is parsed as JSON first, then YAML.
+
+
+        Ruleset selection is explicit and bounded: `ruleset_ids`, else
+        `categories`, else `400`. Categories are never derived from the
+        submitted file — OAS documents carry no category linkage (for OAS
+        APIs, categories live on the Dashboard-stored API envelope, not in
+        the definition). There is **no** "run all active rulesets" fallback
+        — CI behavior must not change because an unrelated ruleset became
+        active.
+      operationId: sandboxEvaluationOAS
+      tags:
+        - Evaluations
+      parameters:
+        - in: query
+          name: ruleset_ids
+          required: false
+          schema:
+            type: array
+            maxItems: 20
+            items: {type: string}
+          style: form
+          explode: false
+          description: >
+            Saved ruleset IDs, comma-separated (repeated params also
+            accepted by the handler). When set, overrides category-based
+            resolution. Inactive rulesets are accepted when selected
+            explicitly. Mutually exclusive with `categories`.
+        - in: query
+          name: categories
+          required: false
+          schema:
+            type: array
+            maxItems: 10
+            items: {type: string}
+          style: form
+          explode: false
+          description: >
+            Governance categories, comma-separated (repeated params also
+            accepted by the handler). Resolves to active `oas-api` rulesets.
+            The only category source for this endpoint — the submitted file
+            carries none. Mutually exclusive with `ruleset_ids`.
+        - in: query
+          name: api_id
+          required: false
+          schema: {type: string}
+          description: >
+            Optional transient API ID echoed on response rows and used in
+            issue IDs. Recommended for CI: if omitted, the fallback is
+            `x-tyk-api-gateway.info.id`, then a deterministic hash of the
+            canonicalized parsed document — which changes on every spec
+            edit, churning issue IDs between commits.
+        - in: query
+          name: api_name
+          required: false
+          schema: {type: string}
+          description: >
+            Optional display name for the submitted document (engine-internal
+            identity; response rows identify the API by `api_id` only).
+            Defaults to `x-tyk-api-gateway.info.name`, then `info.title`,
+            then `api_id`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/SandboxContentRequest'
+                - $ref: '#/components/schemas/TykOasApiDefinition'
+            examples:
+              raw-oas-json:
+                summary: Raw mode — checked-in OpenAPI JSON file as the request body
+                value:
+                  openapi: "3.0.3"
+                  info: {title: "Checkout API", version: "1.2.3"}
+                  paths: {}
+              envelope-yaml:
+                summary: Envelope mode — YAML definition wrapped as a JSON string
+                value:
+                  content: "openapi: 3.0.3\ninfo:\n  title: Checkout API\n  version: 1.2.3\npaths: {}\n"
+          application/yaml:
+            schema:
+              $ref: '#/components/schemas/TykOasApiDefinition'
+            examples:
+              raw-oas-yaml:
+                summary: Raw mode — checked-in OpenAPI YAML file as the request body
+                value:
+                  openapi: "3.0.3"
+                  info: {title: "Checkout API", version: "1.2.3"}
+                  paths: {}
+          application/x-yaml:
+            schema:
+              $ref: '#/components/schemas/TykOasApiDefinition'
+      responses:
+        "200":
+          description: >
+            Evaluation completed. `evaluated_apis` is always 1 on this
+            endpoint. The response may include a non-empty `error` string
+            for partial engine failures. CI gates must inspect the body —
+            `truncated == true`, a present `error`, or blocking-severity
+            issues all arrive with HTTP 200.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxEvaluationResponse'
+        "400":
+          description: >
+            Validation failed: empty body, unsupported Content-Type, body
+            not valid JSON/YAML, document not a valid OpenAPI/Tyk OAS
+            definition, envelope `content` missing / not a string /
+            accompanied by other fields, both `ruleset_ids` and `categories`
+            set, no resolvable ruleset scope, over caps
+            (`MaxSandboxRulesets`, `MaxSandboxCategories`), or invalid
+            ruleset definition (whole-call engine transform error).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiResponse'}
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiResponse'}
+        "403":
+          description: Forbidden — governance is disabled at deployment level (license / config feature flag), the user lacks the APIs permission, or (with API ownership enabled) a requested api_id is not owned by the caller. Sandbox evaluations are read-only previews, so `apis:read` is sufficient; `apis:deny` or a permissions map without an `apis` entry is rejected.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiResponse'}
+        "404":
+          description: Any explicit `ruleset_ids` entry not found within the org or soft-deleted.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiResponse'}
+        "413":
+          description: Request body exceeds the Dashboard's max request size.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiResponse'}
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiResponse'}
+
+  /api/rulesets:
+    get:
+      summary: List rulesets.
+      description: >
+        Return a paginated list of rulesets within the caller's org.
+        Supports filtering by `q` (case-insensitive name substring), `active`, `is_template`,
+        `categories`, `resource_type`, and sorting via `sort` (prefix `-` for descending).
+
+        By default, templates (admin-seeded fixtures) are excluded from the response.
+        Pass `?is_template=true` to fetch templates only, or `?is_template=false` to
+        explicitly request non-templates (same as the default).
+      operationId: listRulesets
+      tags:
+        - Rulesets
+      parameters:
+        - in: query
+          name: p
+          schema:
+            type: integer
+          description: Page number. Send -1 to return all results.
+        - in: query
+          name: q
+          schema:
+            type: string
+          description: Case-insensitive substring filter on `name`.
+        - in: query
+          name: active
+          schema:
+            type: boolean
+          description: Filter by active status. Omit to return rulesets regardless of active state.
+        - in: query
+          name: is_template
+          schema:
+            type: boolean
+          description: >
+            Filter by template flag. When omitted, templates are excluded by default.
+            Pass `true` to fetch templates only, or `false` to explicitly request non-templates.
+        - in: query
+          name: categories
+          schema:
+            type: string
+          description: Filter rulesets that contain this category.
+        - in: query
+          name: resource_type
+          schema:
+            type: string
+            enum: [oas-api, mcp-api]
+          description: Filter by resource type. One of `oas-api` or `mcp-api`.
+        - in: query
+          name: sort
+          schema:
+            type: string
+          example: "-last_updated"
+          description: >
+            Sort field; prefix `-` for descending.
+            Sortable fields: `name`, `date_created`, `last_updated`. Default: `-last_updated`.
+            Unknown fields fall back to the default rather than erroring.
+      responses:
+        "200":
+          description: Rulesets fetched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RulesetList'
+        "400":
+          description: Invalid query parameter.
+        "401":
+          description: Unauthorized.
+        "403":
+          description: Forbidden.
+        "500":
+          description: Internal server error.
+    post:
+      summary: Create a ruleset.
+      description: >
+        Create a new ruleset. `name` is required.
+        `action` defaults to `none`, `resource_type` defaults to `oas-api`.
+        Accepts `application/json` or `multipart/form-data` (parts: `metadata`, `ruleset`).
+      operationId: createRuleset
+      tags:
+        - Rulesets
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RulesetRequest'
+            example:
+              name: "OAS API Ruleset"
+              description: "Validates OAS APIs for compliance"
+              active: true
+              resource_type: "oas-api"
+              action: "warn"
+              categories: ["payments", "internal"]
+              definition: '{"rules":{"operation-tag-defined":{"severity":"warn","given":"$.paths.*.*","then":{"function":"enumeration","functionOptions":{"values":["payments","internal"]}}}}}'
+      responses:
+        "201":
+          description: Ruleset created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                Message: ruleset created
+                Meta: "6644b38535715ec496cbef3d"
+                Status: success
+        "400":
+          description: >
+            Validation failed — missing name, missing definition, invalid definition,
+            unknown action or resource_type, or one or more categories not found
+            in the org's API categories (the error message names the unknown values).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+        "403":
+          description: Forbidden — requires write or admin on governance group.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+        "409":
+          description: A ruleset with this name already exists within the org.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/rulesets/{id}:
+    get:
+      summary: Fetch a single ruleset.
+      description: >
+        Look up a ruleset by id within the caller's org.
+        `id` may be either the MongoDB ObjectId hex or the custom `ruleset_id` string —
+        the server tries `ruleset_id` first (so a custom id that happens to be 24 hex
+        characters resolves correctly), and falls back to `_id` only when stage 1 misses.
+        Soft-deleted rulesets and rulesets belonging to other orgs return 404.
+      operationId: getRuleset
+      tags:
+        - Rulesets
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: ObjectId hex or custom ruleset_id.
+      responses:
+        "200":
+          description: Ruleset fetched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RulesetDetail'
+        "401":
+          description: Unauthorized.
+        "403":
+          description: Forbidden.
+        "404":
+          description: Ruleset not found, or not in caller's org.
+        "500":
+          description: Internal server error.
+    put:
+      summary: Update a ruleset.
+      description: >
+        Update an existing ruleset. `RulesetID` is never changed by an update.
+        `action` and `resource_type` fall back to their existing values when omitted.
+        Accepts `application/json` or `multipart/form-data` (individual fields: `name`,
+        `description`, `active`, `action`, `resource_type`, `ruleset_id`, `categories`;
+        optional file field: `ruleset` for the Spectral definition).
+      operationId: updateRuleset
+      tags:
+        - Rulesets
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: ObjectId hex or custom ruleset_id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RulesetRequest'
+            example:
+              name: "OAS API Ruleset"
+              description: "Validates OAS APIs for compliance"
+              active: true
+              resource_type: "oas-api"
+              action: "warn"
+              categories: ["payments", "internal"]
+              definition: '{"rules":{"operation-tag-defined":{"severity":"warn","given":"$.paths.*.*","then":{"function":"enumeration","functionOptions":{"values":["payments","internal"]}}}}}'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RulesetRequest'
+      responses:
+        "200":
+          description: Ruleset updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ruleset'
+        "400":
+          description: >
+            Validation failed — missing name, missing definition, invalid definition,
+            unknown action or resource_type, or one or more categories not found
+            in the org's API categories (the error message names the unknown values).
+        "401":
+          description: Unauthorized.
+        "403":
+          description: Forbidden — requires write or admin on governance group.
+        "404":
+          description: Ruleset not found.
+        "409":
+          description: A ruleset with this name already exists within the org.
+        "500":
+          description: Internal server error.
+    delete:
+      summary: Delete a ruleset.
+      description: >
+        Soft-delete a ruleset. The document is retained in the database with `deleted_at` set.
+        Accepts both MongoDB ObjectId hex and stable `ruleset_id` string in the path.
+        Soft-deleted rulesets are excluded from Get and List.
+      operationId: deleteRuleset
+      tags:
+        - Rulesets
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: ObjectId hex or custom ruleset_id.
+      responses:
+        "200":
+          description: Ruleset deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                Message: ruleset deleted
+                Meta: null
+                Status: success
+        "401":
+          description: Unauthorized.
+        "403":
+          description: Forbidden — requires write or admin on governance group.
+        "404":
+          description: Ruleset not found.
+        "500":
+          description: Internal server error.
+
+  /api/governance/evaluation-details/{apiID}:
+    get:
+      summary: List lint violations for an API.
+      description: >
+        Returns paginated lint violations produced by the async governance evaluator for
+        the given API within the caller's org.
+        Results are sorted by severity (error → warn → info → hint), then by `ruleset_id`.
+        Use `?p=<page>` to paginate; send `-1` to return all results.
+        Optional filters: `ruleset_id` (exact match) and `severity` (one of `error`, `warn`, `info`, `hint`).
+      operationId: listLintViolations
+      tags:
+        - Governance
+      parameters:
+        - in: path
+          name: apiID
+          required: true
+          schema:
+            type: string
+          description: The API ID to fetch violations for.
+        - in: query
+          name: p
+          schema:
+            type: integer
+          description: Page number. Send `-1` to return all results. Defaults to `1`.
+        - in: query
+          name: ruleset_id
+          schema:
+            type: string
+          description: Filter violations to a specific ruleset.
+        - in: query
+          name: severity
+          schema:
+            type: string
+            enum: [error, warn, info, hint]
+          description: Filter violations by severity level.
+      responses:
+        "200":
+          description: Violations fetched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LintViolationList'
+              example:
+                violations:
+                  - _id: "6644b38535715ec496cbef3d"
+                    org_id: "5e4f2c1a3b6d7e8f9a0b1c2d"
+                    api_id: "abc123"
+                    ruleset_id: "my-ruleset"
+                    ruleset_name: "My OAS Ruleset"
+                    rule_id: "operation-tags"
+                    rule_summary: "Operation must have at least one tag"
+                    how_to_fix: "Add a tags field to the operation object"
+                    message: "Operation must have at least one tag"
+                    severity: "warn"
+                    severity_order: 2
+                    path: "paths./pets.get"
+                    location:
+                      start_line: 12
+                      start_char: 4
+                      end_line: 12
+                      end_char: 20
+                    created_at: "2024-05-01T12:00:00Z"
+                pages: 3
+        "400":
+          description: Missing or invalid `apiID`, or a non-numeric `p` page parameter.
+        "401":
+          description: Unauthorized.
+        "403":
+          description: Forbidden.
+        "500":
+          description: Internal server error.
+
+  /api/governance/apis/{apiID}/compliance:
+    get:
+      summary: Get compliance status for an API.
+      description: >
+        Returns the overall governance compliance status for the given API and a per-ruleset
+        breakdown. Each ruleset entry includes the evaluation status, compliance verdict,
+        violation counts, and a compliance level score (0–100).
+        The ruleset name is resolved from tyk_rulesets.
+        Detailed violation lists are served separately by
+        GET /api/governance/evaluation-details/{apiID}.
+        Scoped to the caller's org.
+      operationId: getAPIComplianceStats
+      tags:
+        - Governance
+      parameters:
+        - in: path
+          name: apiID
+          required: true
+          schema:
+            type: string
+          description: The API's api_id.
+      responses:
+        "200":
+          description: Compliance stats fetched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIComplianceResult'
+              example:
+                overall_status: "non_compliant"
+                rulesets:
+                  - ruleset_id: "my-oas-ruleset"
+                    ruleset_name: "OAS API Ruleset"
+                    status: "completed"
+                    compliance: "non_compliant"
+                    evaluated_at: "2026-06-20T10:00:00Z"
+                    error_count: 2
+                    warn_count: 5
+                    info_count: 0
+                    hint_count: 1
+                    compliance_level: 92
+                  - ruleset_id: "security-baseline"
+                    ruleset_name: "Security Baseline"
+                    status: "in_process"
+                    evaluated_at: null
+                    error_count: 0
+                    warn_count: 0
+                    info_count: 0
+                    hint_count: 0
+        "400":
+          description: Missing apiID.
+        "401":
+          description: Unauthorized.
+        "403":
+          description: >
+            Forbidden. Governance is disabled at the deployment level
+            (license / config feature flag), or ownership is enforced and the
+            caller is not an owner of an API that exists within their org.
+        "404":
+          description: >
+            The api_id does not resolve to an API within the caller's org —
+            it does not exist or belongs to a different org.
+        "500":
+          description: Internal server error.
+
+  /api/clientidps:
+    get:
+      summary: List client IdPs.
+      description: >
+        Return a paginated list of client IdPs within the caller's org.
+        Use `?p=<page>` to paginate; send `-1` to return all results.
+      operationId: listClientIdPs
+      tags:
+        - Client IdPs
+      parameters:
+        - in: query
+          name: p
+          schema:
+            type: integer
+          description: Page number. Send -1 to return all results.
+      responses:
+        "200":
+          description: Client IdPs fetched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientIdPList'
+        "401":
+          description: Unauthorized.
+        "403":
+          description: Forbidden.
+        "500":
+          description: Internal server error.
+    post:
+      summary: Create a client IdP.
+      description: >
+        Create a new client IdP. `name` and `jwks_uri` are required.
+        `issuer` is optional. If `client_idp_id` is not supplied it defaults to the record's internal ID hex.
+        `org_id` is set server-side from the session and cannot be overridden.
+      operationId: createClientIdP
+      tags:
+        - Client IdPs
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientIdPRequest'
+            example:
+              name: "My OIDC Provider"
+              issuer: "https://idp.example.com"
+              jwks_uri: "https://idp.example.com/.well-known/jwks.json"
+              api_mappings: {}
+      responses:
+        "201":
+          description: Client IdP created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                Status: success
+                Message: client idp created
+                Meta: "6644b38535715ec496cbef3d"
+        "400":
+          description: Validation failed — `name` or `jwks_uri` missing, or invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+        "403":
+          description: Forbidden.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+        "409":
+          description: A client IdP with this `client_idp_id` already exists within the org.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/clientidps/{id}:
+    get:
+      summary: Fetch a single client IdP.
+      description: >
+        Look up a client IdP by id within the caller's org.
+        `id` may be the internal record ID hex or the custom `client_idp_id` string —
+        the server tries `client_idp_id` first, then falls back to `_id`.
+      operationId: getClientIdP
+      tags:
+        - Client IdPs
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Internal record ID hex or custom client_idp_id.
+      responses:
+        "200":
+          description: Client IdP fetched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientIdP'
+        "401":
+          description: Unauthorized.
+        "403":
+          description: Forbidden.
+        "404":
+          description: Client IdP not found, or not in caller's org.
+        "500":
+          description: Internal server error.
+    put:
+      summary: Replace a client IdP.
+      description: >
+        Full replacement of an existing client IdP. `name` and `jwks_uri` are required.
+        `client_idp_id` is preserved when absent from the request body but can be changed
+        when explicitly provided (mirroring policy `id` behaviour).
+        `_id` and `org_id` are always preserved from the stored document.
+      operationId: updateClientIdP
+      tags:
+        - Client IdPs
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Internal record ID hex or custom client_idp_id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientIdPRequest'
+      responses:
+        "200":
+          description: Client IdP updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientIdP'
+        "400":
+          description: Validation failed — `name` or `jwks_uri` missing, or invalid body.
+        "401":
+          description: Unauthorized.
+        "403":
+          description: Forbidden.
+        "404":
+          description: Client IdP not found.
+        "409":
+          description: A client IdP with this `client_idp_id` already exists within the org.
+        "500":
+          description: Internal server error.
+    delete:
+      summary: Delete a client IdP.
+      description: Hard-delete a client IdP. A subsequent GET returns 404.
+      operationId: deleteClientIdP
+      tags:
+        - Client IdPs
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Internal record ID hex or custom client_idp_id.
+      responses:
+        "200":
+          description: Client IdP deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                Status: success
+                Message: client idp deleted
+                Meta: null
+        "401":
+          description: Unauthorized.
+        "403":
+          description: Forbidden.
+        "404":
+          description: Client IdP not found.
+        "500":
+          description: Internal server error.
+
+  /api/clientidps/{id}/mappings:
+    patch:
+      summary: Bulk merge-patch API mappings.
+      description: >
+        RFC 7386 JSON Merge Patch on the `api_mappings` map.
+        RFC 7386 applies recursively at every nesting level — the same null-to-delete,
+        absent-key-untouched rules hold inside `scope_to_policy` as they do at the `api_id` level.
+        The whole merge is one atomic document write, emitting exactly one
+        `NoticeClientIdPChanged` notification regardless of how many keys are touched.
+
+
+        Remove an entire API mapping (null at the `api_id` level):
+
+        ```json
+        { "8ddd91f3cda9453442c477b06c4e2da4": null }
+        ```
+
+
+        Remove a single scope while leaving the rest of the mapping intact
+        (null at the `scope_to_policy` level):
+
+        ```json
+        { "b84fe1a04e5648927971c0557971565c": { "scope_to_policy": { "read": null } } }
+        ```
+
+
+        Upsert a mapping and delete another in one call:
+
+        ```json
+        {
+          "4c1c0d8fc885401053ddac4e39ef676b": { "scope_to_policy": { "read": "665d51505715ec2d76022c87" } },
+          "8ddd91f3cda9453442c477b06c4e2da4": null
+        }
+        ```
+
+
+        **Important:** to remove a scope key you must send it explicitly as `null`.
+        Omitting a key from the patch body leaves it untouched at every level —
+        there is no way to remove a scope by simply not including it.
+      operationId: patchClientIdPMappings
+      tags:
+        - Client IdPs
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Internal record ID hex or custom client_idp_id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/APIMappingsPatch'
+      responses:
+        "200":
+          description: Mappings merged. Returns the full updated client IdP document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientIdP'
+        "400":
+          description: Invalid body.
+        "401":
+          description: Unauthorized.
+        "403":
+          description: Forbidden.
+        "404":
+          description: Client IdP not found.
+        "500":
+          description: Internal server error.
+
+  /api/clientidps/{id}/mappings/{apiId}:
+    get:
+      summary: Get a single API mapping.
+      description: Returns the scope mapping for the given API within the client IdP.
+      operationId: getClientIdPMapping
+      tags:
+        - Client IdPs
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Internal record ID hex or custom client_idp_id.
+        - in: path
+          name: apiId
+          required: true
+          schema:
+            type: string
+          description: The API id.
+      responses:
+        "200":
+          description: Mapping fetched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScopeMapping'
+        "401":
+          description: Unauthorized.
+        "403":
+          description: Forbidden.
+        "404":
+          description: Client IdP not found, or no mapping for this API.
+        "500":
+          description: Internal server error.
+    put:
+      summary: Upsert an API mapping.
+      description: Creates or replaces the scope mapping for the given API within the client IdP.
+      operationId: upsertClientIdPMapping
+      tags:
+        - Client IdPs
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Internal record ID hex or custom client_idp_id.
+        - in: path
+          name: apiId
+          required: true
+          schema:
+            type: string
+          description: The API id to upsert.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScopeMapping'
+            example:
+              scope_to_policy:
+                read: "665d51505715ec2d76022c87"
+                write: "5e4f2c1a3b6d7e8f9a0b1c2d"
+      responses:
+        "200":
+          description: Mapping upserted. Returns the full updated client IdP document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientIdP'
+        "400":
+          description: Invalid body.
+        "401":
+          description: Unauthorized.
+        "403":
+          description: Forbidden.
+        "404":
+          description: Client IdP not found.
+        "500":
+          description: Internal server error.
+    delete:
+      summary: Delete an API mapping.
+      description: >
+        Removes the scope mapping for the given API. Other mappings on the same IdP are
+        untouched. Returns 404 if the client IdP is not found.
+      operationId: deleteClientIdPMapping
+      tags:
+        - Client IdPs
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Internal record ID hex or custom client_idp_id.
+        - in: path
+          name: apiId
+          required: true
+          schema:
+            type: string
+          description: The API id to remove.
+      responses:
+        "200":
+          description: Mapping deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                Status: success
+                Message: client idp mapping deleted
+                Meta: null
+        "401":
+          description: Unauthorized.
+        "403":
+          description: Forbidden.
+        "404":
+          description: Client IdP or mapping not found.
+        "500":
+          description: Internal server error.
+
   /api/audit-logs:
     get:
       description: Retrieve audit logs from database
@@ -10293,6 +11385,18 @@ paths:
                     cert_id: 683d6e6a954737af2aa8e5c20d545f3211d5a53684114dc8b3ebb2503edf6fabf2e5812425be2fa108f3fb4d
                     expiry_date: 2025-08-31T08:41:53Z
                     days_remaining: 17
+                - id: 7c1e5a2b-91f3-44c8-8f2a-64c1de9a5f01
+                  created_at: 2025-08-13T11:16:12.194968+02:00
+                  org_id: 683d6e6a954737af2aa8e5c2
+                  hash: '9931265912947126831'
+                  kind: critical
+                  topic: governance.compliance
+                  title: Governance compliance failure
+                  message: API petstore fails governance ruleset rs-secure-access
+                  data:
+                    api_id: petstore
+                    ruleset_id: rs-secure-access
+                    status: failure
               schema:
                 type: array
                 items:
@@ -11256,6 +12360,15 @@ components:
           $ref: '#/components/schemas/ApiModel'
         categories:
           $ref: '#/components/schemas/Categories'
+        compliance_status:
+          description: Governance compliance status derived from evaluation results.
+            Omitted when the governance feature is not enabled or no evaluations have run.
+          enum:
+          - compliant
+          - non_compliant
+          - in_process
+          - not_evaluated
+          type: string
         created_at:
           format: date-time
           nullable: true
@@ -11298,6 +12411,23 @@ components:
           nullable: true
           type: array
         pages:
+          type: integer
+        stats:
+          $ref: '#/components/schemas/OrgComplianceStats'
+      type: object
+    OrgComplianceStats:
+      description: Aggregate governance compliance counts over the full filtered API set.
+        Present only when include_stats=true and governance is enabled.
+      properties:
+        total_apis:
+          type: integer
+        compliant:
+          type: integer
+        non_compliant:
+          type: integer
+        unassessed:
+          type: integer
+        total_issues:
           type: integer
       type: object
     ApiImportByUrlPayload:
@@ -11773,6 +12903,17 @@ components:
           type: string
         days_remaining:
           type: integer
+      type: object
+      x-go-package: github.com/TykTechnologies/tyk-analytics/dashboard/repository/notification
+    GovernanceComplianceData:
+      properties:
+        api_id:
+          type: string
+        ruleset_id:
+          type: string
+        status:
+          type: string
+          enum: [ "failure" ]
       type: object
       x-go-package: github.com/TykTechnologies/tyk-analytics/dashboard/repository/notification
     CertificateList:
@@ -13461,7 +14602,7 @@ components:
           enum: [ "critical", "warning" ]
         topic:
           type: string
-          enum: [ "certificate.expiry" ]
+          enum: [ "certificate.expiry", "governance.compliance" ]
         title:
           type: string
         message:
@@ -13469,6 +14610,7 @@ components:
         data:
           oneOf:
             - $ref: "#/components/schemas/CertificateExpiryData"
+            - $ref: "#/components/schemas/GovernanceComplianceData"
       type: object
       x-go-package: github.com/TykTechnologies/tyk-analytics/dashboard/model
     PathItem:
@@ -14890,6 +16032,13 @@ components:
         global_size_limit:
           format: int64
           type: integer
+        global_size_limit_disabled:
+          type: boolean
+        global_enforce_timeout:
+          type: string
+          example: "5s"
+        global_enforce_timeout_disabled:
+          type: boolean
         ignore_endpoint_case:
           type: boolean
         name:
@@ -15206,6 +16355,570 @@ components:
         abortedOnFailure:
           description: reports whether migration process aborted on first failure
           type: boolean
+    RulesetRequest:
+      type: object
+      required:
+        - name
+        - definition
+      properties:
+        name:
+          type: string
+        ruleset_id:
+          type: string
+          description: >
+            Optional stable identifier. If not provided, defaults to the record's internal ID hex.
+            Must be unique within the org. Never changed after creation.
+        description:
+          type: string
+        active:
+          type: boolean
+        resource_type:
+          type: string
+          enum: [oas-api, mcp-api]
+        action:
+          type: string
+          enum: [none, warn]
+        categories:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: >
+            Optional list of category names to associate with this ruleset.
+            Each value must match an existing org API category
+            (as returned by GET /apis/categories); matching is case-insensitive.
+            Unknown values are rejected with 400.
+            Entries are sanitized before validation and storage: surrounding
+            whitespace is trimmed, empty entries are dropped, and
+            case-insensitive duplicates are removed (first occurrence wins).
+          example: ["payments", "internal"]
+        definition:
+          type: string
+          description: Full Spectral ruleset definition stored as a JSON string.
+
+    Ruleset:
+      type: object
+      properties:
+        _id:
+          type: string
+        ruleset_id:
+          type: string
+          description: Stable migration identifier. Same value across environments.
+        org_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        active:
+          type: boolean
+        resource_type:
+          type: string
+        action:
+          type: string
+        categories:
+          type: array
+          nullable: true
+          items:
+            type: string
+        owner:
+          type: string
+          description: ID of the user who created the ruleset. Set server-side from the session; cannot be supplied by the caller.
+        definition:
+          type: string
+          description: Full Spectral ruleset definition stored as a JSON string.
+        is_template:
+          type: boolean
+        date_created:
+          type: string
+          format: date-time
+        last_updated:
+          type: string
+          format: date-time
+
+    AppliedRule:
+      type: object
+      description: >
+        A single rule that will fire when this ruleset is evaluated against an API.
+        Rules are resolved from the definition's `extends` directives and inline overrides
+        at read time — they are never stored.
+      properties:
+        id:
+          type: string
+          description: Rule identifier.
+          example: operation-operationId
+        description:
+          type: string
+          description: Human-readable description of what the rule checks.
+        message:
+          type: string
+          description: Message shown when the rule fails.
+        severity:
+          type: string
+          enum: [error, warn, info, hint]
+          example: warn
+        type:
+          type: string
+          enum: [style, validation]
+        recommended:
+          type: boolean
+          description: Whether this rule is in the recommended subset.
+        how_to_fix:
+          type: string
+          description: Guidance on how to resolve a violation.
+
+    RulesetDetail:
+      allOf:
+        - $ref: '#/components/schemas/Ruleset'
+        - type: object
+          properties:
+            applied_rules:
+              type: array
+              description: >
+                Full list of rules that would fire when this ruleset is evaluated,
+                after resolving any `extends` directives.
+                Computed at read time, never persisted. Empty when resolution fails.
+              items:
+                $ref: '#/components/schemas/AppliedRule'
+
+    RulesetList:
+      type: object
+      properties:
+        rulesets:
+          type: array
+          items:
+            $ref: '#/components/schemas/Ruleset'
+        pages:
+          type: integer
+
+    LintViolationLocation:
+      type: object
+      description: Source position of the violation in the OAS document.
+      properties:
+        start_line:
+          type: integer
+        start_char:
+          type: integer
+        end_line:
+          type: integer
+        end_char:
+          type: integer
+
+    LintViolation:
+      type: object
+      description: A single rule violation produced by one governance evaluation run.
+      properties:
+        _id:
+          type: string
+          description: >
+            Row identifier. Persisted violations carry a MongoDB ObjectId hex;
+            sandbox evaluations persist nothing, so their rows carry a
+            deterministic 16-hex content hash instead (stable across re-runs
+            of identical inputs).
+        org_id:
+          type: string
+        api_id:
+          type: string
+        ruleset_id:
+          type: string
+        ruleset_name:
+          type: string
+          description: Human-readable ruleset name resolved from tyk_rulesets. Omitted when the referenced ruleset no longer exists (e.g. it was deleted while an evaluation was in flight); sandbox evaluation responses always include it.
+        rule_id:
+          type: string
+          description: Spectral rule name that fired.
+        rule_summary:
+          type: string
+          description: Short human-readable description of the rule.
+        how_to_fix:
+          type: string
+          description: Remediation guidance for this rule.
+        message:
+          type: string
+          description: Violation message produced by the rule engine.
+        severity:
+          type: string
+          enum: [error, warn, info, hint]
+        severity_order:
+          type: integer
+          description: Numeric sort key (1=error, 2=warn, 3=info, 4=hint).
+        path:
+          type: string
+          description: Dot-joined JSON path to the violating node (e.g. `paths./pets.get`).
+        location:
+          $ref: '#/components/schemas/LintViolationLocation'
+        created_at:
+          type: string
+          format: date-time
+
+    APIComplianceResult:
+      type: object
+      description: >
+        Governance compliance summary for one API. Returned by
+        GET /api/governance/apis/{apiID}/compliance.
+      properties:
+        overall_status:
+          type: string
+          enum: [compliant, non_compliant, in_process, not_evaluated]
+          description: >
+            compliant = all completed rulesets have zero errors.
+            non_compliant = at least one completed ruleset has error_count > 0.
+            in_process = no failing completed ruleset, but at least one evaluation is still running.
+            not_evaluated = no records exist, or all evaluations failed.
+        rulesets:
+          type: array
+          items:
+            $ref: '#/components/schemas/RulesetComplianceEntry'
+
+    RulesetComplianceEntry:
+      type: object
+      description: Per-ruleset compliance entry within an APIComplianceResult.
+      properties:
+        ruleset_id:
+          type: string
+        ruleset_name:
+          type: string
+          description: Human-readable name resolved from tyk_rulesets.
+        status:
+          type: string
+          enum: [in_process, completed, failed]
+        compliance:
+          type: string
+          enum: [compliant, non_compliant]
+          description: Only present when status is "completed".
+        evaluated_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null when status is in_process.
+        error_count:
+          type: integer
+          description: Violations at severity=error. error_count > 0 means non-compliant.
+        warn_count:
+          type: integer
+        info_count:
+          type: integer
+        hint_count:
+          type: integer
+        compliance_level:
+          type: integer
+          minimum: 0
+          maximum: 100
+          nullable: true
+          description: >
+            Integer 0–100. Present only when status is "completed" and the ruleset has
+            applied rules. Formula: (applied_rules_count - unique_violated_rules)
+            / applied_rules_count × 100.
+
+    LintViolationList:
+      type: object
+      properties:
+        violations:
+          type: array
+          items:
+            $ref: '#/components/schemas/LintViolation'
+        pages:
+          type: integer
+          description: Total number of pages at the current page size. 0 when all results are returned.
+
+    ScopeMapping:
+      type: object
+      description: Scope-to-policy mapping for a single API.
+      properties:
+        scope_to_policy:
+          type: object
+          description: Map of scope name → policy ID.
+          additionalProperties:
+            type: string
+          example:
+            read: "665d51505715ec2d76022c87"
+            write: "5e4f2c1a3b6d7e8f9a0b1c2d"
+
+    ClientIdPRequest:
+      type: object
+      required:
+        - name
+        - jwks_uri
+      properties:
+        client_idp_id:
+          type: string
+          description: >
+            Optional stable identifier. If not provided, defaults to the record's internal ID hex.
+            Must be unique within the org.
+        name:
+          type: string
+          description: Human-readable name. Required.
+        issuer:
+          type: string
+          description: Issuer URL. Optional — used as a selection hint downstream; an empty value is accepted.
+        jwks_uri:
+          type: string
+          description: JWKS endpoint URL. Required — this is the IdP's signing-key source with no discovery fallback.
+        scope_claim_name:
+          type: string
+          description: >
+            JWT claim that holds the OAuth scopes (e.g. `scope`, `scp`, `roles`). Optional — when empty
+            the gateway falls back to the `scope` claim.
+        api_mappings:
+          type: object
+          description: Map of api_id → `ScopeMapping`. Defaults to an empty map if not provided.
+          additionalProperties:
+            $ref: '#/components/schemas/ScopeMapping'
+          example:
+            b84fe1a04e5648927971c0557971565c:
+              scope_to_policy:
+                read: "665d51505715ec2d76022c87"
+
+    ClientIdP:
+      type: object
+      description: A client Identity Provider stored beside API definitions.
+      properties:
+        _id:
+          type: string
+          description: Internal record ID hex. Set server-side on creation.
+        client_idp_id:
+          type: string
+          description: Stable user-facing identifier. Defaults to `_id` hex when not supplied on create.
+        org_id:
+          type: string
+          description: Organisation ID. Set server-side from the session; cannot be overridden.
+        name:
+          type: string
+        issuer:
+          type: string
+        jwks_uri:
+          type: string
+        scope_claim_name:
+          type: string
+          description: JWT claim holding the OAuth scopes (e.g. `scope`, `scp`, `roles`). Empty falls back to `scope` gateway-side.
+        api_mappings:
+          type: object
+          description: Map of api_id → `ScopeMapping`.
+          additionalProperties:
+            $ref: '#/components/schemas/ScopeMapping'
+          example:
+            b84fe1a04e5648927971c0557971565c:
+              scope_to_policy:
+                read: "665d51505715ec2d76022c87"
+        date_created:
+          type: string
+          format: date-time
+        last_updated:
+          type: string
+          format: date-time
+
+    ClientIdPList:
+      type: object
+      properties:
+        client_idps:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClientIdP'
+        pages:
+          type: integer
+
+    ScopeMappingPatch:
+      type: object
+      description: >
+        Patch shape for a single API's scope mapping.
+        `scope_to_policy` is a free-form JSON object so that individual scope keys
+        can be set to `null` (to remove them) as per RFC 7386 merge-patch semantics.
+      properties:
+        scope_to_policy:
+          type: object
+          description: >
+            Map of scope name → policy ID. Set a key to `null` to remove that scope;
+            omit a key to leave it untouched.
+
+    APIMappingsPatch:
+      type: object
+      description: >
+        RFC 7386 JSON Merge Patch body for `PATCH /api/clientidps/{id}/mappings`.
+        Each key is an `api_id`. A `ScopeMappingPatch` value upserts that mapping;
+        a `null` value deletes the entire mapping for that `api_id`.
+        Keys absent from the body are left untouched at every nesting level —
+        this includes individual scope keys inside `scope_to_policy`.
+        To remove a single scope, set it to `null` inside `scope_to_policy`;
+        omitting it has no effect.
+      additionalProperties:
+        type: object
+        nullable: true
+        allOf:
+          - $ref: '#/components/schemas/ScopeMappingPatch'
+      example:
+        4c1c0d8fc885401053ddac4e39ef676b:
+          scope_to_policy:
+            read: "665d51505715ec2d76022c87"
+            write: null
+
+    SandboxContentRequest:
+      type: object
+      required: [content]
+      additionalProperties: false
+      description: >
+        Envelope transport for `POST /api/evaluations/sandbox/oas`. Carries
+        the API definition as a string and nothing else — evaluation
+        metadata (`ruleset_ids`, `categories`, `api_id`, `api_name`) stays
+        in query params. Extra fields are rejected with 400.
+      properties:
+        content:
+          type: string
+          description: >
+            The OpenAPI/Tyk OAS definition as a string — JSON or YAML,
+            auto-detected (JSON parse attempted first, then YAML). Same
+            accepted document shape as raw-body mode.
+
+    TykOasApiDefinition:
+      type: object
+      additionalProperties: true
+      required: [openapi]
+      properties:
+        openapi:
+          type: string
+          description: OpenAPI version declaration, e.g. `3.0.3`.
+      description: >
+        An OpenAPI 3.x document, optionally carrying the
+        `x-tyk-api-gateway` vendor extension — the same body shape accepted
+        by `POST /api/apis/oas` and returned by `GET /api/apis/oas/{apiId}`.
+        The required top-level `openapi` field mirrors the server's own
+        validation and discriminates this schema from the content envelope
+        in `oneOf` unions. Otherwise kept permissive so the merged
+        `swagger.yml` carries no external URL refs; the server validates
+        against the canonical Tyk OAS schema (`apidef/oas/schema/3.0.json`
+        in TykTechnologies/tyk).
+
+    SandboxEvaluationRequest:
+      type: object
+      required: [api_ids]
+      description: >
+        Sandbox evaluation request — saved resources only. **Exactly one**
+        of `ruleset_ids` / `categories` must be provided (non-empty).
+        To evaluate an API definition submitted in the request body, use
+        `POST /api/evaluations/sandbox/oas` instead.
+      properties:
+        ruleset_ids:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: {type: string}
+          description: >
+            Stable RulesetIDs of saved rulesets in the caller's org.
+            Soft-deleted rulesets are rejected. Inactive rulesets are
+            accepted — sandbox semantics are "test this ruleset",
+            regardless of whether it's currently driving the async
+            dispatcher.
+        categories:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items: {type: string}
+          description: >
+            Category names. Server resolves to every **active**,
+            non-deleted ruleset whose `categories` intersect this list,
+            scoped to the `resource_type` of each resolved API. Use this
+            for the "run an entire compliance category against this API"
+            workflow.
+        api_ids:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items: {type: string}
+          description: APIIDs of saved APIs in the caller's org. Classic (non-OAS) APIs are rejected.
+      example:
+        ruleset_ids: ["rs-payments-v1"]
+        api_ids: ["petstore"]
+
+    SandboxEvaluationResponse:
+      type: object
+      required: [rulesets, issues, total, truncated, evaluated_apis, elapsed_ms, error_count, warn_count, info_count, hint_count]
+      properties:
+        rulesets:
+          type: array
+          items: {$ref: '#/components/schemas/SandboxRulesetSummary'}
+          description: >
+            Rulesets actually executed in this run. Single-ruleset callers
+            see one entry; category-based callers see the resolved set.
+            Each entry carries the ruleset's configured `action` and its
+            per-ruleset severity counts. Empty array means no rulesets
+            matched the request (category input with no intersection, or
+            the only matches had a different `resource_type` than the APIs).
+        issues:
+          type: array
+          items: {$ref: '#/components/schemas/LintViolation'}
+          description: >
+            Per-rule violations across all evaluated APIs, sorted by
+            severity then location. Capped at `MaxSandboxIssues` (1000)
+            — see `truncated`. Shared row schema with `/api/governance/issues`.
+        total:
+          type: integer
+          description: Un-truncated issue count produced by the engine.
+        truncated:
+          type: boolean
+          description: >
+            True when `total > MaxSandboxIssues` and `issues` was capped.
+            FE renders a banner; CI/CD pipelines should treat this as a
+            failure since the build is being gated against partial data.
+        error_count:
+          type: integer
+          description: >
+            Run-wide count of severity-0 (error) issues, computed
+            pre-truncation — trustworthy even when `issues` is capped.
+            Count field names and severity mapping match the persisted
+            `ApiGovernanceResult` summaries (tyk_governance_api_summaries).
+        warn_count:
+          type: integer
+          description: Run-wide severity-1 (warn) issue count, pre-truncation.
+        info_count:
+          type: integer
+          description: Run-wide severity-2 (info) issue count, pre-truncation.
+        hint_count:
+          type: integer
+          description: Run-wide severity-3 (hint) issue count, pre-truncation.
+        evaluated_apis:
+          type: integer
+          description: >
+            Number of APIs the engine actually applied rules against.
+            Always 1 for `/sandbox/oas`.
+        elapsed_ms:
+          type: integer
+          format: int64
+          description: Wall-clock duration of `engine.Evaluate`, in milliseconds.
+        error:
+          type: string
+          description: >
+            Joined error string when the engine returned failures for some
+            `(ruleset, api)` pairs (per `errors.Join` from the mechanism
+            story). Absent on full success. Per-pair attribution is
+            deferred — see ticket.
+
+    SandboxRulesetSummary:
+      type: object
+      required: [id, name, resource_type, active, action, error_count, warn_count, info_count, hint_count]
+      description: >
+        Echo + rollup of one ruleset actually used in the run. Counts are
+        computed pre-truncation from this ruleset's issues across all
+        successfully evaluated pairs — trustworthy even when `issues` is
+        capped. A ruleset whose evaluation errored shows zero counts
+        alongside a non-null response `error`; gates must check `error`
+        first.
+      properties:
+        id:            {type: string, description: "Stable RulesetID."}
+        name:          {type: string}
+        resource_type: {type: string, enum: [oas-api, mcp-api]}
+        active:        {type: boolean, description: "Whether the ruleset is currently active. FE shows an 'inactive' hint when `false`."}
+        action:
+          type: string
+          enum: [none, warn]
+          description: >
+            Verbatim echo of the ruleset's configured action (ruleset CRUD
+            enum — new values appear here without a sandbox schema change).
+            Lets clients gate on "did a ruleset whose action matters produce
+            violations" without scanning `issues`.
+        error_count:   {type: integer, description: "Error-severity issues from this ruleset, pre-truncation."}
+        warn_count:    {type: integer, description: "Warn-severity issues from this ruleset, pre-truncation."}
+        info_count:    {type: integer, description: "Info-severity issues from this ruleset, pre-truncation."}
+        hint_count:    {type: integer, description: "Hint-severity issues from this ruleset, pre-truncation."}
+
   securitySchemes:
     bearerAuth:
       description: The Tyk Dashboard API Access Credentials
