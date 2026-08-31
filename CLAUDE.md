@@ -90,3 +90,20 @@ Apply these rules to all content in this repository.
 
 - When suggesting diagrams, include a comment block with instructions for the designer covering: purpose, structure, key visual elements, and design notes.
 - Use `{/* ... */}` comment syntax in MDX files for diagram placeholders.
+
+---
+
+## STE100 Style Check
+
+This repo has tooling to check content against ASD-STE100 Simplified Technical English (short sentences, active voice, imperative procedure steps). It targets the same failure modes AI-generated prose tends to produce.
+
+- `ste.yaml` (repo root) is the project config. It disables the dictionary-based rules (`approved-words`, `approved-form`, `abbreviation`, `punctuation`, `numbers`) because ASD-STE100's ~1,000-word aviation-maintenance dictionary doesn't cover general API vocabulary or Tyk product names. Only the style rules run: `sentence-length`, `passive-voice`, `ing-form`, `procedure-step`, `modal-verb`, `one-instruction`, `paragraph-length`, `noun-cluster`.
+- `scripts/ste_check.py` is the wrapper. It diffs a branch against a base ref (default `origin/main`), strips YAML frontmatter/imports/JSX lines before checking (those aren't prose), and shells out to the `ste` CLI. Install the CLI with `go install github.com/probelabs/ste/cmd/ste@latest`.
+  - `python3 scripts/ste_check.py` — check the current branch's diff before opening a PR.
+  - `python3 scripts/ste_check.py path/to/file.mdx` — check a specific file directly, no git diff involved.
+- `.github/workflows/ste100-check.yml` runs this as an advisory (non-blocking) PR comment on any PR touching `.mdx`/`.md` files. It does not gate merging. Not present on `production` (separate workflow/scripts set, no auto-sync from `main`).
+
+Known false positives and rule limitations. Don't try to fix these by rewording; they're accepted residuals:
+- `procedure-step` flags ordinary software verbs (`Configure`, `Restart`, `Create`, `Login`, `Import`, `Bind`, `Serve`, and similar) as "not an approved imperative verb". This is ASD-STE100's closed aviation-maintenance verb list; there's no config escape hatch (confirmed: adding a verb to `technical_names` does not suppress it). Only treat a `procedure-step` finding as real when the step doesn't open with a verb at all (for example it starts with "The", "This", "You", "If", "It").
+- `ing-form` sometimes flags nouns that merely end in "-ing" as if they were gerunds, for example "string" (as in "connection string"), "signing" (as in "signing key"), "Operating" (as in "Operating System"). These are real compound technical terms, not verb forms, leave them as is.
+- Short list items that read as fragments or labels (matching the Lists rule above, such as `- Your **Organization Name**`) can still trip `sentence-length`/`procedure-step` because the parser merges adjacent short lines into one pseudo-sentence. Treat these as accepted residuals rather than rewriting the list.
