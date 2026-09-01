@@ -139,6 +139,263 @@ The **Filter Edit View** enables administrators to create or modify filters usin
 
 ---
 
+#### **Script Templates**
+
+A **Load Template** dropdown sits above the script editor. Use it to start a new filter from a ready-made script instead of an empty one. If the editor already contains a script, AI Studio asks for confirmation before it replaces the content.
+
+The available templates depend on the **Is this a Response Filter?** checkbox:
+
+| Filter Type | Template | Description |
+| :--- | :--- | :--- |
+| Request | PII Redaction | Redact emails, phone numbers, and SSNs using regex patterns |
+| Response | Response Guardrails (Pattern Matching) | Block harmful content and policy violations using patterns |
+| Response | Response Guardrails (LLM Check) | Use an LLM to validate response safety and compliance |
+
+#### **PII Redaction (Request Filter)**
+
+Redacts email addresses, phone numbers, and US Social Security Numbers from the request payload, then allows the request to continue. Each redaction step re-parses the payload before it applies the next pattern. The filter also logs a `pii_redacted` [compliance event](#compliance-event-reporting) that summarizes what it redacted.
+
+```tengo
+// Comprehensive PII Redaction Filter
+// This script redacts multiple types of personally identifiable information
+
+tyk := import("tyk")
+
+// Step 1: Redact email addresses
+step1 := tyk.redact_pattern(
+    input,
+    "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}",
+    "[EMAIL]"
+)
+
+// Step 2: Parse the result and redact phone numbers
+json := import("json")
+parsed := json.decode(step1)
+
+// Extract messages from the modified payload
+temp_messages := []
+if !is_error(parsed) && parsed.messages {
+    for msg in parsed.messages {
+        temp_messages = append(temp_messages, msg)
+    }
+}
+
+// Build temp input for second redaction
+temp_input := {
+    raw_input: step1,
+    messages: temp_messages,
+    vendor_name: input.vendor_name,
+    model_name: input.model_name,
+    is_chat: input.is_chat,
+    context: input.context
+}
+
+// Step 2: Redact phone numbers
+step2 := tyk.redact_pattern(
+    temp_input,
+    "\\(?\\d{3}\\)?[\\s.-]?\\d{3}[\\s.-]?\\d{4}",
+    "[PHONE]"
+)
+
+// Step 3: Redact SSN (Social Security Numbers)
+parsed2 := json.decode(step2)
+temp_messages2 := []
+if !is_error(parsed2) && parsed2.messages {
+    for msg in parsed2.messages {
+        temp_messages2 = append(temp_messages2, msg)
+    }
+}
+
+temp_input2 := {
+    raw_input: step2,
+    messages: temp_messages2,
+    vendor_name: input.vendor_name,
+    model_name: input.model_name,
+    is_chat: input.is_chat,
+    context: input.context
+}
+
+final_payload := tyk.redact_pattern(
+    temp_input2,
+    "\\d{3}-\\d{2}-\\d{4}",
+    "[SSN]"
+)
+
+output := {
+    block: false,
+    payload: final_payload,
+    message: "PII redacted",
+    compliance_events: [
+        {
+            event_type: "pii_redacted",
+            severity: "warning",
+            description: "Email, phone, and SSN patterns redacted",
+            metadata: { "redacted_types": ["email", "phone", "ssn"] }
+        }
+    ]
+}
+```
+
+#### **Response Guardrails (Pattern Matching)**
+
+A [response filter](#response-filters) that blocks LLM responses with forbidden phrases, such as refund promises, harmful instructions, or unauthorized commitments. It works for both streaming and non-streaming responses. For a streaming buffer, it waits until it has 150 characters of context before it evaluates.
+
+```tengo
+// Response Filter: Pattern-Based Guardrails
+// This filter blocks responses containing harmful or policy-violating content
+
+text := import("text")
+
+// Get response text (works for both streaming and non-streaming)
+response_text := ""
+if input.is_chunk {
+    response_text = input.current_buffer
+} else {
+    response_text = input.raw_input
+}
+
+// For streaming: wait for sufficient context before evaluation
+min_evaluation_length := 150
+
+// Default output
+output := {
+    block: false,
+    message: ""
+}
+
+// Define patterns to block
+blocked_patterns := [
+    // Refund promises
+    "will refund",
+    "issue a refund",
+    "provide a refund",
+    "get a refund",
+    "refund you",
+
+    // Harmful content
+    "instructions for making",
+    "how to build a weapon",
+    "steps to create explosives",
+    "how to hack",
+    "bypass security",
+
+    // Commitments
+    "I promise to",
+    "I guarantee",
+    "definitely will happen"
+]
+
+// Only evaluate if we have enough context
+if !input.is_chunk || len(response_text) >= min_evaluation_length {
+    // Check for blocked patterns
+    is_blocked := false
+    detected_pattern := ""
+
+    for pattern in blocked_patterns {
+        if text.contains(text.to_lower(response_text), pattern) {
+            is_blocked = true
+            detected_pattern = pattern
+            break
+        }
+    }
+
+    compliance_events_list := []
+    if detected_pattern != "" {
+        compliance_events_list = [
+            {
+                event_type: "harmful_content_detected",
+                severity: is_blocked ? "critical" : "warning",
+                description: "Detected pattern: '" + detected_pattern + "'",
+                metadata: { "matched_pattern": detected_pattern, "blocked": is_blocked ? "true" : "false" }
+            }
+        ]
+    }
+
+    output = {
+        block: is_blocked,
+        message: is_blocked ? "Response blocked: Contains forbidden phrase '" + detected_pattern + "'" : "",
+        compliance_events: compliance_events_list
+    }
+}
+```
+
+#### **Response Guardrails (LLM Check)**
+
+A [response filter](#response-filters) that sends the response to a second, fast LLM and asks it to judge policy compliance, instead of matching fixed phrases. It waits for 200 characters of streaming context before it evaluates.
+
+<Note>
+This template calls `tyk.llm(1, settings, policy_check_prompt)`. The `1` is a placeholder LLM ID. Change it to your policy-checker LLM's ID before you save the filter. Otherwise the script calls whichever LLM has ID `1` in your AI Studio instance.
+</Note>
+
+```tengo
+// Response Filter: LLM-Based Policy Check
+// This filter uses another LLM to analyze responses for policy violations
+
+tyk := import("tyk")
+text := import("text")
+
+// Get response text
+response_text := ""
+if input.is_chunk {
+    response_text = input.current_buffer
+} else {
+    response_text = input.raw_input
+}
+
+// For streaming: only evaluate once buffer reaches minimum size
+min_buffer_size := 200
+
+// Default output
+output := {
+    block: false,
+    message: ""
+}
+
+// Only evaluate if we have enough context
+if !input.is_chunk || len(response_text) >= min_buffer_size {
+    // Use a fast, cheap LLM to check for policy violations
+    // Configure the LLM call with minimal tokens for fast response
+    settings := {
+        model_name: "gpt-3.5-turbo",
+        temperature: 0.0,
+        max_tokens: 10,
+        system_prompt: "You are a content policy checker. Respond ONLY with 'yes' or 'no'."
+    }
+
+    // Craft a policy check prompt
+    policy_check_prompt := `Does this text promise a refund, commit to a specific action, or violate customer service policies?
+
+Text: ` + response_text
+
+    // Call the policy checker LLM (LLM ID 1 - adjust as needed)
+    policy_result := tyk.llm(1, settings, policy_check_prompt)
+
+    // Check if LLM detected a violation
+    violates_policy := text.contains(text.to_lower(policy_result), "yes")
+
+    compliance_events_list := []
+    if violates_policy {
+        compliance_events_list = [
+            {
+                event_type: "policy_violation_detected",
+                severity: "critical",
+                description: "LLM policy checker flagged response as violating policy"
+            }
+        ]
+    }
+
+    output = {
+        block: violates_policy,
+        message: violates_policy ? "Response blocked: LLM detected policy violation" : "",
+        compliance_events: compliance_events_list
+    }
+}
+```
+
+Templates are a starting point. Edit the script after you load a template to match your own regex patterns, blocked phrases, or LLM ID.
+
+---
+
 #### **New Unified Script API**
 
 Modern filters use a unified API that provides rich context and supports both blocking and modification:
@@ -377,6 +634,45 @@ if input.is_chat {
 app_id := input.context.app_id
 user_id := input.context.user_id
 ```
+
+---
+
+#### **Testing Filter Scripts**
+
+A collapsible **Test Script** panel sits below the script editor on the Add/Edit Filter form. Use it to run the current script against sample input and check the output, without saving the filter first.
+
+<Note>
+Testing a filter script, like creating or updating one, requires Tyk AI Studio Enterprise edition. On Community edition, the test request returns an "Enterprise Feature" error.
+</Note>
+
+Expand the panel, fill in the fields, and click **Test Script**. The fields map directly onto the [script input object](#new-unified-script-api) described earlier on this page:
+
+| Field | Maps To | Description |
+| :--- | :--- | :--- |
+| Raw Input | `raw_input` | Sample request or response text, depending on the filter type. |
+| Vendor | `vendor_name` | LLM provider: OpenAI, Anthropic, Google AI, or Azure OpenAI. |
+| Model Name | `model_name` | Model identifier, for example `gpt-4` or `claude-3-opus`. |
+| Is Response | `is_response` | Marks the input as response-side. Pre-selected when **Is this a Response Filter?** is checked on the form. |
+| Is Chat | `is_chat` | Marks the input as a chat session context rather than a direct proxy call. |
+| Is Chunk (Streaming) | `is_chunk` | Simulates a streaming chunk. Selecting it reveals three more fields. |
+| Chunk Index | `chunk_index` | Chunk number, shown only when Is Chunk is selected. |
+| Status Code | `status_code` | HTTP status code from the LLM, shown only when Is Chunk is selected. |
+| Current Buffer | `current_buffer` | Accumulated response text so far, shown only when Is Chunk is selected. |
+| Context (JSON) | `context` | Free-form JSON object, for example `{"app_id": 1, "user_id": 5}`. |
+
+<Note>
+The test panel always sends an empty `messages` array. If your script reads `input.messages`, it sees no messages during a test even though Raw Input has a value. Test message-array logic by pasting a full JSON payload into Raw Input and inspecting it in your script instead.
+</Note>
+
+AI Studio runs the script in a sandbox with a 5 second timeout. If the script does not finish in time, the panel reports "Script execution timed out after 5 seconds" instead of hanging the request. On success, the panel shows the resulting `output` object: `block`, `payload`, `message`, and `messages` when the script sets it. On failure, it shows the Tengo runtime error.
+
+Under the hood, the panel calls:
+
+```
+POST /api/v1/filters/test
+```
+
+with a body of `{"script": "<tengo script>", "input": {<script input object>}}`, and an admin session or API token. You can call this endpoint directly, for example from a CI pipeline. Use it to validate a filter script before you create or update the filter through the API.
 
 ---
 
