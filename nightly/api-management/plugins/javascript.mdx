@@ -9,21 +9,35 @@ canonical: "https://tyk.io/docs/api-management/plugins/javascript"
 
 There are three middleware components that can be scripted with Tyk:
 
-1. **Custom JavaScript plugins**: These execute either *pre* or *post* validation. A *pre* middleware component will execute before any session validation or token validation has taken place, while a *post* middleware component will execute after the request has been passed through all checks and is ready to be proxied upstream.
+1. **Custom JavaScript plugins**: these execute at any of Tyk's standard plugin hooks - pre, authentication, post-authentication, post, and response. See [Plugin Types](/nightly/api-management/plugins/plugin-types) for what each hook is for.
 
-2. **Dynamic event handlers**: These components fire on certain API events (see the event handlers section), these are fired Async and do not have a cooldown timer. These are documented [here](/nightly/api-management/gateway-events#set-up-a-webhook-event-handler-in-the-tyk-oas-api-definition).
+2. **Dynamic event handlers**: these components fire on certain API events (see the event handlers section), these are fired Async and do not have a cooldown timer. These are documented [here](/nightly/api-management/gateway-events#set-up-a-webhook-event-handler-in-the-tyk-oas-api-definition). Event handlers always run on Tyk's original `otto` engine, regardless of which [driver](/nightly/#choosing-a-javascript-engine) an API's plugins use.
 
-3. **Virtual endpoints**: These are powerful programmable middleware invoked towards the end of the request processing chain. Unlike the custom JavaScript plugins, the virtual endpoint terminates the request. These are documented [here](/nightly/api-management/traffic-transformation/virtual-endpoints).
+3. **Virtual endpoints**: These are powerful programmable middleware invoked towards the end of the request processing chain. Unlike the custom JavaScript plugins, the virtual endpoint terminates the request. These support either JavaScript [driver](/nightly/#choosing-a-javascript-engine). These are documented [here](/nightly/api-management/traffic-transformation/virtual-endpoints).
 
 The JavaScript (JS) [scripting guide](/nightly/api-management/plugins/javascript#using-javascript-with-tyk) provides details of how to access dynamic data (such as the key session object) from your JS functions. Combining these resources provides you with a powerful set of tools for shaping and structuring inbound traffic to your API.
 
-### Declared plugin functions
+### Choosing a JavaScript Engine
 
-JavaScript functions are available globally in the same namespace. So, if you include two or more JSVM plugins that call the same function, the last declared plugin implementation of the function will be returned.
+Tyk Gateway can run your JavaScript custom plugins on either of two engines, selected using the `driver` field alongside your plugin configuration. For custom plugins, `driver` has no implicit default - it must be set explicitly to one of:
+
+| `driver` value | Engine |
+|---|---|
+| `otto` | Tyk's original ECMAScript 5.1 interpreter. |
+| `javascript` (recommended) | A modern JavaScript engine, added in **Tyk 5.15.0**, with significantly faster execution and startup, and support for JS syntax beyond ES5.1. |
+
+<Note>
+[Virtual endpoints](/nightly/api-management/traffic-transformation/virtual-endpoints) are the one exception: they run on `otto` even if `driver` is left unset, unless you explicitly set `driver` to `javascript`.
+</Note>
+
+Everything else in this guide - the `request`/`session`/`config` objects, the JavaScript API functions - works the same regardless of which engine you choose, with two exceptions that are only available when using `javascript`:
+
+- [Inline plugin code](/nightly/#inline-plugin-code), embedded directly in the API definition instead of a file path.
+- The [atomic storage bindings](/nightly/#atomic-storage-bindings) (`TykStorage*` functions).
+
+We recommend `javascript` for new plugins. Existing APIs that already set `driver` to `otto` are unaffected.
 
 ### Enabling the JavaScript Virtual Machine (JSVM)
-
-The JavaScript Virtual Machine (JSVM) provided in the Gateway is a traditional ECMAScript5 compatible environment.
 
 Before you can use JavaScript customization in any component you will need to enable the JSVM.
 
@@ -47,6 +61,14 @@ We've provided the following guides:
 Tyk's JavaScript Virtual Machine (JSVM) provides a serverless compute function that allows for the execution of custom logic directly within the gateway itself. This can be accessed from [multiple locations](/nightly/api-management/plugins/javascript#) in the API processing chain and allows significant customization and optimization of your request handling.
 
 In this guide we will cover the features and resources available to you when creating custom functions, highlighting where there are limitations for the different middleware stages.
+
+### Naming Plugin Functions
+
+Whether two plugins on the same API can reuse the same function name depends on which driver you use.
+
+When using the `javascript` driver, each plugin - whether loaded from a file, a bundle, or [inline code](/nightly/#inline-plugin-code) - is compiled in its own isolated scope, and Tyk tracks it under a unique internal alias rather than its declared name. This means multiple plugins on the same API can all declare `var handler = new TykJS.TykMiddleware.NewMiddleware({})` (or any other name) without one overwriting another.
+
+When using the legacy `otto` driver, this isolation doesn't exist: every loaded plugin shares one global JavaScript namespace, keyed by the name it declares. If two or more plugins declare the same name, only the last one loaded survives - the earlier ones are silently overwritten. Give each `otto` plugin a distinct name to avoid this.
 
 ### Scripting basics
 
@@ -128,11 +150,11 @@ The `request` object provides a set of arrays that describe the API request. The
 
 The structure of the `request` object is:
 
-```typesecript
+```typescript
 class ReturnOverrides {
   ResponseCode: number = 200;
   ResponseBody: string = "";
-  ResponseHeaders: string[] = [];
+  ResponseHeaders: { [key: string]: string } = {};
 }
 
 class Request {
@@ -206,7 +228,7 @@ testJSVMData.NewProcessRequest(function(request, session, config) {
   if (someCondition) {
       request.ReturnOverrides.ResponseCode = 403;
       request.ReturnOverrides.ResponseBody = "Access Denied";
-      request.ReturnOverrides.headers = {"X-Error": "the-condition"};
+      request.ReturnOverrides.ResponseHeaders = {"X-Error": "the-condition"};
       // This stops the request from proceeding to the upstream
   }
     return testJSVMData.ReturnData(request, session.meta_data);
@@ -347,7 +369,11 @@ When working with Tyk Classic APIs, you simply add the attributes in the `config
 
 #### Underscore.js Library
 
-In addition to our Tyk JavaScript API functions, you also have access to all the functions from the [underscore](http://underscorejs.org) library.
+<Note>
+Available only with the `otto` driver - see [Choosing a JavaScript Engine](/nightly/#choosing-a-javascript-engine). The `javascript` driver does not bundle underscore.js: a plugin that calls `_.map`, `_.template`, or any other underscore function works on `otto` and fails on `javascript`, since `_` is undefined.
+</Note>
+
+In addition to our Tyk JavaScript API functions, `otto` plugins also have access to all the functions from the [underscore](http://underscorejs.org) library, auto-loaded as the global `_`.
 
 Underscore.js is a JavaScript library that provides a lot of useful functional programming helpers without extending any built-in objects. Underscore provides over 100 functions that support your favorite functional helpers:
 
@@ -459,6 +485,29 @@ To work with the key session object, two functions are provided: `TykGetKeyData`
   ```
 
 All of these methods are described in functional examples in the Tyk `middleware/` and `event_handlers/` folders.
+
+### Atomic Storage Bindings
+
+<Note>
+Available only with the `javascript` driver - see [Choosing a JavaScript Engine](/nightly/#choosing-a-javascript-engine).
+</Note>
+
+Plugins can read and write directly to Tyk's Redis-backed storage using a small set of atomic operations - useful for coordinating state across requests (for example, idempotency keys, distributed locks, or simple counters) without standing up your own storage layer. These always use the Gateway's main [`storage`](/nightly/tyk-configuration-reference/redis-cluster-sentinel) connection - if you've configured a separate `cache_storage` or `analytics_storage` connection, these bindings don't use it.
+
+- `TykStorageGet(key)`: returns the value stored at `key`, or `null` if it doesn't exist.
+- `TykStorageSet(key, value, ttlSeconds)`: stores `value` at `key`. Set `ttlSeconds` to `0` for no expiry.
+- `TykStorageSetNX(key, value, ttlSeconds)`: stores `value` at `key` only if it doesn't already exist, returning `true` if the write happened or `false` if the key was already set. Use this for locks and idempotency checks.
+- `TykStorageDel(key)`: deletes `key`.
+- `TykStorageTTL(key)`: returns the remaining time-to-live of `key` in seconds, `-1` if it has no expiry, or `-2` if it doesn't exist.
+- `TykStorageIncr(key, ttlSeconds)`: atomically increments `key` and returns the new value **as a string** (to avoid precision loss past 2^53 in JavaScript's number type). `ttlSeconds` only applies the first time the key is created.
+
+Every key is automatically prefixed with `jsvm-store:` before it reaches Redis, so plugins can't read or write Tyk's own internal keys (such as API keys, quotas, or rate limit counters) by name collision.
+
+Keys are limited to 256 bytes and values to 64KB; each operation has a 2 second timeout. Exceeding either limit, or a timeout, raises an error rather than failing silently. Failures (for example, a Redis outage) are thrown as JavaScript exceptions rather than returned as `false`, so wrap calls in `try`/`catch` if you don't want a storage error to fail the request.
+
+<Warning>
+These operations use a single, shared Redis keyspace - there's no per-plugin or per-API isolation beyond the key names you choose. Atomicity guarantees such as `TykStorageSetNX`'s and `TykStorageIncr`'s also apply only per Redis instance: in deployments where Gateway nodes use separate Redis instances (common in Hybrid deployments), guarantees like idempotency or replay protection hold per node, not globally. For a global guarantee, all Gateway nodes must share a single Redis deployment - the same consistency model as Tyk's rate limiting.
+</Warning>
 
 ## Installing Middleware on Tyk Self-Managed
 
@@ -599,6 +648,59 @@ As you can see, the parameters are all dynamic, so you will need to ensure that 
 - `post[].path`: The path to the middleware component, this will be loaded into the JSVM when the API is initialised. This means that if you reload an API configuration, the middleware will also be re-loaded. You can hot-swap middleware on reload with no service interruption.
 
 - `post[].require_session`: Defaults to `false`, if you require access to the session object, it will be supplied as a `session` variable to your middleware processor function.
+
+## Inline Plugin Code
+
+<Note>
+Available only with the `javascript` driver - see [Choosing a JavaScript Engine](/nightly/#choosing-a-javascript-engine).
+</Note>
+
+As an alternative to a file path or bundle, a plugin's JavaScript source can be embedded directly in the API definition using the `code` field. This is useful for developing and testing a plugin directly from the API Designer, without needing to host a file or build a bundle first.
+
+<Warning>
+Inline code only works with the `javascript` driver, which must be set explicitly. If `code` is set while `driver` is `otto`, or not set at all, the plugin loads nothing - `path` is skipped because `code` is present, but only the `javascript` engine actually reads `code`. No error is raised. If you need `otto`, use a file path or bundle instead.
+</Warning>
+
+Set `code` to the base64-encoded source of your plugin, alongside the same `name` (Tyk Classic) or `functionName` (Tyk OAS) and hook configuration you would otherwise use with `path`. If both `path` and `code` are set, `code` takes precedence and `path` is not loaded.
+
+<Note>
+Inline `code` is base64-encoded, not encrypted - anyone with read access to the API definition can decode and read the plugin source in seconds. Don't embed secrets in plugin source, and remember to rebuild and re-encode after any change - Tyk runs stale code without complaint.
+</Note>
+
+**Tyk OAS example** (`prePlugins`):
+
+```json
+"x-tyk-api-gateway": {
+  "middleware": {
+    "global": {
+      "pluginConfig": {
+        "driver": "javascript"
+      },
+      "prePlugins": [
+        {
+          "enabled": true,
+          "functionName": "pre_plugin",
+          "code": "<base64-encoded JavaScript source>"
+        }
+      ]
+    }
+  }
+}
+```
+
+**Tyk Classic example** (`custom_middleware.pre`):
+
+```json
+"custom_middleware": {
+  "driver": "javascript",
+  "pre": [
+    {
+      "name": "pre_plugin",
+      "code": "<base64-encoded JavaScript source>"
+    }
+  ]
+}
+```
 
 ## WAF (OSS) ModSecurity Plugin example
 

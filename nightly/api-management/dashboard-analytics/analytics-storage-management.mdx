@@ -8,7 +8,7 @@ canonical: "https://tyk.io/docs/api-management/dashboard-analytics/analytics-sto
 
 ## Overview
 
-Tyk Pump writes two different kinds of data to the Control Plane's persistent storage, from which it's used by Tyk Dashboard's Traffic Analytics and Log Browser, and they behave very differently when it comes to storage growth.
+Tyk Pump writes two different kinds of data to the Control Plane's [persistent database](/nightly/api-management/persistent-database), from which it's used by Tyk Dashboard's Traffic Analytics and Log Browser, and they behave very differently when it comes to storage growth.
 
 - **Traffic logs** are one record per request, stored close to verbatim, so they grow unbounded: proportional to request volume, with no built-in limit.
 - **Aggregated analytics**, computed by the Aggregate pumps, roll traffic logs up into per-hour (or per-minute) buckets by dimensions such as API and key, so their size is bounded by the number of tracked endpoints and time buckets rather than by request volume; they stay small even at high traffic.
@@ -20,7 +20,7 @@ As a guideline, every 3 million requests generates roughly 1GB of traffic log da
 This creates two different problems, not one:
 
 - **Persistent storage** accumulates every record you don't evict, so it needs active management over time, covered below.
-- **Redis** is different: Tyk Pump continuously reads and purges these records, so the analytics buffer doesn't grow indefinitely under normal operation. Its risk is one of throughput instead: a high request rate, or Tyk Pump falling behind, can spike Redis memory and compete with the request path for resources. See [Separate Analytics Storage](/nightly/planning-for-production/database-settings#separate-analytics-storage) for information on isolating analytics traffic onto its own Redis instance.
+- **Redis** is different: Tyk Pump continuously reads and purges these records, so the analytics buffer doesn't grow indefinitely under normal operation. Its risk is one of throughput instead: a high request rate, or Tyk Pump falling behind, can spike Redis memory and compete with the request path for resources. See [Separate Analytics Storage](/nightly/api-management/in-memory-database#separate-analytics-storage) for information on isolating analytics traffic onto its own Redis instance.
 
 ## Managing Analytics Storage
 
@@ -84,9 +84,7 @@ db.runCommand({"convertToCapped": "z_tyk_analyticz_<org-id>", size: 100000});
 
 As an alternative to capping by size, you can configure MongoDB to delete documents automatically based on a TTL (Time To Live) index. A TTL index can be any date field in a document - once that field's value is in the past, the document will be deleted. This runs in the background, not instantly: MongoDB sweeps for expired documents roughly once a minute.
 
-<Note>
-Unlike capped collections, Tyk never creates a TTL index for you, even on a brand-new collection. It's always a manual step, and you need to repeat it for every collection this applies to (each Organisation's collection, if you're using the Per-Organisation Mongo Pump).
-</Note>
+Whether Tyk creates one automatically for you depends on the pump type. The [Aggregate pump](/nightly/api-management/dashboard-analytics/control-plane-pumps#mongo-aggregate-pump) and the [Per-Organisation Mongo Pump](/nightly/api-management/dashboard-analytics/control-plane-pumps#per-organisation-mongo-pump) both create one automatically on any brand-new collection, the same way they create their other indexes. The [Standard Mongo Pump](/nightly/api-management/dashboard-analytics/control-plane-pumps#standard-mongo-pump) doesn't create one automatically. You must create it manually on `tyk_analytics`.
 
 <Note>
 If `tyk_analytics` is already a capped collection, MongoDB won't create the TTL index, and you'll see errors in the MongoDB logs. See the [MongoDB TTL documentation](https://docs.mongodb.com/manual/tutorial/expire-data/) for details.
@@ -99,7 +97,7 @@ Azure CosmosDB (`mongo_db_type: 2`) does not support the `expireAt` TTL index; T
 The traffic log contains two fields that can be used for the TTL index:
 
 - `timestamp` which is set with the current time when the log record is created
-- `expireAt` which Tyk Gateway calculates based on a retention period set in the Organisation Key; if no retention period is configured, it defaults to 100 years from creation, so the record effectively never expires via this index
+- `expireAt` which Tyk Gateway calculates based on a retention period set in the Organisation Key; if no retention period is configured, it defaults to 100 years from creation, so the record effectively never expires via this index. This is the field the automatic TTL index mentioned above uses.
 
 **Creating the TTL Index**
 
@@ -150,26 +148,21 @@ Traffic logs generated for this Organisation will be retained in MongoDB for 24 
 
 ### SQL
 
-Unlike MongoDB, the SQL pumps (PostgreSQL and MySQL) have no capped-collection or TTL-index equivalent: there's no built-in way to have Tyk Pump automatically evict old rows. The closest tool is table sharding, which doesn't cap anything by itself, but makes it practical to manage size yourself by dropping old dated tables instead of running slow `DELETE` queries against one huge table.
+Unlike MongoDB, SQL has no capped-collection or TTL-index equivalent: there's no built-in way to have Tyk Pump automatically evict old rows. The closest tool is table sharding, which doesn't cap anything by itself, but makes it practical to manage size yourself by dropping old dated tables instead of running slow `DELETE` queries against one huge table. See [Table Sharding](/nightly/tyk-configuration-reference/sql#table-sharding) for how it works, including the schema-migration behavior and its performance trade-offs.
 
-#### Table Sharding
+Enable it in `pump.conf`:
 
-By default, every SQL pump type stores all its records in one table, which becomes slow to query or prune as it grows. Setting `table_sharding: true` switches to one table per day instead, using the pump's table name as a prefix, for example `tyk_analytics_20230327`.
+```json expandable highlight={6}
+{
+  "pumps": {
+    "sql": {
+      "type": "sql",
+      "meta": {
+        "table_sharding": true
+      }
+    }
+  }
+}
+```
 
-You must ensure that the equivalent `table_sharding` configuration for each relevant section of Tyk Dashboard's `storage` configuration (`main`, `analytics`, `logs`, `uptime`) matches.
-
-**Maintaining Consistency**
-
-When Tyk Pump starts, it checks its sharded tables against the current data model (traffic log schema) and adds any missing columns, for example following an update that adds to the schema; it never drops or renames existing columns.
-
-When using table sharding, by default it only updates the schema for the current day's table, leaving older dated tables exactly as they were when created. Setting `migrate_sharded_tables: true` automatically scans the database for every table matching this pump's prefix on startup, updating the schema for any that are out of date. If a table fails to migrate, Tyk Pump logs a warning and continues.
-
-<Warning>
-This scan-and-update runs on every Pump restart, not just once, and it touches every table matching this pump's prefix.
-
-In a deployment with months or years of daily-sharded tables, that can mean scanning and potentially altering hundreds or thousands of tables. Startup can take a long time, and Tyk Pump won't begin processing analytics again until it completes.
-
-The sustained read and write load this puts on the database can also affect other services sharing it, not just Tyk Pump's own performance.
-
-Only enable `migrate_sharded_tables` when you actually need it, such as the first restart after a Tyk Pump upgrade that changed the schema, then turn it back off.
-</Warning>
+Keep `table_sharding` consistent between Tyk Pump (or Tyk MDCB) and Tyk Dashboard's corresponding `storage.<category>` block - see the warning on the linked page for what goes wrong if they don't match.

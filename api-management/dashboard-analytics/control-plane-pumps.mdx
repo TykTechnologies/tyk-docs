@@ -8,11 +8,11 @@ canonical: "https://tyk.io/docs/api-management/dashboard-analytics/control-plane
 
 ## Introduction
 
-This page covers the [Tyk Pump types](/api-management/tyk-pump#pump-type-catalog) that write traffic logs and aggregated analytics into Tyk Dashboard's persistent storage (MongoDB or SQL): the pumps that ultimately feed Tyk Dashboard's Log Browser and Traffic Analytics screens.
+This page covers the [Tyk Pump types](/api-management/tyk-pump#pump-type-catalog) that write traffic logs and aggregated analytics into Tyk Dashboard's [persistent database](/api-management/persistent-database): the pumps that ultimately feed Tyk Dashboard's Log Browser and Traffic Analytics screens.
 
 How you deploy these pumps depends on your deployment topology:
 
-- In a combined control and data plane, such as the `tyk-stack` chart, you configure them directly: Tyk Pump already has access to both Redis and the persistent storage.
+- In a combined control and data plane, such as the `tyk-stack` chart, you configure them directly: Tyk Pump already has access to both Redis and the persistent database.
 - In a distributed deployment, with separate control and data planes connected via Tyk MDCB, these same pump types are instead configured as the Control Plane Pump, running on the control plane, which receives data forwarded by the Hybrid Pump on each data plane. See [Data Plane Pump](/api-management/dashboard-analytics/data-plane-pump) for that mechanism.
 
 For an explanation of how traffic logging works in general, including detailed recording and aggregation, see the [Dashboard Analytics overview](/api-management/dashboard-analytics).
@@ -28,7 +28,7 @@ Tyk Pump implements separate pump types for MongoDB and SQL because of how diffe
 
 The pump type that you should deploy depends on which Tyk Dashboard feature you want to populate and the protocol (REST, GraphQL, MCP) the traffic logs come from.
 
-For Tyk Dashboard's Traffic Analytics screens (Traffic Analytics graphs, Activity by Graph, Activity by MCP):
+For Tyk Dashboard's Traffic Analytics screens (Traffic Analytics graphs, Activity by Graph, Activity by MCP), data is written to the [Aggregate Analytics](/api-management/persistent-database#aggregate-analytics) category in the database using:
 
 | Protocol | MongoDB | SQL |
 | :-- | :-- | :-- |
@@ -36,7 +36,7 @@ For Tyk Dashboard's Traffic Analytics screens (Traffic Analytics graphs, Activit
 | GraphQL | not available | [`sql-graph-aggregate`](#sql-graphql-aggregate-pump) (PostgreSQL only) |
 | MCP | [`mongo-mcp-aggregate`](#mongo-mcp-aggregate-pump) | [`sql-mcp-aggregate`](#sql-mcp-aggregate-pump) |
 
-For Tyk Dashboard's Log Browser:
+For Tyk Dashboard's Log Browser, data is written to the [Logs](/api-management/persistent-database#traffic-logs) category in the database using:
 
 | Protocol | MongoDB | SQL |
 | :-- | :-- | :-- |
@@ -44,11 +44,11 @@ For Tyk Dashboard's Log Browser:
 | GraphQL | not available | not available |
 | MCP | not available | not available |
 
-For your own downstream querying:
+For your own downstream querying, REST traffic reuses the same [Logs](/api-management/persistent-database#traffic-logs) category storage as the Log Browser above. GraphQL and MCP traffic instead write to their own dedicated collections or tables, which Tyk Dashboard never reads - typically pointed at the same database instance by convention, but not part of any category Tyk Dashboard itself recognizes:
 
 | Protocol | MongoDB | SQL |
 | :-- | :-- | :-- |
-| REST | already covered by [`mongo`](#standard-mongo-pump)/[`mongo-pump-selective`](#per-organisation-mongo-pump) above | already covered by [`sql`](#standard-sql-pump) above |
+| REST | [`mongo`](#standard-mongo-pump)/[`mongo-pump-selective`](#per-organisation-mongo-pump) | [`sql`](#standard-sql-pump) |
 | GraphQL | [`mongo-graph`](#mongo-graphql-pump) | [`sql-graph`](#sql-graphql-pump) |
 | MCP | [`mongo-mcp`](#mongo-mcp-pump) | [`sql-mcp`](#sql-mcp-pump) |
 
@@ -328,7 +328,7 @@ Tyk Pump offers SQL pump types for REST, MCP proxy and GraphQL traffic. All shar
 The pumps are declared and configured as described in the [Tyk Pump configuration guide](/api-management/tyk-pump#declaring-pumps). Each pump to be deployed has its own entry in that configuration and has both [common](/api-management/tyk-pump#common-pump-settings) and specific configuration options. The specific config is held in the `meta` object - some of this is common, some is dependent on the specific pump as outlined in the following sections.
 
 <Note>
-Tyk no longer supports SQLite as of Tyk 5.7.0. Transition to [PostgreSQL](/planning-for-production/database-settings#postgresql), [MongoDB](/planning-for-production/database-settings#mongodb), or a listed compatible alternative.
+Tyk no longer supports SQLite as of Tyk 5.7.0. Transition to [PostgreSQL](/tyk-configuration-reference/sql), [MongoDB](/tyk-configuration-reference/mongodb), or a listed compatible alternative.
 </Note>
 
 ### Common SQL Meta
@@ -345,10 +345,10 @@ Every SQL pump type on this page accepts these fields in `meta`, in addition to 
 | `mysql.dont_support_rename_index` | `false` | Drops and recreates an index instead of renaming it; needed before MySQL 5.7, or on MariaDB. |
 | `mysql.dont_support_rename_column` | `false` | Uses `CHANGE` instead of `RENAME COLUMN`; needed before MySQL 8, or on MariaDB. |
 | `mysql.skip_initialize_with_version` | `false` | Skips auto-configuring behavior based on the connected MySQL version. |
-| `table_sharding` | `false` | If `true`, records are stored in one table per day instead of a single table. See [Table Sharding](/api-management/dashboard-analytics/analytics-storage-management#table-sharding). |
+| `table_sharding` | `false` | If `true`, records are stored in one table per day instead of a single table. See [Table Sharding](/tyk-configuration-reference/sql#table-sharding). |
 | `log_level` | `silent` | SQL log verbosity: `debug`, `info`, or `warning`. Any other value, including `error`, is treated as `silent` (no query logging). |
 | `batch_size` | `1000` | Maximum records written per batch. |
-| `migrate_sharded_tables` | `false` | See [Table Sharding](/api-management/dashboard-analytics/analytics-storage-management#table-sharding). |
+| `migrate_sharded_tables` | `false` | See [Table Sharding](/tyk-configuration-reference/sql#table-sharding). |
 
 ### Standard SQL Pump
 
@@ -458,7 +458,7 @@ In addition to the [common pump settings](/api-management/tyk-pump#common-pump-s
 }
 ```
 
-Accepts the same `track_all_paths`, `ignore_tag_prefix_list`, `store_analytics_per_minute`, and `omit_index_creation` fields as the [SQL Aggregate Pump](#sql-aggregate-pump) above. The table name is fixed at `tyk_graph_aggregated`; there's no `table_name` override, though [table sharding](/api-management/dashboard-analytics/analytics-storage-management#table-sharding) still applies, storing per-day tables such as `tyk_graph_aggregated_20230327`.
+Accepts the same `track_all_paths`, `ignore_tag_prefix_list`, `store_analytics_per_minute`, and `omit_index_creation` fields as the [SQL Aggregate Pump](#sql-aggregate-pump) above. The table name is fixed at `tyk_graph_aggregated`; there's no `table_name` override, though [table sharding](/tyk-configuration-reference/sql#table-sharding) still applies, storing per-day tables such as `tyk_graph_aggregated_20230327`.
 
 **Tyk Dashboard Setting:** powers the **Activity by Graph** screen (Popularity by Graph API, Errors by Graph API, All Graph APIs). Tyk Dashboard's Postgres storage driver queries this pump's table directly; there's no separate Dashboard config flag to enable it, and it's PostgreSQL-only.
 
@@ -513,6 +513,6 @@ In addition to the [common pump settings](/api-management/tyk-pump#common-pump-s
 }
 ```
 
-Accepts the same `track_all_paths`, `ignore_tag_prefix_list`, `store_analytics_per_minute`, and `omit_index_creation` fields as the [SQL Aggregate Pump](#sql-aggregate-pump) above. The table name is fixed at `tyk_mcp_aggregated`; there's no `table_name` override, though [table sharding](/api-management/dashboard-analytics/analytics-storage-management#table-sharding) still applies, storing per-day tables such as `tyk_mcp_aggregated_20230327`.
+Accepts the same `track_all_paths`, `ignore_tag_prefix_list`, `store_analytics_per_minute`, and `omit_index_creation` fields as the [SQL Aggregate Pump](#sql-aggregate-pump) above. The table name is fixed at `tyk_mcp_aggregated`; there's no `table_name` override, though [table sharding](/tyk-configuration-reference/sql#table-sharding) still applies, storing per-day tables such as `tyk_mcp_aggregated_20230327`.
 
 **Tyk Dashboard Setting:** this pump supplies the **Activity by MCP** screen. [enable_aggregate_lookups: true](/tyk-dashboard/configuration#enable_aggregate_lookups) is required in the Tyk Dashboard configuration, not just recommended: unlike the REST case, there's no working [live fallback](/api-management/dashboard-analytics#pre-computed-vs-live-aggregation) if it's left `false`, since that fallback has no MCP-specific logic and queries the plain REST traffic log table, returning nothing useful. See [MCP Analytics](/ai-management/mcp-gateway/mcp-analytics) for the Dashboard side of this feature.

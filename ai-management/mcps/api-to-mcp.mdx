@@ -1,239 +1,97 @@
 ---
-title: "Natural-language interaction with your APIs (API to MCP)"
-description: "Enable AI assistants to safely and dynamically interact with your existing APIs using Tyk's API to MCP tooling."
-keywords: "AI MCP, API-to-MCP, Tyk AI MCP"
-sidebarTitle: "API to MCP"
+title: "REST API to MCP"
+sidebarTitle: "REST API to MCP"
+description: "Generate an MCP proxy directly from a Tyk-managed REST API's OpenAPI specification in Tyk Gateway, without building or hosting a separate MCP server."
+keywords: "MCP, Model Context Protocol, API to MCP, REST API, OpenAPI, MCP proxy, x-tyk-mcp-server, tool catalog, Tyk OAS API, Enterprise Edition"
 canonical: "https://tyk.io/docs/ai-management/mcps/api-to-mcp"
 ---
 
-## Overview
+## Availability
 
-**API to MCP** enables AI assistants to safely and dynamically interact with your existing APIs. It allows non-technical users to access API functionality through natural language, while developers retain full control over what endpoints are exposed and how they are accessed.
+| Component   | Version              | Editions                |
+| :------------- | :---------------------- | :------------------------- |
+| Gateway | Available since [v5.15.0](/developer-support/release-notes/gateway) | Enterprise |
 
-This allows AI tools to interpret, invoke, and structure API operations without requiring any backend modifications.
+## What Is REST API to MCP
 
-**Use this tool to:**
-- Expose your APIs for AI interaction
-- Allow AI assistants to understand and call API operations
-- Configure basic access controls (e.g., filtering operations and setting headers) to manage how AI tools interact with your APIs
+Tyk Gateway can generate an MCP proxy directly from a Tyk-managed REST API's OpenAPI specification, turning its operations into MCP tools without a separate MCP server to build or host.
 
-If you're looking for quick setup, [jump to Quick Start](#quick-start). For deeper understanding, see [How It Works](#how-it-works) and [Use Cases](#use-cases).
+Every MCP proxy in Tyk Gateway does one of two things: it fronts a **remote MCP server** you've built and hosted elsewhere, or it's generated this way, directly from a Tyk-managed REST API. This page covers the second case.
+
+To generate a proxy this way, you reference an existing [Tyk OAS API](/ai-management/mcp-gateway/mcp-proxy-definitions), and Tyk derives an MCP tool for each REST operation you choose to expose. No changes to the source REST API are required: you don't touch its OpenAPI spec, its code, or its existing consumers.
+
+<Note>
+Only a Tyk OAS REST API already onboarded to Tyk can be the source. GraphQL APIs and Tyk Classic API definitions aren't supported. See [Current Limitations](#current-limitations) below.
+</Note>
+
+This provides:
+
+- **A tool catalog**: derived automatically from the source API and kept in sync on every gateway reload. See [Tool Catalog](#tool-catalog) below.
+- **Multiple proxies from a single API**: each with its own tool selection, enrichment, and policies, such as a read-only proxy for a reporting agent and a separate write-enabled proxy for an operations agent. See [How to slice one API into multiple MCP proxies](/ai-management/mcp-gateway/how-to-slice-one-api-into-multiple-mcp-proxies).
+- **A distinct security identity for the proxy**: independent of the keys and policies your existing REST consumers use. See [Proxy Identity and Security](#proxy-identity-and-security) below.
+
+### How a Tool Call Is Handled
+
+Calling a tool sends a JSON-RPC `tools/call` request to the MCP proxy, which Tyk translates into an ordinary REST request against the paired API and wraps the response back into the format the agent expects.
 
 ```mermaid
 graph LR
-    A["Your OpenAPI"] --> B["Tyk API-to-MCP Tool"]
-    B --> C["Tyk MCP Server"]
-    D["AI Assistant"] <--> C
-    C <--> E["Your API"]
-    
-    style A fill:#ffffff,stroke:#D1D1E0,stroke-width:1px,font-size:18px
-    style B fill:#d5f5e3,stroke:#D1D1E0,stroke-width:1px,font-size:18px
-    style C fill:#d5f5e3,stroke:#D1D1E0,stroke-width:1px,font-size:18px
-    style D fill:#eeeeee,stroke:#D1D1E0,stroke-width:1px,font-size:18px
-    style E fill:#ffffff,stroke:#D1D1E0,stroke-width:1px,font-size:18px
-    
-    linkStyle default stroke-width:2px
+    A[Agent] -->|"tools/call" JSON-RPC request| B[MCP Proxy]
+    B -->|Ordinary REST request| C[Source REST API]
+    C -->|REST response| B
+    B -->|MCP result| A
 ```
 
-## Key Features
-- **Dynamic OpenAPI Loading:** Load specifications from local files or HTTP/HTTPS URLs
-- **OpenAPI Overlay Support:** Apply overlays to customize specifications
-- **Flexible Operation Filtering:** Include/exclude specific operations using glob patterns
-- **Comprehensive Parameter Handling:** Preserves formats and includes metadata
-- **Built-in Access Control & Security:** Control which endpoints are exposed, enforce authentication (API keys, OAuth, etc.), and add custom headers to all API requests, for secure AI access
-- **Authentication Support:** Handles API keys, OAuth tokens, and other security schemes
-- **MCP Extensions:** Support for custom x-mcp extensions to override tool names and descriptions
-- **Multiple Integration Options:** Works with Claude Desktop, Cursor, Vercel AI SDK, and other MCP-compatible environments
+## Proxy Identity and Security
 
-Check the [complete features list](https://github.com/TykTechnologies/api-to-mcp#features) is available in Tyk's *api-to-mcp* GitHub repository.
+The MCP proxy is itself a distinct consumer of the source REST API, with its own credential and security policy, independent of the keys and policies your existing REST consumers use.
 
-## Quick Start
-<a id="quick-start"></a>
+This matters because agents call APIs differently from humans and services: an agent decides autonomously which operations to invoke, can be manipulated into calling tools it shouldn't through prompt injection, and produces less predictable traffic. Govern that traffic with its own tool allowlists, rate limits, and RBAC, without touching your source API.
 
-To get started quickly, the primary way to use it is by configuring your AI assistant to run it directly as an MCP tool.
+## Tool Catalog
 
-### Requirements
-- [Node.js v18+](https://nodejs.org/en/download) installed
-- An accessible OpenAPI specification, e.g. `https://petstore3.swagger.io/api/v3/openapi.json` (could be a local file as well)
-- Claude Desktop (which we show in this example) or other MCP-compatible AI assistant that supports connecting to external MCP-compatible tool servers (e.g. Cursor, Vercel AI SDK, Cline extension in VS Code etc.)
+Tyk builds the tool catalog by reading the source API's OpenAPI operations.
 
-### Configure your AI Assistant
+### Naming
 
-To connect the tool with Claude Desktop or other MCP-compatible assistants, you need to register it as an MCP server. Most AI assistance share similar MCP server definition. This is the definition for *api-to-mcp* with petstore as the OpenAPI:
+Each operation's `operationId` becomes the tool name; operations without one get a deterministic name derived from their HTTP method and path instead. See [Tool naming and discovery](/ai-management/mcp-gateway/core-concepts#tool-naming-and-discovery) for how names are derived and collisions resolved.
 
-```json
-{
-  "mcpServers": {
-    "api-tools": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@tyk-technologies/api-to-mcp@latest",
-        "--spec",
-        "https://petstore3.swagger.io/api/v3/openapi.json"
-      ],
-      "enabled": true
-    }
-  }
-}
-```
+### Filtering With an Allow List
 
-**Step 1.**
-To enable the tool, paste the above configuration into your AI assistant’s MCP config file
+All operations become tools by default. To narrow that down, create an explicit allow list in the `x-tyk-mcp-server` extension, listing only the operations you want exposed as `allow: true` entries, through whichever interface you use to manage the proxy (see [Creating and Managing a Proxy](#creating-and-managing-a-proxy) below).
 
-- **Claude Desktop**: For MacOS, you need to update `~/Library/Application Support/Claude/claude_desktop_config.json`. See the [Claude Desktop setup instructions](https://github.com/TykTechnologies/api-to-mcp?tab=readme-ov-file#setting-up-in-claude-desktop) for Windows OS and more customization options.
-- **Cursor**: See the [Cursor setup guide](https://github.com/TykTechnologies/api-to-mcp#cursor) for instruction on setting it with Cursor.
+### Overriding Names and Descriptions for Agents
 
-**Step 2.**
-Once connected, ask the AI to perform an operation (e.g., "List all pets" or "Create a new user").
+OpenAPI specs are usually written for human developers or system-to-system integration, not for an agent deciding which tool to call. A cryptic `operationId` or an undocumented parameter can leave a perfectly functional operation hard for an agent to use well.
 
-## How It Works
+You can override a tool's and each parameter's name and description directly at the proxy layer, independently of the source API's OpenAPI document, making an existing API agent-ready without editing its spec.
 
-### User flow in API to MCP user flow
+This configuration lives in the `x-tyk-mcp-server` vendor extension on the MCP proxy's own OAS definition, alongside the `x-tyk-api-gateway` extension every MCP proxy has. See [REST API to MCP x-tyk-mcp-server extension](/ai-management/mcp-gateway/api-to-mcp-definitions) for the full schema.
 
-1.  **Input**: Your OpenAPI specification (required) and optional overlays
-2.  **Processing**: The API to MCP tool loads the spec, applies any overlays, and transforms API operations into MCP tools
-3.  **Runtime**: The MCP server exposes these tools to AI assistants, which are now discoverable to the AI assistant
-4.  **Execution Flow**: When you ask the AI assistant a question, it calls the tool (via the MCP server), which translates the request, forwards it to your API, and returns a formatted response.
+### Staying in Sync
 
+The catalog is derived from the source API's OpenAPI specification at gateway load time rather than stored as a fixed snapshot, so changes to the source operations are picked up on the next gateway reload. Without an allow list, new operations become tools automatically; with one, you need to add them yourself, since only what's explicitly allowed is exposed.
 
-```mermaid
-flowchart LR
-    subgraph "Input"
-        A["OpenAPI Specification"]
-        B["Optional Overlays"]
-    end
+## Creating and Managing a Proxy
 
-    subgraph "API to MCP Tool"
-        C["1. Load & Parse<br />OpenAPI Spec"]
-        D["2. Apply Overlays<br />(if provided)"]
-        E["3. Transform API Operations<br />into MCP Tools"]
-        F["MCP Server"]
-    end
+An MCP proxy generated this way is still just a [Tyk OAS API definition](/ai-management/mcp-gateway/mcp-proxy-definitions) with the `x-tyk-mcp-server` extension added, so any interface that manages a Tyk OAS API definition can create and manage one:
 
-    subgraph "Runtime"
-        G["4. AI Assistant<br />Discovers Tools"]
-        H["AI Assistant<br />Calls Tools"]
-        I["Your API"]
-    end
+- **Tyk Dashboard**: a guided wizard walks you through selecting the source API, choosing which operations to expose, and overriding tool and parameter names and descriptions, with a preview before you save. See [Managing MCP proxies](/ai-management/mcp-gateway/managing-proxies).
+- **Tyk Operator**: declare the OAS document, including the `x-tyk-mcp-server` extension, in a `ConfigMap` referenced by a `TykMcpProxyDefinition` custom resource, managed the same way as any other Tyk API in a GitOps workflow. See [Tyk Operator: MCP proxies](/product-stack/tyk-operator/mcp-proxy#managing-a-proxy-generated-from-a-tyk-managed-rest-api).
+- **Tyk Gateway API and Dashboard API**: create, update, and delete the OAS definition directly, including a dry-run mode that previews the expanded tool catalog without persisting it. See [MCP Gateway API extensions](/ai-management/mcp-gateway/mcp-api-extensions).
 
-    A -->|YAML/JSON| C
-    B -->|Optional| D
-    C --> D
-    D --> E
-    E -->|Register Tools| F
-    F -->|Expose Tools| G
-    G --> H
-    H -->|Request| F
-    F -->|Translate & Forward| I
-    I -->|Response| F
-    F -->|Format & Return| H
+The interface you use doesn't change how the proxy behaves at runtime. The tool catalog and enrichment overrides apply the same way regardless of how the definition was authored.
 
-    classDef input fill:#f9f,stroke:#333,stroke-width:2px,font-size:18px;
-    classDef tool fill:#bbf,stroke:#333,stroke-width:2px,font-size:18px;
-    classDef runtime fill:#bfb,stroke:#333,stroke-width:2px,font-size:18px;
-    
-    class A,B input;
-    class C,D,E,F tool;
-    class G,H,I runtime;
+## Current Limitations
 
-linkStyle default stroke-width:2px
-```
+The following limitations apply in this release:
 
-### Request lifecycle: how an AI assistant invokes an API tool
-
-The following diagram illustrates the flow of a request through the system at runtime:
-
-```mermaid
-sequenceDiagram
-    participant AI as "AI Client"
-    participant MCP as "MCP Server"
-    participant Tool as "Tool Handler"
-    participant API as "API Client"
-    participant Target as "Target API"
-
-    AI->>MCP: Invoke Tool
-    MCP->>Tool: Execute Tool Handler
-    Tool->>Tool: Extract Parameters
-    Tool->>Tool: Validate Input
-    Tool->>API: executeApiCall()
-    API->>API: Apply Security
-    API->>API: Construct Request
-    API->>Target: Make HTTP Request
-    Target-->>API: HTTP Response
-
-    alt Successful Response
-        API-->>Tool: Success Response
-        Tool->>MCP: Format MCP Result
-        MCP-->>AI: Tool Execution Success
-    else Error Response
-        API-->>Tool: Error Response
-        Tool->>MCP: Map to MCP Error
-        MCP-->>AI: Tool Execution Error
-    end
-
-```
-
-API to MCP  can be found in [api-to-mcp GitHub repository](https://github.com/TykTechnologies/api-to-mcp)
-
-## Use cases
-<a id="use-cases"></a>
-
-Use **API to MCP** when you need to:
-
-- **Connect AI Assistants to Existing APIs** - Let AI tools understand and call your existing API operations using natural language — no code changes needed, just [configuration](https://github.com/TykTechnologies/api-to-mcp/#configuration).
-
-- **Create a Unified Interface for AI Systems** - Standardize how APIs are accessed by AI across your organization with a consistent protocol (MCP).
-
-- **Control API Access for AI** - Filter which operations are available to AI, apply authentication, and monitor usage securely.
-
-- **Improve API Discoverability** - Enable AI systems to automatically list available endpoints, input parameters, and expected responses.
-
-- **Test APIs Using AI** - Use AI assistants to generate test inputs, invoke endpoints, and validate responses in a conversational way. Natural-language test generation and feedback.
-
-- **Auto-docs & validation** - Use AI to test, describe, or troubleshoot APIs in a conversational way. Natural-language test generation and feedback.
-
-- **Workflow Automation** - Connect APIs and AI logic in real time to automate workflows and streamline processes.
-
----
-
-## Best Practices
-
-- **Start small**: Only expose safe, limited endpoints
-- **Use filters**: allow list or block list endpoints as needed
-- **Secure your APIs**: Pass tokens, headers, or keys securely
-- **Track usage**: Monitor tool access and patterns
-- **Version specs**: Maintain OpenAPI version control
-- **Use env vars**: Don't hardcode secrets in CLI or config
-- **Validate safely**: Test in staging before going live
-
----
-
-## Customize your own version of the api-to-mcp tool
-
-If you'd like to share your MCP with a predefined OpenAPI spec and configuration, you can customize this tool to fit your needs. Useful for sharing pre-configured setups with others.
-
-By creating a customized version, others can use the tool with minimal configuration --- no need to manually specify specs or overlays.
-
-Refer to the [customization and publishing guide](https://github.com/TykTechnologies/api-to-mcp?tab=readme-ov-file#customizing-and-publishing-your-own-version) in the *api-to-mcp* repository for step-by-step instructions.
-
----
-
-## FAQs
-
-**Does this work with GraphQL?**
-Not currently — OpenAPI REST APIs only.
-
-**How do I secure my API requests?**
-Use `--headers`, environment variables. Check the [configuration section](https://github.com/TykTechnologies/api-to-mcp/tree/main#configuration) for more details.
-
-**Can I hide or rename tools?**
-Yes — use `x-mcp` extensions and filters.
-
-**What AI tools are supported?**
-Any tool that supports MCP: Claude, Cursor, VS Code, and more.
-
-
-## Summary
-
-API to MCP transforms OpenAPI specs into AI-compatible tools using the MCP standard. It enables your AI stack to dynamically understand, test, and invoke your existing APIs securely — without modifying your existing backend.
+| Limitation | Detail |
+|---|---|
+| Source API format | The source must be a Tyk OAS API already onboarded to Tyk. GraphQL APIs and Tyk Classic API definitions aren't supported as a source. |
+| One proxy, one source | An MCP proxy pairs with exactly one source REST API. You can't combine operations from multiple REST APIs behind a single proxy. The reverse, slicing one REST API's operations across several MCP proxies, is supported: see [How to slice one API into multiple MCP proxies](/ai-management/mcp-gateway/how-to-slice-one-api-into-multiple-mcp-proxies). |
+| Request body types | Only JSON and form-urlencoded request bodies are currently supported. An operation with a multipart, XML, or binary request body is still exposed as a tool, but its body isn't included in the tool's schema, so calling it can't carry the original request body. |
+| Response size | Upstream responses are capped at 1 MiB and truncated beyond that. The cap isn't configurable. |
+| Transport | Only `POST /mcp` is supported. `GET /mcp`, SSE streaming, and server-initiated notifications aren't available. |
+| Primitives | A proxy generated this way only ever produces tools. Resources and prompts aren't applicable, since a REST operation has no equivalent primitive. |
+| Behavioral hints | `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint` can be set directly in the `x-tyk-mcp-server` extension, for example via Tyk Operator or the API, but the Tyk Dashboard's wizard and designer don't yet expose a UI control for them. |
