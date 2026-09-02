@@ -1,0 +1,186 @@
+---
+title: "Logs"
+description: "Learn about the different types of logs in Tyk, how to configure them and how to integrate with third-party log management tools for effective API observability."
+keywords: "Logs, Application Logs, System Logs, API Traffic, Access Logs, Traffic Logs, Datadog, Dynatrace, New Relic, Elastic Search, Jaeger, Monitoring, Observability"
+sidebarTitle: "Overview"
+canonical: "https://tyk.io/docs/api-management/logs"
+---
+
+A log is a timestamped text record, either structured (recommended) or unstructured, with some metadata.
+
+## Types of Logs
+
+Tyk generates four types of logs:
+
+- **[Application Log](/5.14/api-management/logs/application-logs):** Internal system events such as health-checks, configuration changes, and errors.
+- **[API Traffic Log](/5.14/api-management/dashboard-analytics#where-the-data-comes-from):** <Badge color="orange">Gateway</Badge> A record of every API request, written into Redis and processed by Tyk Pump for analytics and reporting.
+- **[Access Log](/5.14/api-management/logs/access-logs):** <Badge color="orange">Gateway</Badge> Per-request server logs intended for external log aggregators. Similar to API Traffic Logs in that both record individual requests, but Access Logs are lightweight and real-time whereas API Traffic Logs are richer and processed asynchronously.
+- **[Audit Log](/5.14/api-management/logs/audit-logs):** <Badge color="blue">Dashboard</Badge> A record of user actions in Tyk Dashboard, such as API changes and login events.
+
+
+## Configuring Application and Access Logs
+
+Tyk Gateway, Tyk Pump, Tyk Dashboard, Tyk MDCB, and Tyk Developer Portal each write an **Application Log** to `stderr`, handled in a typical installation by the service manager running the process.
+
+Tyk Gateway's **Access Log** uses the same underlying logger, so every setting that applies to Tyk Gateway's Application Log also affects the Access Log.
+
+Three aspects can be configured:
+
+- **verbosity**: which severity levels are written
+- **format**: the structure and content of each entry
+- **log output**: where logs are sent, for example to a third-party aggregator
+
+Both verbosity and format can be controlled globally across all components, or per component for finer control. Global settings take priority over component-specific ones.
+
+### Global Settings
+
+Two environment variables apply across multiple components and override any component-specific setting:
+
+| Setting | Environment variable | Applies to |
+| :--- | :--- | :--- |
+| Verbosity | `TYK_LOGLEVEL` | All components except Tyk Developer Portal |
+| Format | `TYK_LOGFORMAT` | Tyk Gateway, Tyk Dashboard, Tyk Pump |
+
+### Component Settings
+
+When global variables are not set, each component can be configured individually using environment variables or the equivalent `log_level` and `log_format` settings in its configuration file.
+
+All components default to `info` verbosity and `text` format. Tyk Developer Portal is an exception: it defaults to `prod` format, which is equivalent to `json`.
+
+| Tyk component | Log level env var | Log format env var | Supported formats |
+| :--- | :--- | :--- | :--- |
+| [Tyk Gateway](/5.14/tyk-oss-gateway/configuration#log_level) | `TYK_GW_LOGLEVEL` | `TYK_GW_LOGFORMAT` | `text`, `json`, `legacy` |
+| [Tyk Pump](/5.14/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables#log_level) | `TYK_PMP_LOGLEVEL` | `TYK_PMP_LOGFORMAT` | `text`, `json`, `legacy` |
+| [Tyk Dashboard](/5.14/tyk-dashboard/configuration) | `TYK_DB_LOGLEVEL` (from `v5.14.0`) | `TYK_DB_LOGFORMAT` | `text`, `json` |
+| [Tyk MDCB](/5.14/tyk-multi-data-centre/mdcb-configuration-options#log_level) | `TYK_MDCB_LOGLEVEL` | N/A | Legacy text only |
+| [Tyk Developer Portal](/5.14/product-stack/tyk-enterprise-developer-portal/deploy/configuration#portal_log_level) | `PORTAL_LOG_LEVEL` | `PORTAL_LOG_FORMAT` | `text`, `json` |
+
+<Note>
+The `legacy` format was introduced in Tyk Gateway 5.14.0 and Tyk Pump 5.14.0 to maintain backward compatibility for existing users with log pipelines reliant on the precise log content. See [legacy format](/5.14/api-management/logs#legacy-format).
+</Note>
+
+### Severity and Verbosity
+
+The severity of a log is an indication of its likely importance to the system administrator. The system will generate logs at four different levels of severity:
+
+| Severity | Purpose | Example |
+|:---------|:--------|:--------|
+| Error | Conditions that require immediate attention, such as a component being unreachable or a request failing due to a system fault. | Failed to connect to Redis |
+| Warning | Potential issues or degraded behavior that may require investigation, but do not prevent the system from operating. | Configuration value out of bounds, using default |
+| Information | Normal operational events confirming the system is functioning as expected. This is the default level. | Gateway started, API loaded, access log entries |
+| Debug | Detailed diagnostic output useful for troubleshooting, such as middleware execution steps and request routing decisions. | Middleware execution details |
+
+Each component can individually be configured to output only the logs generated at or above a given severity level by setting the **log level** as follows:
+
+- `error`: only errors are logged
+- `warn`: warnings and errors are logged
+- `info`: errors, warnings, and informational messages are logged (default)
+- `debug`: all of the above, plus detailed diagnostic output
+
+<Note>
+Access Logs have `info` level severity. Setting Tyk Gateway's log level to `warn` or `error` therefore suppresses Access Log output. There are additional controls for the generation and content of access logs as described in [Access Logs](/5.14/api-management/logs/access-logs).
+</Note>
+
+<Warning>
+Debug log level generates a significant amount of data and is not recommended unless debugging.
+</Warning>
+
+### Format Options
+
+Log format controls the structure and timestamp style of application and access logs generated by a component. The supported values are `text` (default), `json` (recommended), and `legacy`.
+
+<Tip>
+As a general performance tip, the `json` output format incurs less memory allocation overhead than the `text` format. For optimal performance, it's recommended to configure logging in the JSON format.
+</Tip>
+
+<Tabs>
+<Tab title="Text Format">
+
+```
+time="2024-09-05T09:04:12Z" level=info message="Tyk API Gateway v5.14.0" prefix=main
+```
+
+</Tab>
+<Tab title="JSON Format">
+
+```json
+{"level":"info","message":"Tyk API Gateway v5.14.0","prefix":"main","time":"2024-09-05T09:04:12Z"}
+```
+
+</Tab>
+<Tab title="Legacy Format">
+
+Preserves the previous timestamp format and `msg` field key:
+
+```
+time="Sep 05 09:04:12" level=info msg="Tyk API Gateway v5.14.0" prefix=main
+```
+
+</Tab>
+</Tabs>
+
+#### Legacy Format
+
+From Tyk Gateway 5.14.0 and Tyk Pump 5.14.0, the `text` and `json` formats use RFC3339 timestamps and a standardized `message` field.
+
+If your log pipeline relies on the previous timestamp format (`Dec 12 13:50:45`) or the `msg` field key, set `log_format` to `legacy` to preserve the old behavior.
+
+### Log Output
+
+By default, application and access log output is written to `stderr`.
+
+Tyk Gateway and Dashboard can also forward logs to a third-party aggregator, in addition to `stderr`:
+
+| Data Sink | Gateway | Dashboard |
+| :--- | :---: | :---: |
+| Sentry | ✅ | ✅ |
+| Logstash | ✅ | ❌ |
+| Graylog | ✅ | ❌ |
+| Syslog | ✅ | ❌ |
+
+Add the relevant settings to `tyk.conf` for Tyk Gateway, or `tyk_analytics.conf` for Tyk Dashboard (or use the equivalent environment variables):
+
+<Tabs>
+<Tab title="Sentry">
+
+<Badge color="orange">Gateway</Badge> <Badge color="blue">Dashboard</Badge>
+
+- `use_sentry`: Set to `true` to enable output to [Sentry](https://sentry.io/product/logs/).
+- `sentry_code`: The Sentry-assigned DSN (endpoint URL) to which the logs are sent.
+
+</Tab>
+<Tab title="Logstash">
+
+<Badge color="orange">Gateway Only</Badge>
+
+- `use_logstash`: Set to `true` to enable output to [Logstash](https://www.elastic.co/logstash).
+- `logstash_transport`: Set this to `"tcp"`.
+- `logstash_network_addr`: The network address of the Logstash server, in the form `hostname:port`.
+
+</Tab>
+<Tab title="Graylog">
+
+<Badge color="orange">Gateway Only</Badge>
+
+- `use_graylog`: Set to `true` to enable output to [Graylog](https://graylog.org/).
+- `graylog_network_addr`: The network address of the Graylog server, in the form `hostname:port`.
+
+</Tab>
+<Tab title="Syslog">
+
+<Badge color="orange">Gateway Only</Badge>
+
+- `use_syslog`: Set to `true` to enable output to syslog.
+- `syslog_transport`: Set to `"udp"` to send to a remote syslog server, or leave empty to use the local Unix socket.
+- `syslog_network_addr`: The network address of the syslog server, in the form `hostname:port`.
+
+</Tab>
+</Tabs>
+
+## Configuring Traffic Logs
+
+Traffic Logs are generated by Tyk Gateway and written to Redis, not `stderr`, so none of the settings above apply to them. Enable them by setting [`enable_analytics`](/5.14/tyk-oss-gateway/configuration#enable_analytics) in the Gateway configuration; see [Dashboard Analytics](/5.14/api-management/dashboard-analytics) for how Tyk Pump then processes and routes them from Redis.
+
+## Configuring Audit Logs
+
+Audit Logs are generated by Tyk Dashboard and configured through its own `audit.*` settings block, unrelated to the Application Log settings above. See [Audit Logs](/5.14/api-management/logs/audit-logs) for the full configuration reference, or [Enable and View Audit Logs in Tyk Dashboard](/5.14/api-management/enable-audit-logs-dashboard) for a step-by-step guide.
