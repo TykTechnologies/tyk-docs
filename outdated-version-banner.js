@@ -25,7 +25,7 @@
   // branches-config.json marks isLatest, LTS_VERSIONS as a JSON array of every
   // target_folder marked isLts. Dismissal is keyed to LATEST_VERSION, so both
   // banners automatically reappear for everyone once a new version ships.
-  var LATEST_VERSION = '5.14';
+  var LATEST_VERSION = '5.15';
   var LTS_VERSIONS = (function () {
     try {
       return JSON.parse('["5.13"]');

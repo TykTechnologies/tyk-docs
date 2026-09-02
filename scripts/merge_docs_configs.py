@@ -1408,16 +1408,33 @@ class DocsMerger:
 
         lts_versions_json = json.dumps(self.lts_versions)
 
+        # outdated-version-banner.js only ever exists as a single checked-in copy
+        # on `production` (it has no source on any release branch), so the deploy
+        # workflow's cleanup step whitelists it to survive every deploy instead of
+        # being deleted. That means these two lines are never freshly re-cloned
+        # with the "{{...}}" placeholder restored - after the very first
+        # substitution replaces it with a literal value, that placeholder is gone
+        # from the file for good. Matching only the placeholder (as this used to
+        # do) makes the substitution fire exactly once, ever; matching the
+        # previously-substituted literal too keeps it re-substitutable on every
+        # deploy, so the banner tracks whichever version is actually latest.
+        latest_version_pattern = re.compile(
+            r"var LATEST_VERSION = '(?:\{\{LATEST_VERSION\}\}|[^']*)';"
+        )
+        lts_versions_pattern = re.compile(
+            r"JSON\.parse\('(?:\{\{LTS_VERSIONS\}\}|[^']*)'\)"
+        )
+
         for script_path in Path(base_dir).rglob("outdated-version-banner.js"):
             try:
                 content = script_path.read_text(encoding="utf-8")
-                changed = False
-                if "{{LATEST_VERSION}}" in content:
-                    content = content.replace("{{LATEST_VERSION}}", self.latest_version)
-                    changed = True
-                if "{{LTS_VERSIONS}}" in content:
-                    content = content.replace("{{LTS_VERSIONS}}", lts_versions_json)
-                    changed = True
+                content, n1 = latest_version_pattern.subn(
+                    f"var LATEST_VERSION = '{self.latest_version}';", content
+                )
+                content, n2 = lts_versions_pattern.subn(
+                    f"JSON.parse('{lts_versions_json}')", content
+                )
+                changed = bool(n1 or n2)
                 if changed:
                     script_path.write_text(content, encoding="utf-8")
                     print(
