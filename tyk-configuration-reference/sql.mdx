@@ -1,0 +1,307 @@
+---
+title: "Configure SQL Storage"
+description: "Learn how to configure PostgreSQL, MySQL and MariaDB for Tyk Dashboard, Tyk MDCB, Tyk Pump and Tyk Developer Portal, including connection settings and connection pool tuning."
+keywords: "configuration, postgresql, mysql, mariadb, sql, tyk-dashboard, tyk-mdcb, tyk-pump, tyk-developer-portal, persistent database, connection pool"
+sidebarTitle: "Configure SQL Storage"
+canonical: "https://tyk.io/docs/tyk-configuration-reference/sql"
+---
+
+import SqlVersionsInclude from '/snippets/5.15/sql-versions-include.mdx';
+
+Several Tyk components support SQL as their persistent database, but they don't all share a single instance:
+- Tyk Dashboard, Tyk MDCB and Tyk Pump connect to the same PostgreSQL instance as part of the Core Platform's [shared persistent database](/api-management/persistent-database).
+- Tyk Developer Portal maintains its own, separate database - see [Install Developer Portal](/portal/install#architecture) for how that fits into a Portal deployment.
+
+Not all components support the same engines:
+
+| Component | PostgreSQL | MySQL / MariaDB |
+|---|---|---|
+| Tyk Dashboard, Tyk MDCB, Tyk Pump | Supported | Not recommended - untested |
+| Tyk Developer Portal | Supported | Supported |
+
+## Supported Versions
+
+### Core Platform
+
+<SqlVersionsInclude />
+
+### Developer Portal
+
+| Database Type | Version |
+|---------------|---------|
+| PostgreSQL    | 14.x, 15.x, 16.x, 17.x |
+| MySQL         | 4 or later |
+| MariaDB       | 10.6, 10.11, 11.4, 11.8 |
+
+You can also use the following as a drop in replacement for PostgreSQL:
+
+- [Amazon RDS](https://aws.amazon.com/rds/)
+- [Amazon Aurora PostgreSQL](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/Aurora.AuroraPostgreSQL.html)
+- [Azure CosmosDB for PostgreSQL](https://learn.microsoft.com/en-us/azure/cosmos-db/postgresql/introduction)
+
+## Configuration Reference
+
+Each component configures SQL storage differently - see [Configuration Examples](#configuration-examples) below for each component's own fields. A few options are worth explaining up front, since they apply across more than one component.
+
+### Connection String
+
+A connection string combines the address Tyk uses to reach your database (host and port), access credentials, and the database name.
+
+| Field | Purpose |
+|---|---|
+| `host` | Database server hostname or IP address. |
+| `port` | Database server port. |
+| `user` | Username to authenticate as. |
+| `password` | Password for that user, if your database requires one. |
+| `dbname` | Name of the database to connect to. |
+
+**PostgreSQL** uses space-separated `key=value` pairs:
+
+```text
+host=tyk-db port=5432 user=admin password=secr3t dbname=tyk-demo-db
+```
+
+**MySQL / MariaDB** uses a single positional string instead, formatted `username:password@tcp(host:port)/dbname`:
+
+```text
+admin:secr3t@tcp(tyk-db:3306)/tyk-demo-db
+```
+
+Some managed database services let you scale reads independently of writes, by exposing separate endpoints: one for the primary, which handles writes, and one or more read replicas, which serve reads without adding load to the primary. Amazon RDS is a common example, with distinct writer and reader endpoints.
+
+- Tyk Dashboard can take advantage of this by pointing writes and reads at two different connection strings instead of one.
+- Tyk MDCB and Tyk Pump only write to the persistent storage, and so would not benefit from separate read and write connections.
+- Tyk Developer Portal also uses a single connection string.
+
+### Table Sharding
+
+Unlike [MongoDB](/api-management/dashboard-analytics/analytics-storage-management#mongodb), SQL has no built-in way to expire old data automatically. Left alone, a table such as `tyk_analytics` (Logs) or `tyk_aggregated` (Aggregate Analytics) just grows forever, and deleting old rows from a huge table with a plain `DELETE` gets slower as the table grows.
+
+When enabled, **table sharding** solves this by creating a new table per day instead of a single large table. Each table uses a common name as a prefix, adding the date to generate a unique table name, for example `tyk_analytics_20230327`. Deleting a day's data then just means dropping that one table, instead of running a slow `DELETE` against everything.
+
+- Tyk Dashboard, Tyk MDCB, and Tyk Pump can be configured to use sharded tables.
+- Tyk Developer Portal does not expose this option.
+
+<Warning>
+The writers and readers of a [data category](/api-management/persistent-database#how-tyk-uses-persistent-storage) must all have the same table sharding configuration (enabled or disabled).
+</Warning>
+
+#### Maintaining Consistency
+
+When the component writing a sharded category starts up, it checks that day's table against the current schema and adds any missing columns, for example after an upgrade that extends the schema; it never drops or renames existing columns. By default, this only happens for the current day's table - older dated tables are left exactly as they were when created.
+
+Tyk Pump's `migrate_sharded_tables` setting extends this to every table matching its prefix, not just today's, scanning the whole set on startup and updating any that are out of date. Tyk MDCB has no equivalent setting, so it only ever updates the current day's table.
+
+<Warning>
+This scan-and-update runs on every restart, not just once, and touches every table matching the prefix. In a deployment with months or years of daily-sharded tables, that can mean scanning and potentially altering hundreds or thousands of tables - startup can take a long time, and the pump won't resume processing until it completes, with sustained read and write load that can affect other services sharing the database too. Only enable `migrate_sharded_tables` when you actually need it, such as the first restart after an upgrade that changed the schema, then turn it back off.
+</Warning>
+
+### TLS
+
+TLS encrypts the connection between Tyk and your database, and can optionally authenticate Tyk to the database using a client certificate (mutual TLS) rather than just a password. Many managed database providers require it, or a compliance policy may.
+
+TLS is configured by adding extra parameters to the [connection string](#connection-string). These parameters depend on the SQL engine:
+
+| Purpose | PostgreSQL | MySQL / MariaDB |
+|---|---|---|
+| Enable/require encryption | `sslmode` (`disable`, `require`, `verify-ca`, or `verify-full`) | `tls` (`true`, `false`, `skip-verify`, or `preferred`) |
+| Certificate Authority file | `sslrootcert` | not supported |
+| Client certificate and key (mTLS) | `sslcert` / `sslkey` | not supported |
+
+**PostgreSQL**:
+
+```text
+host=tyk-db port=5432 user=admin password=secr3t dbname=tyk-demo-db sslmode=verify-full sslrootcert=/path/to/ca.crt
+```
+
+**MySQL / MariaDB**:
+
+```text
+admin:secr3t@tcp(tyk-db:3306)/tyk-demo-db?tls=true
+```
+
+For MySQL and MariaDB, `tls=true` encrypts the connection and verifies the server's certificate against your system's trusted root CAs - this covers the common case of a certificate signed by a public CA, as most managed cloud database providers use. For a private or self-signed certificate, `tls=skip-verify` encrypts the connection without verifying the server's identity; limit this to development or temporary testing. Avoid `tls=preferred` in production: it can silently fall back to an unencrypted connection if TLS negotiation fails.
+
+## Connection Pool Management
+
+Each component maintains one or more [pools of connections](/api-management/persistent-database#connection-pool-management) to the database:
+
+| Component | Number of Pools | Max Open Connections | Max Idle Connections | Max Connection Lifetime | Max Connection Idle Time |
+|---|---|---|---|---|---|
+| Tyk Dashboard | 8 | Unlimited (configurable) | 2 (configurable) | Unlimited (configurable) | Unlimited (configurable) |
+| Tyk MDCB | 1 to 7, depending on configuration | Unlimited | 2 | Unlimited | Unlimited |
+| Tyk Pump | Varies, one per configured pump type | Unlimited | 2 | Unlimited | Unlimited |
+| Tyk Developer Portal | 1 | Unlimited (configurable) | 2 (configurable) | 30 minutes (configurable) | Unlimited |
+
+**Sizing Guidance**
+
+For Tyk Dashboard and Tyk Developer Portal, the two components with configurable pools, size `max_open_connections` against your database's own maximum connection limit: divide that limit by the number of instances you're running, and by however many pools each instance opens (one for Tyk Developer Portal, eight for Tyk Dashboard), to find a safe per-pool ceiling that keeps every instance's connections within the database's own limit.
+
+### Tyk Dashboard
+
+Tyk Dashboard's pools are configured per category, under `storage.<category>.postgres` (or the equivalent environment variables):
+
+```json expandable
+{
+  "storage": {
+    "main": {
+      "postgres": {
+        "max_open_connections": 20,
+        "max_idle_connections": 5,
+        "connection_max_lifetime": "30m",
+        "connection_max_idle_time": "5m"
+      }
+    }
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `max_open_connections` | The maximum number of open connections in the pool. Defaults to unlimited. |
+| `max_idle_connections` | The maximum number of idle connections kept in the pool. Defaults to 2. |
+| `connection_max_lifetime` | How long a connection can be reused before being closed. Accepts a Go duration string, such as `30s`, `5m`, or `1h`. Defaults to unlimited. |
+| `connection_max_idle_time` | How long a connection can sit idle before being closed. Accepts a Go duration string. Defaults to unlimited. This is the setting to reach for if a Dashboard deployment needs to release database connections during extended idle periods, for example the inactive side of a blue/green deployment. |
+
+<Note>
+These settings apply **per connection pool**, and Tyk Dashboard maintains [eight of them](/api-management/persistent-database#connection-pool-management) - one read and one write pool for each of its four categories of data. Setting `max_open_connections` to `10` for `main` permits up to 20 open connections for that category alone (10 for reads, 10 for writes), not 10 across the whole Dashboard.
+</Note>
+
+### Tyk Developer Portal
+
+Tyk Developer Portal's pool is controlled in the `Database` block (or via environment variables):
+
+```json expandable
+{
+  "Database": {
+    "MaxOpenConnections": 30,
+    "MaxIdleConnections": 15,
+    "ConnectionMaxLifetime": 1800000
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| [`MaxOpenConnections`](/product-stack/tyk-enterprise-developer-portal/deploy/configuration#portal_database_max_open_connections) | The maximum number of open connections in the pool. Defaults to unlimited. |
+| [`MaxIdleConnections`](/product-stack/tyk-enterprise-developer-portal/deploy/configuration#portal_database_max_idle_connections) | The maximum number of idle connections kept in the pool. Defaults to 2. |
+| [`ConnectionMaxLifetime`](/product-stack/tyk-enterprise-developer-portal/deploy/configuration#portal_database_connection_max_lifetime) | How long a connection can be reused before being closed, in milliseconds (not a duration string). Defaults to `1800000` (30 minutes). Set to `0` for unlimited. |
+
+For example, with a database allowing 60 connections across two Developer Portal instances: `MaxOpenConnections` of 30 and `MaxIdleConnections` of 15 per instance can handle around 90 active users, based on Tyk's own performance testing.
+
+<Note>
+Tyk Developer Portal does not currently have an equivalent to Tyk Dashboard's `connection_max_idle_time`.
+</Note>
+
+## Configuration Examples
+
+### Tyk Dashboard
+
+Tyk Dashboard uses a `storage.<category>` block per category of data, in `tyk_analytics.conf` (or via environment variables). `<category>` is one of `main`, `analytics`, `logs`, or `uptime` - each of the [four categories of data](/api-management/persistent-database#how-tyk-uses-persistent-storage) is configured independently, though all four normally point at the same database instance.
+
+<Note>
+Tyk Dashboard uses the `main` category's configuration when no corresponding configuration is available for `logs`, `uptime` or `analytics`.
+</Note>
+
+In this example, Traffic Logs use a separate, sharded database from the other three categories, and Main Storage splits reads and writes across two connection strings, pointing writes at the primary and reads at a read replica:
+
+```json expandable
+{
+  "storage": {
+    "main": {
+      "type": "postgres",
+      "write_connection_string": "user=root password=admin dbname=tyk-primary-db host=tyk-db port=5432",
+      "read_connection_string": "user=root password=admin dbname=tyk-primary-db host=tyk-db-replica port=5432"
+    },
+    "logs": {
+      "type": "postgres",
+      "connection_string": "user=root password=admin dbname=tyk-logs-db host=tyk-db port=5432",
+      "table_sharding": true
+    }
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `type` | `postgres` or `mysql`. MySQL is accepted but not recommended and untested for Tyk Dashboard - see [Supported Versions](#supported-versions). |
+| `connection_string` | The database [connection string](#connection-string). See [TLS](#tls) for encryption parameters. |
+| `read_connection_string` / `write_connection_string` | Split reads and writes across two connection strings instead of one - see [Connection String](#connection-string). |
+| `table_sharding` | Store records in per-day tables - see [Table Sharding](#table-sharding). |
+
+### Tyk MDCB
+
+Tyk MDCB uses a top-level `analytics` block, in `tyk_sink.conf` (or via environment variables):
+
+```json expandable
+{
+  "analytics": {
+    "type": "postgres",
+    "connection_string": "user=root password=admin dbname=tyk-demo-db host=tyk-db port=5432"
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `type` | `mongo` or `postgres`. MySQL is not recognized - if set, Tyk MDCB silently falls back to `mongo` rather than failing. |
+| `connection_string` | The database [connection string](#connection-string). See [TLS](#tls) for encryption parameters. |
+| `table_sharding` | Store records in per-day tables - see [Table Sharding](#table-sharding). |
+| `batch_size` | Maximum records written per batch. |
+
+### Tyk Pump
+
+Tyk Pump connects to SQL through its [SQL pump types](/api-management/dashboard-analytics/control-plane-pumps#choosing-a-pump-type), each declared in `pump.conf` (or using equivalent environment variables).
+
+For full details of the SQL pump types and their configuration see [Control Plane Pumps](/api-management/dashboard-analytics/control-plane-pumps#sql).
+
+### Tyk Developer Portal
+
+Tyk Developer Portal uses a `Database` block, in `portal.conf` (or via environment variables):
+
+```json expandable
+{
+  "Database": {
+    "Dialect": "postgres",
+    "ConnectionString": "host=tyk-db port=5432 user=admin password=secr3t dbname=tyk-demo-db"
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| [`Dialect`](/product-stack/tyk-enterprise-developer-portal/deploy/configuration#portal_database_dialect) | `postgres`, `mysql`, or `mariadb`. |
+| [`ConnectionString`](/product-stack/tyk-enterprise-developer-portal/deploy/configuration#portal_database_connectionstring) | The database [connection string](#connection-string). See [TLS](#tls) for encryption parameters. |
+
+## Migrating Tyk Dashboard from MongoDB to SQL
+
+Tyk Dashboard provides a migration command to move data from an existing MongoDB instance to a SQL platform. This migrates all data from the `main` category (APIs, Policies, Users, UserGroups, Webhooks, Certificates, Portal Settings, Portal Catalogs, Portal Pages, Portal CSS, etc.).
+
+<Note>
+The migration tool will not migrate any Traffic Logs, Aggregate Analytics, or Uptime Test Results data.
+</Note>
+
+1. Make sure your new SQL platform and the existing MongoDB instance are both running.
+2. Configure the `main` part of the `storage` section of your `tyk-analytics.conf`:
+
+```json expandable highlight={7}
+{
+...
+  "storage": {
+    ...
+    "main": {
+      "type": "postgres",
+      "connection_string": "user=root password=admin dbname=tyk-demo-db host=tyk-db port=5432"
+    }
+  }
+}
+```
+3. Run the following command:
+
+```console
+./tyk-analytics migrate-sql
+```
+You will see an output listing the transfer of each database table. For example: `Migrating 'tyk_apis' collection. Records found: 7`.
+
+4. You can now remove your MongoDB configuration from `tyk-analytics.conf`.
+5. Restart your Tyk Dashboard.

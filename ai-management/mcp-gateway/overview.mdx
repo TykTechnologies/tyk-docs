@@ -1,7 +1,7 @@
 ---
 title: "MCP Gateway"
 description: "Tyk Gateway proxies and governs remote MCP servers, applying authentication, rate limiting, access control, key management, and observability to AI agent traffic at the gateway level."
-keywords: "MCP, Model Context Protocol, MCP Gateway, AI agent, remote MCP server, JSON-RPC, authentication, rate limiting, observability, policy enforcement"
+keywords: "MCP, Model Context Protocol, MCP Gateway, AI agent, remote MCP server, API to MCP, JSON-RPC, authentication, rate limiting, observability, policy enforcement"
 sidebarTitle: "Overview"
 canonical: "https://tyk.io/docs/ai-management/mcp-gateway/overview"
 ---
@@ -12,7 +12,7 @@ The Model Context Protocol (MCP) is the open standard for connecting AI applicat
 
 As MCP servers move into shared cloud infrastructure, they face the same operational challenges REST APIs faced a decade ago: who can call what, how often, with what credentials, and with what visibility.
 
-Tyk Gateway addresses these challenges natively, sitting between MCP clients and your remote MCP servers to enforce authentication, access policies, rate limits, and traffic governance on every JSON-RPC request.
+Tyk Gateway addresses these challenges natively, sitting between MCP clients and the servers or APIs behind them, to enforce authentication, access policies, rate limits, and traffic governance on every JSON-RPC request. This applies whether an MCP proxy fronts a remote MCP server or is [generated directly from a Tyk-managed REST API](/ai-management/mcps/api-to-mcp).
 
 ---
 
@@ -40,7 +40,7 @@ Remote MCP servers are HTTP services. Like any HTTP service, they need authentic
 
 ## Where Tyk fits
 
-Tyk Gateway sits in front of your remote MCP servers and proxies all MCP traffic through a centrally managed gateway layer. AI clients connect to Tyk at a configured listen path; Tyk authenticates the request, applies the configured middleware chain, and forwards the request to the upstream MCP server. The Tyk Dashboard serves as the registry layer, the central catalog of every MCP server in your organization, with the access policies and observability that govern how each one is used.
+Tyk Gateway sits in front of your MCP servers and Tyk-managed REST APIs, proxying all MCP traffic through a centrally managed gateway layer. The same governance applies whether an MCP proxy fronts a remote MCP server or is [generated directly from a Tyk-managed REST API](/ai-management/mcps/api-to-mcp). AI clients connect to Tyk at a configured listen path; Tyk authenticates the request, applies the configured middleware chain, and forwards the request to the upstream MCP server or REST API. The Tyk Dashboard serves as the registry layer, the central catalog of every MCP proxy in your organization, with the access policies and observability that govern how each one is used.
 
 ![Where Tyk MCP Gateway fits](/img/ai-management/where-tyk-mcp-gateway-fits.png)
 
@@ -55,19 +55,21 @@ Tyk handles both MCP transport methods:
 
 ## How Tyk represents MCP proxies
 
-Tyk models each remote MCP server as a **[Tyk OAS API definition](/ai-management/mcp-gateway/mcp-proxy-definitions)**, an OpenAPI 3.0 document extended with the `x-tyk-api-gateway` vendor extension. This is the same format used for REST APIs, so MCP proxies share the same configuration model, tooling, and management APIs as the rest of your Tyk estate.
+Tyk models each MCP proxy as a **[Tyk OAS API definition](/ai-management/mcp-gateway/mcp-proxy-definitions)**, an OpenAPI 3.0 document extended with the `x-tyk-api-gateway` vendor extension. This is the same format used for REST APIs, so MCP proxies share the same configuration model, tooling, and management APIs as the rest of your Tyk estate, whether the proxy fronts a remote MCP server or is generated directly from a Tyk-managed REST API.
 
 The MCP proxy definition configures:
 
 - The **listen path**: the URL prefix where Tyk exposes the MCP proxy to clients
-- The **upstream URL**: the address of your remote MCP server
+- The **upstream**: for a remote MCP server, its address; for a REST API to MCP proxy, a reference to the Tyk-managed REST API it's generated from
 - **Authentication**: which method to use and how to validate credentials
 - **Middleware**: per-primitive access control, rate limits, caching, transformations, and more
 
-You create and manage MCP proxy definitions through the Tyk Dashboard or the Gateway API. No changes to your upstream MCP server are required.
+REST API to MCP proxies also carry an `x-tyk-mcp-server` vendor extension, which defines which REST operations become MCP tools and how they're presented to agents. See [MCP proxy definitions](/ai-management/mcp-gateway/mcp-proxy-definitions) for the full schema.
+
+You create and manage MCP proxy definitions through the Tyk Dashboard or the Gateway API. No changes to your upstream MCP server, or the source REST API, are required.
 
 <Note>
-MCP proxy definitions require Tyk OAS format. Tyk Classic API definitions do not support MCP.
+MCP proxy definitions require Tyk OAS format. When a proxy is generated from a REST API, the source must also be a Tyk OAS REST API: GraphQL APIs and Tyk Classic API definitions aren't supported as a source. See [REST API to MCP](/ai-management/mcps/api-to-mcp) for details.
 </Note>
 
 ---
@@ -94,7 +96,7 @@ Tyk also filters discovery responses per consumer. When an agent calls `tools/li
 
 ### Service registry
 
-The Tyk Dashboard's MCP section serves as a central registry of all MCP servers in your organization. Each MCP proxy is a registry entry that records the upstream server's address, its listen path, the tools and resources it exposes, and the access policies that govern it.
+The Tyk Dashboard's MCP section serves as a central registry of all MCP servers in your organization. Each MCP proxy is a registry entry that records its upstream (a remote server address or a paired Tyk API), its listen path, the tools and resources it exposes, and the access policies that govern it.
 
 This gives teams a single authoritative source of truth for what MCP capabilities are available, who can access them, and under what conditions. When a new MCP server is onboarded, registering it as a proxy in the Dashboard makes it discoverable to authorized agents and invisible to everyone else, without changes to the upstream server or the agents themselves.
 
@@ -137,9 +139,10 @@ Beyond the Dashboard analytics page, Tyk emits MCP-specific observability signal
 
 | Requirement | Detail |
 |---|---|
-| Tyk Gateway version | v5.13 or later |
+| Tyk Gateway version | v5.13 or later for pass-through MCP proxies. REST API to MCP proxying requires v5.15 or later. |
 | API definition format | Tyk OAS only. Tyk Classic API definitions do not support MCP. |
 | API definition extension | The `x-tyk-api-gateway` vendor extension is required in every MCP proxy definition. |
+| Licensing | Proxies fronting a remote MCP server are available on all Tyk Gateway licenses. Individual features, such as upstream OAuth and token exchange, require Tyk Enterprise Edition. A [REST API to MCP proxy](/ai-management/mcps/api-to-mcp) requires Tyk Enterprise Edition for the proxy type itself. |
 
 ### Supported transports
 
@@ -150,9 +153,11 @@ Tyk MCP Gateway supports the **Streamable HTTP** transport defined in the MCP `2
 
 The **stdio** transport is not supported. Tyk is a network-based API gateway; stdio is designed for local, in-process MCP servers. If your upstream MCP server uses stdio, a stdio-to-HTTP bridge (such as the one provided by the MCP SDK) is required between it and Tyk.
 
-### HTTP-to-MCP translation
+### REST API to MCP proxies
 
-When using Tyk to convert an existing REST API into MCP tools (via [AI Studio](/ai-management/ai-studio/overview)), only **OpenAPI REST APIs** are supported as the source. GraphQL APIs cannot be converted to MCP tools.
+Tyk Gateway can also generate an MCP proxy directly from a Tyk-managed REST API, without building or hosting a separate MCP server. See [REST API to MCP](/ai-management/mcps/api-to-mcp).
+
+This capability requires **Tyk Enterprise Edition**. Only Tyk OAS REST APIs already onboarded to Tyk are supported as a source: GraphQL APIs and Tyk Classic API definitions cannot be converted to MCP tools. These proxies support only the `POST /mcp` transport; they do not expose `GET /mcp`, SSE streaming, or server-initiated notifications.
 
 ### MCP specification version
 
