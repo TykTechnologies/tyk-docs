@@ -1,0 +1,82 @@
+---
+title: "How to slice one API into multiple MCP proxies"
+description: "Expose different subsets of a single Tyk-managed REST API's operations as separate, independently governed MCP proxies, for example, a read-only proxy for a fraud-review agent and a write-enabled proxy for a treasury agent."
+keywords: "MCP, Model Context Protocol, REST API to MCP, multiple MCP proxies, tool catalog, allow list, x-tyk-mcp-server, RBAC"
+sidebarTitle: "Slice an API into Multiple Proxies"
+---
+
+A single REST API often needs to serve more than one kind of agent, each with a different level of trust. A fraud-review agent might only need to read transaction history; a treasury agent might need to initiate a wire transfer or freeze an account. Rather than exposing every operation to every agent through one proxy and relying on per-consumer policy to restrict access, you can [generate more than one MCP proxy from the same REST API](/ai-management/mcps/api-to-mcp), each with its own tool catalog, credential, and policy.
+
+This guide slices a payments API into two proxies: a read-only **Payments Reporting** proxy exposing only lookup operations, and a write-enabled **Payments Operations** proxy exposing wire transfers and account freezes.
+
+## Before You Begin
+
+- A Tyk-managed REST API (Tyk OAS format) already onboarded to Tyk, with its [API ID](/ai-management/mcp-gateway/api-to-mcp-definitions#the-upstream-adapter-target) to hand.
+- Tyk Gateway v5.15 or later, Enterprise Edition. See [Requirements](/ai-management/mcp-gateway/overview#requirements).
+
+## The Pattern
+
+Every proxy generated this way is its own [Tyk OAS API definition](/ai-management/mcp-gateway/mcp-proxy-definitions), so nothing stops you from creating several proxies that all point at the same source API. Each one has its own `upstream.url` adapter target (identical across every proxy sliced from the same source, since they all reference the same source API ID) and its own [`x-tyk-mcp-server`](/ai-management/mcp-gateway/api-to-mcp-definitions) extension, listing only the operations that proxy should expose.
+
+The two proxies below both target the same source API (ID `4d5e6f7a8b9c4d1e8f0a1b2c3d4e5f6a`), but each has its own allow-list:
+
+**Payments Reporting**, read-only lookups only:
+
+```json expandable
+{
+  "x-tyk-api-gateway": {
+    "info": { "name": "Payments Reporting", "state": { "active": true } },
+    "server": { "listenPath": { "value": "/payments-reporting/", "strip": true } },
+    "upstream": { "url": "tyk://4d5e6f7a8b9c4d1e8f0a1b2c3d4e5f6a/mcp" }
+  },
+  "x-tyk-mcp-server": {
+    "primitives": [
+      { "source": { "operationId": "getTransactionStatus" }, "name": "get_transaction_status", "allow": true },
+      { "source": { "operationId": "listTransactions" }, "name": "list_transactions", "allow": true }
+    ]
+  }
+}
+```
+
+**Payments Operations**, the write operations, none of the read-only ones:
+
+```json expandable
+{
+  "x-tyk-api-gateway": {
+    "info": { "name": "Payments Operations", "state": { "active": true } },
+    "server": { "listenPath": { "value": "/payments-operations/", "strip": true } },
+    "upstream": { "url": "tyk://4d5e6f7a8b9c4d1e8f0a1b2c3d4e5f6a/mcp" }
+  },
+  "x-tyk-mcp-server": {
+    "primitives": [
+      {
+        "source": { "method": "POST", "path": "/transfers" },
+        "name": "initiate_wire_transfer",
+        "annotations": { "destructiveHint": true },
+        "allow": true
+      },
+      {
+        "source": { "method": "POST", "path": "/accounts/{id}/freeze" },
+        "name": "freeze_account",
+        "allow": true
+      }
+    ]
+  }
+}
+```
+
+Neither definition needs to know about the other. Each is a complete, independent MCP proxy: the only thing they share is which source API they derive tools from.
+
+## Creating Both Proxies
+
+Create each definition through whichever interface you use to manage MCP proxies. The Tyk Dashboard, Tyk Operator, or the Gateway/Dashboard API all work the same way here, since both proxies are ordinary Tyk OAS API definitions. See [Creating and managing a proxy](/ai-management/mcps/api-to-mcp#creating-and-managing-a-proxy) for the specifics of each.
+
+In the Dashboard wizard specifically, this means running through **Tyk API** proxy creation twice against the same source API, deselecting different operations each time in the **Map endpoints to tools** step.
+
+## Governing Each Proxy Independently
+
+Because they're separate proxies, **Payments Reporting** and **Payments Operations** each get their own credential and [security policy](/ai-management/mcp-gateway/policies): issue keys scoped to whichever proxy an agent should reach, rather than relying on per-tool RBAC within a single shared proxy. A fraud-review agent's key never needs to be trusted with write access at all, because the write tools don't exist on the proxy it connects to.
+
+<Note>
+Tool names only need to be unique within the proxy that exposes them, with one exception: if two proxies sliced from the same source API both expose a tool with the same name, that name must refer to the same source operation in both. Giving the same tool name to two different operations across proxies on the same source API is a configuration error, not a runtime ambiguity: creating or reloading the second proxy fails outright. See [How to resolve tool and parameter collisions](/ai-management/mcp-gateway/how-to-resolve-tool-and-parameter-collisions) for the full collision rules.
+</Note>
