@@ -1237,9 +1237,10 @@ class DocsMerger:
             full_match = match.group(0)
             path = match.group(1)
 
-            # Skip external links and already processed absolute paths
+            # Skip external links, anchors, and already processed absolute paths
             if (path.startswith('http') or path.startswith('//') or
-                    path.startswith('mailto:') or path.startswith('/')):
+                    path.startswith('mailto:') or path.startswith('/') or
+                    path.startswith('#') or path.strip().startswith('#')):
                 return full_match
 
             changes_made += 1
@@ -1255,9 +1256,10 @@ class DocsMerger:
             path = match.group(3)
             after_href = match.group(4)
 
-            # Skip external links and already processed absolute paths
+            # Skip external links, anchors, and already processed absolute paths
             if (path.startswith('http') or path.startswith('//') or
-                    path.startswith('mailto:') or path.startswith(prefix)):
+                    path.startswith('mailto:') or path.startswith('#') or
+                    path.strip().startswith('#') or path.startswith(prefix)):
                 return match.group(0)
 
             # Add prefix to path (whether it starts with / or not)
@@ -1280,18 +1282,19 @@ class DocsMerger:
             # Strip leading/trailing whitespace from path
             path_stripped = path.strip()
 
-            # Skip external links and already processed absolute paths
+            # Skip external links, anchors, and already processed absolute paths
             if (path_stripped.startswith('http') or path_stripped.startswith('//') or
                     path_stripped.startswith('mailto:') or path_stripped.startswith('<mailto:') or
-                    path_stripped.startswith('/') or path_stripped.startswith(prefix)):
+                    path_stripped.startswith('/') or path_stripped.startswith('#') or
+                    path_stripped.startswith(prefix)):
                 return match.group(0)
 
             changes_made += 1
             return f'[{text}]({prefix}/{path_stripped})'
 
         # This regex is too broad and conflicts with the absolute path regex above
-        # It should only match relative paths (not starting with /)
-        content = re.sub(r'(?<!!)\[([^\]]+)\]\(([^/)][^)]*)\)', replace_relative_markdown, content)
+        # It should only match relative paths (not starting with / or #)
+        content = re.sub(r'(?<!!)\[([^\]]+)\]\(([^/#)][^)]*)\)', replace_relative_markdown, content)
 
         # Note: Snippet imports are now handled by the dedicated rewrite_snippet_imports function
 
