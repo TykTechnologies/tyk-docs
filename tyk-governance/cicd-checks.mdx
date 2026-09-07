@@ -1,0 +1,259 @@
+---
+title: "CI/CD Governance Checks"
+description: "Evaluate an API definition against Tyk Governance rulesets directly from a CI/CD pipeline, using the sandbox evaluation endpoint and a reference script."
+keywords: "Tyk Governance, API Governance, CI/CD, Governance Checks, Sandbox API"
+sidebarTitle: "CI/CD Governance Checks"
+---
+
+This page covers how to check an API definition against Tyk Governance rulesets directly from a CI/CD pipeline, evaluating the spec file itself rather than whatever is currently saved in Tyk Dashboard. It is written for the developer or platform engineer wiring a governance check into GitHub Actions, GitLab CI, Jenkins, or any other pipeline.
+
+It is the same rulesets and the same evaluation engine as Tyk Dashboard, so a spec that fails here would fail there too, and the reverse. What differs is when the check runs: from a pipeline you can check a spec that has never been imported, for example in a pull request before it merges.
+
+The other governance pages cover the rest of the picture. [Rulesets](/tyk-governance/rulesets) covers how platform teams define the standards being checked. [Service Compliance](/tyk-governance/service-compliance) covers how API owners see and resolve compliance issues for APIs already saved in Tyk Dashboard.
+
+**Currently supported:** OpenAPI Specification (OAS) files only. There is no MCP support on this endpoint yet.
+
+> **Before you start:** this requires a Tyk license with API Governance enabled. Without the license's governance scope, every governance endpoint, including this one, returns `403 Forbidden`, regardless of the token's own permissions. Contact your Tyk account team to have it enabled.
+
+{/* TODO: relink to the Governance Evaluation API reference page once the swagger-based api-reference pages are live. */}
+For the underlying endpoint itself, including request and response schemas, limits, and error codes, see the Governance Evaluation API reference.
+
+## Set Up the Check
+
+The fastest way to get a governance check running is a small reference script. It is a thin wrapper around one API call, so it works the same way in any CI system.
+
+### Step 1: Get the Script
+
+Copy the script below into your repo, for example as `scripts/governance-check.sh`, and make it executable with `chmod +x scripts/governance-check.sh`.
+
+It takes a spec file plus either `--categories` or `--ruleset-ids`, and optionally `--api-id`, `--api-name`, and `--strictness`. It requires `curl` and `jq`, and reads `TYK_DASHBOARD_URL` and `TYK_DASHBOARD_TOKEN` from the environment.
+
+What it does, in order: posts the spec to the sandbox endpoint, prints the full JSON result, fails outright if the response could not be parsed or came back truncated, then sums Error and Warn counts across only those rulesets whose `action` is not `none` and exits according to your strictness setting.
+
+```bash expandable
+#!/usr/bin/env bash
+# governance-check.sh - evaluate an OAS file against Tyk Governance rulesets from CI.
+#
+# Usage:
+#   ./governance-check.sh <spec-file> (--categories a,b | --ruleset-ids a,b) [--api-id id] [--api-name name] [--strictness strict|standard|permissive]
+#
+# Requires: curl, jq
+# Env vars: TYK_DASHBOARD_URL, TYK_DASHBOARD_TOKEN
+#
+# --strictness (default: standard)
+#   strict:      fail the build on any Error or Warn severity issue
+#   standard:    fail the build only on Error severity issues (matches the Dashboard's own compliance definition)
+#   permissive:  never fail on severity, just report. The check still fails if it couldn't run at all
+#                (bad response, or the response was truncated)
+#
+# Only rulesets whose action is not "none" count toward the pass/fail decision:
+# action: "none" means visibility-only in the Dashboard too (no Deployment Warning),
+# so a violation on one of those rulesets is reported but never fails the build,
+# regardless of strictness.
+set -euo pipefail
+SPEC_FILE="${1:?Usage: $0 <spec-file> (--categories a,b | --ruleset-ids a,b) [--api-id id] [--api-name name] [--strictness strict|standard|permissive]}"
+shift
+CATEGORIES=""
+RULESET_IDS=""
+API_ID=""
+API_NAME=""
+STRICTNESS="standard"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --categories) CATEGORIES="$2"; shift 2 ;;
+    --ruleset-ids) RULESET_IDS="$2"; shift 2 ;;
+    --api-id) API_ID="$2"; shift 2 ;;
+    --api-name) API_NAME="$2"; shift 2 ;;
+    --strictness) STRICTNESS="$2"; shift 2 ;;
+    *) echo "Unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+: "${TYK_DASHBOARD_URL:?Set TYK_DASHBOARD_URL}"
+: "${TYK_DASHBOARD_TOKEN:?Set TYK_DASHBOARD_TOKEN}"
+if [[ -z "$CATEGORIES" && -z "$RULESET_IDS" ]]; then
+  echo "Provide either --categories or --ruleset-ids" >&2
+  exit 2
+fi
+if [[ -n "$CATEGORIES" && -n "$RULESET_IDS" ]]; then
+  echo "Provide either --categories or --ruleset-ids, not both" >&2
+  exit 2
+fi
+case "$SPEC_FILE" in
+  *.yaml|*.yml) CONTENT_TYPE="application/yaml" ;;
+  *.json) CONTENT_TYPE="application/json" ;;
+  *) echo "Unrecognized file extension on $SPEC_FILE (expected .yaml, .yml or .json)" >&2; exit 2 ;;
+esac
+QUERY="categories=${CATEGORIES}"
+[[ -n "$RULESET_IDS" ]] && QUERY="ruleset_ids=${RULESET_IDS}"
+[[ -n "$API_ID" ]] && QUERY="${QUERY}&api_id=${API_ID}"
+[[ -n "$API_NAME" ]] && QUERY="${QUERY}&api_name=${API_NAME}"
+RESP="$(curl -sS -X POST \
+  "${TYK_DASHBOARD_URL}/api/evaluations/sandbox/oas?${QUERY}" \
+  -H "Authorization: Bearer ${TYK_DASHBOARD_TOKEN}" \
+  -H "Content-Type: ${CONTENT_TYPE}" \
+  --data-binary "@${SPEC_FILE}")"
+if ! echo "$RESP" | jq -e '.rulesets' >/dev/null 2>&1; then
+  echo "Unexpected response from Tyk Dashboard:" >&2
+  echo "$RESP" >&2
+  exit 2
+fi
+echo "$RESP" | jq .
+ERROR_FIELD="$(echo "$RESP" | jq -r '.error')"
+TRUNCATED="$(echo "$RESP" | jq -r '.truncated')"
+if [[ "$ERROR_FIELD" != "null" || "$TRUNCATED" == "true" ]]; then
+  echo "Evaluation returned an error, or the response was truncated. Treating this as a failed check regardless of strictness." >&2
+  exit 2
+fi
+TOTAL_ERRORS="$(echo "$RESP" | jq -r '.error_count')"
+TOTAL_WARNS="$(echo "$RESP" | jq -r '.warn_count')"
+# Only rulesets with action != "none" gate the build; see the note at the top of this file.
+GATING_ERRORS="$(echo "$RESP" | jq -r '[.rulesets[] | select(.action != "none") | .error_count] | add // 0')"
+GATING_WARNS="$(echo "$RESP" | jq -r '[.rulesets[] | select(.action != "none") | .warn_count] | add // 0')"
+echo "Totals across all rulesets: ${TOTAL_ERRORS} error(s), ${TOTAL_WARNS} warning(s)."
+echo "Counting only rulesets with action != none: ${GATING_ERRORS} error(s), ${GATING_WARNS} warning(s)."
+if [[ "$GATING_ERRORS" -gt 0 ]]; then
+  RESULT_CODE=2
+  echo "Result: non-compliant."
+elif [[ "$GATING_WARNS" -gt 0 ]]; then
+  RESULT_CODE=1
+  echo "Result: compliant, with warnings."
+else
+  RESULT_CODE=0
+  echo "Result: compliant."
+fi
+case "$STRICTNESS" in
+  strict)     exit "$RESULT_CODE" ;;
+  standard)   [[ "$RESULT_CODE" -eq 2 ]] && exit 2 || exit 0 ;;
+  permissive) exit 0 ;;
+  *) echo "Unknown --strictness value: $STRICTNESS (expected strict, standard, or permissive)" >&2; exit 2 ;;
+esac
+```
+
+{/* TODO: relink to the Governance Evaluation API reference page, and its Gating Correctly section, once the swagger-based api-reference pages are live. */}
+If you would rather call the endpoint directly, from another language or a CI system's native HTTP step, use the Governance Evaluation API reference instead. Read Gating Correctly in that reference first: there are two traps that make a naive implementation pass every build.
+
+### Step 2: Add It to Your Pipeline
+
+Drop a step into your existing pipeline configuration that calls the script. The script itself does not change between platforms, only the surrounding config does.
+
+**GitHub Actions**, a step in `.github/workflows/*.yml`:
+
+```yaml
+- name: Governance check
+  env:
+    TYK_DASHBOARD_URL: ${{ secrets.TYK_DASHBOARD_URL }}
+    TYK_DASHBOARD_TOKEN: ${{ secrets.TYK_DASHBOARD_TOKEN }}
+  run: ./scripts/governance-check.sh openapi.yaml --categories payments --api-id checkout-api
+```
+
+**GitLab CI**, a job in `.gitlab-ci.yml`:
+
+```yaml
+governance_check:
+  stage: test
+  script:
+    - ./scripts/governance-check.sh openapi.yaml --categories payments --api-id checkout-api
+  # TYK_DASHBOARD_URL and TYK_DASHBOARD_TOKEN are configured as
+  # protected/masked CI/CD variables under Settings > CI/CD.
+```
+
+**Jenkins**, a stage in your `Jenkinsfile`:
+
+```groovy
+stage('Governance check') {
+    environment {
+        TYK_DASHBOARD_URL = credentials('tyk-dashboard-url')
+        TYK_DASHBOARD_TOKEN = credentials('tyk-dashboard-token')
+    }
+    steps {
+        sh './scripts/governance-check.sh openapi.yaml --categories payments --api-id checkout-api'
+    }
+}
+```
+
+### Step 3: Configure Authentication
+
+`TYK_DASHBOARD_TOKEN` is the standard Tyk Dashboard user API token, the same one used to call any other Dashboard API endpoint such as `GET /api/apis` or `POST /api/apis/oas`. It is not a separate governance-specific credential. Find it in Tyk Dashboard under your user profile's API Access Credentials.
+
+The token inherits that user's permissions, and because the sandbox endpoints are exposed as `POST` requests, the token's user needs `apis: write` permission, not just `apis: read`.
+
+Use a dedicated user and token for CI rather than a personal one, and set both `TYK_DASHBOARD_TOKEN` and `TYK_DASHBOARD_URL` as secrets in your CI provider, using GitHub Actions secrets, GitLab CI/CD variables, Jenkins credentials, or the equivalent. Never commit them to the repo.
+
+### Step 4: Point It at Your Spec and Ruleset
+
+The script needs two things, passed as arguments in the pipeline step above:
+
+- **Which spec file to check.** The OAS file already in your repo, for example `openapi.yaml`. It does not need to be imported into Tyk Dashboard.
+- **Which rulesets to check it against**, either `--categories`, meaning the categories your governance owner has linked rulesets to, resolved at check time, or `--ruleset-ids`, meaning specific ruleset IDs if you want a fixed set regardless of category changes. Pick one. See [Best Practices](#best-practices) for when to use which.
+
+Passing `--api-id` is optional but recommended. It keeps issue IDs stable across commits instead of changing every time the file is edited. You can also pass `--api-name` for a human-readable label in the response; it is purely cosmetic and has no effect on gating.
+
+Not sure what to pass for categories or ruleset IDs? Both are visible in Tyk Dashboard under **Governance > Rulesets**: each ruleset's detail page shows its linked categories and its ID. To script the lookup instead, `GET /api/rulesets` lists every ruleset in your organization along with its categories.
+
+### Step 5: Choose Your Strictness Level
+
+Add `--strictness strict` or `--strictness permissive` if the default does not match your team's policy:
+
+- **`strict`**: fails the build on any Error or Warn severity issue.
+- **`standard`** (the default): fails the build only on Error severity issues, matching how compliance is defined in Tyk Dashboard.
+- **`permissive`**: never fails on severity, and only reports, like Tyk Dashboard's own soft warning. Useful while you are first rolling this out to a team and do not want it breaking builds yet.
+
+Under every strictness level the check still fails if it could not run at all, meaning a bad response or a truncated one.
+
+Only rulesets whose `action` is not `none` count toward the pass or fail decision. A `none` ruleset is visibility-only in Tyk Dashboard too, with no Deployment Warning, so a violation on one is reported but never fails the build, regardless of strictness.
+
+### Step 6: Run the Pipeline
+
+From here it is automatic. When a developer pushes a commit or opens a pull request, the pipeline step:
+
+1. Reads the spec file.
+2. Sends it to the Tyk Dashboard sandbox endpoint, along with the rulesets or category.
+3. Gets back the list of issues, each with a severity, its exact location in the spec, and "how to fix" guidance.
+4. Prints the full result in the pipeline log.
+5. Exits `0` if the result passes your strictness setting, or non-zero if it does not, stopping the pipeline there.
+
+To see what a failure looks like before it can affect a real build, run the same command once with `--strictness permissive` against a spec you suspect has issues. It prints the same result without ever exiting non-zero, which is a safe way to try this out before switching to `standard` or `strict`.
+
+### Step 7: Fix and Re-Run
+
+If the check fails, read the `how_to_fix` text on each failing issue, which points to exactly where in the spec the problem is. Make the change and push again. The check re-runs automatically on the next pipeline run.
+
+For fixing the same issues inside Tyk Dashboard instead, see [Remediate Issues](/tyk-governance/remediate-issues).
+
+## Best Practices
+
+- **Pass `api_id`.** Without it, issue IDs are derived from a content hash of the spec and change on every edit, making it hard to track a specific issue across commits. Pass a stable identifier; your API or repo name works well.
+- **Treat `truncated: true` as a failure, not a warning.** Truncation only caps the itemized issue list at the top 1,000 entries; `error_count`, `warn_count` stay accurate regardless. So the build fails or passes either way correctly; what you lose is visibility into every issue's exact location and `how_to_fix` guidance past the cutoff. Fail the build and narrow the ruleset or category scope so you can actually see and fix everything, rather than working from a partial list.
+- **Choose `ruleset_ids`** when you want a fixed, explicit set of checks, for example a security baseline every pipeline must pass regardless of what else is active in the organization. **Choose `categories`** when you want the pipeline to pick up whatever rulesets a platform team currently has linked to that category, so CI tracks the same governance scope Tyk Dashboard applies without pipeline config changes every time a ruleset changes. Note that category-based resolution returns only active, non-template rulesets; to test against a ruleset still marked as a template, reference it explicitly with `ruleset_ids`.
+- **Use a dedicated token for CI, not a personal one.** Create or designate a user for pipeline use with `apis: write` permission, rather than reusing an individual's personal credentials.
+- **Store the token as a pipeline secret.** Use your CI provider's built-in secrets manager rather than committing it or passing it as a plain environment variable in a script.
+
+## FAQ
+
+<AccordionGroup>
+<Accordion title='Does this import my API into Tyk Dashboard?'>
+No. The sandbox endpoint evaluates the submitted document and returns results. Nothing is saved, and no API record is created. It is a one-off check, not an onboarding step.
+</Accordion>
+
+<Accordion title="Can I evaluate an API that isn't in Tyk Dashboard yet?">
+Yes, that is the main use case. You do not need to import or register an API before running this check, which is what makes it useful for shift-left validation on a spec that is still just a file in your repo.
+</Accordion>
+
+<Accordion title='Can I use this for MCP specs?'>
+Not yet. This endpoint currently supports Tyk OAS APIs only.
+</Accordion>
+
+<Accordion title='Do I need to keep a copy of the ruleset definition in my repo?'>
+No. Rulesets live in Tyk Dashboard, and you reference them from your pipeline by `ruleset_ids` or `categories`, so the pipeline always checks against whatever the platform team currently has configured.
+</Accordion>
+
+<Accordion title='Why does my pipeline pass when the spec is non-compliant?'>
+{/* TODO: relink to the Governance Evaluation API reference page's Gating Correctly section once the swagger-based api-reference pages are live. */}
+Almost always because the check is gating on the HTTP status code, which is `200` whenever the evaluation ran successfully, even with Error-severity issues. Violations live in the response body. See Gating Correctly in the Governance Evaluation API reference.
+</Accordion>
+
+<Accordion title='How many categories or ruleset IDs can I pass in one call?'>
+{/* TODO: relink to the Governance Evaluation API reference page's Limits section once the swagger-based api-reference pages are live. */}
+Twenty of each, and category resolution is also capped at 20 resolved rulesets. This limit applies to the sandbox endpoint only, not to Tyk Dashboard. See Limits in the Governance Evaluation API reference.
+</Accordion>
+</AccordionGroup>

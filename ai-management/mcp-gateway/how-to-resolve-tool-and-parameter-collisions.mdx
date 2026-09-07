@@ -1,0 +1,77 @@
+---
+title: "How to resolve tool and parameter collisions"
+description: "Understand when Tyk automatically resolves a naming collision when generating an MCP proxy from a REST API, when it's a hard error you must fix yourself, and how to fix it with an explicit override."
+keywords: "MCP, Model Context Protocol, REST API to MCP, tool name collision, parameter collision, x-tyk-mcp-server, operationId, duplicate tool name"
+sidebarTitle: "Resolve Tool and Parameter Collisions"
+---
+
+Generating an MCP proxy [directly from a Tyk-managed REST API](/ai-management/mcps/api-to-mcp) can produce two kinds of naming collision: two operations deriving the same tool name, or two parameters on the same operation deriving the same argument name. Whether Tyk resolves a collision automatically or requires you to fix it depends on what is colliding.
+
+This guide covers both collision types, how to tell them apart, and how to resolve each with an explicit override.
+
+<Note>
+This page covers collisions **within a single proxy's** own tool catalog. If you've [sliced one REST API across multiple MCP proxies](/ai-management/mcp-gateway/how-to-slice-one-api-into-multiple-mcp-proxies), there's a separate, cross-proxy rule: any tool name shared by two proxies pairing to the same source API must refer to the same source operation in both. See [Governing each proxy independently](/ai-management/mcp-gateway/how-to-slice-one-api-into-multiple-mcp-proxies#governing-each-proxy-independently).
+</Note>
+
+## Before You Begin
+
+- A Tyk-managed REST API (Tyk OAS format) already onboarded to Tyk.
+- Tyk Gateway v5.15 or later, Enterprise Edition. See [Requirements](/ai-management/mcp-gateway/overview#requirements).
+
+## Tool Name Collisions
+
+Every operation becomes a tool named after its `operationId`, or a deterministic name derived from its HTTP method and path if it has none. See [Tool naming and discovery](/ai-management/mcp-gateway/core-concepts#tool-naming-and-discovery) for how each is derived.
+
+### Auto-Resolved: Operations Without an operationId
+
+If an operation has no `operationId` and its derived method-and-path name collides with another tool name already in use, Tyk resolves it: it retries with an 8-character hash suffix, and if that still collides, adds a numeric suffix (`_0`, `_1`, and so on) until it finds a free name.
+
+No action is required, but the resulting name is less predictable than a hand-chosen one. If a stable, readable name matters for a specific tool, give the source operation an `operationId` or add an explicit `name` override.
+
+### Hard Error: Operations With an operationId
+
+If an operation *does* have an `operationId`, a name collision is not resolved automatically. It is a hard error that blocks saving or reloading the proxy:
+
+```text
+duplicate tool name "get_order"
+```
+
+This happens if two different operations end up with the same `operationId` (often a copy-paste mistake in the source OAS), or if an explicit `name` override in `x-tyk-mcp-server` happens to match another tool's name. Fix it either in the source spec (give one operation a distinct `operationId`) or in the proxy definition, by adding an explicit override to one of the colliding entries:
+
+```json
+{
+  "source": { "operationId": "getOrder" },
+  "name": "get_order_by_id"
+}
+```
+
+## Parameter Collisions
+
+Path, query, header, and body parameters on one operation are flattened into a single MCP tool input schema. Two parameters from different locations can easily share a name, for example, a path parameter `id` and a query parameter `id` on the same operation.
+
+### Auto-Resolved: Path, Query, and Header Parameters
+
+When a non-body parameter's name collides with another parameter on the same operation, Tyk prefixes it with its location: a colliding path parameter `id` becomes `path_id`, a colliding query parameter `id` becomes `query_id`, and so on. A parameter with a unique name is left alone: the prefix only appears once a collision actually exists.
+
+### Hard Error: Body Parameters
+
+Body fields are deliberately excluded from that automatic prefixing. If a body field's name collides with a path, query, or header parameter, or with another body field, it is a hard error at build time:
+
+```text
+duplicate exposed parameter name "id"
+```
+
+The only way to resolve this is an explicit parameter override, renaming one side of the collision:
+
+```json
+{
+  "source": { "operationId": "getOrder" },
+  "parameters": [
+    { "param": "id", "name": "order_id" }
+  ]
+}
+```
+
+`param` refers to the parameter's derived name before any prefixing; `name` is what the calling agent sees instead.
+
+See [REST API to MCP schema](/ai-management/mcp-gateway/api-to-mcp-definitions) for the full `name` and `parameters[]` override reference.
