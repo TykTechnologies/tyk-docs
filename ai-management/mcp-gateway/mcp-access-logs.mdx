@@ -2,7 +2,7 @@
 title: "MCP Gateway Access Logs"
 sidebarTitle: "Access Logs"
 description: "MCP-specific fields available in Tyk Gateway structured access logs, including JSON-RPC method, primitive type, primitive name, and error code."
-keywords: "mcp, access logs, observability, logging, mcp_method, mcp_primitive_name, json-rpc"
+keywords: "mcp, access logs, observability, logging, mcp_method, mcp_primitive_name, json-rpc, api to mcp"
 ---
 
 When Tyk Gateway processes an MCP request, it adds four MCP-specific fields to the structured access log record for that request. These fields let you filter, aggregate, and analyze MCP traffic in your log management tooling using the same access log pipeline you use for REST APIs.
@@ -43,6 +43,51 @@ The `mcp_error_code` field reflects errors that occur within the gateway: authen
 | `-32004` | Upstream error (502/503/504) |
 | `-32600` | Invalid request (400) |
 | `-32603` | Internal error (500) |
+
+## Access logs when the proxy fronts a Tyk-managed REST API
+
+When an MCP proxy is [generated directly from a Tyk-managed REST API](/ai-management/mcps/api-to-mcp) rather than fronting a remote MCP server, a single `tools/call` request produces two separate access log entries, provided access logging is enabled for both APIs.
+
+The first entry is for the MCP proxy request itself, and carries the MCP fields described above. The second is for Tyk's internal call into the paired source REST API, dispatched through the gateway's standard request handling. That second entry has no MCP fields at all: its `api_type` reflects the source API's own type (`oas` for a Tyk OAS API), and it is otherwise indistinguishable from a request made directly against that API.
+
+```json expandable
+{
+  "api_id": "orders-mcp",
+  "api_name": "Orders MCP Proxy",
+  "api_type": "mcp",
+  "client_ip": "10.0.0.42",
+  "latency_total": 187,
+  "method": "POST",
+  "mcp_method": "tools/call",
+  "mcp_primitive_name": "get_order_status",
+  "mcp_primitive_type": "tool",
+  "path": "/mcp",
+  "prefix": "access-log",
+  "status": 200,
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
+}
+```
+
+```json expandable
+{
+  "api_id": "orders-rest",
+  "api_name": "Orders REST API",
+  "api_type": "oas",
+  "client_ip": "10.0.0.42",
+  "latency_total": 142,
+  "method": "GET",
+  "path": "/orders/{id}/status",
+  "prefix": "access-log",
+  "status": 200,
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
+}
+```
+
+If [OpenTelemetry tracing](/api-management/traces) is enabled alongside access logging, both entries carry the same `trace_id`: Tyk dispatches the internal call to the source API within the same trace as the originating MCP request, so the two entries are spans of one trace rather than unrelated hits. Without tracing enabled, there is no shared identifier between the two entries, so correlate them by timestamp. The proxy's own `latency_total` includes the time spent on the source API call, so it is always the larger of the two figures.
+
+<Note>
+This dual-record pattern isn't unique to access logs. The Dashboard's [MCP analytics](/ai-management/mcp-gateway/mcp-analytics) charts, and the Tyk Pump analytics pipeline underneath them, follow the same rule: only the MCP proxy's own record is recorded as MCP traffic, so the source API's analytics include this internal traffic indistinguishably alongside any direct hits it receives. See [Tyk Pump](/api-management/tyk-pump) for how analytics records are processed and stored.
+</Note>
 
 ## Configuring which fields to include
 

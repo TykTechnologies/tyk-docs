@@ -1,0 +1,233 @@
+---
+title: "REST API to MCP x-tyk-mcp-server extension"
+sidebarTitle: "REST API to MCP Schema"
+description: "Full field reference for the x-tyk-mcp-server vendor extension: source selection, tool and parameter overrides, behavioral hints, the allow-list selection rule, and worked examples."
+keywords: "MCP, Model Context Protocol, x-tyk-mcp-server, primitives, allow list, tool name validation, behavioral hints, REST API to MCP"
+---
+
+## Availability
+
+| Component   | Version              | Editions                |
+| :------------- | :---------------------- | :------------------------- |
+| Gateway | Available since [v5.15.0](/developer-support/release-notes/gateway) | Enterprise |
+
+## Overview
+
+An MCP proxy [generated directly from a Tyk-managed REST API](/ai-management/mcps/api-to-mcp) has one further structure beyond the definition covered in [MCP proxy definitions](/ai-management/mcp-gateway/mcp-proxy-definitions): `x-tyk-mcp-server`, a vendor extension alongside `x-tyk-api-gateway` rather than nested inside it. It holds the tool catalog Tyk derives from the source API's OpenAPI operations: which operations are exposed as tools, and any name, description, or parameter overrides applied to them.
+
+`x-tyk-mcp-server` can only be present when `upstream.url` is a REST API adapter target. Tyk rejects the extension outright on a proxy that fronts a remote MCP server.
+
+## The Upstream Adapter Target
+
+For an MCP proxy generated directly from a Tyk-managed REST API, `upstream.url` holds an adapter target instead of a remote server's url, for example `tyk://a1b2c3d4e5f647a8b9c0d1e2f3a4b5c6/mcp`.
+
+`tyk://` is Tyk's internal-routing scheme for addressing another Tyk-managed API without a real network hop, always shaped `tyk://<api-id>/<path>`. For most uses of this scheme, `<path>` is a real path on the target API. Here it is not: your REST API does not need an actual `/mcp` endpoint.
+
+`/mcp` is a fixed marker value that identifies this as a REST API to MCP adapter target rather than an ordinary internal call. Only the host portion identifies something real: your paired REST API's own ID.
+
+If your REST API's OpenAPI specification already defines a real path at `/mcp`, Tyk uses a different marker instead, appending `__mcp-server` to the API ID with no path. This is not something you configure.
+
+Tyk fills in this value for you when you create the proxy through the Dashboard wizard or the API, so you don't need to know the source API's ID yourself. If you're hand-authoring the definition, for example via Tyk Operator, you can find that ID:
+
+- **Dashboard**: on the source API's own detail page, where the API ID is shown and copyable.
+- **API**: in the `api_id` field of the response when you `GET` the source API's own definition.
+- **Tyk Operator**: in `.status.id` once the Operator has reconciled the source API's `TykOasApiDefinition`, for example, `kubectl get tykoasapidefinition <name> -o jsonpath='{.status.id}'`.
+
+<Note>
+In Tyk, each version of a versioned API is its own separate API definition with its own distinct API ID: a base API just holds a lookup of version name to version ID, not the versions themselves. Because the adapter target points at one specific API ID, it points at one specific version of the source API, not "the API" across all its versions. Pick the version you want when you create the proxy: switching to a different version later means changing `upstream.url` to that version's own API ID, which in practice means creating a new proxy rather than editing the existing one.
+</Note>
+
+## Structure
+
+`x-tyk-mcp-server` holds a single field, `primitives`, an array with one entry per tool you want to configure:
+
+| Field | Type | Description |
+|---|---|---|
+| `primitives[].source` | object | Identifies the source REST operation this entry configures. See [Source](#source). |
+| `primitives[].name` | string | Overrides the derived MCP-facing tool name. |
+| `primitives[].description` | string | Overrides the derived MCP-facing tool description. |
+| `primitives[].annotations` | object | Overrides the tool's behavioral hints. See [Behavioral Hints](#behavioral-hints). |
+| `primitives[].parameters` | array | Per-parameter name and description overrides. See [Overriding Tool and Parameter Names and Descriptions](#overriding-tool-and-parameter-names-and-descriptions). |
+| `primitives[].allow` | boolean | Whether this tool is exposed. See [Selecting Which Operations Become Tools](#selecting-which-operations-become-tools). |
+
+You only need to list a source operation here if you want to override something about it or explicitly select it. An operation with no entry at all still becomes a tool under the default (no-allow-list) behavior described below.
+
+A single entry using every field looks like this:
+
+```json
+{
+  "source": { "operationId": "getOrderStatus" },
+  "name": "get_order_status",
+  "description": "Look up the current status of a customer order by ID.",
+  "annotations": { "readOnlyHint": true },
+  "parameters": [
+    { "param": "id", "name": "order_id", "description": "The order to look up." }
+  ],
+  "allow": true
+}
+```
+
+## Source
+
+`source` identifies which REST operation a primitive entry configures, using exactly one of two forms. Specifying both, or neither, fails validation when the definition loads.
+
+| Field | Type | Description |
+|---|---|---|
+| `source.operationId` | string | Selects the source operation by its OpenAPI `operationId`. Use this whenever the operation has one. |
+| `source.method` + `source.path` | string | Selects the source operation by HTTP method and OAS path template, for operations with no `operationId`. Rejected if the matched operation actually has an `operationId` — use `source.operationId` for it instead. |
+
+Both of the following select the same operation, assuming `getOrderStatus` is that operation's `operationId` — but not both together, since combining `operationId` with `method`/`path` on the same entry is itself a validation error:
+
+```json
+{ "source": { "operationId": "getOrderStatus" } }
+```
+
+```json
+{ "source": { "method": "GET", "path": "/orders/{id}/status" } }
+```
+
+## Selecting Which Operations Become Tools
+
+All operations become tools by default. To explicitly declare what operations are exposed as tools, add entries with `allow: true` for only the operations you want exposed. As soon as one entry has `allow: true`, Tyk switches to that explicit allow-list and every other operation is excluded.
+
+Source and `allow` are the only two fields required to expose a tool: no name, description, or other overrides are needed.
+
+```json
+{ "source": { "operationId": "getOrderStatus" }, "allow": true }
+```
+
+## Overriding Tool and Parameter Names and Descriptions
+
+`name` and `description` override the tool's caller-facing identity; `parameters` overrides individual arguments:
+
+| Field | Type | Description |
+|---|---|---|
+| `parameters[].param` | string | The derived MCP argument name to override. |
+| `parameters[].name` | string | The caller-facing replacement name. |
+| `parameters[].description` | string | The caller-facing replacement description. |
+
+Tool names must be non-empty, no more than 128 characters, and contain only ASCII letters, digits, underscores, hyphens, and dots (`^[A-Za-z0-9_.-]+$`). Tyk rejects an invalid name rather than sanitizing it.
+
+```json
+{
+  "source": { "operationId": "getOrderStatus" },
+  "name": "get_order_status",
+  "description": "Look up the current status of a customer order by ID.",
+  "parameters": [
+    { "param": "id", "name": "order_id", "description": "The order to look up." }
+  ]
+}
+```
+
+This renames the tool from its derived name to `get_order_status` with a clearer description, and renames its `id` parameter to `order_id` for the calling agent.
+
+## Behavioral Hints
+
+`annotations` sets the tool's MCP behavioral hints:
+
+| Field | Type | Description |
+|---|---|---|
+| `annotations.title` | string | A human-readable display name for the tool. |
+| `annotations.readOnlyHint` | boolean | Whether the tool is expected to avoid modifying state. |
+| `annotations.destructiveHint` | boolean | Whether the tool may perform destructive updates. |
+| `annotations.idempotentHint` | boolean | Whether repeated calls with the same arguments have the same effect. |
+| `annotations.openWorldHint` | boolean | Whether the tool interacts with external systems. |
+
+```json
+{
+  "source": { "operationId": "cancelOrder" },
+  "annotations": { "destructiveHint": true, "idempotentHint": false }
+}
+```
+
+This marks `cancelOrder` as destructive and explicitly not idempotent: calling it twice may cancel two different orders or otherwise produce different results, so an agent shouldn't retry it blindly on failure.
+
+<Note>
+These fields are configurable directly in the OAS definition, but the Tyk Dashboard's wizard and designer don't yet expose a UI control for them.
+</Note>
+
+## Compact and Expanded Shapes
+
+The fields above are all Tyk persists. They do not show what inputs the finished tool expects, what type each one is, or where each goes in the REST request (a path segment, a query parameter, a header, or the request body).
+
+Requesting the definition with `expand=true` computes that from the source operation and adds it to the response as read-only fields, letting you preview the finished tool shape before saving: `inputSchema`, `outputSchema`, `parameterLocations`, `parameterSourceNames`, `parameterSerializations`, `parameterOrder`, and `requestBodyContentType`. These expanded fields are never accepted on write; sending them back has no effect.
+
+For example, this is all you write and Tyk stores for an entry:
+
+```json
+{
+  "source": { "operationId": "getOrderStatus" },
+  "name": "get_order_status",
+  "allow": true
+}
+```
+
+Requesting the definition with `expand=true` returns that same entry with the extra read-only fields filled in:
+
+```json expandable
+{
+  "source": { "operationId": "getOrderStatus" },
+  "name": "get_order_status",
+  "allow": true,
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "id": { "type": "string" }
+    },
+    "required": ["id"]
+  },
+  "parameterLocations": { "id": "path" },
+  "parameterSourceNames": { "id": "id" }
+}
+```
+
+## Complete Example
+
+```json expandable
+{
+  "x-tyk-mcp-server": {
+    "primitives": [
+      {
+        "source": { "operationId": "getOrderStatus" },
+        "name": "get_order_status",
+        "description": "Look up the current status of a customer order by ID.",
+        "annotations": { "readOnlyHint": true },
+        "allow": true
+      },
+      {
+        "source": { "method": "POST", "path": "/orders/{id}/cancel" },
+        "name": "cancel_order",
+        "description": "Cancel an order that hasn't shipped yet.",
+        "parameters": [
+          { "param": "id", "name": "order_id", "description": "The order to cancel." }
+        ],
+        "annotations": { "destructiveHint": true }
+      }
+    ]
+  }
+}
+```
+
+This proxy exposes exactly one tool, `get_order_status`, the only entry marked `allow: true`. `cancel_order` is not exposed, since it is not marked `allow: true`, and neither is any other operation on the source API. Its `description` and `annotations` overrides are still saved in the definition, and take effect only if you later add `allow: true` to that same entry.
+
+```json expandable
+{
+  "x-tyk-mcp-server": {
+    "primitives": [
+      {
+        "source": { "method": "POST", "path": "/orders/{id}/cancel" },
+        "name": "cancel_order",
+        "description": "Cancel an order that hasn't shipped yet.",
+        "parameters": [
+          { "param": "id", "name": "order_id", "description": "The order to cancel." }
+        ],
+        "annotations": { "destructiveHint": true }
+      }
+    ]
+  }
+}
+```
+
+In the above example, all operations on the source API are exposed as tools. `cancel_order` has overridden `description`, `parameters`, and `annotations`, but every other operation on the source API becomes a tool too.
+
+To build up an explicit allow-list, add `allow: true` to each operation you want exposed, one at a time. This means new operations added to the API later won't be inadvertently exposed as a tool unless you explicitly add them.
