@@ -43,31 +43,59 @@ To enhance security by restricting visibility of the credentials, these can be s
 
 Some auth servers will return *additional metadata* with the access token (for example, the URL of the upstream server that should be addressed using the token if this can vary per client). Tyk can accommodate this using the optional `extraMetadata` field in the API definition. The response from the auth server will be parsed for any fields defined in `extraMetadata`; any matches will be saved to the request context where they can be accessed from other middleware (for our example, the URL rewrite middleware could be used to [transform the upstream target URL](/transform-traffic/url-rewriting)).
 
+#### Authentication Method
+
+When Tyk requests a token from the auth server, it must authenticate itself using its client ID and client secret. The OAuth standard allows these credentials to be sent either as HTTP Basic Authentication in the request header, or as form fields in the request body; different auth servers accept different methods.
+
+By default, Tyk tries the header first and, if the auth server rejects it, retries with the credentials in the body - this is standards-compliant, but for an auth server that only accepts body credentials, it means every token request needlessly fails once before succeeding, producing avoidable `400 Bad Request` errors in your logs and monitoring.
+
+If you know which method your auth server expects, set the optional `method` field to `client_secret_basic` (header only) or `client_secret_post` (body only) so Tyk sends a single, correct request. Leave `method` unset to keep the default automatic behavior.
+
 #### Configuring Upstream OAuth 2.0 Client Credentials in the Tyk OAS API definition
 
 Upstream Authentication is configured per-API in the Tyk extension (`x-tyk-api-gateway`) within the Tyk OAS API definition by adding the `authentication` section within the `upstream` section.
 
 Set `upstream.authentication.enabled` to `true` to enable upstream authentication.
 
-For OAuth 2.0 Client Credentials, you will need to add the `oauth` section within `upstream.authentication`.
+For OAuth 2.0 Client Credentials, you will need to add the `oauth` section within `upstream.authentication`:
 
-This has the following parameters:
-- `enabled` set this to `true` to enable upstream OAuth authentication
-- `allowedAuthorizeTypes` should include the value `clientCredentials`
-- `clientCredentials` should be configured with:
-    - `tokenUrl` is the URL of the `/token` endpoint on the *auth server*
-    - `clientId` is the client ID to be provided to the *auth server*
-    - `clientSecret` is the client secret to be provided to the *auth server*
-    - `scopes` is an optional array of authorization scopes to be requested
-    - `extraMetadata` is an optional array of additional fields to be extracted from the *auth server* response
-    - `header.enabled` must be set to `true` if your upstream expects the credentials to be in a custom header, otherwise it can be omitted to use `Authorization` header 
-    - `header.name` is the custom header to be used if `header.enabled` is set to `true`
+```json expandable
+"oauth": {
+    "enabled": true,
+    "allowedAuthorizeTypes": ["clientCredentials"],
+    "clientCredentials": {
+        "tokenUrl": "http://<my-auth-server>/token",
+        "clientId": "client123",
+        "clientSecret": "secret123",
+        "method": "client_secret_post",
+        "scopes": ["scope1"],
+        "extraMetadata": ["instance_url"],
+        "header": {
+            "enabled": true,
+            "name": "Authorization"
+        }
+    }
+}
+```
+
+| Field | Description |
+|---|---|
+| `enabled` | Set to `true` to enable upstream OAuth authentication. |
+| `allowedAuthorizeTypes` | Should include the value `clientCredentials`. |
+| `clientCredentials.tokenUrl` | The URL of the `/token` endpoint on the *auth server*. |
+| `clientCredentials.clientId` | The client ID to be provided to the *auth server*. |
+| `clientCredentials.clientSecret` | The client secret to be provided to the *auth server*. |
+| `clientCredentials.method` | Optional. Controls how the client ID and secret are sent to the *auth server*'s token endpoint: `client_secret_basic` sends them in the request header, `client_secret_post` sends them in the request body. Leave unset for Tyk's automatic detection (tries the header first, then the body). |
+| `clientCredentials.scopes` | Optional array of authorization scopes to be requested. |
+| `clientCredentials.extraMetadata` | Optional array of additional fields to be extracted from the *auth server* response. |
+| `clientCredentials.header.enabled` | Set to `true` if your upstream expects the credentials to be in a custom header. Otherwise, omit to use the `Authorization` header. |
+| `clientCredentials.header.name` | The custom header to use, if `header.enabled` is `true`. |
 
 Note that if you use the [Tyk API Designer](/api-management/upstream-authentication/basic-auth#configuring-upstream-basic-auth-using-the-api-designer) in Tyk Dashboard it will always configure the `header` parameter - even if you are using the default `Authorization` value.
 
 For example:
 
-```json {hl_lines=["43-62"],linenos=true, linenostart=1}
+```json {hl_lines=["43-63"],linenos=true, linenostart=1}
 {
     "info": {
         "title": "example-upstream-client-credentials",
@@ -125,6 +153,7 @@ For example:
                         "tokenUrl": "http://<my-auth-server>/token",
                         "clientId": "client123",
                         "clientSecret": "secret123",
+                        "method": "client_secret_post",
                         "scopes": ["scope1"],
                         "extraMetadata": ["instance_url"]
                     }
@@ -135,7 +164,7 @@ For example:
 }
 ```
 
-In this example upstream authentication has been enabled (line 44). The authentication method to be used is indicated in lines 46 (OAuth) and 48 (client credentials). When a request is made to the API, Tyk will request an access token from the *authorization server* at `http://<my-auth-server>` providing client credentials and the scope `scope1`.
+In this example upstream authentication has been enabled (line 44). The authentication method to be used is indicated in lines 46 (OAuth) and 48 (client credentials). When a request is made to the API, Tyk will request an access token from the *authorization server* at `http://<my-auth-server>` providing client credentials and the scope `scope1`. Since `method` is set to `client_secret_post`, Tyk sends the client ID and secret in the request body.
 
 Tyk will parse the response from the *authorization server* for the key `instance_url`, storing any value found in the *request context* were it can be accessed by other middleware as `$tyk_context.instance_url` (note the rules on accessing [request context variables from middleware](/api-management/traffic-transformation/request-context-variables)).
 
@@ -149,6 +178,8 @@ Upstream Authentication is configured from the **Settings** tab of the Tyk OAS A
 
 Select **OAuth** from the choice in the **Authentication Method** drop-down, then you can provide the header name, authorization server token URL and select **Client Credentials** to reveal the configuration for the credentials to be passed to the auth server.
 
+Use the **Client authentication method** drop-down to control how the client ID and secret are sent to the auth server: **Header then body** (the default) preserves Tyk's automatic detection; **Header** sends them as HTTP Basic Authentication only; **Body** sends them as form fields only. Leave the default selected unless you know which method your auth server requires.
+
 <img src="/img/dashboard/api-designer/upstream-oauth-client-credentials.png" alt="Tyk OAS API Designer showing Upstream OAuth client credentials configuration options" />
 
 #### Configuring Upstream OAuth 2.0 Password Grant in the Tyk OAS API definition
@@ -157,21 +188,43 @@ Upstream Authentication is configured per-API in the Tyk extension (`x-tyk-api-g
 
 Set `upstream.authentication.enabled` to `true` to enable upstream authentication.
 
-For OAuth 2.0 Resource Owner Password Credentials (*Password Grant*), you will need to add the `oauth` section within `upstream.authentication`.
+For OAuth 2.0 Resource Owner Password Credentials (*Password Grant*), you will need to add the `oauth` section within `upstream.authentication`:
 
-This has the following parameters:
-- `enabled` set this to `true` to enable upstream OAuth authentication
-- `allowedAuthorizeTypes` should include the value `password`
-- `password` should be configured with:
-    - `tokenUrl` is the URL of the `/token` endpoint on the *auth server*
-    - `clientId` is the client ID to be provided to the *auth server*
-    - `clientSecret` is the client secret to be provided to the *auth server*
-    - `username` is the Resource Owner username to be provided to the *auth server*
-    - `password` is the Resource Owner password to be provided to the *auth server*
-    - `scopes` is an optional array of authorization scopes to be requested
-    - `extraMetadata` is an optional array of additional fields to be extracted from the *auth server* response
-    - `header.enabled` must be set to `true` if your upstream expects the credentials to be in a custom header, otherwise it can be omitted to use `Authorization` header 
-    - `header.name` is the custom header to be used if `header.enabled` is set to `true`
+```json expandable
+"oauth": {
+    "enabled": true,
+    "allowedAuthorizeTypes": ["password"],
+    "password": {
+        "tokenUrl": "http://<my-auth-server>/token",
+        "clientId": "client123",
+        "clientSecret": "secret123",
+        "method": "client_secret_post",
+        "username": "user123",
+        "password": "pass123",
+        "scopes": ["scope1"],
+        "extraMetadata": ["instance_url"],
+        "header": {
+            "enabled": true,
+            "name": "Authorization"
+        }
+    }
+}
+```
+
+| Field | Description |
+|---|---|
+| `enabled` | Set to `true` to enable upstream OAuth authentication. |
+| `allowedAuthorizeTypes` | Should include the value `password`. |
+| `password.tokenUrl` | The URL of the `/token` endpoint on the *auth server*. |
+| `password.clientId` | The client ID to be provided to the *auth server*. |
+| `password.clientSecret` | The client secret to be provided to the *auth server*. |
+| `password.method` | Optional. Controls how the client ID and secret are sent to the *auth server*'s token endpoint: `client_secret_basic` sends them in the request header, `client_secret_post` sends them in the request body. Leave unset for Tyk's automatic detection (tries the header first, then the body). |
+| `password.username` | The Resource Owner username to be provided to the *auth server*. |
+| `password.password` | The Resource Owner password to be provided to the *auth server*. |
+| `password.scopes` | Optional array of authorization scopes to be requested. |
+| `password.extraMetadata` | Optional array of additional fields to be extracted from the *auth server* response. |
+| `password.header.enabled` | Set to `true` if your upstream expects the credentials to be in a custom header. Otherwise, omit to use the `Authorization` header. |
+| `password.header.name` | The custom header to use, if `header.enabled` is `true`. |
 
 Note that if you use the [Tyk API Designer](/api-management/upstream-authentication/basic-auth#configuring-upstream-basic-auth-using-the-api-designer) in Tyk Dashboard it will always configure the `header` parameter - even if you are using the default `Authorization` value.
 
@@ -247,7 +300,7 @@ For example:
 }
 ```
 
-In this example upstream authentication has been enabled (line 44). The authentication method to be used is indicated in lines 46 (OAuth) and 48 (password grant). When a request is made to the API, Tyk will request an access token from the *authorization server* at `http://<my-auth-server>` providing client credentials, resource owner credentials and the scope `scope1`.
+In this example upstream authentication has been enabled (line 44). The authentication method to be used is indicated in lines 46 (OAuth) and 48 (password grant). When a request is made to the API, Tyk will request an access token from the *authorization server* at `http://<my-auth-server>` providing client credentials, resource owner credentials and the scope `scope1`. The `method` field is left unset, so Tyk uses its default automatic detection: it tries the header first and falls back to the body if the auth server rejects it.
 
 Tyk will parse the response from the *authorization server* for the key `instance_url`, storing any value found in the *request context* were it can be accessed by other middleware as `$tyk_context.instance_url` (note the rules on accessing [request context variables from middleware](/api-management/traffic-transformation/request-context-variables)).
 
@@ -260,6 +313,8 @@ If you replace the `upstream.url` and *authorization server* details with valid 
 Upstream Authentication is configured from the **Settings** tab of the Tyk OAS API Designer, where there is a dedicated section within the **Upstream** section.
 
 Select **OAuth** from the choice in the **Authentication Method** drop-down, then you can provide the header name, authorization server token URL and select **Resource Owner Password Credentials** to reveal the configuration for the credentials to be passed to the auth server.
+
+Use the **Client authentication method** drop-down to control how the client ID and secret are sent to the auth server: **Header then body** (the default) preserves Tyk's automatic detection; **Header** sends them as HTTP Basic Authentication only; **Body** sends them as form fields only. Leave the default selected unless you know which method your auth server requires.
 
 <img src="/img/dashboard/api-designer/upstream-oauth-password-grant.png" alt="Tyk OAS API Designer showing Upstream OAuth password grant configuration options" />
 

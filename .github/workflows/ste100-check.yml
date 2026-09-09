@@ -1,0 +1,58 @@
+name: STE100 Style Check (Advisory)
+
+on:
+  pull_request:
+    paths:
+      - '**/*.mdx'
+      - '**/*.md'
+
+# One in-flight run per PR: a second push cancels the still-running check from
+# the first, so two runs can never race to create the marker comment at once.
+concurrency:
+  group: ste100-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  ste-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: '1.26'
+
+      - name: Install ste
+        run: go install github.com/probelabs/ste/cmd/ste@latest
+
+      - name: Run STE100 check
+        run: |
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          git fetch origin "${{ github.event.pull_request.base.ref }}" --quiet
+          python3 scripts/ste_check.py --base "origin/${{ github.event.pull_request.base.ref }}" --format markdown > ste_comment.md || true
+
+      - name: Post or update PR comment
+        # A PR from a fork gets a read-only GITHUB_TOKEN, so this can 403 there.
+        # That's fine: this check is advisory, so a failure here must not redden the job.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          MARKER="<!-- ste100-advisory-check -->"
+          COMMENT_ID=$(gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" --paginate \
+            --jq ".[] | select(.body | startswith(\"$MARKER\")) | .id" | tail -1)
+          if [ -n "$COMMENT_ID" ]; then
+            gh api "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" -X PATCH -F body=@ste_comment.md
+          else
+            gh pr comment "$PR_NUMBER" --body-file ste_comment.md
+          fi
