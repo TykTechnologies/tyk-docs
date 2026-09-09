@@ -23,9 +23,7 @@ Health checks verify the status of Tyk components (Gateway, Dashboard, Pump) and
 Tyk provides two distinct HTTP endpoints for health checks:
 
 - **Liveness Probe (`/hello` or `/health`)**: Indicates if the Tyk process is running and its web server is responsive. It returns `200 OK` if the process is alive, regardless of the status of any dependency such as a Redis datastore.
-- **Readiness Probe (`/ready`)**: <Badge color="orange">Gateway Only</Badge> Indicates whether the Gateway is fully initialized and ready to process traffic. It returns a non-200 status code (e.g., `503 Service Unavailable`) if critical dependencies are not available. The Gateway is considered "ready" only when its dependencies are healthy and the API definitions are loaded.
-
-
+- **Readiness Probe (`/ready`)**: <Badge color="orange">Gateway Only</Badge> Indicates whether the Gateway is fully initialized and ready to process traffic. It returns `503 Service Unavailable` if Redis is unreachable, or the Gateway has not yet completed a successful API reload. Otherwise it returns `200 OK`, even if a non-critical dependency such as Tyk Dashboard or Tyk MDCB is still unavailable.
 
 <Note>
 Health check is implemented in accordance with the [Health Check Response Format for HTTP APIs](https://inadarei.github.io/rfc-healthcheck/) RFC.
@@ -40,7 +38,6 @@ The Dashboard and Pump liveness endpoints return the live status of the componen
 ### Probe Endpoints
 
 The Liveness and Readiness endpoints for each component are summarised here. Tyk provides the option to [customise](#customising-the-endpoint-path) the endpoint paths if required for your integration.
-
 
 | Component | Liveness Endpoint | Readiness Endpoint | Configuration Key | Introduced In |
 |-----------|-------------------|--------------------|-------------------|---------------|
@@ -59,11 +56,9 @@ Simply set the required endpoint name using the configuration key for the approp
 
 The equivalent environment variables can be used in place of the config files, for example the Gateway configs are:
 
-
 ```yaml
 health_check_endpoint_name: "status"
 ```
-
 
 ### Response Format
 
@@ -74,7 +69,7 @@ The Gateway's `/hello` and `/ready` endpoints return a structured JSON response.
 ```json
 {
   "status": "pass",
-  "version": "v5.8.10",
+  "version": "v5.15.0",
   "description": "Tyk GW",
   "details": {
     "redis": { "status": "pass", "componentType": "datastore", "time": "..." }
@@ -82,13 +77,33 @@ The Gateway's `/hello` and `/ready` endpoints return a structured JSON response.
 }
 ```
 
-The `status` field can have the following values:
+The `status` field summarises the check results, but liveness and readiness apply different rules to reach it:
 
-| Status | HTTP Code | Description |
-|--------|-----------|-------------|
-| **pass** | 200 | All dependencies available. No impact on traffic. |
-| **warn** | 200 | One dependency is down but Gateway continues processing. Medium impact (no quotas, no analytics, no RPC connection to [MDCB](/api-management/mdcb)). |
-| **fail** | 200 (`/hello`) / 503 (`/ready`) | Critical dependencies (Redis and/or the Tyk Dashboard) unavailable. High impact (no configuration changes, no quotas, no analytics). |
+| Endpoint | How `status` is decided | HTTP Code |
+|----------|--------------------------|-----------|
+| `/hello` | `pass` if every checked dependency succeeds. `fail` if every one of them fails. `warn` for any other mix. | Always `200`, regardless of status. |
+| `/ready` | `pass` only if Redis is reachable and the Gateway has completed a successful API reload. No other dependency affects this result. | `200` for `pass`, `503` otherwise. |
+
+<Note>
+A failing Tyk Dashboard or Tyk MDCB connection can turn `/hello` to `warn` or `fail`, but it does not make `/ready` return `503` by itself. This keeps a Gateway that has already loaded its APIs serving traffic during a control plane outage. A Gateway that cannot reach Redis, or has not finished its first reload, is kept out of service instead. See [Health Check Examples](#health-check-examples) below.
+</Note>
+
+Each entry in `details` reports one dependency the Gateway checked:
+
+| Key | Present when | Affects |
+|-----|---------------|---------|
+| `redis` | Always. | Liveness (`warn` or `fail`) and readiness (`503`). |
+| `dashboard` | `use_db_app_configs` is enabled (Dashboard-managed APIs). | Liveness only. |
+| `rpc` | `policies.policy_source` is `rpc` (an MDCB Hybrid or Worker Gateway). | Liveness only. |
+
+When `/ready` returns `503`, the response body is a simple error object instead of the structure above:
+
+```json
+{
+  "status": "error",
+  "message": "Redis connection not available"
+}
+```
 
 #### Tyk Dashboard and Tyk Pump
 
@@ -100,12 +115,17 @@ Both return the [live status](#data-accuracy) of the component, with no caching:
 
 HTTP 200 is returned when the service is running.
 
+<Warning>
+**Security Best Practice**
+
+Health check responses include the Gateway's version and details about internal dependencies, including error messages when a check fails. Restrict access to these endpoints to trusted internal systems, such as your container orchestrator, load balancers, and monitoring stack. Do not expose them to the public internet.
+</Warning>
+
 ## Deployment Configuration
 
 ### Non-Kubernetes
 
 Point your load balancer or external monitoring system at the Gateway's liveness endpoint (default: `/hello`) to check that the Gateway is up. You can use the readiness endpoint (default: `/ready`) to check that it is ready to handle API client requests.
-
 
 ### Kubernetes (Helm)
 
@@ -132,23 +152,27 @@ gateway:
 ```
 
 <Note>
-Adjust `initialDelaySeconds` based on the number of APIs your Gateway loads and available pod resources to allow time for it to be ready to serve requests. Note that if you are using the Tyk Operator, probe configuration is still done at the Helm level: the Operator manages API definitions and policies, not the Gateway deployment itself.
+The readiness endpoint requires Tyk Gateway v5.8.3 or later. On earlier versions, `/ready` does not exist and the probe fails permanently, so the pod never becomes ready. If you run an earlier version, point `readinessProbe` at `/hello` instead. This is a weaker check, since `/hello` always returns `200 OK`, but it avoids blocking traffic to the pod.
 </Note>
 
-## Health check examples
+<Warning>
+Set `initialDelaySeconds` high enough for the Gateway to load all its API definitions before Kubernetes probes it. A Gateway with many APIs can take longer to become ready than the `10`-`15` second defaults shown above allow. Too short a delay lets Kubernetes repeatedly restart a Gateway that is still starting up. This causes a `CrashLoopBackOff`. Start with a higher value, such as `60`-`120` seconds, for a Gateway that loads hundreds of APIs. Then tune it down based on the observed startup time in the pod logs.
 
-The following examples show how the Health check endpoint returns for the Gateway. For a description of the `status` values and HTTP codes, see [Response Format](#response-format).
+The Tyk Operator does not change this. Probe configuration is still set at the Helm level: the Operator manages API definitions and policies, not the Gateway deployment itself.
+</Warning>
 
-### Pass Status (Liveness)
+## Health Check Examples
 
-The following is returned for a `pass` status level for the Open Source Gateway:
+The following examples pair `/hello` and `/ready` responses for the same scenario, so you can see exactly how liveness and readiness diverge. For a description of `status` values, HTTP codes, and `details` entries, see [Response Format](#response-format).
+
+### All Checks Pass
+
+Both endpoints return `200 OK` with a `pass` status.
 
 ```http
 $ http :8080/hello
 HTTP/1.1 200 OK
-Content-Length: 156
 Content-Type: application/json
-Date: Wed, 14 Apr 2021 17:36:09 GMT
 
 {
   "description": "Tyk GW",
@@ -156,79 +180,76 @@ Date: Wed, 14 Apr 2021 17:36:09 GMT
     "redis": {
       "componentType": "datastore",
       "status": "pass",
-      "time": "2021-04-14T17:36:03Z"
+      "time": "2026-09-08T09:12:03Z"
     }
   },
   "status": "pass",
-  "version": "v3.1.1"
+  "version": "v5.15.0"
 }
 ```
-
-### Pass Status (Readiness)
 
 ```http
 $ http :8080/ready
 HTTP/1.1 200 OK
-Content-Length: 162
 Content-Type: application/json
-Date: Thu, 05 Feb 2026 20:34:38 GMT
 
 {
   "status": "pass",
-  "version": "5.8.10",
+  "version": "v5.15.0",
   "description": "Tyk GW Ready",
   "details": {
     "redis": {
       "status": "pass",
       "componentType": "datastore",
-      "time": "2026-02-05T20:34:38Z"
-    },
-    "rpc": {
-      "status": "pass",
-      "componentType": "system",
-      "time": "2026-02-05T20:34:38Z"
+      "time": "2026-09-08T09:12:03Z"
     }
   }
 }
 ```
 
-### Redis outage
+### Redis Unavailable
+
+Redis is a critical dependency for both endpoints. `/hello` degrades to `warn` and keeps returning `200 OK`. `/ready` returns `503`, since the Gateway cannot serve API traffic without Redis.
 
 ```http
 $ http :8080/hello
 HTTP/1.1 200 OK
-Content-Length: 303
 Content-Type: application/json
-Date: Wed, 14 Apr 2021 14:58:06 GMT
 
 {
   "description": "Tyk GW",
   "details": {
-    "dashboard": {
-      "componentType": "system",
-      "status": "pass",
-      "time": "2021-04-14T14:58:03Z"
-    },
     "redis": {
       "componentType": "datastore",
       "output": "storage: Redis is either down or was not configured",
       "status": "fail",
-      "time": "2021-04-14T14:58:03Z"
+      "time": "2026-09-08T09:14:21Z"
     }
   },
   "status": "warn",
-  "version": "v3.1.2"
+  "version": "v5.15.0"
 }
 ```
 
-### Dashboard outage
+```http
+$ http :8080/ready
+HTTP/1.1 503 Service Unavailable
+Content-Type: application/json
+
+{
+  "status": "error",
+  "message": "Redis connection not available"
+}
+```
+
+### Tyk Dashboard Unreachable, Redis Healthy
+
+A failing Tyk Dashboard connection is not critical to readiness. `/hello` reports `warn`, but `/ready` still returns `200 OK`. This keeps a Gateway that has already loaded its APIs serving traffic during a control plane outage.
 
 ```http
 $ http :8080/hello
 HTTP/1.1 200 OK
-Content-Length: 292
 Content-Type: application/json
-Date: Wed, 14 Apr 2021 15:52:47 GMT
 
 {
   "description": "Tyk GW",
@@ -237,27 +258,52 @@ Date: Wed, 14 Apr 2021 15:52:47 GMT
       "componentType": "system",
       "output": "dashboard is down? Heartbeat is failing",
       "status": "fail",
-      "time": "2021-04-14T15:52:43Z"
+      "time": "2026-09-08T09:16:47Z"
     },
     "redis": {
       "componentType": "datastore",
       "status": "pass",
-      "time": "2021-04-14T15:52:43Z"
+      "time": "2026-09-08T09:16:47Z"
     }
   },
   "status": "warn",
-  "version": "v3.1.2"
+  "version": "v5.15.0"
 }
 ```
 
-### Dashboard and Redis outage
+```http
+$ http :8080/ready
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "status": "pass",
+  "version": "v5.15.0",
+  "description": "Tyk GW Ready",
+  "details": {
+    "dashboard": {
+      "componentType": "system",
+      "output": "dashboard is down? Heartbeat is failing",
+      "status": "fail",
+      "time": "2026-09-08T09:16:47Z"
+    },
+    "redis": {
+      "componentType": "datastore",
+      "status": "pass",
+      "time": "2026-09-08T09:16:47Z"
+    }
+  }
+}
+```
+
+### Redis and Tyk Dashboard Both Unavailable
+
+`/hello` reports `fail`, since every checked dependency has failed, but it still returns `200 OK`. `/ready` returns `503` because of Redis alone; the Tyk Dashboard state does not change that outcome.
 
 ```http
 $ http :8080/hello
 HTTP/1.1 200 OK
-Content-Length: 354
 Content-Type: application/json
-Date: Wed, 14 Apr 2021 17:53:33 GMT
 
 {
   "description": "Tyk GW",
@@ -266,28 +312,39 @@ Date: Wed, 14 Apr 2021 17:53:33 GMT
       "componentType": "system",
       "output": "dashboard is down? Heartbeat is failing",
       "status": "fail",
-      "time": "2021-04-14T17:53:33Z"
+      "time": "2026-09-08T09:19:02Z"
     },
     "redis": {
       "componentType": "datastore",
       "output": "storage: Redis is either down or was not configured",
       "status": "fail",
-      "time": "2021-04-14T17:53:33Z"
+      "time": "2026-09-08T09:19:02Z"
     }
   },
   "status": "fail",
-  "version": "v3.1.2"
+  "version": "v5.15.0"
 }
 ```
 
-### MDCB Worker Gateway RPC outage
+```http
+$ http :8080/ready
+HTTP/1.1 503 Service Unavailable
+Content-Type: application/json
+
+{
+  "status": "error",
+  "message": "Redis connection not available"
+}
+```
+
+### MDCB Worker Gateway: Redis and RPC Unavailable
+
+A Hybrid or Worker Gateway connects to Tyk MDCB over RPC. A failed RPC check affects `/hello` the same way a failed Tyk Dashboard check does. On its own, it does not cause `/ready` to return `503`. See [Tyk Dashboard Unreachable, Redis Healthy](#tyk-dashboard-unreachable-redis-healthy) above for that case in isolation. Redis has also failed in this example, so `/ready` returns `503` for that reason.
 
 ```http
 $ http :8080/hello
 HTTP/1.1 200 OK
-Content-Length: 333
 Content-Type: application/json
-Date: Wed, 14 Apr 2021 17:21:24 GMT
 
 {
   "description": "Tyk GW",
@@ -296,16 +353,57 @@ Date: Wed, 14 Apr 2021 17:21:24 GMT
       "componentType": "datastore",
       "output": "storage: Redis is either down or was not configured",
       "status": "fail",
-      "time": "2021-04-14T17:21:16Z"
+      "time": "2026-09-08T09:21:16Z"
     },
     "rpc": {
       "componentType": "system",
       "output": "Could not connect to RPC",
       "status": "fail",
-      "time": "2021-04-14T17:21:16Z"
+      "time": "2026-09-08T09:21:16Z"
     }
   },
   "status": "fail",
-  "version": "v3.1.2"
+  "version": "v5.15.0"
+}
+```
+
+```http
+$ http :8080/ready
+HTTP/1.1 503 Service Unavailable
+Content-Type: application/json
+
+{
+  "status": "error",
+  "message": "Redis connection not available"
+}
+```
+
+### Gateway Not Yet Ready
+
+Immediately after startup, Redis can be healthy while the Gateway is still loading its API definitions. `/ready` returns `503` until the first reload completes. `/hello` is unaffected, since it does not check reload state.
+
+```http
+$ http :8080/ready
+HTTP/1.1 503 Service Unavailable
+Content-Type: application/json
+
+{
+  "status": "error",
+  "message": "A successful API reload did not happen"
+}
+```
+
+### Gateway Shutting Down
+
+During a graceful shutdown, `/ready` returns `503` immediately so Kubernetes stops routing new requests to the pod before it stops accepting connections.
+
+```http
+$ http :8080/ready
+HTTP/1.1 503 Service Unavailable
+Content-Type: application/json
+
+{
+  "status": "error",
+  "message": "Gateway is shutting down"
 }
 ```
