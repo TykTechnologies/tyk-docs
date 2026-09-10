@@ -16,14 +16,14 @@ Health checks verify the status of Tyk components (Gateway, Dashboard, Pump) and
 
 - **Load Balancer Configuration**: Route traffic only to healthy instances.
 - **Kubernetes Probes**: Automatically restart unhealthy pods or remove them from service.
-- **Monitoring and Alerting**: Track the status of Tyk components and their dependencies (like Redis, RPC).
+- **Monitoring and Alerting**: Track the status of Tyk components and their dependencies (such as Redis, RPC connectivity).
 
 ## Health Check Endpoints
 
 Tyk provides two distinct HTTP endpoints for health checks:
 
 - **Liveness Probe (`/hello` or `/health`)**: Indicates if the Tyk process is running and its web server is responsive. It returns `200 OK` if the process is alive, regardless of the status of any dependency such as a Redis datastore.
-- **Readiness Probe (`/ready`)**: <Badge color="orange">Gateway Only</Badge> Indicates whether the Gateway is fully initialized and ready to process traffic. It returns `503 Service Unavailable` if Redis is unreachable, or the Gateway has not yet completed a successful API reload. Otherwise it returns `200 OK`, even if a non-critical dependency such as Tyk Dashboard or Tyk MDCB is still unavailable.
+- **Readiness Probe (`/ready`)**: <Badge color="orange">Gateway Only</Badge> Indicates whether the Gateway is fully initialized and ready to process traffic. It returns `503 Service Unavailable` if the local in-memory database (typically Redis) is unreachable, or if the Gateway has not completed a successful API reload. Otherwise it returns `200 OK` indicating that it is able to serve traffic, even if the Control Plane (Tyk Dashboard, Tyk MDCB) is unavailable - these are considered non-critical dependencies as the Data Plane Gateway can operate without them.
 
 <Note>
 Health check is implemented in accordance with the [Health Check Response Format for HTTP APIs](https://inadarei.github.io/rfc-healthcheck/) RFC.
@@ -37,7 +37,7 @@ The Dashboard and Pump liveness endpoints return the live status of the componen
 
 ### Probe Endpoints
 
-The Liveness and Readiness endpoints for each component are summarised here. Tyk provides the option to [customise](#customising-the-endpoint-path) the endpoint paths if required for your integration.
+The Liveness and Readiness endpoints for each component are summarised here. Tyk provides the option to [customize](#customizing-the-endpoint-path) the endpoint paths if required for your integration.
 
 | Component | Liveness Endpoint | Readiness Endpoint | Configuration Key | Introduced In |
 |-----------|-------------------|--------------------|-------------------|---------------|
@@ -45,7 +45,7 @@ The Liveness and Readiness endpoints for each component are summarised here. Tyk
 | **Dashboard** | `/health` | N/A | [health_check_endpoint_name](/tyk-dashboard/configuration#health_check_endpoint_name) | v3.0.0 |
 | **Pump** | `/health` | N/A | [health_check_endpoint_name](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables#health_check_endpoint_name) | Pump v0.8.5 |
 
-#### Customising the endpoint path
+#### Customizing the endpoint path
 
 For some integrations, the default endpoint paths are not suitable, so Tyk provides a simple method to customise them as required.
 
@@ -85,9 +85,9 @@ The `status` field summarises the check results, but liveness and readiness appl
 | `/ready` | `pass` only if Redis is reachable and the Gateway has completed a successful API reload. No other dependency affects this result. | `200` for `pass`, `503` otherwise. |
 
 <Note>
-A failing Tyk Dashboard or Tyk MDCB connection can turn `/hello` to `warn` or `fail`, but it does not make `/ready` return `503` by itself.
+A failing Tyk Dashboard (`dashboard`) or Tyk MDCB (`rpc`) connection will cause the liveness endpoint response to indicate a `status` of `warn` or `fail`, but it does not affect the `status` returned by the readiness endpoint - this depends only on the Gateway's ability to handle traffic.
 
-This keeps a Gateway that has already loaded its APIs serving traffic during a control plane outage. A Gateway that cannot reach Redis, or has not finished its first reload, is kept out of service instead.
+This keeps a Gateway that has already loaded its APIs serving traffic during a control plane outage. A Gateway that cannot reach Redis, or has not finished its first reload, is kept out of service instead, with the readiness endpoint returning `503`.
 
 See [Health Check Examples](#health-check-examples) below.
 </Note>
@@ -214,9 +214,12 @@ Content-Type: application/json
 }
 ```
 
-### Redis Unavailable
+### In-Memory Storage Unavailable
 
-Redis is a critical dependency for both endpoints. `/hello` degrades to `warn` and keeps returning `200 OK`. `/ready` returns `503`, since the Gateway cannot serve API traffic without Redis.
+The [in-memory database](/api-management/in-memory-database) (typically Redis) is a critical dependency for the Gateway and so affects the response from both endpoints: 
+
+- `/hello` degrades to `warn` and keeps returning `200 OK`.
+- `/ready` returns `503`, since the Gateway cannot serve API traffic without this.
 
 ```http expandable
 $ http :8080/hello
@@ -249,9 +252,9 @@ Content-Type: application/json
 }
 ```
 
-### Tyk Dashboard Unreachable, Redis Healthy
+### Combined Deployment: Tyk Dashboard Unreachable
 
-A failing Tyk Dashboard connection is not critical to readiness. `/hello` reports `warn`, but `/ready` still returns `200 OK`. This keeps a Gateway that has already loaded its APIs serving traffic during a control plane outage.
+For a combined deployment, where the Gateway connects directly to Tyk Dashboard, the Dashboard connection is not critical to readiness. `/hello` reports `warn`, but `/ready` still returns `200 OK`. This keeps a Gateway that has already loaded its APIs serving traffic during a control plane outage.
 
 ```http expandable
 $ http :8080/hello
@@ -303,9 +306,9 @@ Content-Type: application/json
 }
 ```
 
-### Redis and Tyk Dashboard Both Unavailable
+### Combined Deployment: In-Memory Storage and Tyk Dashboard Both Unavailable
 
-`/hello` reports `fail`, since every checked dependency has failed, but it still returns `200 OK`. `/ready` returns `503` because of Redis alone; the Tyk Dashboard state does not change that outcome.
+`/hello` reports `fail`, since every checked dependency has failed, but it still returns `200 OK` because the Gateway itself is responsive. `/ready` returns `503` because of the failed critical dependency (in-memory storage).
 
 ```http expandable
 $ http :8080/hello
@@ -344,9 +347,9 @@ Content-Type: application/json
 }
 ```
 
-### MDCB Worker Gateway: Redis and RPC Unavailable
+### Distributed Deployment: In-Memory Storage and Tyk MDCB Unavailable
 
-A Hybrid or Worker Gateway connects to Tyk MDCB over RPC. A failed RPC check affects `/hello` the same way a failed Tyk Dashboard check does. On its own, it does not cause `/ready` to return `503`. See [Tyk Dashboard Unreachable, Redis Healthy](#tyk-dashboard-unreachable-redis-healthy) above for that case in isolation. Redis has also failed in this example, so `/ready` returns `503` for that reason.
+A Data Plane Gateway connects to Tyk MDCB over RPC. A failed RPC check affects `/hello` the same way a failed Tyk Dashboard check does for the [combined deployment](). On its own, it does not cause `/ready` to return `503`. The Data Plane's local in-memory storage has also failed in this example, so `/ready` returns `503` for that reason.
 
 ```http expandable
 $ http :8080/hello
@@ -387,7 +390,7 @@ Content-Type: application/json
 
 ### Gateway Not Yet Ready
 
-Immediately after startup, Redis can be healthy while the Gateway is still loading its API definitions. `/ready` returns `503` until the first reload completes. `/hello` is unaffected, since it does not check reload state.
+Immediately after startup, the in-memory storage can be healthy while the Gateway is still loading its API definitions. `/ready` returns `503` until the first reload completes. `/hello` is unaffected, since it does not check reload state.
 
 ```http
 $ http :8080/ready
