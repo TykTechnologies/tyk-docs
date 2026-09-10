@@ -54,12 +54,6 @@ Simply set the required endpoint name using the configuration key for the approp
 - **Liveness probe**: `health_check_endpoint_name` (all components)
 - **Readiness probe**:`readiness_check_endpoint_name` (Gateway only)
 
-The equivalent environment variables can be used in place of the config files, for example the Gateway configs are:
-
-```yaml
-health_check_endpoint_name: "status"
-```
-
 ### Response Format
 
 #### Tyk Gateway
@@ -72,10 +66,14 @@ The Gateway's `/hello` and `/ready` endpoints return a structured JSON response.
   "version": "v5.15.0",
   "description": "Tyk GW",
   "details": {
-    "redis": { "status": "pass", "componentType": "datastore", "time": "..." }
+    "redis": { "status": "pass", "componentType": "datastore", "time": "..." },
+    "dashboard": { "status": "pass", "componentType": "system", "time": "..." },
+    "rpc": { "status": "pass", "componentType": "system", "time": "..." }
   }
 }
 ```
+
+`redis` always appears in `details`. `dashboard` and `rpc` appear only when the corresponding dependency applies to this Gateway. See the table below. Not every deployment shows all three keys.
 
 The `status` field summarises the check results, but liveness and readiness apply different rules to reach it:
 
@@ -118,6 +116,8 @@ Both return the [live status](#data-accuracy) of the component, with no caching:
 ```
 
 HTTP 200 is returned when the service is running.
+
+Neither endpoint checks a dependency, so there is no error response: this exact body is returned whenever the process is running and accepting connections. A `200` here confirms only that the process is alive, not that its dependencies (such as its database) are healthy. If the process is not running, the connection is refused instead of receiving an HTTP response.
 
 <Warning>
 **Security Best Practice**
@@ -252,6 +252,47 @@ Content-Type: application/json
 }
 ```
 
+### Distributed Deployment: In-Memory Storage and Tyk MDCB Unavailable
+
+A Data Plane Gateway connects to Tyk MDCB over RPC. A failed RPC check affects `/hello` the same way a failed Tyk Dashboard check does for the [combined deployment](#combined-deployment-tyk-dashboard-unreachable). On its own, it does not cause `/ready` to return `503`. The Data Plane's local in-memory storage has also failed in this example, so `/ready` returns `503` for that reason.
+
+```http expandable
+$ http :8080/hello
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "description": "Tyk GW",
+  "details": {
+    "redis": {
+      "componentType": "datastore",
+      "output": "storage: Redis is either down or was not configured",
+      "status": "fail",
+      "time": "2026-09-08T09:21:16Z"
+    },
+    "rpc": {
+      "componentType": "system",
+      "output": "Could not connect to RPC",
+      "status": "fail",
+      "time": "2026-09-08T09:21:16Z"
+    }
+  },
+  "status": "fail",
+  "version": "v5.15.0"
+}
+```
+
+```http
+$ http :8080/ready
+HTTP/1.1 503 Service Unavailable
+Content-Type: application/json
+
+{
+  "status": "error",
+  "message": "Redis connection not available"
+}
+```
+
 ### Combined Deployment: Tyk Dashboard Unreachable
 
 For a combined deployment, where the Gateway connects directly to Tyk Dashboard, the Dashboard connection is not critical to readiness. `/hello` reports `warn`, but `/ready` still returns `200 OK`. This keeps a Gateway that has already loaded its APIs serving traffic during a control plane outage.
@@ -329,47 +370,6 @@ Content-Type: application/json
       "output": "storage: Redis is either down or was not configured",
       "status": "fail",
       "time": "2026-09-08T09:19:02Z"
-    }
-  },
-  "status": "fail",
-  "version": "v5.15.0"
-}
-```
-
-```http
-$ http :8080/ready
-HTTP/1.1 503 Service Unavailable
-Content-Type: application/json
-
-{
-  "status": "error",
-  "message": "Redis connection not available"
-}
-```
-
-### Distributed Deployment: In-Memory Storage and Tyk MDCB Unavailable
-
-A Data Plane Gateway connects to Tyk MDCB over RPC. A failed RPC check affects `/hello` the same way a failed Tyk Dashboard check does for the [combined deployment](). On its own, it does not cause `/ready` to return `503`. The Data Plane's local in-memory storage has also failed in this example, so `/ready` returns `503` for that reason.
-
-```http expandable
-$ http :8080/hello
-HTTP/1.1 200 OK
-Content-Type: application/json
-
-{
-  "description": "Tyk GW",
-  "details": {
-    "redis": {
-      "componentType": "datastore",
-      "output": "storage: Redis is either down or was not configured",
-      "status": "fail",
-      "time": "2026-09-08T09:21:16Z"
-    },
-    "rpc": {
-      "componentType": "system",
-      "output": "Could not connect to RPC",
-      "status": "fail",
-      "time": "2026-09-08T09:21:16Z"
     }
   },
   "status": "fail",
