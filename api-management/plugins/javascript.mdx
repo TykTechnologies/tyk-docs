@@ -500,6 +500,37 @@ Plugins can read and write directly to Tyk's Redis-backed storage using a small 
 - `TykStorageTTL(key)`: returns the remaining time-to-live of `key` in seconds, `-1` if it has no expiry, or `-2` if it doesn't exist.
 - `TykStorageIncr(key, ttlSeconds)`: atomically increments `key` and returns the new value **as a string** (to avoid precision loss past 2^53 in JavaScript's number type). `ttlSeconds` only applies the first time the key is created.
 
+In this example, `TykStorageSetNX` implements an idempotency guard. The first request carrying a given idempotency key claims it and is passed through to the upstream. Any repeat request within 24 hours is rejected with `HTTP 409 Conflict`:
+
+```js
+var idempotencyGuard = new TykJS.TykMiddleware.NewMiddleware({});
+
+idempotencyGuard.NewProcessRequest(function(request, session, config) {
+    var idempotencyKey = request.Headers["Idempotency-Key"];
+
+    if (idempotencyKey) {
+        try {
+            // Claim the key for 24 hours; only the first request succeeds
+            var claimed = TykStorageSetNX("idem:" + idempotencyKey[0], "1", 86400);
+
+            if (!claimed) {
+                request.ReturnOverrides.ResponseCode = 409;
+                request.ReturnOverrides.ResponseBody = "Duplicate request";
+            }
+        } catch (e) {
+            // Storage unavailable; fail closed rather than risk a duplicate
+            log("storage error: " + e);
+            request.ReturnOverrides.ResponseCode = 503;
+            request.ReturnOverrides.ResponseBody = "Try again later";
+        }
+    }
+
+    return idempotencyGuard.ReturnData(request, session.meta_data);
+});
+```
+
+For more worked examples of these functions, see the [`idempotency-guard` example](https://github.com/TykTechnologies/tyk-plugin-starter/tree/main/examples/idempotency-guard) and the other [plugin starter examples](https://github.com/TykTechnologies/tyk-plugin-starter/tree/main/examples).
+
 Every key is automatically prefixed with `jsvm-store:` before it reaches Redis, so plugins can't read or write Tyk's own internal keys (such as API keys, quotas, or rate limit counters) by name collision.
 
 Keys are limited to 256 bytes and values to 64KB; each operation has a 2 second timeout. Exceeding either limit, or a timeout, raises an error rather than failing silently. Failures (for example, a Redis outage) are thrown as JavaScript exceptions rather than returned as `false`, so wrap calls in `try`/`catch` if you don't want a storage error to fail the request.
