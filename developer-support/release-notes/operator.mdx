@@ -15,6 +15,182 @@ Only the most recent Tyk Operator release is supported. We recommend staying cur
 
 ---
 
+## 1.5 Release Notes
+
+### 1.5.0 Release Notes
+
+#### Release Date xx September 2026
+
+#### Release Highlights
+
+This release delivers a major expansion of GitOps coverage for Tyk Dashboard resources, along with a first release of API Governance support and several reliability improvements.
+ 
+**Declarative management of Tyk Dashboard resources**
+ 
+Following on from API and Policy management, Tyk Operator now lets you declare several more Dashboard-managed resource types as Kubernetes Custom Resources, closing most of the remaining gaps that previously required manual Dashboard configuration or ad hoc Kubernetes Jobs calling the Admin API:
+ 
+- **`TykKey`**: API access tokens and HTTP Basic Auth credentials
+- **`TykCertificate`**: TLS certificates, with automatic reconciliation when the underlying Kubernetes Secret is rotated by tools like cert-manager or Vault
+- **`TykIdentityProfile`**: Tyk Identity Broker (TIB) profiles for external identity providers (OIDC, LDAP, SAML, social login)
+- **`TykOAuthClient`**: OAuth 2.0 clients bound to a specific Tyk OAuth-enabled API
+- **`TykWebhook`**: reusable Dashboard webhook targets
+- **`TykUserGroup`**: Dashboard user groups
+Together, these CRDs bring the Operator much closer to full parity with the Dashboard for production, GitOps-driven deployments.
+ 
+**API Governance**
+ 
+This release also introduces initial support for [Tyk's API Governance capability](https://tyk.io/docs/tyk-governance/overview): a new `TykRuleset` CRD lets you declare Spectral-based governance rulesets as Kubernetes resources (inline or referencing a ConfigMap/Secret), and Tyk OAS API definitions applied through the Operator can now be evaluated against active rulesets, including an admission webhook that can deny a non-compliant `kubectl apply` outright.
+ 
+**Other improvements**
+ 
+- API ownership set via `OperatorContext` is now correctly applied to Tyk OAS APIs, matching existing behavior for Tyk Classic APIs.
+- `SecurityPolicy` resources now surface reconcile status and error information on `.status`, matching the existing `ApiDefinition` pattern.
+- Tyk Operator has been updated to Go 1.26.
+
+For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-v1.5.0) below.
+
+#### Breaking Changes
+This release has no breaking changes.
+
+#### Dependencies
+##### 3rd Party Dependencies & Tools
+
+| Third Party Dependency                                     | Tested Versions        | Compatible Versions    | Comments | 
+| :--------------------------------------------------------- | :--------------------- | :--------------------- | :------- | 
+| [Kubernetes](https://kubernetes.io)                        | 1.28.x to 1.35.x       | 1.19.x to 1.35.x       |          | 
+
+Given the time difference between your upgrade and the release of this version, we recommend customers verify the ongoing support of third-party dependencies they install, as their status may have changed since the release.
+
+#### Deprecations
+There are no deprecations in this release.
+
+#### Upgrade instructions
+
+Go to the [Upgrading Tyk Operator](/tyk-stack/tyk-operator/installing-tyk-operator) section for detailed upgrade instructions.
+
+
+#### Downloads
+- [Docker image v1.5.0](https://hub.docker.com/r/tykio/tyk-operator/tags?page=&page_size=&ordering=&name=v1.5.0)
+  - ```bash
+    docker pull tykio/tyk-operator:v1.5.0
+    ```
+- Helm chart
+  - [tyk-charts v5.4.0](/developer-support/release-notes/helm-chart#5-4-release-notes)
+
+#### Changelog
+<a id="Changelog-v1.5.0" data-scroll-offset></a>
+
+##### Changed
+
+<AccordionGroup>
+
+<Accordion title='Updated to Go 1.26'>
+{/* TT-17868, TT-18096 */}
+Tyk Operator has been updated to Go 1.26.
+
+</Accordion>
+</AccordionGroup>
+
+
+##### Added
+
+<AccordionGroup>
+
+<Accordion title='Added TykRuleset CRD for declarative Governance ruleset management'>
+{/* TT-17067 */}
+A new `TykRuleset` custom resource lets you declare Tyk's API Governance rulesets, Spectral-based rules that lint your Tyk OAS APIs for compliance, as Kubernetes resources, instead of managing them only through the Dashboard. The ruleset's category list, action (`none`/`warn`), active state, and Spectral rule body can all be version-controlled and rolled back through Git.
+The Spectral rule body can be supplied inline in the resource, or via a reference to a ConfigMap or Secret, letting large or sensitive rulesets live outside the CR. The Operator keeps the ruleset in sync with the Dashboard as the resource or its referenced object changes.
+
+For more information, visit [Governance via Operator](https://tyk.io/docs/tyk-governance/tyk-operator)
+</Accordion>
+
+<Accordion title='Added admission webhook and reconcile-time Governance evaluation for Tyk OAS APIs'>
+{/* TT-17076 */}
+Tyk OAS API definitions applied through the Operator can now be evaluated against active Governance rulesets (see `TykRuleset` above). A Kubernetes admission webhook can deny a `kubectl apply` outright when a matching ruleset with the `block` action has error-level findings, showing up to five violations inline; a ruleset with the `warn` action instead admits the object with an inline warning.
+Separately, the reconciler evaluates the same rulesets and records the outcome on `status.governancePreflight` and as a Kubernetes Event, purely for visibility; it never blocks or withholds the Dashboard sync based on a governance result.
+ 
+Evaluation is opt-in: it only runs when an API's `categories` intersect an active `TykRuleset`'s categories, and results are cached against a hash of the OpenAPI document plus the matched ruleset set, so unrelated changes don't trigger repeat evaluation calls.
+
+For more information, visit [Governance via Operator](https://tyk.io/docs/tyk-governance/tyk-operator)
+</Accordion>
+
+<Accordion title='Added TykKey CRD for declarative management of API access tokens'>
+{/* TT-17235 */}
+A new `TykKey` custom resource lets you declare API credentials, opaque access tokens, and HTTP Basic Auth users as Kubernetes resources, instead of provisioning them with one-off Kubernetes Jobs against the Admin API. The Operator creates, updates, and revokes the corresponding credential in the Gateway as the resource changes.
+Security policies are referenced by their Kubernetes `metadata.name`, consistent with the Operator's existing cross-resource reference model, so no raw Tyk IDs are needed in the manifest.
+</Accordion>
+ 
+<Accordion title='Added TykCertificate CRD for declarative TLS certificate management'>
+{/* TT-17501 */}
+A new `TykCertificate` custom resource uploads a TLS certificate from a same-namespace Kubernetes Secret into Tyk's certificate store, replacing the previous workaround of running Kubernetes Jobs against the Operator's admin credentials. The resulting certificate ID, fingerprint, and expiry are exposed on `.status`.
+The certificate ID is deterministic, so re-applying an unchanged resource is a no-op. Deleting the resource checks whether any API still depends on the certificate before removing it, so a certificate shared across multiple APIs is never deleted out from under them.
+</Accordion>
+ 
+<Accordion title='Added automatic reconciliation for externally rotated certificates and keys'>
+{/* TT-17503 */}
+`TykCertificate` and `TykKey` resources (see above) now detect when their referenced Kubernetes Secret is rotated by an external system such as cert-manager or Vault, and reconcile the change automatically without needing a manual edit to trigger a sync.
+For certificates, a rotated Secret produces a new certificate in Tyk, uploaded before the old one is removed, and the old certificate is only cleaned up once nothing still depends on it, so a live API is never left pointing at a missing certificate. For Basic Auth key passwords, rotation updates the credential in place under the same key ID, so quota and rate-limit counters are preserved.
+ 
+<Note>
+Referencing a certificate or key by its Kubernetes Secret name (rather than a copied-out Tyk ID) is what keeps it rotation-safe. A literal ID reference continues to work but won't pick up future rotations automatically. Rotating the token/seed of a bring-your-own key isn't supported, since the seed is the key's identity; the Operator reports this as failed and recommends deleting and re-applying the resource instead.
+</Note>
+</Accordion>
+
+<Accordion title='Added TykIdentityProfile CRD for declarative TIB profile management'>
+{/* TT-17502 */}
+A new `TykIdentityProfile` custom resource lets you declare Tyk Identity Broker (TIB) profiles, which broker external identity providers such as OIDC, LDAP, SAML, or social login into Tyk logins and tokens — as Kubernetes resources, instead of only through the Dashboard UI or API.
+A profile is owned by either the Operator or the Dashboard, never both: an Operator-managed profile is authoritative, and any manual Dashboard edit is treated as drift and overwritten on the next reconcile, while a profile already created in the Dashboard is left alone unless explicitly annotated for the Operator to adopt it. Provider secrets in the profile configuration can be supplied as a reference to a same-namespace Kubernetes Secret rather than inline; the resolved value is sent to Tyk but never stored in the resource's status, logs, or events, and rotating the referenced Secret automatically re-triggers reconciliation.
+</Accordion>
+
+<Accordion title='Added TykOAuthClient CRD for declarative OAuth 2.0 client management'>
+{/* TT-17800 */}
+A new `TykOAuthClient` custom resource lets you declare OAuth 2.0 clients bound to a specific Tyk OAuth-enabled API as Kubernetes resources, instead of creating them through the Dashboard or Admin API. A client can be created with a specific `client_id`/`client_secret` supplied via a Kubernetes Secret, or left for Tyk to generate; a Tyk-generated `client_secret` is written to an Operator-owned Secret and never exposed in the resource's status, logs, or events.
+</Accordion>
+
+<Accordion title='Added TykWebhook CRD for declarative Dashboard webhook management'>
+{/* TT-17808 */}
+A new `TykWebhook` custom resource lets you declare reusable Dashboard webhook targets, the objects referenced by an API's event handlers, as Kubernetes resources, instead of creating them through the Dashboard UI or API. Header values can reference a same-namespace Kubernetes Secret instead of being set inline, so credentials sent to the webhook target are never stored in the resource's status, logs, or events; rotating the referenced Secret automatically re-syncs the webhook.
+</Accordion>
+
+<Accordion title='Added TykUserGroup CRD for declarative Dashboard user group management'>
+{/* TT-17809 */}
+A new `TykUserGroup` custom resource lets you declare Dashboard user groups, the permission sets referenced by Dashboard users, TIB profiles, and Tyk OAS API ownership, as Kubernetes resources, instead of creating them through the Dashboard UI or API.
+</Accordion>
+
+
+<Accordion title='Added reconcile status and error reporting to the SecurityPolicy resource'>
+{/* TT-17673 */}
+`SecurityPolicy` resources now expose a `status.latestTransaction` field, matching the reconcile-status pattern already available on `ApiDefinition` and Tyk OAS API definition resources. A failed policy sync, for example, an invalid Dashboard call or a missing linked API, is now visible directly on the resource via `kubectl get securitypolicy`, rather than requiring a look at the Operator's logs. A transient Kubernetes conflict encountered while writing the status no longer causes a spurious "Failed" state to be reported.
+</Accordion>
+
+<Accordion title='Fixed API ownership not being applied for Tyk OAS APIs'>
+{/* TT-16776 */}
+Tyk OAS API definitions synced by the Operator did not have API ownership applied from `OperatorContext`, unlike Tyk Classic APIs, so `user_owners` and `user_group_owners` set on the context were silently ignored for OAS APIs. The Operator now applies ownership to Tyk OAS APIs on create and update, and updating the ownership fields on an `OperatorContext` now triggers reconciliation of every Tyk OAS API definition that references it, keeping ownership consistent between Kubernetes and the Dashboard.
+</Accordion>
+
+</AccordionGroup>
+
+
+
+##### Security Fixes
+
+<AccordionGroup>
+
+<Accordion title='Resolved CVEs'>
+Addressed the following CVEs, providing increased protection against security vulnerabilities, including, but not limited to:
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-39821" target="_blank">CVE-2026-39821</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-39822" target="_blank">CVE-2026-39822</a>
+- <a href="https://osv.dev/vulnerability/GHSA-hrxh-6v49-42gf" target="_blank">GHSA-hrxh-6v49-42gf</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-33818" target="_blank">CVE-2026-33818</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-56853" target="_blank">CVE-2026-56853</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-56858" target="_blank">CVE-2026-56858</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-56859" target="_blank">CVE-2026-56859</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-56860" target="_blank">CVE-2026-56860</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-56862" target="_blank">CVE-2026-56862</a>
+</Accordion>
+
+</AccordionGroup>
+
 ## 1.4 Release Notes
 
 ### 1.4.2 Release Notes
