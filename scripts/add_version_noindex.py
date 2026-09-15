@@ -56,16 +56,30 @@ def version_segment(file_path: Path):
 
 
 def add_noindex_if_missing(file_path: Path) -> str:
-    """Add 'noindex: true' plus 'robots: "noindex, follow"' to frontmatter if
-    neither field already exists. Both are needed: noindex: true is what
-    actually excludes the page from Mintlify's sitemap.xml (confirmed live -
-    robots: alone does not, per the long-standing Classic Portal pages, which
-    are NOT excluded from /docs/sitemap.xml despite having robots: "noindex,
-    nofollow" set); robots: "noindex, follow" is what controls the rendered
-    meta tag content, and takes precedence over whatever noindex: true would
-    render on its own (confirmed live via tyk-docs#3036 - the combination
-    renders exactly "noindex, follow", not "noindex, nofollow").
-    Returns one of: 'added', 'skipped-has-robots-or-noindex', 'skipped-no-frontmatter'."""
+    """Ensure a non-current, non-LTS page is excluded from Mintlify's
+    sitemap.xml, without disturbing any existing robots: value it may already
+    carry for content reasons (such as the Classic Portal / EDP pages, which
+    have long had robots: "noindex, nofollow" set deliberately).
+
+    noindex: true is what actually excludes a page from /docs/sitemap.xml
+    (confirmed live - robots: alone does not: on old versions, the Classic
+    Portal pages were still present in the sitemap despite robots: "noindex,
+    nofollow" being set). robots: (whatever its value) always wins for the
+    rendered meta tag over whatever noindex: true would render alone
+    (confirmed live via tyk-docs#3036) - so adding noindex: true next to an
+    existing robots: value changes nothing about the rendered tag, only
+    whether the page is excluded from the sitemap.
+
+    Three cases:
+    - noindex: already present -> already deliberate, leave entirely alone.
+    - robots: present but no noindex: (e.g. Classic Portal/EDP pages) -> add
+      noindex: true only, so these finally get excluded from the sitemap on
+      old versions too. Never touches the existing robots: line.
+    - neither present -> add both noindex: true and robots: "noindex, follow",
+      as before.
+
+    Returns one of: 'added-both', 'added-noindex-only', 'skipped-has-noindex',
+    'skipped-no-frontmatter'."""
     content = file_path.read_text(encoding="utf-8")
 
     frontmatter_match = re.match(r"^---\n([\s\S]*?)\n---", content)
@@ -75,21 +89,27 @@ def add_noindex_if_missing(file_path: Path) -> str:
 
     frontmatter = frontmatter_match.group(1)
 
-    if re.search(r'^["\']?(robots|noindex)["\']?\s*:', frontmatter, flags=re.MULTILINE):
-        # A robots or noindex directive already exists (such as a deliberate
-        # classic-portal noindex,nofollow) - don't override a page-level
-        # content decision.
-        return "skipped-has-robots-or-noindex"
+    has_noindex = bool(re.search(r'^["\']?noindex["\']?\s*:', frontmatter, flags=re.MULTILINE))
+    if has_noindex:
+        return "skipped-has-noindex"
 
-    new_frontmatter = frontmatter + '\nnoindex: true\nrobots: "noindex, follow"'
+    has_robots = bool(re.search(r'^["\']?robots["\']?\s*:', frontmatter, flags=re.MULTILINE))
+    if has_robots:
+        new_frontmatter = frontmatter + "\nnoindex: true"
+        result = "added-noindex-only"
+        print(f"📝 Added noindex: true (kept existing robots: as-is) to: {file_path}")
+    else:
+        new_frontmatter = frontmatter + '\nnoindex: true\nrobots: "noindex, follow"'
+        result = "added-both"
+        print(f"📝 Added noindex to: {file_path}")
+
     new_content = re.sub(
         r"^---\n([\s\S]*?)\n---",
         f"---\n{new_frontmatter}\n---",
         content,
     )
     file_path.write_text(new_content, encoding="utf-8")
-    print(f"📝 Added noindex to: {file_path}")
-    return "added"
+    return result
 
 
 def main():
@@ -102,7 +122,13 @@ def main():
     mdx_files = find_mdx_files(ROOT_DIR)
     print(f"📄 Found {len(mdx_files)} eligible .mdx files")
 
-    counts = {"added": 0, "skipped-has-robots-or-noindex": 0, "skipped-no-frontmatter": 0, "skipped-current-or-lts": 0}
+    counts = {
+        "added-both": 0,
+        "added-noindex-only": 0,
+        "skipped-has-noindex": 0,
+        "skipped-no-frontmatter": 0,
+        "skipped-current-or-lts": 0,
+    }
 
     for file_path in mdx_files:
         version = version_segment(file_path)
@@ -113,8 +139,9 @@ def main():
         counts[result] += 1
 
     print("\n✅ Version noindex pass complete.")
-    print(f"   Added: {counts['added']}")
-    print(f"   Already had a robots or noindex directive: {counts['skipped-has-robots-or-noindex']}")
+    print(f"   Added noindex + robots (had neither before): {counts['added-both']}")
+    print(f"   Added noindex only (already had a robots: value, e.g. Classic Portal/EDP): {counts['added-noindex-only']}")
+    print(f"   Already had noindex: (untouched): {counts['skipped-has-noindex']}")
     print(f"   Current version or LTS (untouched): {counts['skipped-current-or-lts']}")
     print(f"   No frontmatter found: {counts['skipped-no-frontmatter']}")
 
