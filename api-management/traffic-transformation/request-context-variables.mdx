@@ -9,27 +9,25 @@ Context variables are extracted from the request at the start of the middleware 
 
 
 <Note>
-When using Tyk Classic APIs, you must [enable](#enabling-context-variables-for-use-with-tyk-classic-apis) context variables for the API to be able to access them. When using Tyk OAS APIs, the context variables are always available to the context-aware middleware.
+Context variables must be enabled for your API to access them in transformation middleware. See [Enabling Context Variables](#enabling-context-variables) for configuration instructions.
 </Note>
 
-
-
-## Available context variables
+## Available Context Variables
 
 | Variable name  | Description |
 |----------------|-------------|
 | `request_data` | If the inbound request contained any query data or form data, it will be available in this object. For the header injector Tyk will format this data as `key:value1,value2,valueN;key:value1,value2` etc. |
 | `path_parts` | The components of the path, split on `/`. These values should be in the format of a comma delimited list. |
-|`token` | The inbound raw token of this user (if bearer tokens are being used). |
+| `token` | The inbound raw token of this user (if bearer tokens are being used). |
 | `path` | The path that is being requested. |
 | `remote_addr` | The client's IP address. |
 | `request_id` | Allows the injection of request correlation ID (for example X-Request-ID) |
+| `tyk_trace_id` | When OpenTelemetry tracing is enabled on Tyk Gateway, this contains the OpenTelemetry trace ID allocated to the request. |
 | `jwt_claims_CLAIMNAME` | If JWT tokens are being used, then each claim in the JWT is available in this format to the context processor. `CLAIMNAME` is case sensitive so use the exact claim. |
 | `cookies_COOKIENAME` | If there are cookies, then each cookie is available in context processor in this format. `COOKIENAME` is case sensitive so use the exact cookie name and replace any `-` in the cookie name with `_`. |
 | `headers_HEADERNAME` | Request headers are accessed using the following format: Convert the **first letter** in each word of an incoming header to Capital Case and replace any `-` in the `HEADERNAME` name with `_`. For example, to get the value stored in `test-header`, the syntax would be `$tyk_context.headers_Test_Header`. |
 
-From Tyk 5.13.0 the current Session's rate limit and quota data are available from the following context variables:
-
+From Tyk Gateway 5.13.0, the current session's rate limit and quota data are available from the following context variables:
 | Variable name          | Description |
 |------------------------|-------------|
 | `rate_limit_limit`     | Number of requests that can be sent in the rate limit period |
@@ -39,26 +37,41 @@ From Tyk 5.13.0 the current Session's rate limit and quota data are available fr
 | `quota_remaining`      | Number of requests remaining in the current quota period |
 | `quota_reset`          | Timestamp for next quota period reset (Unix time) |
 
-## Middleware that can use context variables:
-Context variables are exposed in three middleware plugins but are accessed differently depending on the caller as follows:
+## Middleware That Can Use Context Variables
 
-1.   URL Rewriter - Syntax is `$tyk_context.CONTEXTVARIABLES`. See [Path Modification](/transform-traffic/url-rewriting) for more details.
-2.   Modify Headers - Syntax is `$tyk_context.CONTEXTVARIABLES`. See [Request Headers](/api-management/traffic-transformation/request-headers) for more details.
-3.   Body Transforms - Syntax is `{{ ._tyk_context.CONTEXTVARIABLES }}`. See [Body Transforms](/api-management/traffic-transformation/request-body) for more details.
+Context variables are exposed in five middleware plugins but are accessed differently depending on the caller:
+
+| Middleware | Syntax |
+|------------|-------------|
+| [URL Rewriter](/transform-traffic/url-rewriting) | `$tyk_context.CONTEXTVARIABLES` |
+| [Request Header Transform](/api-management/traffic-transformation/request-headers) | `$tyk_context.CONTEXTVARIABLES` |
+| [Response Header Transform](/api-management/traffic-transformation/response-headers) | `$tyk_context.CONTEXTVARIABLES` |
+| [Request Body Transform](/api-management/traffic-transformation/request-body) | `{{ ._tyk_context.CONTEXTVARIABLES }}` |
+| [Response Body Transform](/api-management/traffic-transformation/response-body) | `{{ ._tyk_context.CONTEXTVARIABLES }}` |
+
+<Note>
+Request Body Transform and Response Body Transform can fully iterate through list indices within context data. For example, calling `{{ index ._tyk_context.path_parts 0 }}` in the Go Template exposes the first entry in the `path_parts` list.
+
+URL Rewriter, Request Header Transform, and Response Header Transform cannot iterate through list indices.
+</Note>
+
+In Tyk OAS API definitions, add these middlewares under `x-tyk-api-gateway.middleware`:
+
+- **Global level** (`x-tyk-api-gateway.middleware.global`): applied across all endpoints in the API.
+- **Operation level** (`x-tyk-api-gateway.middleware.operations.<operationId>`): `transformRequestHeaders`, `transformResponseHeaders`, `transformRequestBody`, `transformResponseBody`, or `urlRewrite`, applied to a specific endpoint operation.
+
+If using Tyk Classic APIs, add these middlewares under `version_data.versions.<version_name>`:
+
+- **Global level** (applies to all paths in the version): `global_headers` / `global_response_headers`.
+- **Path level**: `extended_paths.transform_headers`, `extended_paths.transform_response_headers`, `extended_paths.transform`, `extended_paths.transform_response`, or `extended_paths.url_rewrites`.
+
+## Example Use of Context Variables
 
 
+### Examples of the Syntax to Use with Available Context Variables
 
-    <Note>
-    The Body Transform can fully iterate through list indices within context data so, for example, calling `{{ index ._tyk_context.path_parts 0 }}` in the Go Template in a Body Transform will expose the first entry in the `path_parts` list.
+The following example adds context variables to request headers sent to the upstream. The upstream in this example echoes received request headers back in its response body, which is how the resulting values appear below.
 
-    URL Rewriter and Header Transform middleware cannot iterate through list indices.
-    </Note>
-
-
-
-## Example use of context variables
-
-### Examples of the syntax to use with all the available context variables:
 ```
 "x-remote-addr": "$tyk_context.remote_addr",
 "x-token": "$tyk_context.token",
@@ -70,11 +83,16 @@ Context variables are exposed in three middleware plugins but are accessed diffe
 "x-my-header": "$tyk_context.headers_My_Header",
 "x-path": "$tyk_context.path",
 "x-request-data": "$tyk_context.request_data",
-"x-req-id": "$tyk_context.request_id"
+"x-req-id": "$tyk_context.request_id",
+"x-trace-id": "$tyk_context.tyk_trace_id"
 ```
+
 <img src="/img/dashboard/system-management/context_variables_ui.jpg" alt="Example of the syntax in the UI" />
 
-### The context variable values in the response:
+### Context Variable Values in the Response
+
+The values below are from the upstream's echoed response, not values Tyk returns directly to the API client.
+
 ```
 "My-Header": "this-is-my-header",
 "User-Agent": "PostmanRuntime/7.4.0",
@@ -88,21 +106,132 @@ Context variables are exposed in three middleware plugins but are accessed diffe
 "X-Remote-Addr": "127.0.0.1",
 "X-Req-Id": "e3e99350-b87a-4d7d-a75f-58c1f89b2bf3",
 "X-Request-Data": "key1:val1;key2:val2",
-"X-Token": "5bb2c2abfb6add0001d65f699dd51f52658ce2d3944d3d6cb69f07a2"
+"X-Token": "5bb2c2abfb6add0001d65f699dd51f52658ce2d3944d3d6cb69f07a2",
+"X-Trace-Id": "4bf92f3577b34da6a3ce929d0e0e4736"
 ```
 
-## Enabling Context Variables for use with Tyk Classic APIs
-1. In the your Tyk Dashboard, select `APIs` from the `System Management` menu 
-2. Open the API you want to add Context Variable to
-3. Click the `Advanced Options` tab and then select the `Enable context variables` option
+## Enabling Context Variables
+
+### Tyk OAS
+
+In Tyk OAS APIs, context variables are enabled by default when creating or importing an API. This is an API-wide setting under `x-tyk-api-gateway.middleware.global.contextVariables.enabled`
+
+<Tabs>
+<Tab title="Dashboard">
+
+1. In the Tyk Dashboard, select **APIs** from the **API Management** menu.
+2. Select your Tyk OAS API.
+
+    <img src="/img/dashboard/system-management/tyk-oas-context-variables-api-list.png" alt="Tyk Dashboard APIs list under API Management, showing Tyk OAS APIs to select from" />
+
+3. Select the **Settings** tab.
+4. Scroll down to the **Middleware** section and toggle **Context variables** to **On**.
+
+    <img src="/img/dashboard/system-management/tyk-oas-context-variables-toggle.png" alt="Tyk OAS API Settings Middleware section with the Context variables toggle switched on" />
+
+5. Click **Save API**.
+
+</Tab>
+<Tab title="Operator">
+
+When using Tyk Operator with `TykOasApiDefinition`, set `x-tyk-api-gateway.middleware.global.contextVariables.enabled` to `true` in the OpenAPI specification stored in the ConfigMap referenced by the custom resource:
+
+```yaml expandable
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: httpbin-oas
+  namespace: default
+data:
+  openapi.json: |-
+    {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "httpbin",
+        "version": "1.0.0"
+      },
+      "paths": {},
+      "x-tyk-api-gateway": {
+        "info": {
+          "name": "httpbin",
+          "state": {
+            "active": true
+          }
+        },
+        "upstream": {
+          "url": "http://httpbin.org"
+        },
+        "server": {
+          "listenPath": {
+            "value": "/httpbin",
+            "strip": true
+          }
+        },
+        "middleware": {
+          "global": {
+            "contextVariables": {
+              "enabled": true
+            }
+          }
+        }
+      }
+    }
+---
+apiVersion: tyk.tyk.io/v1alpha1
+kind: TykOasApiDefinition
+metadata:
+  name: httpbin
+  namespace: default
+spec:
+  tykOAS:
+    configmapRef:
+      name: httpbin-oas
+      namespace: default
+      keyName: openapi.json
+```
+
+</Tab>
+<Tab title="API Definition">
+
+In your Tyk OAS API definition file, enable context variables under `x-tyk-api-gateway.middleware.global.contextVariables.enabled`:
+
+```json
+{
+  "x-tyk-api-gateway": {
+    "middleware": {
+      "global": {
+        "contextVariables": {
+          "enabled": true
+        }
+      }
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+### Tyk Classic
+
+<a id="enabling-context-variables-for-use-with-tyk-classic-apis"></a>
+
+If using Tyk Classic APIs, context variables are disabled by default and must be explicitly enabled (`enable_context_vars: true`).
+
+<Tabs>
+<Tab title="Dashboard">
+
+1. In the Tyk Dashboard, select **APIs** from the **System Management** menu.
+2. Select your Tyk Classic API.
+3. Select the **Advanced Options** tab and select **Enable context variables**.
+4. Click **Update**.
 
 <img src="/img/2.10/context_variables.png" alt="Context Variables" />
 
-If not using a Tyk Dashboard, add the field `enable_context_vars` to your API definition file at root level and set it to `true`.
+</Tab>
+<Tab title="Operator">
 
-If you are using Tyk Operator, set the field `spec.enable_context_vars` to `true`.
-
-The example API Definition below enabled context variable:
+When using Tyk Operator with Tyk Classic `ApiDefinition` custom resources, set `spec.enable_context_vars` to `true`:
 
 ```yaml {linenos=true, linenostart=1, hl_lines=["10-10"]}
 apiVersion: tyk.tyk.io/v1alpha1
@@ -120,3 +249,18 @@ spec:
     listen_path: /httpbin
     strip_listen_path: true
 ```
+
+</Tab>
+<Tab title="API Definition">
+
+If you are not using Tyk Dashboard, add the field `enable_context_vars` at the root level of your API definition file and set it to `true`:
+
+```json
+{
+  "name": "httpbin",
+  "enable_context_vars": true
+}
+```
+
+</Tab>
+</Tabs>
