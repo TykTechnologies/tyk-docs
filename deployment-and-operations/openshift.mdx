@@ -16,24 +16,17 @@ Red Hat OpenShift admits pods through [Security Context Constraints](https://doc
 | Requirement | Version |
 | :--- | :--- |
 | Tyk Helm Chart | v5.4.0 or later |
-| Tyk components | 5.13 LTS tree (Tyk Gateway and Tyk Dashboard v5.13.1, Tyk Pump v1.16.0, Tyk MDCB v2.12.0, Tyk Developer Portal v1.18.0) |
+| Tyk components | Chart v5.4.0 defaults: Tyk Gateway and Tyk Dashboard v5.15.0, Tyk Pump v1.17.0, Tyk MDCB v2.13.0, Tyk Developer Portal v1.19.0. This page was validated with Tyk Gateway and Tyk Dashboard v5.13.1 |
 | OpenShift | 4.22 (validated on 4.22.1). The approach applies to any cluster that provides the `restricted-v2` SCC |
-
 
 ## How Security Context Constraints Affect Tyk
 
-When you create a project, OpenShift allocates it a block of UIDs and GIDs, typically starting above 1000000000. The `restricted-v2` SCC uses the `MustRunAsRange` strategy for `runAsUser` and `MustRunAs` for `fsGroup`. You can confirm this on your own cluster:
-
-```bash
-oc get scc restricted-v2 -o jsonpath='{"runAsUser: "}{.runAsUser.type}{"\nfsGroup:   "}{.fsGroup.type}{"\n"}'
-```
-
-Both strategies share the property that matters here:
+When you create a project, OpenShift allocates it a block of UIDs and GIDs, typically starting above 1000000000. The `restricted-v2` SCC applies one rule to both `runAsUser` and `fsGroup`:
 
 - If the pod leaves the field **unset**, the SCC assigns a value from the project's allocated range.
 - If the pod sets the field **explicitly**, the SCC **validates** it against that range and rejects the pod if it falls outside.
 
-The Tyk charts set both fields explicitly, so a default installation is rejected. Installing `tyk-oss` with default values on OpenShift 4.21 as an unprivileged user produces two independent violations:
+The Tyk charts set both fields explicitly, so a default installation is rejected. Installing `tyk-oss` with default values on OpenShift as an unprivileged user produces two independent violations:
 
 ```console
 pods "gateway-tyk-oss-tyk-gateway" is forbidden: unable to validate against any security context constraint:
@@ -41,18 +34,16 @@ pods "gateway-tyk-oss-tyk-gateway" is forbidden: unable to validate against any 
   spec.initContainers[0].runAsUser: Invalid value: 65532: must be in the ranges: [1000670000, 1000679999]
 ```
 
-Only two kinds of field cause this: an explicit `runAsUser` and an explicit `fsGroup`. The other hardening the charts apply, such as `runAsNonRoot`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation: false`, `seccompProfile.type: RuntimeDefault` and `capabilities.drop: [ALL]`, is fully compliant with `restricted-v2` and should be left in place.
+Only an explicit `runAsUser` and an explicit `fsGroup` cause this. The other hardening the charts apply is compliant with `restricted-v2` and should be left in place.
 
 <Note>
 SCCs are evaluated when a **pod** is admitted, not when a Deployment or StatefulSet is created. Rendering manifests with `helm template` does not prove that a workload will be admitted. Always verify against real pods.
 </Note>
 
-On OpenShift 4.22 and later you may also see a `restricted-v3` SCC. Pods from these charts still land on `restricted-v2`, and clusters on 4.14 to 4.18 do not have `restricted-v3` at all, so this page targets `restricted-v2` throughout.
-
 ## Prerequisites
 
 - An OpenShift 4.21 cluster, including Red Hat OpenShift Service on AWS (ROSA).
-- The oc [CLI](https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/cli_tools/openshift-cli-oc) and [Helm 3+](https://helm.sh/docs/intro/install/).
+- The [`oc` CLI](https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/cli_tools/openshift-cli-oc) and [Helm 3+](https://helm.sh/docs/intro/install/).
 - An [Enterprise Edition License](/apim#licensing) for `tyk-stack`, `tyk-control-plane` and `tyk-data-plane`.
 - A deploying account with the **`admin`** role on the target project. The `edit` role is not sufficient, because the charts create Roles and RoleBindings for the bootstrap job.
 
@@ -70,35 +61,21 @@ oc get namespace tyk -o jsonpath='{.metadata.annotations}' | tr ',' '\n' | grep 
 
 Every `securityContext` block in the charts accepts an `enabled` flag. Setting `enabled: false` omits the **entire** block from the rendered manifest, which leaves the fields unset and lets the SCC assign them. The `enabled` key itself is never rendered.
 
+```yaml expandable highlight={4}
 tyk-gateway:
   gateway:
     securityContext:
       enabled: false
 ```
 
-
-A block containing only `enabled: true` and no other fields renders nothing at all, so you never end up with an empty `securityContext:` key in your manifests.
-
 ### The Tyk Gateway Init Container Falls Through
 
-The Tyk Gateway runs an init container, `setupDirectories`, that prepares its working directory. This is the only container in the charts that pins a `runAsUser` by default (`65532`).
+The Tyk Gateway runs an init container, `setupDirectories`, that prepares its working directory. The chart resolves its `runAsUser` from the first value it finds: the init container's own `securityContext`, then `gateway.containerSecurityContext`, then `gateway.securityContext`. If none sets a UID, the init container runs as `65532`, which matches the Tyk Gateway image.
 
-Setting `enabled: false` on the init container's own block does not remove the security context outright. The template falls back to `gateway.containerSecurityContext`, which pins no UID. On OpenShift that fallback is admitted, because the SCC assigns the UID. To omit the init container's security context entirely, set `enabled: false` on **both** blocks:
-
-tyk-gateway:
-  gateway:
-    containerSecurityContext:
-      enabled: false
-    initContainers:
-      setupDirectories:
-        securityContext:
-          enabled: false
-```
-
-The values profiles below do this for you.
+Setting `enabled: false` on the init container's own block does not remove the security context outright. The template falls back to `gateway.containerSecurityContext`. To omit the init container's security context entirely, set `enabled: false` on **both** blocks. The values profiles below do this for you.
 
 <Warning>
-Do not copy this fall-through behavior to vanilla Kubernetes. There, nothing assigns a UID, so the init container inherits `runAsNonRoot: true` with no `runAsUser`. Its `busybox` image declares no `USER`, and kubelet rejects the pod with `CreateContainerConfigError: container has runAsNonRoot and image will run as root`. These opt-out flags are for clusters that assign IDs, such as OpenShift.
+Use these opt-out flags only on clusters that assign IDs, such as OpenShift. On vanilla Kubernetes nothing assigns a UID, and kubelet rejects the `busybox` init container with `CreateContainerConfigError: container has runAsNonRoot and image will run as root`.
 </Warning>
 
 ## Values Profiles By Chart
@@ -298,12 +275,6 @@ Tyk Pump and Tyk Operator are both disabled by default in this chart.
 </Tab>
 </Tabs>
 
-Only the pod-level blocks pin an `fsGroup`, so strictly speaking those are the ones that must be disabled. The container-level blocks are included above because they pin no IDs and disabling them keeps the whole configuration consistent, and because the Tyk Gateway init container falls back to `gateway.containerSecurityContext` as described earlier.
-
-<Note>
-`tyk-operator.podSecurityContext` is a dead key that no template reads, and it carries `allowPrivilegeEscalation`, which is not a valid `PodSecurityContext` field. Use `tyk-operator.managerPodSecurityContext` for the pod-level block. Do not set `tyk-operator.podSecurityContext`.
-</Note>
-
 ## Redis And PostgreSQL
 
 Redis and PostgreSQL are **not** dependencies of the Tyk charts. You install them as separate releases, and they have their own security contexts that OpenShift rejects independently of anything you configure in Tyk's values.
@@ -331,13 +302,6 @@ MISCONF Redis is configured to save RDB snapshots, but it's currently unable to
 persist to disk. Commands that may modify the data set are disabled...
 ```
 
-Tyk Gateway surfaces this as a failed dependency, which resembles a Tyk problem but is not:
-
-```json
-{"status":"fail","details":{"redis":{"status":"fail",
- "output":"storage: Redis is either down or was not configured"}}}
-```
-
 The failure is also delayed. Redis only attempts its first background save once its save interval elapses, so the deployment can look healthy for an hour before writes start failing.
 
 Mount a volume at the data directory so the SCC-assigned `fsGroup` applies to it. Any `emptyDir` or `PersistentVolumeClaim` works, because OpenShift sets group ownership and the setgid bit on mounted volumes:
@@ -352,64 +316,6 @@ containers:
       - name: data
         mountPath: /data
 ```
-
-Verify the mounted directory is group-writable by the assigned UID:
-
-```bash
-oc exec -n tyk deploy/redis -- sh -c 'id -u; ls -ld /data'
-```
-
-```console
-1000670000
-drwxrwsrwx 2 root 1000670000 6 Jul 23 12:44 /data
-```
-
-<Note>
-This applies to any third-party dependency image, not only Redis. Anything that writes to a path baked into its image, rather than to a mounted volume, hits the same problem on OpenShift and works fine on a cluster that runs containers as the image's own user. Production Redis and PostgreSQL deployments normally use a PersistentVolumeClaim, which avoids this. It most often bites in test and evaluation deployments that run without persistence.
-</Note>
-
-### Restarting Redis Desynchronizes Node Registration
-
-Tyk Gateway registers itself with Tyk Dashboard and keeps registration state in Redis. If Redis is replaced or flushed, for example when a pod is rescheduled without persistence, the two fall out of step. Tyk Gateway then loops on:
-
-```console
-Registration deferred (409 with status: Error); retrying in 5s
-Dashboard authentication failed: {"Status":"Error","Message":"Authorization failed (Nonce empty)"}
-```
-
-While in this state it loads zero APIs and zero policies, and every proxied request returns `404`. It does not recover on its own. Restart both components, Tyk Dashboard first:
-
-```bash
-oc rollout restart -n tyk deploy/dashboard-tyk-<release>-tyk-dashboard
-oc rollout status  -n tyk deploy/dashboard-tyk-<release>-tyk-dashboard
-oc rollout restart -n tyk deploy/gateway-tyk-<release>-tyk-gateway
-```
-
-A successful re-registration logs `Node Registered` with a node ID.
-
-## Tyk Dashboard Init Container
-
-Tyk Dashboard renders an init container, `init-analytics-conf`, only when `dashboard.image.tag` is `5.0.2` or earlier. It pins `runAsUser: 1000`. If you are pinned to one of those tags, disable it as well:
-
-```yaml expandable highlight={6}
-tyk-dashboard:
-  dashboard:
-    initContainers:
-      initAnalyticsConf:
-        securityContext:
-          enabled: false
-```
-
-Unlike the Tyk Gateway init container, this block has no fall-through. Setting `enabled: false` omits it outright.
-
-<Warning>
-Two separate version thresholds apply to Tyk Dashboard and it is easy to conflate them:
-
-- Tags `5.0.2` and earlier render this init container at all.
-- Tags earlier than `v5.5.0` have a main image whose `USER` is empty. Tags v5.0.2, v5.1.0, v5.3.0 and v5.4.0 all report `USER=''`; v5.5.0 onwards report `USER='65532'`.
-
-Tags between v5.0.3 and v5.4.0 therefore render **no** init container and are still affected by the missing `runAsUser` on the main container. See [Upgrade Notes](#upgrade-notes).
-</Warning>
 
 ## Verifying Admission
 
@@ -438,10 +344,6 @@ A healthy Tyk Gateway returns `"status":"pass"` with a `"pass"` for each configu
 ```json
 {"status":"pass","version":"5.13.1","description":"Tyk GW","details":{"redis":{"status":"pass","componentType":"datastore","time":"..."}}}
 ```
-
-<Note>
-Do not try to run `oc exec ... -- curl` or `-- wget` against the Tyk Gateway. Its image is distroless and contains no shell, `curl` or `wget`, so the command fails with `executable file not found in $PATH`. This is expected and is not a sign that the pod is unhealthy. Use `oc port-forward` as shown above.
-</Note>
 
 If a pod is not created at all, the SCC rejected it. The error is on the ReplicaSet or Job, not the pod, because no pod object exists:
 
@@ -476,7 +378,7 @@ CreateContainerConfigError: container has runAsNonRoot and image will run as roo
 Three cases break:
 
 - The image declares no `USER` at all.
-- The image declares `USER 0`. Tyk Gateway `v5.9.1` is an example, which is why the `tyk-oss` chart default moved to `v5.13.1`.
+- The image declares `USER 0`. Tyk Gateway `v5.9.1` is an example.
 - The image declares a **symbolic** `USER`, such as distroless `nonroot`. Kubelet cannot verify a non-numeric user against `runAsNonRoot` and reports `non-numeric user (nonroot), cannot verify user is non-root`.
 
 Before upgrading, check any tag you have pinned:
@@ -493,19 +395,8 @@ Anything other than a numeric, non-zero value needs either a tag bump or an expl
 
 ### Upgrading With Helm Hooks Disabled
 
-If you run with `bootstrap.disableHelmHooks: true`, which most OpenShift users do because they deploy through Argo CD, a plain `helm upgrade` fails:
-
-```console
-Error: UPGRADE FAILED: cannot patch "bootstrap-pre-install-..." with kind Job:
-  Job.batch "..." is invalid: spec.template: Invalid value: ...: field is immutable
-```
-
-With hooks disabled the bootstrap jobs are ordinary release resources, and a Job's pod template cannot be patched in place. Neither `helm upgrade --force` nor `helm.sh/resource-policy: keep` avoids it. For an already-bootstrapped deployment, set `global.components.bootstrap: false` and delete the pre-install job before upgrading. See [Upgrading With Hooks Disabled](/product-stack/tyk-charts/gitops-deployment#upgrading-with-hooks-disabled) for the full recipe and the reason a second bootstrap run must be avoided.
+With `bootstrap.disableHelmHooks: true`, a plain `helm upgrade` fails on the immutable bootstrap Job. See [Upgrading With Hooks Disabled](/product-stack/tyk-charts/gitops-deployment#upgrading-with-hooks-disabled).
 
 ### Changed Keys
 
-- `tyk-dev-portal.bootstrapJob.imagePullSecrets` has been **removed**. Use `tyk-dev-portal.imagePullSecrets`, which now applies to both the Tyk Developer Portal pod and its bootstrap job.
-- `tyk-bootstrap.bootstrap.imagePullSecrets` is still supported, but it is now applied through the bootstrap ServiceAccount rather than on the job pod specs. Behavior for image pulls is unchanged.
 - `pump.extraContainers` was previously nested inside the Tyk Pump `securityContext` condition, so sidecars silently disappeared when that block was falsy. The two are now independent.
-
-
