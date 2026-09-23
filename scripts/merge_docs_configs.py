@@ -1142,7 +1142,7 @@ class DocsMerger:
         """Rewrite Swagger download URLs to point to version-specific specs."""
         import re
 
-        pattern = r'https://raw\.githubusercontent\.com/TykTechnologies/tyk-docs/refs/heads/(?:production|main)/swagger/(?:nightly/?|[0-9.]+/)?([a-zA-Z0-9_.-]+\.(?:ya?ml|json))'
+        pattern = r'https://raw\.githubusercontent\.com/TykTechnologies/tyk-docs/refs/heads/(?:production|main)/swagger/(?:(?:nightly|[0-9.]+)/)?([a-zA-Z0-9_.-]+\.(?:ya?ml|json))'
         replacement = f'https://raw.githubusercontent.com/TykTechnologies/tyk-docs/refs/heads/production/swagger/{version}/\\1'
 
         new_content, count = re.subn(pattern, replacement, content)
