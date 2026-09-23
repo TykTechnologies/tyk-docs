@@ -66,5 +66,60 @@ class TestRewriteInternalLinks(unittest.TestCase):
         self.assertIn("[page](/docs/nightly/page)", result)
 
 
+class TestRewriteSwaggerDownloadLinks(unittest.TestCase):
+    def setUp(self):
+        self.merger = DocsMerger()
+
+    def test_rewrite_swagger_download_links_nightly_to_versioned(self):
+        content = '<ButtonLeft href="https://raw.githubusercontent.com/TykTechnologies/tyk-docs/refs/heads/production/swagger/nightly/dashboard-swagger.yml" color="green" content="Download Swagger" />'
+        result = self.merger.rewrite_swagger_download_links(content, "5.11")
+        expected = '<ButtonLeft href="https://raw.githubusercontent.com/TykTechnologies/tyk-docs/refs/heads/production/swagger/5.11/dashboard-swagger.yml" color="green" content="Download Swagger" />'
+        self.assertEqual(result, expected)
+
+    def test_rewrite_swagger_download_links_main_branch_identity_broker(self):
+        content = '<ButtonLeft href="https://raw.githubusercontent.com/TykTechnologies/tyk-docs/refs/heads/main/swagger/identity-broker-swagger.yml" color="green" content="Download Swagger" />'
+        result = self.merger.rewrite_swagger_download_links(content, "5.11")
+        expected = '<ButtonLeft href="https://raw.githubusercontent.com/TykTechnologies/tyk-docs/refs/heads/production/swagger/5.11/identity-broker-swagger.yml" color="green" content="Download Swagger" />'
+        self.assertEqual(result, expected)
+
+    def test_rewrite_swagger_download_links_yaml_extension(self):
+        content = '<ButtonLeft href="https://raw.githubusercontent.com/TykTechnologies/tyk-docs/refs/heads/production/swagger/nightly/enterprise-developer-portal-swagger.yaml" color="green" content="Download Swagger" />'
+        result = self.merger.rewrite_swagger_download_links(content, "5.10")
+        expected = '<ButtonLeft href="https://raw.githubusercontent.com/TykTechnologies/tyk-docs/refs/heads/production/swagger/5.10/enterprise-developer-portal-swagger.yaml" color="green" content="Download Swagger" />'
+        self.assertEqual(result, expected)
+
+    def test_rewrite_swagger_download_links_json_extension(self):
+        content = 'https://raw.githubusercontent.com/TykTechnologies/tyk-docs/refs/heads/production/swagger/nightly/spec.json'
+        result = self.merger.rewrite_swagger_download_links(content, "5.11")
+        expected = 'https://raw.githubusercontent.com/TykTechnologies/tyk-docs/refs/heads/production/swagger/5.11/spec.json'
+        self.assertEqual(result, expected)
+
+    def test_rewrite_swagger_download_links_from_existing_version(self):
+        content = '<ButtonLeft href="https://raw.githubusercontent.com/TykTechnologies/tyk-docs/refs/heads/production/swagger/5.10/dashboard-swagger.yml" color="green" content="Download Swagger" />'
+        result = self.merger.rewrite_swagger_download_links(content, "5.11")
+        expected = '<ButtonLeft href="https://raw.githubusercontent.com/TykTechnologies/tyk-docs/refs/heads/production/swagger/5.11/dashboard-swagger.yml" color="green" content="Download Swagger" />'
+        self.assertEqual(result, expected)
+
+    def test_rewrite_swagger_download_links_for_nightly_version(self):
+        content = '<ButtonLeft href="https://raw.githubusercontent.com/TykTechnologies/tyk-docs/refs/heads/production/swagger/nightly/gateway-swagger.yml" color="green" content="Download Swagger" />'
+        result = self.merger.rewrite_swagger_download_links(content, "nightly")
+        expected = '<ButtonLeft href="https://raw.githubusercontent.com/TykTechnologies/tyk-docs/refs/heads/production/swagger/nightly/gateway-swagger.yml" color="green" content="Download Swagger" />'
+        self.assertEqual(result, expected)
+
+    def test_rewrite_swagger_download_links_unrelated_urls_unchanged(self):
+        content = "https://raw.githubusercontent.com/TykTechnologies/tyk/refs/heads/master/apidef/oas/schema/3.0.json"
+        result = self.merger.rewrite_swagger_download_links(content, "5.11")
+        self.assertEqual(result, content)
+
+    def test_rewrite_swagger_download_links_multiple_links(self):
+        content = (
+            "Dashboard: https://raw.githubusercontent.com/TykTechnologies/tyk-docs/refs/heads/production/swagger/nightly/dashboard-swagger.yml\n"
+            "Gateway: https://raw.githubusercontent.com/TykTechnologies/tyk-docs/refs/heads/production/swagger/nightly/gateway-swagger.yml"
+        )
+        result = self.merger.rewrite_swagger_download_links(content, "5.11")
+        self.assertIn("swagger/5.11/dashboard-swagger.yml", result)
+        self.assertIn("swagger/5.11/gateway-swagger.yml", result)
+
+
 if __name__ == "__main__":
     unittest.main()
