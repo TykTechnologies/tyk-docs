@@ -463,6 +463,9 @@ class DocsMerger:
                             # First: Rewrite snippet imports (always uses version)
                             modified_content = self.rewrite_snippet_imports(content, version)
 
+                            # Rewrite Swagger download links (always uses version)
+                            modified_content = self.rewrite_swagger_download_links(modified_content, version)
+
                             # Then: Rewrite internal links for this version
                             modified_content = self.rewrite_internal_links(modified_content, version, is_latest)
 
@@ -724,7 +727,10 @@ class DocsMerger:
 
                                 # First: Rewrite snippet imports (always uses version)
                                 modified_content = self.rewrite_snippet_imports(content, version)
-                                
+
+                                # Rewrite Swagger download links (always uses version)
+                                modified_content = self.rewrite_swagger_download_links(modified_content, version)
+
                                 # Then: Rewrite internal links (uses subfolder logic)
                                 modified_content = self.rewrite_internal_links(modified_content, version, is_latest)
 
@@ -1132,6 +1138,19 @@ class DocsMerger:
         print(f"    📝 Snippet imports: {changes_made} changes made")
         return content
 
+    def rewrite_swagger_download_links(self, content: str, version: str) -> str:
+        """Rewrite Swagger download URLs to point to version-specific specs."""
+        import re
+
+        pattern = r'https://raw\.githubusercontent\.com/TykTechnologies/tyk-docs/refs/heads/(?:production|main)/swagger/(?:nightly/?|[0-9.]+/)?([a-zA-Z0-9_.-]+\.(?:ya?ml|json))'
+        replacement = f'https://raw.githubusercontent.com/TykTechnologies/tyk-docs/refs/heads/production/swagger/{version}/\\1'
+
+        new_content, count = re.subn(pattern, replacement, content)
+        if count > 0:
+            print(f"    📦 Swagger download links: {count} rewritten for version {version}")
+
+        return new_content
+
     def rewrite_internal_links(self, content, version, is_latest):
         """Rewrite internal links to include subfolder and version paths"""
         import re
@@ -1331,7 +1350,10 @@ class DocsMerger:
 
                         # First: Rewrite snippet imports (always uses version)
                         modified_content = self.rewrite_snippet_imports(content, version)
-                        
+
+                        # Rewrite Swagger download links (always uses version)
+                        modified_content = self.rewrite_swagger_download_links(modified_content, version)
+
                         # Then: Rewrite internal links (uses subfolder logic)
                         modified_content = self.rewrite_internal_links(modified_content, version, is_latest)
 
