@@ -173,9 +173,9 @@ For per-operation and per-primitive exemptions (`scopeCheck.enabled: false` on i
 
 ## Upstream OAuth
 
-When the upstream MCP server requires OAuth, Tyk handles token acquisition transparently. It acts as an OAuth client — obtaining a token from the upstream's authorization server using the client credentials flow and attaching it to every proxied request. The original MCP client never needs to supply upstream credentials.
+When the upstream MCP server requires OAuth, Tyk handles token acquisition transparently. It acts as an OAuth client, obtaining a token from the upstream's authorization server using the client credentials flow and attaching it to every proxied request. The original MCP client never needs to supply upstream credentials, and Tyk never forwards the client's own token to the upstream.
 
-Tyk caches acquired tokens and refreshes them before they expire, so the upstream sees a consistent stream of valid credentials without a token request on every MCP call.
+Tyk caches each token in Redis until it expires, encrypted with the Gateway `secret`, and shares it across all consumers of the proxy. When the cached token expires, Tyk requests a new one on the next request, so the authorization server isn't called on every MCP request.
 
 <Note>
 Upstream OAuth is available in Tyk Enterprise Edition only.
@@ -183,7 +183,9 @@ Upstream OAuth is available in Tyk Enterprise Edition only.
 
 ### Client Credentials Flow
 
-Client credentials is the OAuth flow for machine-to-machine communication — no user is involved, Tyk acts as the client. OAuth 2.1 retains this flow specifically for server-to-server scenarios.
+Client credentials is the OAuth flow for machine-to-machine access. No user is involved: Tyk authenticates to the authorization server as itself and receives a token for the upstream. OAuth 2.1 keeps this grant for confidential clients, which can hold a client secret securely, and Tyk is one.
+
+Because the token represents Tyk rather than the end user, the upstream MCP server sees every request as coming from Tyk. If the upstream needs the user's identity, use [token exchange](#token-exchange) instead.
 
 ```mermaid
 sequenceDiagram
@@ -198,7 +200,7 @@ sequenceDiagram
 
     alt Token not cached or expired
         T->>A: POST /oauth/token
-        Note over T,A: grant_type: client_credentials · client_id · client_secret · scopes
+        Note over T,A: grant_type: client_credentials · scope · client credentials (Basic auth header or request body)
         A-->>T: 200 OK · access_token · expires_in: 3600
         Note over T: Cache upstream token
     else Token cached
