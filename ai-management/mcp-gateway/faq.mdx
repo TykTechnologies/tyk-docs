@@ -29,16 +29,20 @@ If you don't have a Tyk Gateway deployment and just want to turn an OpenAPI spec
 
 ### Which transport methods does Tyk support?
 
-Tyk supports the Streamable HTTP transport defined in the MCP specification (version 2025-11-25):
+Tyk supports the Streamable HTTP transport defined in the MCP specification:
 
 - **`POST /mcp`**: for JSON-RPC messages from client to server. Tyk applies the middleware chain and proxies the request, streaming SSE responses through if the upstream returns them.
-- **`GET /mcp`**: for long-lived Server-Sent Events connections carrying server-initiated messages. Tyk maintains the connection and passes events through transparently.
+- **`GET /mcp`**: for long-lived Server-Sent Events connections carrying server-initiated messages. Tyk maintains the connection and passes events through transparently. Clients on `2026-07-28` don't use `GET /mcp`, because that revision has no sessions.
 
 The older HTTP+SSE transport (two separate endpoints: a POST endpoint and a `/sse` endpoint) used by earlier MCP versions is not supported. Check that your upstream server implements Streamable HTTP.
 
 ### What MCP protocol versions does Tyk support?
 
-Tyk passes the `MCP-Protocol-Version` header through to the upstream unchanged; version negotiation is handled between the client and the upstream MCP server. The current MCP specification version is `2025-11-25`. See [MCP proxy definition](/ai-management/mcp-gateway/mcp-proxy-definitions) for details on configuring the proxy definition.
+Tyk Gateway 5.16 and later supports `2026-07-28`, `2025-11-25`, `2025-06-18`, and `2025-03-26`. Tyk detects the version of each request from the `MCP-Protocol-Version` header and the request body, and rejects requests that declare any other version with error `-32022`. Requests that don't declare a version are treated as `2025-03-26`. See [MCP Protocol Versions](/ai-management/mcp-gateway/protocol-versions) for the detection rules and limitations.
+
+### Can clients on different MCP versions use the same proxy?
+
+Yes. Tyk handles each request according to the version it declares, so stateful clients on `2025-11-25` and earlier and stateless clients on `2026-07-28` can use the same MCP proxy at the same time. The same policies, rate limits, and middleware apply to both. REST API to MCP proxies serve both styles as well.
 
 ### Can Tyk proxy multiple MCP servers?
 
@@ -158,7 +162,7 @@ For most deployments, Bearer token authentication using Tyk-issued API keys is t
 
 ### Does Tyk support the MCP OAuth 2.1 specification?
 
-Yes. The MCP specification (version 2025-11-25) bases its authorization model on OAuth 2.1 and recommends that MCP servers expose **Protected Resource Metadata** (RFC 9728) so clients can discover authorization servers automatically.
+Yes. The MCP specification bases its authorization model on OAuth 2.1 and recommends that MCP servers expose **Protected Resource Metadata** (RFC 9728) so clients can discover authorization servers automatically.
 
 Tyk implements this end-to-end:
 
@@ -197,13 +201,15 @@ In every case, the agent presents a Tyk credential and Tyk presents the correct 
 
 ### MCP is described as stateful. How does Tyk handle sessions?
 
-The MCP protocol establishes sessions identified by an `Mcp-Session-Id` header. After initialisation, clients include this identifier on every subsequent request so the server can associate them with established session state.
+Revisions of MCP up to and including `2025-11-25` establish sessions identified by an `Mcp-Session-Id` header. After initialization, clients include this identifier on every subsequent request so the server can associate them with established session state.
 
 Tyk passes the `Mcp-Session-Id` header through unchanged in both directions. It does not maintain session state itself; session management is an upstream concern. If your upstream MCP server is load-balanced across multiple instances, configure session-aware routing (sticky sessions) in Tyk's upstream load-balancing settings to ensure requests from the same session consistently reach the same instance.
 
+The `2026-07-28` revision removes sessions entirely: each request is self-contained, and Tyk removes any `Mcp-Session-Id` header from `2026-07-28` requests before proxying them. See [MCP Protocol Versions](/ai-management/mcp-gateway/protocol-versions).
+
 ### What happens if the SSE connection drops?
 
-Tyk passes through the `Last-Event-ID` header when a client reconnects to the `GET /mcp` SSE stream. The upstream MCP server uses this to resume the stream from the last delivered event. Tyk maintains the long-lived connection for the duration of the session and re-establishes it transparently if it drops at the gateway layer.
+For clients on `2025-11-25` and earlier, Tyk passes through the `Last-Event-ID` header when a client reconnects to the `GET /mcp` SSE stream. The upstream MCP server uses this to resume the stream from the last delivered event. Tyk maintains the long-lived connection for the duration of the session and re-establishes it transparently if it drops at the gateway layer.
 
 ### Does Tyk buffer SSE responses?
 

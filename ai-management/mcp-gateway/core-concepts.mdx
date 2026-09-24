@@ -54,18 +54,22 @@ Tyk executes the middleware chain against the incoming `POST` request (authentic
 
 **`GET /mcp`**: Server-Sent Events. Clients open a persistent `GET /mcp` connection to receive server-initiated messages. The upstream MCP server uses this channel to push progress notifications, resource update notifications, and server-to-client requests such as `sampling/createMessage`. Tyk proxies the SSE stream transparently, maintaining the long-lived connection for the duration of the session.
 
+Clients on the `2026-07-28` revision use `POST /mcp` only. That revision has no sessions, so Tyk rejects `GET` and `DELETE` requests that use it with `405 Method Not Allowed`. See [MCP Protocol Versions](/ai-management/mcp-gateway/protocol-versions) for the differences between the revisions.
+
 ### Protocol headers
 
-MCP defines several protocol-specific headers that Tyk passes through unchanged in both directions:
+MCP defines several protocol-specific headers:
 
 | Header | Direction | Purpose |
 |---|---|---|
-| `MCP-Protocol-Version` | Client → Server | Required. Specifies the MCP protocol revision (for example, `2025-11-25`). |
-| `Mcp-Session-Id` | Server → Client, then Client → Server | Session identifier. Returned by the server after initialization; clients echo it on subsequent requests. |
-| `Last-Event-ID` | Client → Server | SSE resume token sent when reconnecting to a `GET /mcp` stream. |
-| `Origin` | Client → Server | Used by servers for origin-based security validation. |
+| `MCP-Protocol-Version` | Client → Server | Specifies the MCP protocol revision (for example, `2026-07-28`). Required on every `2026-07-28` request, and on requests after `initialize` from `2025-06-18` onwards. |
+| `Mcp-Method` | Client → Server | The JSON-RPC method of the request. `2026-07-28` only. |
+| `Mcp-Name` | Client → Server | The tool, prompt, or resource named in the request. `2026-07-28` only, on `tools/call`, `prompts/get`, and `resources/read`. |
+| `Mcp-Session-Id` | Server → Client, then Client → Server | Session identifier. Returned by the server after initialization; clients echo it on subsequent requests. `2025-11-25` and earlier only. |
+| `Last-Event-ID` | Client → Server | SSE resume token sent when reconnecting to a `GET /mcp` stream. `2025-11-25` and earlier only. |
+| `Origin` | Client → Server | The origin of a browser-based client. |
 
-The client and upstream MCP server handle version negotiation and session management. Tyk does not modify any MCP protocol headers.
+Tyk reads `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` to detect the protocol version and checks that they agree with the request body, rejecting requests where they don't. It passes the headers to the upstream unchanged. For `2025-11-25` and earlier, the client and upstream MCP server handle session management, and Tyk passes `Mcp-Session-Id` and `Last-Event-ID` through in both directions. For `2026-07-28` requests, Tyk removes both headers before proxying. See [MCP Protocol Versions](/ai-management/mcp-gateway/protocol-versions) for the rules Tyk applies to each header.
 
 ---
 
@@ -77,7 +81,7 @@ New to MCP? The [MCP introduction](https://modelcontextprotocol.io/introduction)
 
 The Model Context Protocol (MCP) is an open standard that defines how AI applications connect to external tools, data sources, and services. It uses a client-server model: an **MCP client** (an AI agent, LLM orchestration framework, or application) connects to an **MCP server** that exposes capabilities, and the two communicate using JSON-RPC 2.0 messages carried over HTTP.
 
-**Tyk supports the `2025-11-25` revision of the MCP specification.**
+**Tyk supports the `2026-07-28`, `2025-11-25`, `2025-06-18`, and `2025-03-26` revisions of the MCP specification side by side.** See [MCP Protocol Versions](/ai-management/mcp-gateway/protocol-versions) for details.
 
 ### Primitives
 
@@ -154,7 +158,9 @@ Tyk can apply rate limits, access control, and middleware at the method level (f
 
 ## Session lifecycle
 
-MCP is a stateful protocol. When a client sends an `initialize` request, the upstream server responds with an `Mcp-Session-Id` header. The client includes this identifier on all subsequent requests, allowing the server to associate them with the established session context. Tyk passes the header through unmodified and does not maintain session state itself.
+Revisions of MCP up to and including `2025-11-25` are stateful, and this section describes their session lifecycle. The `2026-07-28` revision has no sessions; see [Stateless Requests](#stateless-requests) below.
+
+When a client sends an `initialize` request, the upstream server responds with an `Mcp-Session-Id` header. The client includes this identifier on all subsequent requests, allowing the server to associate them with the established session context. Tyk passes the header through unmodified and does not maintain session state itself.
 
 A typical session proceeds through four phases.
 
@@ -252,6 +258,36 @@ sequenceDiagram
 ```
 
 If the `GET /mcp` SSE connection drops, the client can reconnect by opening a new `GET /mcp` request with the `Last-Event-ID` header set to the ID of the last event received. Tyk passes this through to the upstream, which resumes the stream from that point.
+
+### Stateless Requests
+
+Clients on the `2026-07-28` revision skip the handshake and session close entirely. Each request declares its protocol version and the client's capabilities in the request body, and repeats the method and primitive name in the `Mcp-Method` and `Mcp-Name` headers. Clients call `server/discover` instead of `initialize` to learn what the server supports, and Tyk filters the response against the consumer's policy in the same way as it filters an `initialize` response.
+
+Tyk authenticates and applies policy to every request exactly as it does within a session. Discovery and invocation look the same as in the diagrams above, without the `Mcp-Session-Id` header.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as MCP Client
+    participant T as Tyk Gateway
+    participant U as Upstream MCP Server
+
+    rect rgb(240, 248, 255)
+        Note over C,U: Stateless discovery and invocation (2026-07-28)
+        C->>T: POST /mcp · server/discover · MCP-Protocol-Version: 2026-07-28
+        Note over T: Authenticate · filter capabilities
+        T->>U: POST /mcp · server/discover
+        U-->>T: 200 OK · capabilities
+        T-->>C: 200 OK · filtered capabilities
+        C->>T: POST /mcp · tools/call · Mcp-Method: tools/call · Mcp-Name: get_forecast
+        Note over T: Authenticate · check headers match body · apply policy
+        T->>U: POST /mcp · tools/call
+        U-->>T: 200 OK · result
+        T-->>C: 200 OK · result
+    end
+```
+
+See [MCP Protocol Versions](/ai-management/mcp-gateway/protocol-versions) for the full requirements of `2026-07-28` requests.
 
 ---
 
