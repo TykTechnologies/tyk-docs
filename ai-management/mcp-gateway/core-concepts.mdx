@@ -6,9 +6,117 @@ sidebarTitle: "Core Concepts"
 ---
 
 
-This page covers the technical foundation for working with Tyk's MCP Gateway: the gateway's role in the protocol flow, the MCP protocol concepts it builds on, the session lifecycle, the proxy definition, middleware levels, and the policy model for per-consumer access control and rate limiting.
+This page covers the technical foundation for working with Tyk's MCP Gateway: the MCP protocol concepts it builds on, the gateway's role in the protocol flow, the session lifecycle, the proxy definition, middleware levels, and the policy model for per-consumer access control and rate limiting.
 
-## The gateway role
+## What Is MCP?
+
+<Tip>
+New to MCP? The [MCP introduction](https://modelcontextprotocol.io/introduction) is a good starting point before reading further.
+</Tip>
+
+The Model Context Protocol (MCP) is an open standard that defines how AI applications connect to external tools, data sources, and services. It uses a client-server model: an **MCP client** (an AI agent, LLM orchestration framework, or application) connects to an **MCP server** that exposes capabilities, and the two communicate using JSON-RPC 2.0 messages carried over HTTP.
+
+**Tyk supports the `2026-07-28` and `2025-11-25` revisions of the MCP specification side by side.** See [MCP Protocol Versions](/ai-management/mcp-gateway/protocol-versions) for details.
+
+### Primitives
+
+MCP servers expose three types of capability, collectively called **primitives**.
+
+| Primitive | Description | Discovery method | Invocation method |
+|---|---|---|---|
+| **Tool** | A callable function that takes structured arguments and returns a result. Used for actions and computed queries. | `tools/list` | `tools/call` |
+| **Resource** | A readable data source identified by a URI. Used for documents, files, and live data feeds. | `resources/list` | `resources/read` |
+| **Prompt** | A reusable prompt template the server exposes for common tasks. | `prompts/list` | `prompts/get` |
+
+Each primitive has a name (or URI for resources) that uniquely identifies it within the server:
+
+- A `tools/call` request names the tool in `params.name`
+- A `resources/read` request names the resource URI in `params.uri`
+- A `prompts/get` request names the prompt in `params.name`
+
+This name is what Tyk uses to apply primitive-level middleware and policy controls.
+
+### Client-Side Primitives
+
+MCP also defines primitives that run in the opposite direction: capabilities that servers can request from clients rather than expose themselves.
+
+| Primitive | Description | Method |
+|---|---|---|
+| **Sampling** | Server requests the client to perform LLM inference on its behalf and return the result. | `sampling/createMessage` |
+| **Roots** | Server requests the list of filesystem roots (directories or URIs) the client is willing to share. | `roots/list` |
+| **Elicitation** | Server requests structured input from the user, mediated through the client. | `elicitation/create` |
+
+<Note>
+Tyk passes client-side primitive messages through to the upstream and back. Primitive-level middleware configuration (rate limits, access control, timeouts) applies to server-side primitives only.
+</Note>
+
+### The Request Format
+
+Every MCP operation is a JSON-RPC 2.0 message sent to `POST /mcp`. Each message carries a `method` field that identifies the operation and, for invocation requests, a `params` object that names the specific primitive being accessed.
+
+A typical tool call looks like this:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "get_current_weather",
+    "arguments": { "location": "London" }
+  }
+}
+```
+
+The `method` field identifies the category of operation: `tools/call` in this example. The `params.name` field identifies the specific tool. Tyk reads both fields on every incoming `POST /mcp` request to determine which middleware to execute before forwarding to the upstream.
+
+### JSON-RPC Methods
+
+The MCP specification defines a fixed set of JSON-RPC method names, grouped into four categories.
+
+| Method | Category | Description |
+|---|---|---|
+| `initialize` | Session | Opens the session and negotiates capabilities. |
+| `notifications/initialized` | Session | Client confirms session is ready. |
+| `tools/list` | Tools | Returns the list of tools the server exposes. |
+| `tools/call` | Tools | Invokes a named tool with the supplied arguments. |
+| `resources/list` | Resources | Returns the list of resources the server exposes. |
+| `resources/read` | Resources | Reads the content of a named resource URI. |
+| `prompts/list` | Prompts | Returns the list of prompt templates the server exposes. |
+| `prompts/get` | Prompts | Retrieves a named prompt template, optionally with arguments. |
+| `sampling/createMessage` | Sampling | Requests the client to perform LLM sampling on behalf of the server. |
+| `notifications/tools/list_changed` | Notifications | Server-initiated notification that the tool list has changed. |
+
+Tyk can apply rate limits, access control, and middleware at the method level (for example, capping all `tools/call` requests) and at the primitive level (for example, rate limiting a specific named tool). The distinction matters: method-level controls apply to every invocation of that method regardless of which primitive is named; primitive-level controls apply only when that specific tool, resource, or prompt is requested.
+
+### Transport
+
+MCP uses **Streamable HTTP** as its transport. Clients send every JSON-RPC 2.0 message as a `POST` request to a single endpoint path, `/mcp`. The upstream MCP server can respond with:
+
+- **`200 application/json`**: a single JSON-RPC response, for operations that complete immediately.
+- **`200 text/event-stream`**: a Server-Sent Events stream carrying multiple JSON-RPC messages, used when the server streams results or sends progress notifications while it handles the request.
+- **`202 Accepted`**: an acknowledgement for JSON-RPC notifications that don't expect a response body.
+
+Tyk runs the middleware chain against each `POST` request, authenticating it, applying rate limits, and checking allowlists, and then proxies it to the upstream. Tyk preserves the response content type and streams SSE responses to the client without buffering or transforming the body.
+
+Clients on `2026-07-28` use `POST /mcp` only. That revision has no sessions, so Tyk rejects `GET` and `DELETE` requests that use it with `405 Method Not Allowed`.
+
+If your clients use `2025-11-25`, they also use two session-based methods on the same path:
+
+- **`GET /mcp`**: a persistent Server-Sent Events connection for server-initiated messages, such as resource update notifications and requests from the server to the client. Tyk proxies the stream and keeps the connection open for the duration of the session.
+- **`DELETE /mcp`**: closes the session. See [Session lifecycle](#session-lifecycle).
+
+See [MCP Protocol Versions](/ai-management/mcp-gateway/protocol-versions) for the differences between the revisions.
+
+### Protocol Headers
+
+Alongside the JSON-RPC body, MCP requests carry protocol information in HTTP headers. The `MCP-Protocol-Version` header declares the protocol revision. Clients on `2026-07-28` also repeat the method and the tool, resource, or prompt name in `Mcp-Method` and `Mcp-Name` headers, so that intermediaries such as Tyk can read them without parsing the body. Tyk checks that these headers agree with the request body before it applies policy, and rejects requests where they don't.
+
+See [Protocol Headers](/ai-management/mcp-gateway/protocol-versions#protocol-headers) for every MCP header and how Tyk handles each one.
+
+---
+
+## The Gateway Role
 
 Without a gateway, AI agents connect directly to MCP servers over HTTP. Each server is responsible for its own authentication, access control, and rate limiting, or has none at all. There is no central point to see which agents are calling which tools, no consistent way to revoke access, and no protection against a slow or unavailable server. For the full picture of why this creates operational risk at scale, see [MCP Gateway overview](/ai-management/mcp-gateway/overview).
 
@@ -40,123 +148,9 @@ MCP proxies share the same authentication mechanisms, policy engine, and analyti
 MCP definitions are supported in Tyk OAS format only. They are not available as Tyk Classic API definitions.
 </Note>
 
-### Transport
-
-MCP uses **Streamable HTTP** as its transport. The MCP specification defines a single endpoint path (`/mcp`) that supports two HTTP methods with distinct roles. Tyk proxies both.
-
-**`POST /mcp`**: JSON-RPC messages. Clients send JSON-RPC 2.0 messages to `POST /mcp`. The upstream MCP server can respond with:
-
-- **`200 application/json`**: a single JSON-RPC response, for operations that complete immediately.
-- **`200 text/event-stream`**: a Server-Sent Events stream carrying multiple JSON-RPC messages, used when the server streams results or sends progress notifications.
-- **`202 Accepted`**: an acknowledgement for JSON-RPC notifications that do not expect a response body.
-
-Tyk executes the middleware chain against the incoming `POST` request (authenticating, applying rate limits, checking allowlists) and then proxies it to the upstream. Tyk preserves the response content type and streams SSE responses through to the client without buffering or transforming the body.
-
-**`GET /mcp`**: Server-Sent Events. Clients open a persistent `GET /mcp` connection to receive server-initiated messages. The upstream MCP server uses this channel to push progress notifications, resource update notifications, and server-to-client requests such as `sampling/createMessage`. Tyk proxies the SSE stream transparently, maintaining the long-lived connection for the duration of the session.
-
-Clients on the `2026-07-28` revision use `POST /mcp` only. That revision has no sessions, so Tyk rejects `GET` and `DELETE` requests that use it with `405 Method Not Allowed`. See [MCP Protocol Versions](/ai-management/mcp-gateway/protocol-versions) for the differences between the revisions.
-
-### Protocol headers
-
-MCP defines several protocol-specific headers:
-
-| Header | Direction | Purpose |
-|---|---|---|
-| `MCP-Protocol-Version` | Client → Server | Specifies the MCP protocol revision (for example, `2026-07-28`). Required on every `2026-07-28` request, and on requests after `initialize` from `2025-06-18` onwards. |
-| `Mcp-Method` | Client → Server | The JSON-RPC method of the request. `2026-07-28` only. |
-| `Mcp-Name` | Client → Server | The tool, prompt, or resource named in the request. `2026-07-28` only, on `tools/call`, `prompts/get`, and `resources/read`. |
-| `Mcp-Session-Id` | Server → Client, then Client → Server | Session identifier. Returned by the server after initialization; clients echo it on subsequent requests. `2025-11-25` and earlier only. |
-| `Last-Event-ID` | Client → Server | SSE resume token sent when reconnecting to a `GET /mcp` stream. `2025-11-25` and earlier only. |
-| `Origin` | Client → Server | The origin of a browser-based client. |
-
-Tyk reads `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` to detect the protocol version and checks that they agree with the request body, rejecting requests where they don't. It passes the headers to the upstream unchanged. For `2025-11-25` and earlier, the client and upstream MCP server handle session management, and Tyk passes `Mcp-Session-Id` and `Last-Event-ID` through in both directions. For `2026-07-28` requests, Tyk removes both headers before proxying. See [MCP Protocol Versions](/ai-management/mcp-gateway/protocol-versions) for the rules Tyk applies to each header.
-
 ---
 
-## What is MCP?
-
-<Tip>
-New to MCP? The [MCP introduction](https://modelcontextprotocol.io/introduction) is a good starting point before reading further.
-</Tip>
-
-The Model Context Protocol (MCP) is an open standard that defines how AI applications connect to external tools, data sources, and services. It uses a client-server model: an **MCP client** (an AI agent, LLM orchestration framework, or application) connects to an **MCP server** that exposes capabilities, and the two communicate using JSON-RPC 2.0 messages carried over HTTP.
-
-**Tyk supports the `2026-07-28`, `2025-11-25`, `2025-06-18`, and `2025-03-26` revisions of the MCP specification side by side.** See [MCP Protocol Versions](/ai-management/mcp-gateway/protocol-versions) for details.
-
-### Primitives
-
-MCP servers expose three types of capability, collectively called **primitives**.
-
-| Primitive | Description | Discovery method | Invocation method |
-|---|---|---|---|
-| **Tool** | A callable function that takes structured arguments and returns a result. Used for actions and computed queries. | `tools/list` | `tools/call` |
-| **Resource** | A readable data source identified by a URI. Used for documents, files, and live data feeds. | `resources/list` | `resources/read` |
-| **Prompt** | A reusable prompt template the server exposes for common tasks. | `prompts/list` | `prompts/get` |
-
-Each primitive has a name (or URI for resources) that uniquely identifies it within the server:
-
-- A `tools/call` request names the tool in `params.name`
-- A `resources/read` request names the resource URI in `params.uri`
-- A `prompts/get` request names the prompt in `params.name`
-
-This name is what Tyk uses to apply primitive-level middleware and policy controls.
-
-### Client-side primitives
-
-MCP also defines primitives that run in the opposite direction: capabilities that servers can request from clients rather than expose themselves.
-
-| Primitive | Description | Method |
-|---|---|---|
-| **Sampling** | Server requests the client to perform LLM inference on its behalf and return the result. | `sampling/createMessage` |
-| **Roots** | Server requests the list of filesystem roots (directories or URIs) the client is willing to share. | `roots/list` |
-| **Elicitation** | Server requests structured input from the user, mediated through the client. | `elicitation/create` |
-
-<Note>
-Tyk passes client-side primitive messages through to the upstream and back. Primitive-level middleware configuration (rate limits, access control, timeouts) applies to server-side primitives only.
-</Note>
-
-### The request format
-
-Every MCP operation is a JSON-RPC 2.0 message sent to `POST /mcp`. Each message carries a `method` field that identifies the operation and, for invocation requests, a `params` object that names the specific primitive being accessed.
-
-A typical tool call looks like this:
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/call",
-  "params": {
-    "name": "get_current_weather",
-    "arguments": { "location": "London" }
-  }
-}
-```
-
-The `method` field identifies the category of operation: `tools/call` in this example. The `params.name` field identifies the specific tool. Tyk reads both fields on every incoming `POST /mcp` request to determine which middleware to execute before forwarding to the upstream.
-
-### JSON-RPC methods
-
-The MCP specification defines a fixed set of JSON-RPC method names, grouped into four categories.
-
-| Method | Category | Description |
-|---|---|---|
-| `initialize` | Session | Opens the session and negotiates capabilities. |
-| `notifications/initialized` | Session | Client confirms session is ready. |
-| `tools/list` | Tools | Returns the list of tools the server exposes. |
-| `tools/call` | Tools | Invokes a named tool with the supplied arguments. |
-| `resources/list` | Resources | Returns the list of resources the server exposes. |
-| `resources/read` | Resources | Reads the content of a named resource URI. |
-| `prompts/list` | Prompts | Returns the list of prompt templates the server exposes. |
-| `prompts/get` | Prompts | Retrieves a named prompt template, optionally with arguments. |
-| `sampling/createMessage` | Sampling | Requests the client to perform LLM sampling on behalf of the server. |
-| `notifications/tools/list_changed` | Notifications | Server-initiated notification that the tool list has changed. |
-
-Tyk can apply rate limits, access control, and middleware at the method level (for example, capping all `tools/call` requests) and at the primitive level (for example, rate limiting a specific named tool). The distinction matters: method-level controls apply to every invocation of that method regardless of which primitive is named; primitive-level controls apply only when that specific tool, resource, or prompt is requested.
-
----
-
-## Session lifecycle
+## Session Lifecycle
 
 Revisions of MCP up to and including `2025-11-25` are stateful, and this section describes their session lifecycle. The `2026-07-28` revision has no sessions; see [Stateless Requests](#stateless-requests) below.
 
@@ -236,7 +230,7 @@ sequenceDiagram
     end
 ```
 
-### Session close
+### Session Close
 
 When the client has finished, it sends `DELETE /mcp` with the `Mcp-Session-Id` header. Tyk proxies the request to the upstream, which terminates the session. After session close, the `Mcp-Session-Id` is invalid; a new `initialize` request is required to open a new session.
 
@@ -291,7 +285,7 @@ See [MCP Protocol Versions](/ai-management/mcp-gateway/protocol-versions) for th
 
 ---
 
-## The proxy definition
+## The Proxy Definition
 
 The **MCP proxy definition** is the configuration object that describes the proxy. It is a Tyk OAS API definition, an OpenAPI 3.0 document extended with `x-tyk-api-gateway`, and it is both the single source of truth for everything about the proxy and its registry entry: the listen path, the upstream URL, authentication, middleware, and versioning.
 
@@ -336,7 +330,7 @@ Clients connect to Tyk at `https://my-gateway.example.com/weather/mcp`. Tyk auth
 
 You manage MCP proxy definitions through the [Tyk Gateway API](/ai-management/mcp-gateway/mcp-api-extensions) (at `/tyk/mcps`) or the [Tyk Dashboard](/ai-management/mcp-gateway/managing-proxies). For the full definition structure and field reference, see [MCP proxy definitions](/ai-management/mcp-gateway/mcp-proxy-definitions).
 
-### Tool naming and discovery
+### Tool Naming and Discovery
 
 Every tool, resource, and prompt on an MCP server has a **name** (or URI for resources) that uniquely identifies it within that server. Understanding how names are assigned, and how Tyk uses them, is a prerequisite for configuring primitive-level middleware, blocking specific tools, or writing policies with allowlists and blocklists.
 
@@ -354,11 +348,11 @@ There is one exception: if the source API's OAS uses an operation-level allow-li
 
 Tyk applies middleware to MCP traffic at three levels, all configured in the `x-tyk-api-gateway.middleware` section of the proxy definition. The levels are evaluated in order from broadest to most specific.
 
-### Global middleware
+### Global Middleware
 
 Global middleware applies to every request that reaches the proxy, before any method-level or primitive-level processing. Use it for server-wide concerns: CORS configuration, traffic logging, header injection into upstream requests, or custom plugins that should run on all traffic.
 
-### Operation middleware
+### Operation Middleware
 
 Operation middleware applies to all requests for a specific JSON-RPC method, regardless of which primitive is called. Configure it in `middleware.operations`, keyed by the JSON-RPC method name with its HTTP method suffix (for example, `tools/callPOST`). Use it for method-wide policies, such as a rate limit that applies to all `tools/call` requests without distinguishing between individual tools.
 
@@ -376,7 +370,7 @@ Operation middleware applies to all requests for a specific JSON-RPC method, reg
 
 This rate limit applies to every `tools/call` request, regardless of which tool is named in `params`.
 
-### Primitive middleware
+### Primitive Middleware
 
 Primitive middleware applies to a specific tool, resource, or prompt. Configure it in one of three maps (`middleware.mcpTools`, `middleware.mcpResources`, or `middleware.mcpPrompts`), keyed by the primitive's identifier: the tool name, resource URI (or URI pattern), or prompt name. In addition to the standard middleware capabilities, two OAuth 2.0 features operate at this level: `scopeCheck` validates the inbound token's scopes against the primitive's `security:` requirements, and `exchange` replaces the `Authorization` header with a backend-scoped token before the request reaches the upstream (see [Token exchange](/api-management/authentication/token-exchange)).
 
@@ -421,7 +415,7 @@ Primitive access control is enforced at two points in the MCP protocol.
 
 **At discovery time**: Tyk intercepts `tools/list`, `resources/list`, and `prompts/list` responses from the upstream and strips out any primitives the consumer cannot see. Each consumer receives a filtered view of the server's capabilities from the moment they connect.
 
-### Policies versus middleware
+### Policies Versus Middleware
 
 Both middleware and policies can enforce limits on MCP primitives, but they operate on different subjects.
 

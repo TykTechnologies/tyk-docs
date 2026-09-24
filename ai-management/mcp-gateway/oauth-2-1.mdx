@@ -29,11 +29,11 @@ The two planes are configured independently — Bearer tokens on the inbound sid
 
 **Protected Resource Metadata (PRM)** is the standardized discovery mechanism defined in [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728). It gives OAuth clients a machine-readable document describing a protected resource: which authorization servers can issue tokens for it, and which OAuth scopes it supports.
 
-The MCP specification recommends that every MCP server expose a PRM document so that clients can discover the correct authorization server before making their first request. Without it, clients must be pre-configured with authorization server URLs — an approach that becomes fragile as deployments grow and authorization infrastructure changes.
+The MCP specification requires MCP servers that support authorization to expose a PRM document, so that clients can discover the correct authorization server before making their first request. Without it, clients must be pre-configured with authorization server URLs — an approach that becomes fragile as deployments grow and authorization infrastructure changes.
 
 Tyk serves the PRM document natively. When PRM is enabled on an [MCP OAS definition](/ai-management/mcp-gateway/mcp-proxy-definitions), Tyk intercepts GET requests to the well-known path and serves the metadata document. The endpoint is unauthenticated by design — clients need it before they have a token.
 
-### The discovery flow
+### The Discovery Flow
 
 ```mermaid
 sequenceDiagram
@@ -45,24 +45,31 @@ sequenceDiagram
 
     C->>T: POST /mcp (no token)
     T-->>C: 401 Unauthorized
-    Note over T,C: WWW-Authenticate: Bearer resource_metadata=https://gateway.example.com/weather-mcp/.well-known/oauth-protected-resource
+    Note over T,C: WWW-Authenticate: Bearer resource_metadata="https://gateway.example.com/weather-mcp/.well-known/oauth-protected-resource"
 
-    C->>T: GET /.well-known/oauth-protected-resource
-    T-->>C: 200 OK — PRM document
-    Note over T,C: resource · authorization_servers: [auth.example.com] · scopes_supported
+    C->>T: GET /weather-mcp/.well-known/oauth-protected-resource
+    T-->>C: 200 OK · PRM document
+    Note over T,C: resource · authorization_servers: [https://auth.example.com] · scopes_supported
 
-    C->>A: POST /oauth/token (client credentials grant)
-    A-->>C: 200 OK · access_token · token_type: Bearer
+    C->>A: GET /.well-known/oauth-authorization-server
+    A-->>C: 200 OK · authorization server metadata
+    Note over C: Check issuer matches https://auth.example.com
+
+    Note over C,A: Obtain a client ID (Client ID Metadata Document, pre-registration, or Dynamic Client Registration)
+    C->>A: Authorization request · PKCE · resource=https://gateway.example.com/weather-mcp/
+    A-->>C: Authorization code · iss
+    Note over C: Check iss matches the recorded issuer
+    C->>A: Token request · code_verifier · resource
+    A-->>C: 200 OK · access_token
 
     C->>T: POST /mcp · Authorization: Bearer access_token
-    Note over T: Validate Bearer token · apply middleware
-    T->>U: POST /mcp · Authorization: Bearer upstream-token
+    Note over T: Validate token · apply middleware
+    T->>U: POST /mcp (upstream credentials, if configured)
     U-->>T: Response
     T-->>C: Response
-    Note over C,U: Request authorised and proxied
 ```
 
-The `WWW-Authenticate` header Tyk sends on authentication failure is a standard Bearer challenge extended with the `resource_metadata` parameter defined in RFC 9728. Any OAuth 2.1-compliant client library handles this automatically.
+The `WWW-Authenticate` header Tyk sends on authentication failure is a standard Bearer challenge extended with the `resource_metadata` parameter defined in RFC 9728. Tyk also serves the PRM document at `/.well-known/oauth-protected-resource/{listen-path}`, the fallback location that clients try when the header is missing.
 
 ### Configuring PRM
 
@@ -107,7 +114,7 @@ If you have an existing PRM configuration at `authentication.protectedResourceMe
 
 ---
 
-## Scope enforcement
+## Scope Enforcement
 
 Scope enforcement checks that the bearer token carries the scopes required by the matched operation or MCP primitive — translating what the authorization server granted into access decisions at the gateway.
 
@@ -174,7 +181,7 @@ Tyk caches acquired tokens and refreshes them before they expire, so the upstrea
 Upstream OAuth is available in Tyk Enterprise Edition only.
 </Note>
 
-### Client credentials flow
+### Client Credentials Flow
 
 Client credentials is the OAuth flow for machine-to-machine communication — no user is involved, Tyk acts as the client. OAuth 2.1 retains this flow specifically for server-to-server scenarios.
 
@@ -204,7 +211,7 @@ sequenceDiagram
     Note over C,U: Request processed upstream
 ```
 
-### Configuring upstream OAuth
+### Configuring Upstream OAuth
 
 Upstream OAuth is configured in the `upstream.authentication` section of the API definition:
 
@@ -241,9 +248,9 @@ Upstream OAuth is configured in the `upstream.authentication` section of the API
 
 ---
 
-## Token exchange
+## Token Exchange
 
-The [MCP authorization specification](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization#access-token-privilege-restriction) requires that an MCP server **MUST NOT** pass through the token it received from the MCP client when making requests to upstream APIs. The upstream token must be a separate token issued by the upstream authorization server.
+The [MCP authorization specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#access-token-privilege-restriction) requires that an MCP server **MUST NOT** pass through the token it received from the MCP client when making requests to upstream APIs. The upstream token must be a separate token issued by the upstream authorization server.
 
 **Token exchange** ([RFC 8693](https://www.rfc-editor.org/rfc/rfc8693)) is how Tyk satisfies this requirement while preserving the caller's identity. Tyk presents the validated inbound token to an authorization server and receives a backend-scoped token in return. The inbound agent token never reaches the upstream.
 
@@ -282,7 +289,7 @@ Do not configure `upstream.authentication.oauth` alongside token exchange. They 
 
 ---
 
-## Composing features
+## Composing Features
 
 Each feature on this page is independent. The example below uses all of them, but you can enable any subset depending on your requirements.
 
@@ -307,7 +314,7 @@ Common configurations:
 
 ---
 
-## The complete OAuth 2.1 flow
+## The Complete OAuth 2.1 Flow
 
 The end-to-end flow has two phases. The authorization server appears in both — first when the MCP client obtains its agent token, then when Tyk exchanges it for an upstream-scoped token.
 
@@ -331,7 +338,7 @@ The agent's original token never reaches the upstream MCP server. The MCP client
 
 ---
 
-## A complete configuration example
+## A Complete Configuration Example
 
 The following configuration for a weather MCP proxy enables all four features — PRM discovery, JWT signature validation, scope enforcement, and RFC 8693 token exchange:
 
@@ -444,11 +451,11 @@ For the static client credentials variant — where Tyk authenticates to the ups
 
 ---
 
-## Per-primitive configuration
+## Per-Primitive Configuration
 
 The complete example above configures each feature at the API level, applying uniformly to all primitives. Both scope enforcement and token exchange support per-primitive overrides when individual tools need different access requirements or different upstream credentials.
 
-### Multiple exchange providers
+### Multiple Exchange Providers
 
 The `providers` array accepts multiple entries. Tyk selects the matching provider at request time by comparing the inbound token's `iss` claim against each provider's `issuers` list. This lets you handle tokens from different authorization servers — for example, your own IdP and a partner's — routing each to the appropriate token endpoint and default target:
 
@@ -490,7 +497,7 @@ The `providers` array accepts multiple entries. Tyk selects the matching provide
 
 If no provider matches the inbound token's issuer, the exchange step fails and Tyk returns an error before the request reaches the upstream.
 
-### Per-primitive scope and exchange overrides
+### Per-Primitive Scope and Exchange Overrides
 
 The `defaultTarget` in each provider applies uniformly to every primitive. When individual tools need a different audience, a narrower set of scopes, or stricter scope enforcement than the API-level default, configure overrides directly on the primitive in the `middleware.mcpTools` map:
 
