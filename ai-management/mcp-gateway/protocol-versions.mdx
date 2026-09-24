@@ -1,0 +1,179 @@
+---
+title: "MCP Protocol Versions"
+sidebarTitle: "Protocol Versions"
+description: "The MCP specification versions Tyk MCP Gateway supports, how Tyk detects the version a request uses, and how stateful and stateless (2026-07-28) requests are handled side by side."
+keywords: "MCP, Model Context Protocol, protocol version, 2026-07-28, 2025-11-25, 2025-06-18, 2025-03-26, stateless, MCP-Protocol-Version, Mcp-Method, Mcp-Name, server/discover, cacheScope, ttlMs, Tyk MCP Gateway"
+---
+
+The Model Context Protocol (MCP) specification is published in dated revisions. Clients and servers declare which revision they speak, and each revision can change how requests are formed and processed. Tyk MCP Gateway supports several revisions at the same time, so clients on older and newer revisions can use the same MCP proxy. This page lists the supported versions, explains how Tyk works out which version a request uses, and describes what changes for requests that use the 2026-07-28 revision.
+
+## Supported Versions
+
+Tyk MCP Gateway accepts requests that use any of the following MCP specification versions:
+
+| Version | Request style |
+|---|---|
+| [`2026-07-28`](https://modelcontextprotocol.io/specification/2026-07-28) | Stateless |
+| [`2025-11-25`](https://modelcontextprotocol.io/specification/2025-11-25) | Stateful |
+| [`2025-06-18`](https://modelcontextprotocol.io/specification/2025-06-18) | Stateful |
+| [`2025-03-26`](https://modelcontextprotocol.io/specification/2025-03-26) | Stateful |
+
+The same list applies to MCP proxies that front a remote MCP server and to proxies [generated from a REST API](/ai-management/mcps/api-to-mcp). A request that declares any other version is rejected with error `-32022` (unsupported protocol version). The error's `data` object lists the requested version and the versions the proxy supports. See [MCP Error Codes](/ai-management/mcp-gateway/error-codes) for the full error format.
+
+<Note>
+The `2025-03-26` revision allows a client to send several JSON-RPC requests as a single JSON array, known as a batch. Tyk doesn't support batches. It rejects a request body that is a JSON array with error `-32700` (parse error), so clients on `2025-03-26` must send each request separately. Later revisions removed batching from the specification.
+</Note>
+
+## Stateful and Stateless Requests
+
+Revisions up to and including `2025-11-25` are *stateful*. A client opens a session with an `initialize` handshake, and the server returns an `Mcp-Session-Id` header that the client sends on every later request. [Core Concepts](/ai-management/mcp-gateway/core-concepts#session-lifecycle) describes this session lifecycle in detail.
+
+The `2026-07-28` revision is *stateless*. There is no handshake and no session. Every request carries everything the server needs to process it, including the protocol version and the client's capabilities, in the request body. Clients discover what a server offers by calling `server/discover` instead of `initialize`.
+
+| | Stateful (2025-11-25 and earlier) | Stateless (2026-07-28) |
+|---|---|---|
+| Handshake | `initialize`, then `notifications/initialized` | None |
+| Session header | `Mcp-Session-Id` | Not used |
+| Capability discovery | `initialize` response | `server/discover` |
+| Version declaration | `initialize` body, then the `MCP-Protocol-Version` header (2025-06-18 and later) | `MCP-Protocol-Version` header and `_meta` on every request |
+| Method headers | Not used | `Mcp-Method` and `Mcp-Name` |
+| HTTP methods | `POST`, `GET` (SSE stream), `DELETE` (close session) | `POST` only |
+
+Tyk applies authentication, policies, rate limits, and per-primitive middleware in the same way for both styles. It reads the method and the tool, resource, or prompt name from the JSON-RPC request body, so the same policy governs a client regardless of the version it uses.
+
+{/*
+Diagram placeholder: stateful and stateless request flows side by side.
+Purpose: show at a glance why a 2026-07-28 client needs no session with Tyk.
+Structure: two sequence diagrams next to each other, each with lanes for MCP Client, Tyk Gateway, and Upstream MCP Server.
+Key visual elements:
+- Left (stateful): initialize, response with Mcp-Session-Id, notifications/initialized, then tools/call carrying Mcp-Session-Id.
+- Right (stateless): server/discover, then tools/call carrying MCP-Protocol-Version, Mcp-Method, Mcp-Name, and _meta. No session header.
+- In both diagrams, mark the point where Tyk applies authentication and policy on each request.
+Design notes: use the same lane order and colors as the session lifecycle diagrams on the Core Concepts page. Label the columns with the version ranges ("2025-11-25 and earlier", "2026-07-28").
+*/}
+
+## How Tyk Detects the Protocol Version
+
+Tyk works out the protocol version of every MCP request before it runs authentication. It looks for a declaration in these places:
+
+- The `MCP-Protocol-Version` request header.
+- The `io.modelcontextprotocol/protocolVersion` field in the request's `params._meta` object.
+- The `protocolVersion` field in the `params` of an `initialize` request.
+
+When a request declares a version in more than one place, every declaration must match. Conflicting declarations, such as a `2026-07-28` header with a `2025-11-25` body, are rejected with error `-32020` (header mismatch) rather than resolved by picking one of them.
+
+A request that declares no version at all is treated as `2025-03-26`. This keeps older clients working, since stateful clients send the header only after the handshake.
+
+An `initialize` request that states its version only in the body, with no header and no `_meta`, is an exception to the supported-version check. Tyk forwards it so that the client and the upstream server can negotiate a version between them, as the stateful revisions define.
+
+Tyk also rejects any request that sends more than one `MCP-Protocol-Version` header, or a header value that isn't a date in `YYYY-MM-DD` format, with error `-32020`.
+
+## Requests Using 2026-07-28
+
+Tyk treats a request as `2026-07-28` when any of its declarations names that version. These requests must meet the additional requirements of the stateless revision before Tyk processes them.
+
+### Required Metadata
+
+A `2026-07-28` request must declare its version and the client's capabilities in `params._meta`, and must send the same version in the `MCP-Protocol-Version` header. The following `tools/call` request shows the required fields:
+
+```http
+POST /weather-mcp/mcp HTTP/1.1
+Host: gateway.example.com
+Content-Type: application/json
+Authorization: Bearer eyJhbGciOiJSUzI1NiIs...
+MCP-Protocol-Version: 2026-07-28
+Mcp-Method: tools/call
+Mcp-Name: get_forecast
+
+{
+  "jsonrpc": "2.0",
+  "id": 42,
+  "method": "tools/call",
+  "params": {
+    "name": "get_forecast",
+    "arguments": { "city": "London" },
+    "_meta": {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientCapabilities": {}
+    }
+  }
+}
+```
+
+The `io.modelcontextprotocol/clientCapabilities` object is required, even when it's empty. Any `sampling`, `roots`, `elicitation`, or `tasks` entries inside it must be objects. The optional `io.modelcontextprotocol/clientInfo` field must also be an object when present. Tyk rejects a request with missing or malformed metadata with error `-32602` (invalid params), and a request whose header is missing or doesn't match `_meta` with error `-32020`.
+
+### Mirrored Method Headers
+
+The `2026-07-28` revision repeats key parts of the request body in HTTP headers, so that intermediaries such as Tyk can check them without trusting one source over the other:
+
+- **`Mcp-Method`**: required on every request. It must match the body's `method`.
+- **`Mcp-Name`**: required on `tools/call` and `prompts/get`, where it must match `params.name`, and on `resources/read`, where it must match `params.uri`.
+
+Either header can carry a Base64-encoded value in the form `=?base64?<value>?=` for names that contain characters not allowed in an HTTP header. Tyk decodes the value before comparing it. A missing, repeated, malformed, or mismatched header is rejected with error `-32020`.
+
+Tyk passes custom `Mcp-Param-*` headers to the upstream unchanged.
+
+### Session Methods and Headers
+
+Because `2026-07-28` has no sessions, Tyk rejects the stateful lifecycle methods when a request uses that version. The following methods return error `-32601` (method not found):
+
+- `initialize`
+- `ping`
+- `notifications/initialized`
+- `notifications/roots/list_changed`
+- `logging/setLevel`
+- `resources/subscribe`
+- `resources/unsubscribe`
+
+Tyk removes any `Mcp-Session-Id` and `Last-Event-ID` headers from `2026-07-28` requests before routing them, so a stale session identifier can't affect how the request is handled. `GET` and `DELETE` requests return `405 Method Not Allowed` with an `Allow: POST` header.
+
+## Checks for All Versions
+
+Some checks apply whatever version a request uses. Every MCP `POST` request must have exactly one `Content-Type` header, and its media type must be `application/json`. Tyk rejects any other request with error `-32600` (invalid request) and `400 Bad Request`.
+
+The body of an MCP request can be at most 1 MB (1,048,576 bytes). Tyk reads the body to route the request and apply policy, and rejects a larger body with error `-32600`. The limit applies even when the API definition doesn't configure a request size limit.
+
+Tyk also rejects requests that repeat, or use a non-standard spelling of, a JSON-RPC field that Tyk reads for routing and policy, such as a second `method` field or a field named `Method`. This stops a request from presenting one value to Tyk and a different one to the upstream server.
+
+## Capability Discovery
+
+Clients using `2026-07-28` call `server/discover` to find out which capabilities and protocol versions a server supports. Tyk filters the upstream's `server/discover` response in the same way as it filters an `initialize` response for stateful clients, so the same policy applies to both:
+
+- Capabilities whose methods the consumer isn't allowed to call are removed, based on the JSON-RPC method rules in the consumer's [policy](/ai-management/mcp-gateway/policies).
+- The `supportedVersions` list is narrowed to the versions Tyk supports.
+
+Tyk returns `502 Bad Gateway` if the upstream's `server/discover` response is malformed or doesn't match the request's JSON-RPC `id`.
+
+## Cache Hints on Filtered Results
+
+The `2026-07-28` revision adds two cache hints to list and discovery results: `cacheScope`, which says whether a shared cache may store the result, and `ttlMs`, which says how long it stays fresh. The hints appear on `tools/list`, `prompts/list`, `resources/list`, `resources/templates/list`, and `server/discover` results.
+
+Tyk filters these results for each consumer, so a result that the upstream marked `public` can differ between consumers after filtering. Whenever Tyk changes a result for a consumer, it sets `"cacheScope": "private"` and `"ttlMs": 0` on it, on every page of a paginated result. This stops a shared cache in front of Tyk from serving one consumer's filtered list to another. Results that Tyk doesn't change keep the upstream's hints unchanged.
+
+Filtering never reorders a list. Each consumer receives its permitted items in the upstream's order on every call, which keeps tool lists stable for clients that cache them.
+
+## REST API to MCP Proxies
+
+MCP proxies [generated from a Tyk-managed REST API](/ai-management/mcps/api-to-mcp) serve all the supported versions. Tyk handles stateful requests with a session-based handler and `2026-07-28` requests with a stateless handler, choosing between them on each request. Consumers on older and newer clients can use the same proxy at the same time.
+
+A `GET` or `DELETE` request to one of these proxies returns `405 Method Not Allowed` unless it belongs to an existing stateful session.
+
+## Protocol Versions in Analytics
+
+Tyk records the protocol version on each MCP analytics record, together with the version the request declared and where the declaration came from. You can use these fields to see how much of your traffic has moved to `2026-07-28`. See [MCP Observability](/ai-management/mcp-gateway/mcp-observability) for the analytics and metrics available for MCP traffic.
+
+## Limitations
+
+Tyk MCP Gateway has the following limitations when handling MCP protocol traffic:
+
+- **Protocol versions**: Tyk accepts only the versions listed in [Supported Versions](#supported-versions). Requests that declare `2024-11-05`, or any other version, are rejected with error `-32022`.
+- **JSON-RPC batches**: Tyk doesn't accept batched requests, which only the `2025-03-26` revision allows. A request body that is a JSON array is rejected with error `-32700`.
+- **Client responses to server requests**: in the stateful revisions, a server can send the client a request, such as `sampling/createMessage`, `elicitation/create`, or `roots/list`, and the client answers by sending a JSON-RPC response in a new `POST` request. Tyk rejects any `POST` body without a `method` field with error `-32600`, so these answers don't reach the upstream server. Features that depend on them, such as sampling, elicitation, and roots, don't work through Tyk.
+- **Request size**: MCP request bodies are limited to 1 MB (1,048,576 bytes). Larger bodies are rejected with error `-32600`.
+- **Transport**: Tyk supports the Streamable HTTP transport only. It doesn't support the stdio transport, so local MCP servers that use stdio need a stdio-to-HTTP bridge.
+
+## Related Pages
+
+- [Core Concepts](/ai-management/mcp-gateway/core-concepts) explains the MCP protocol, the gateway's role, and the stateful session lifecycle.
+- [MCP Error Codes](/ai-management/mcp-gateway/error-codes) lists every error code Tyk returns and the HTTP status for each.
+- [Policies](/ai-management/mcp-gateway/policies) describes the method and primitive rules that Tyk applies to discovery and list results.
