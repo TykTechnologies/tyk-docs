@@ -50,19 +50,6 @@ This repository contains technical documentation for Tyk products. The primary a
 
 ---
 
-## Discoverability and Retrieval
-
-An assistant retrieves a handful of pages and answers from those alone; it does not browse the site the way a human does. Apply these rules so the right page gets retrieved and summarised correctly.
-
-- **Every page must stand alone.** An assistant cannot see the sidebar and does not know a page has siblings. State product name, spec version, GA status, and edition gating on the page itself, not only in a parent nav page.
-- **Put the claim before the qualification.** Lead with the concrete fact (version, capability, date) in the description, first paragraph, or heading. Do not bury it in a requirements table at the foot of the page; that is where good facts go unread.
-- **Use the buyer's words, not only the builder's.** A page that has to be found first needs discovery-intent phrasing (for example "does Tyk support MCP"), not only implementation vocabulary (for example a specific field or method name). Reference pages can and should still use precise implementation terms.
-- **One canonical entry point per product or feature.** Competing entry points split authority and let the weaker page win in search and retrieval. When two sections cover related ground, cross-link them so a reader who lands on the wrong one has a path to the right one.
-- **Be concrete, dated, and specific.** "Shipped in Gateway v5.13, implementing MCP 2025-11-25" is retrievable and attributable. "Enterprise-grade" or similar unquantified claims are not.
-- **Treat a wrong AI-assistant answer as a bug.** If an assistant misdescribes a Tyk capability or cites the wrong page, that is a documentation defect like any other: find which page it retrieved and fix the entry point, not just the content.
-
----
-
 ## Writing Style Rules
 
 Apply these rules to all content in this repository.
