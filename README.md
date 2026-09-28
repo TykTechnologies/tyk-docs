@@ -69,7 +69,7 @@ We welcome contributions.
 
 Tyk maintainers review your pull request. If necessary, they copy the change to the release branches.
 
-Other Tyk repositories generate some files in this repository from their source code. Examples are the files in `swagger/` and the configuration snippets in `snippets/`. Do not edit these files here. [`CLAUDE.md`](CLAUDE.md) lists them and gives the style rules.
+Other Tyk repositories generate some files in this repository from their source code. Examples are the files in `swagger/` and the configuration snippets in `snippets/`. Do not edit these files here. [`CLAUDE.md`](/CLAUDE.md) lists them and gives the style rules.
 
 For the full workflow, see the [contribution guide](https://tyk.io/docs/developer-support/contribution-guides).
 
