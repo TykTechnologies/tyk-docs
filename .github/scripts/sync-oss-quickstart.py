@@ -28,7 +28,6 @@ def load_updater():
 def render(text: str, version: str) -> str:
     replacements = [
         (rf"(image: {re.escape(IMAGE_REPO)}:v){VERSION}", rf"\g<1>{version}", "image tag"),
-        (rf"^`v{VERSION}` is the latest release\.", f"`v{version}` is the latest release.", "latest note"),
         (rf'("status":"pass","version":"){VERSION}(")', rf"\g<1>{version}\2", "hello output"),
     ]
     for pattern, replacement, label in replacements:
