@@ -70,3 +70,7 @@ For the full workflow, see the [contribution guide](https://tyk.io/docs/develope
 - Docs error: [open an issue](https://github.com/TykTechnologies/tyk-docs/issues/new) in this repository.
 - Product question: ask on the [Tyk Community Forum](https://community.tyk.io/).
 - Commercial support: see [Tyk support](https://tyk.io/docs/developer-support/support).
+
+## License
+
+The [Mozilla Public License 2.0](/LICENSE) applies to this repository.
