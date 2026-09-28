@@ -52,7 +52,7 @@ python3 scripts/validate_mintlify_docs.py . --validate-redirects --verbose
 
 The script finds broken internal links, missing images and redirect problems.
 
-To check your prose against [ASD-STE100 Simplified Technical English](https://www.asd-ste100.org/), install the [`ste`](https://github.com/probelabs/ste) CLI and run the check script:
+To check your prose against [ASD-STE100 Simplified Technical English](https://www.asd-ste100.org/), install the [`ste`](https://github.com/probelabs/ste) CLI and run the check script. You need [Go](https://go.dev/).
 
 ```bash
 go install github.com/probelabs/ste/cmd/ste@latest
