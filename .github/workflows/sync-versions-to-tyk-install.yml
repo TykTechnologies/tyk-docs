@@ -15,16 +15,26 @@ jobs:
       - name: Checkout tyk-docs
         uses: actions/checkout@v7
 
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.PROBE_APP_ID }}
+          private-key: ${{ secrets.PROBE_APP_PRIVATE_KEY }}
+          owner: TykTechnologies
+          repositories: tyk-install
+
       - name: Checkout tyk-install
         uses: actions/checkout@v7
         with:
           repository: TykTechnologies/tyk-install
-          token: ${{ secrets.ORG_GH_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           path: tyk-install
 
       - name: Run version updater
         id: updater
         run: |
+          set -o pipefail
           mkdir -p tyk-install/scripts
           cp .github/scripts/sync-versions-updater.py tyk-install/scripts/updater.py
 
@@ -82,7 +92,10 @@ jobs:
           if [ -n "$EXISTING_PR" ]; then
             echo "Updated existing PR #$EXISTING_PR with the latest versions."
             gh pr comment "$EXISTING_PR" --repo TykTechnologies/tyk-install --body "$PR_BODY"
-            gh pr edit "$EXISTING_PR" --repo TykTechnologies/tyk-install --add-reviewer MohammedELKheir
+            # REST, not `gh pr edit --add-reviewer`: that resolves the login over
+            # GraphQL, which needs org read access the App token does not have.
+            gh api --method POST "repos/TykTechnologies/tyk-install/pulls/$EXISTING_PR/requested_reviewers" \
+              -f 'reviewers[]=MohammedELKheir' --silent
           else
             gh pr create \
               --repo TykTechnologies/tyk-install \
@@ -92,4 +105,4 @@ jobs:
               --head "$BRANCH"
           fi
         env:
-          GH_TOKEN: ${{ secrets.ORG_GH_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
