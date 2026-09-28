@@ -74,7 +74,7 @@ MCP uses the following HTTP headers. Tyk passes them to the upstream unchanged, 
 | `MCP-Protocol-Version` | Client → Server | Declares the protocol revision. Required on every request. Tyk uses it to detect the version and checks it matches `_meta`. |
 | `Mcp-Method` | Client → Server | The JSON-RPC method. Required on every request. Tyk checks it matches the body. |
 | `Mcp-Name` | Client → Server | The tool, prompt, or resource named on `tools/call`, `prompts/get`, and `resources/read`. Tyk checks it matches the body. |
-| `Origin` | Client → Server | The origin of a browser-based client. |
+| `Origin` | Client → Server | The origin of a browser-based client. Tyk validates it. See [Origin Validation](#origin-validation). |
 
 `2026-07-28` doesn't use `Mcp-Session-Id` or `Last-Event-ID`. Tyk removes both headers from `2026-07-28` requests before proxying them.
 
@@ -86,7 +86,7 @@ MCP uses the following HTTP headers. Tyk passes them to the upstream unchanged, 
 | `MCP-Protocol-Version` | Client → Server | Declares the protocol revision. Required on requests after `initialize`. Tyk uses it to detect the version. |
 | `Mcp-Session-Id` | Server → Client, then Client → Server | Session identifier returned after `initialize`. Clients send it on every later request. Tyk passes it through in both directions. |
 | `Last-Event-ID` | Client → Server | SSE resume token sent when reconnecting to a `GET /mcp` stream. Tyk passes it through. |
-| `Origin` | Client → Server | The origin of a browser-based client. |
+| `Origin` | Client → Server | The origin of a browser-based client. Tyk validates it. See [Origin Validation](#origin-validation). |
 
 </Tab>
 </Tabs>
@@ -157,6 +157,40 @@ Some checks apply whatever version a request uses. Every MCP `POST` request must
 The body of an MCP request can be at most 1 MB (1,048,576 bytes). Tyk reads the body to route the request and apply policy, and rejects a larger body with error `-32600`. The limit applies even when the API definition doesn't configure a request size limit.
 
 Tyk also rejects requests that repeat, or use a non-standard spelling of, a JSON-RPC field that Tyk reads for routing and policy, such as a second `method` field or a field named `Method`. This stops a request from presenting one value to Tyk and a different one to the upstream server.
+
+### Origin Validation
+
+A browser sends an `Origin` header with each request. Tyk checks it on every MCP request before it reads the body or checks credentials, so a web page on another site can't use a visitor's browser to reach your MCP proxy. This check also applies to CORS preflight requests.
+
+Tyk accepts a request when:
+
+- it has no `Origin` header, as with most non-browser clients
+- its origin is the proxy's own public origin
+- its origin is listed in `server.mcp.trustedOrigins` in the API definition
+
+Tyk rejects any other request with a plain-text `403 Forbidden`, including a request with more than one `Origin` header.
+
+Each trusted origin must be a scheme, host and optional port, such as `https://app.example.com`, with no path or wildcard. Tyk rejects an API definition that contains an invalid entry.
+
+```json
+{
+  "x-tyk-api-gateway": {
+    "server": {
+      "mcp": {
+        "trustedOrigins": ["https://app.example.com"]
+      }
+    }
+  }
+}
+```
+
+Set `trustedOrigins` in the API definition. The Tyk Dashboard UI and Tyk Operator don't support it yet.
+
+If the API definition has no `mcp` object, Tyk trusts the exact origins listed in the API's CORS `allowedOrigins` instead. Wildcards and patterns in that list are ignored. To stop Tyk using the CORS list, add an `mcp` object, even with an empty `trustedOrigins` list.
+
+If using Tyk Classic, set `mcp.trusted_origins` instead.
+
+If Tyk Gateway runs behind a load balancer or reverse proxy, Tyk works out the proxy's public origin from the `Forwarded` or `X-Forwarded-*` headers. It only trusts those headers from peers listed in `http_server_options.trusted_proxy_cidrs` in the Tyk Gateway configuration, and ignores them from any other peer. If this setting contains an invalid CIDR, Tyk Gateway doesn't start.
 
 ## Capability Discovery
 
