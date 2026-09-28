@@ -1,0 +1,179 @@
+---
+title: "Deploy Tyk Helm Charts with GitOps"
+description: "Deploy the Tyk Helm charts with Argo CD, Flux CD or another GitOps tool. Covers disabling Helm hooks, sync-wave ordering, bootstrap job retries and private registries."
+sidebarTitle: "GitOps Deployment"
+keywords: ["GitOps", "Argo CD", "Flux CD", "helm hooks", "sync-wave", "kubernetes", "helm", "bootstrap", "tyk charts"]
+---
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| Enterprise | Self-Managed, Hybrid |
+
+The Tyk Helm charts bootstrap a deployment with Helm hooks: a pre-install job prepares credentials, a post-install job creates the initial Organisation and users, and a pre-delete job cleans up on uninstall. Argo CD does not run these hooks through Helm's lifecycle. It applies hook resources at the wrong point, skips them, or recreates them on every sync. The worst case is the pre-delete job, which runs its cleanup at sync time and deletes the Tyk Operator secret.
+
+This page shows how to configure the charts so that your GitOps tool, not Helm, owns bootstrap ordering.
+
+## Configure The Charts For GitOps
+
+**Available from Tyk Helm Chart v5.4.0.**
+
+Set `disableHelmHooks` on the bootstrap chart, then place the bootstrap resources in sync waves:
+
+```yaml expandable highlight={3}
+tyk-bootstrap:
+  bootstrap:
+    disableHelmHooks: true
+
+    # Applies to the bootstrap ServiceAccount, Role and RoleBinding
+    rbacAnnotations:
+      argocd.argoproj.io/sync-wave: "-2"
+
+    jobs:
+      preInstall:
+        annotations:
+          argocd.argoproj.io/sync-wave: "-1"
+        backoffLimit: 1
+      postInstall:
+        annotations:
+          argocd.argoproj.io/sync-wave: "2"
+        backoffLimit: 3
+```
+
+- `disableHelmHooks: true` removes every `helm.sh/hook` annotation from the bootstrap jobs and their RBAC resources. The jobs become ordinary resources that your GitOps tool applies and orders.
+- `rbacAnnotations` must place the RBAC resources in an earlier wave than the jobs that use them.
+- `backoffLimit` defaults to `1` for each job. Set it to `0` to make a sync fail on the first error.
+- Quote sync-wave values. Kubernetes requires annotation values to be strings, and an unquoted `-1` in YAML is an integer.
+
+<Warning>
+**The pre-delete job is not rendered when `disableHelmHooks: true`.** Without its hook annotation it would run its cleanup during install and delete the Tyk Operator secret. Adding `bootstrap.jobs.preDelete.annotations` does not bring it back. If you need cleanup on deletion, run it outside this chart, for example as a separately managed job.
+</Warning>
+
+## Private Registries
+
+**Available from Tyk Helm Chart v5.3.0.**
+
+The bootstrap jobs pull their images with secrets attached to the bootstrap ServiceAccount. The rendered job manifests do not contain an `imagePullSecrets` field, which is expected.
+
+```yaml highlight={3}
+tyk-bootstrap:
+  bootstrap:
+    imagePullSecrets:
+      - name: my-registry-credentials
+```
+
+For Tyk Developer Portal, `imagePullSecrets` covers both the portal pod and its bootstrap job. Set `bootstrapJob.image` to mirror the job's `curl` image into your registry:
+
+```yaml highlight={2}
+tyk-dev-portal:
+  imagePullSecrets:
+    - name: my-registry-credentials
+  bootstrapJob:
+    image:
+      repository: my-registry.example.com/curl
+      tag: "8.8.0"
+```
+
+From v5.4.0 the Tyk Developer Portal bootstrap job also has its own `securityContext` and `containerSecurityContext`. On clusters that assign their own UIDs and GIDs, see [Deploy Tyk on OpenShift](/tyk-self-managed/install/openshift).
+
+## Complete Argo CD Example
+
+The `Prune=false` annotation keeps Argo CD from pruning and recreating the completed bootstrap jobs. See [Upgrade And Re-Run Safety](#upgrade-and-re-run-safety).
+
+```yaml expandable
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tyk-stack
+  namespace: argocd
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: tyk
+  source:
+    repoURL: https://helm.tyk.io/public/helm/charts/
+    chart: tyk-stack
+    targetRevision: 5.4.0
+    helm:
+      values: |
+        global:
+          license:
+            dashboard: "<your-license>"
+          adminUser:
+            useSecretName: "tyk-admin-secrets"
+          redis:
+            addrs:
+              - tyk-redis-master.tyk.svc:6379
+          postgres:
+            host: tyk-postgres-postgresql.tyk.svc
+
+        tyk-bootstrap:
+          bootstrap:
+            disableHelmHooks: true
+            rbacAnnotations:
+              argocd.argoproj.io/sync-wave: "-2"
+            jobs:
+              preInstall:
+                annotations:
+                  argocd.argoproj.io/sync-wave: "-1"
+                  argocd.argoproj.io/sync-options: Prune=false
+                backoffLimit: 3
+              postInstall:
+                annotations:
+                  argocd.argoproj.io/sync-wave: "2"
+                  argocd.argoproj.io/sync-options: Prune=false
+                backoffLimit: 3
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+```
+
+Redis and PostgreSQL are not chart dependencies. Deploy them as their own Argo CD Applications in an earlier sync wave, or point the values above at existing instances.
+
+## Upgrade And Re-Run Safety
+
+With hooks disabled, the bootstrap jobs are ordinary release resources. Two problems follow.
+
+**A Job's pod template is immutable.** Any change to it, including an image tag bump, makes `helm upgrade` fail:
+
+```console
+Error: UPGRADE FAILED: cannot patch "bootstrap-pre-install-tyk-stack-tyk-bootstrap" with kind Job:
+  Job.batch "bootstrap-pre-install-tyk-stack-tyk-bootstrap" is invalid:
+  spec.template: Invalid value: ...: field is immutable
+```
+
+`helm.sh/resource-policy: keep` and `helm upgrade --force` do not avoid this.
+
+**The post-install job is not idempotent.** A second run deletes and recreates the Tyk Operator and Tyk Developer Portal secrets with empty `TYK_AUTH` and `TYK_ORG` values, so Tyk Operator can no longer authenticate against Tyk Dashboard. The job still reports `Success`, so your GitOps tool shows no problem. A second run happens when your GitOps tool prunes and recreates completed jobs, when you delete the jobs to clear the upgrade error, or when a sync recreates a job because its pod template changed. This is a limitation of the `tyk-k8s-bootstrap` image v2.2.0 and v2.2.1, and chart values cannot avoid it.
+
+### Upgrade A Bootstrapped Deployment
+
+1. Back up the Tyk Operator secret:
+
+    ```bash
+    kubectl get secret -n tyk tyk-operator-conf -o yaml > tyk-operator-conf.backup.yaml
+    ```
+
+2. Set `global.components.bootstrap: false` in your values. This suppresses the post-install and pre-delete jobs. It does not suppress the pre-install job, or the bootstrap ServiceAccount, Role and RoleBinding.
+
+    ```yaml highlight={3}
+    global:
+      components:
+        bootstrap: false
+    ```
+
+3. Delete the pre-install job, then upgrade:
+
+    ```bash
+    kubectl delete job -n tyk bootstrap-pre-install-tyk-<release>-tyk-bootstrap --ignore-not-found
+    helm upgrade tyk-<release> tyk-helm/tyk-stack -n tyk -f values.yaml
+    ```
+
+The post-install job is removed rather than re-run, and only the pre-install job is recreated.
+
+<Warning>
+Do **not** delete both jobs and upgrade with bootstrap still enabled. That clears the immutability error but runs the post-install job a second time.
+</Warning>
