@@ -14,7 +14,7 @@ This repository is the source of the official [Tyk documentation](https://tyk.io
 
 ### For AI Assistants and Agents
 
-- [`llms.txt`](https://tyk.io/docs/llms.txt) lists the docs pages. [`llms-full.txt`](https://tyk.io/docs/llms-full.txt) contains the full text.
+- [llms.txt](https://tyk.io/docs/llms.txt) lists the docs pages. [`llms-full.txt`](https://tyk.io/docs/llms-full.txt) contains the full text.
 - Every page is also available as Markdown. Add `.md` to the page URL.
 - The docs MCP server is at `https://tyk.io/docs/mcp`. Use it to search the docs from an MCP client.
 
@@ -52,12 +52,7 @@ python3 scripts/validate_mintlify_docs.py . --validate-redirects --verbose
 
 The script finds broken internal links, missing images and redirect problems.
 
-To check your prose against [ASD-STE100 Simplified Technical English](https://www.asd-ste100.org/), install the [`ste`](https://github.com/probelabs/ste) CLI and run the check script. You need [Go](https://go.dev/).
 
-```bash
-go install github.com/probelabs/ste/cmd/ste@latest
-python3 scripts/ste_check.py
-```
 
 ## Contribute
 
@@ -67,9 +62,6 @@ We welcome contributions.
 2. Edit or add `.mdx` pages. If you add a page, add it to the navigation in `docs.json`.
 3. Open a pull request against `main`.
 
-Tyk maintainers review your pull request. If necessary, they copy the change to the release branches.
-
-Other Tyk repositories generate some files in this repository from their source code. Examples are the files in `swagger/` and the configuration snippets in `snippets/`. Do not edit these files here. [`CLAUDE.md`](/CLAUDE.md) lists them and gives the style rules.
 
 For the full workflow, see the [contribution guide](https://tyk.io/docs/developer-support/contribution-guides).
 
