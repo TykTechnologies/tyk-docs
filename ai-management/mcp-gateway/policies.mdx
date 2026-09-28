@@ -9,7 +9,7 @@ A Tyk security policy defines the access rules and usage limits for a consumer. 
 
 ---
 
-## What policies are for
+## What Policies Are For
 
 A policy is a reusable template applied to one or more API keys. Rather than configuring limits and access rights on each key individually, you define them once in a policy and issue keys that inherit those rules automatically. When you update the policy, every key bound to it picks up the change.
 
@@ -23,9 +23,9 @@ For MCP proxies, policies serve three purposes:
 
 ---
 
-## What MCP policies control
+## What MCP Policies Control
 
-### Access control
+### Access Control
 
 Tyk evaluates access control at three levels, in order:
 
@@ -33,9 +33,17 @@ Tyk evaluates access control at three levels, in order:
 
 **JSON-RPC method access** (`json_rpc_methods_access_rights`): controls which protocol-level operations the consumer may use. For example, you can allow `tools/call` and `tools/list` while blocking `sampling/createMessage`. Use an `allowed` list to restrict to specific methods, or a `blocked` list to exclude specific methods while permitting all others.
 
+Method rules match the methods that clients actually send, and those depend on the protocol version. Clients using `2026-07-28` don't send session methods such as `initialize` and `ping`, so a method rule or rate limit keyed on one of them never matches that traffic. See [Session Methods and Headers](/ai-management/mcp-gateway/protocol-versions#session-methods-and-headers).
+
 **Primitive access** (`mcp_access_rights`): controls which specific tools, resources, and prompts the consumer can invoke. Each primitive type (tools, resources, prompts) has its own `allowed` and `blocked` list. Values are Go regular expressions, so `"internal_.*"` matches any tool whose name starts with `internal_`. A non-empty `allowed` list acts as an explicit allowlist; `blocked` entries are excluded from whatever is otherwise permitted.
 
-### Rate limiting
+### How Access Rules Shape Discovery
+
+Access rules also control what a consumer can discover. Tyk removes denied tools, resources, resource templates and prompts from list results, and keeps the remaining items in the upstream's order. It also removes a capability from the `server/discover` result when method rules deny any method that capability needs. If your clients use `2025-11-25`, the same filtering applies to the `initialize` result. For example, a method allowlist that doesn't include `resources/templates/list` removes the whole `resources` capability.
+
+A filtered result is specific to the consumer's key, so Tyk marks it with `"cacheScope": "private"` and `"ttlMs": 0`. See [Cache Hints on Filtered Results](/ai-management/mcp-gateway/protocol-versions#cache-hints-on-filtered-results).
+
+### Rate Limiting
 
 Rate limits can be applied at four levels within a policy entry for an MCP proxy:
 
@@ -55,7 +63,7 @@ A quota sets a maximum total number of calls over a renewal period (daily, weekl
 
 ---
 
-## Configuring MCP policies
+## Configuring MCP Policies
 
 ### Using the Tyk Dashboard
 
@@ -74,11 +82,11 @@ A quota sets a maximum total number of calls over a renewal period (daily, weekl
 
 Create or update a policy via `POST /api/portal/policies` (create) or `PUT /api/portal/policies/{policy-id}` (update). The MCP-specific fields sit inside the `access_rights` entry for each MCP proxy.
 
-The following example creates a policy that grants access to a weather MCP proxy, restricts the consumer to read-only methods, limits them to specific tools, and applies per-primitive rate limits:
+The following example creates a policy that grants access to a weather MCP proxy, restricts which JSON-RPC methods the consumer can use, limits them to specific tools, and applies per-primitive rate limits:
 
 ```json expandable
 {
-  "name": "Weather Agent — Standard Tier",
+  "name": "Weather Agent - Standard Tier",
   "state": "active",
   "rate": 1000,
   "per": 60,
@@ -94,7 +102,16 @@ The following example creates a policy that grants access to a weather MCP proxy
         "per": 60
       },
       "json_rpc_methods_access_rights": {
-        "allowed": ["tools/call", "tools/list", "resources/list", "resources/read"]
+        "allowed": [
+          "server/discover",
+          "initialize",
+          "notifications/initialized",
+          "tools/list",
+          "tools/call",
+          "resources/list",
+          "resources/templates/list",
+          "resources/read"
+        ]
       },
       "mcp_access_rights": {
         "tools": {
@@ -128,15 +145,19 @@ The following example creates a policy that grants access to a weather MCP proxy
 }
 ```
 
+<Note>
+An allowlist denies every method it doesn't name. Include the methods clients need to connect: `server/discover` for `2026-07-28` clients, and `initialize` and `notifications/initialized` for `2025-11-25` clients. Also include every method that a capability needs, or Tyk removes that capability from the discovery result.
+</Note>
+
 See [Policies](/api-management/policies) for more details.
 
 ---
 
-## Policy schema for MCP
+## Policy Schema for MCP
 
 The MCP-specific fields appear inside each entry in the `access_rights` object, alongside the standard `limit` and `versions` fields.
 
-### Access rights entry
+### Access Rights Entry
 
 | Field | Type | Description |
 |---|---|---|
@@ -156,11 +177,13 @@ Controls which primitives the consumer can invoke. Each of the three sub-objects
 | Field | Type | Description |
 |---|---|---|
 | `tools.allowed` | array of strings | Explicit allowlist of tool names. If non-empty, only listed tools are accessible. Supports Go regular expressions. |
-| `tools.blocked` | array of strings | Tools to block. Applied after `allowed`. Supports Go regular expressions. |
+| `tools.blocked` | array of strings | Tools to block. A blocked entry always wins, even if it also matches `allowed`. Supports Go regular expressions. |
 | `resources.allowed` | array of strings | Explicit allowlist of resource URIs. |
 | `resources.blocked` | array of strings | Resource URIs to block. |
 | `prompts.allowed` | array of strings | Explicit allowlist of prompt names. |
 | `prompts.blocked` | array of strings | Prompt names to block. |
+
+Patterns must match the whole name. For example, `get_.*` matches `get_forecast` but not `forecast_get_all`.
 
 Leave a sub-object empty (`{}`) to apply no restrictions for that primitive type.
 
@@ -187,7 +210,7 @@ Each entry defines a rate limit for one JSON-RPC method.
 | `limit.rate` | integer | Yes | Maximum calls using this method per time window. |
 | `limit.per` | integer | Yes | Time window in seconds. |
 
-### Top-level policy fields
+### Top-Level Policy Fields
 
 | Field | Type | Description |
 |---|---|---|
@@ -199,7 +222,7 @@ Each entry defines a rate limit for one JSON-RPC method.
 
 ---
 
-## When multiple policies apply
+## When Multiple Policies Apply
 
 A consumer key can have multiple policies applied to it. Tyk merges MCP-specific fields as follows:
 
@@ -209,7 +232,7 @@ A consumer key can have multiple policies applied to it. Tyk merges MCP-specific
 
 ---
 
-## Applying a policy to a consumer
+## Applying a Policy to a Consumer
 
 A policy takes effect when it is applied to an access key. In the Tyk Dashboard, go to **Keys**, click **Add Key**, select the policy from the **Apply Policy** dropdown, and generate the key. Issue the key to the consumer; they include it in the `Authorization` header of every MCP request.
 
