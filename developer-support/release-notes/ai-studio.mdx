@@ -12,6 +12,549 @@ Tyk AI Studio is available as a [Community edition](/ai-management/ai-studio/ove
 
 ---
 
+## 2.2 Release Notes
+
+### 2.2.0 Release Notes
+
+#### Release Date 29 September 2026
+
+#### Release Highlights
+
+Tyk AI Studio 2.2.0 is the largest release on the 2.x line. You can now reach every LLM in an App through one OpenAI-compatible URL, keep traffic flowing when a provider goes down, and govern tool calls in the same way you govern prompts. This release also includes a large set of security fixes. Read the [Breaking Changes](#breaking-changes) section before you upgrade.
+
+**One endpoint for every model**
+
+Apps can now call `POST /v1/chat/completions` with a model name in the form `{llm-slug}/{model}`, for example `openai/gpt-4o` or `bedrock/claude-sonnet`. One URL and one App credential reach every LLM the App has access to, whatever the upstream vendor. `GET /v1/models` lists the models the caller can use.
+
+There is also a native Anthropic Messages endpoint for Bedrock (`/anthropic/{slug}/v1/messages`). Point Claude Code at it with `ANTHROPIC_BASE_URL` and it runs against Claude models on AWS Bedrock, with AI Studio authentication, budgets, filters, and analytics applied to every request.
+
+**LLM failover**
+
+Each LLM configuration can now have an ordered list of fallback LLMs and models. When the primary provider returns a 5xx, 408, or 429 error, times out, or refuses the connection, AI Studio tries the next fallback in the list. Every attempt goes through the same authentication, budget, and filter checks. Failover is available in the Community and Enterprise editions.
+
+**Filters on tool calls, and guardrails without scripts**
+
+Filters attached to a [tool](/ai-management/ai-studio/tools) now run in both directions (arguments in, response out) over REST, all MCP transports, and chat, on AI Studio and on Edge Gateways. If a tool filter fails, it blocks the call.
+
+Enterprise adds a second kind of [filter](/ai-management/ai-studio/filters): **guardrails**. A guardrail uses a detection provider instead of a script, and then blocks, redacts, or logs the content. You can use the built-in pattern library for credentials, personal data, and prompt-injection heuristics, or connect to Lakera, Microsoft Presidio, Azure AI Content Safety, Azure AI Language PII, Amazon Bedrock Guardrails, or your own HTTP classifier. Each guardrail hit records a compliance event. The event does not contain the matched text. New Enterprise installations include four default guardrails. They are not attached, so nothing is enforced until you attach them.
+
+**Enterprise governance: roles, audit, metadata, and webhooks**
+
+- **Fine-grained RBAC** replaces the old admin or non-admin model. It has permissions for each resource and action, five system roles (Owner, Administrator, Editor, Viewer, Auditor), custom roles that you can clone, and role assignment to users and teams. A separate `publish` permission lets you give one person permission to edit a resource and another person permission to make it live.
+- **Audit trail** records every change made through the management API, and every login, logout, failed login, and SSO event. Each record shows who made the change, when, from which IP address, and which fields changed. Secrets are redacted. You can filter the records in the console and export them to CSV or JSON. The audit trail is on by default.
+- **Governed metadata** lets administrators define required fields, such as owner, lifecycle state, risk tier, and data classification, for LLMs, tools, data sources, and plugin resources. A schema can be advisory or enforced. A coverage report shows which fields are missing, invalid, or expired.
+- **Outbound webhooks** send internal events as signed JSON to HTTP endpoints that an administrator has approved. Failed deliveries are retried with backoff and then moved to a dead-letter queue. If someone changes a webhook URL or its headers, an administrator must approve it again.
+
+**Routing and cost control**
+
+[Model Routers](/ai-management/ai-studio/model-router) are now governed assets. You publish them in LLM catalogs and grant them to Apps in the same way as LLMs. Apps call them on the unified endpoint as `{router}/{model}`.
+
+Enterprise adds three more features:
+
+- **Semantic Routers** choose a model based on the meaning of the prompt. A client sends `smart/auto`, and the router checks explicit routes, keywords, and similarity to example prompts. It can also ask an LLM to decide. If it cannot classify the prompt, it uses the default route. Shadow mode lets you test a router against live traffic before it changes anything.
+- **Team budgets** set a monthly spending limit for all the Apps in a team. New Apps take their budget from the team's pool.
+- **Semantic caching** in the Advanced LLM Cache plugin (1.2.0) can answer a reworded prompt from the cache. Cache entries are never shared across Apps, models, or system prompts. Semantic caching is off by default.
+
+**Import MCP Proxies from Tyk Dashboard (Enterprise)**
+
+AI Studio can now import MCP proxies that a Tyk Dashboard manages and publish them in the portal. Developers bind these MCP servers to their Apps. For MCP proxies that use API keys, AI Studio creates a Tyk key for each App from policies that an administrator selects. Administrators can also register new MCP proxies from AI Studio. The Tyk Gateway continues to handle all MCP traffic.
+
+**A new chat experience**
+
+The [chat interface](/ai-management/ai-studio/chat-interface) is rebuilt. It streams one turn at a time, and you can cancel, edit a previous message, or regenerate a reply. **Client tools** let the model ask the person in the chat for approval or for information through a form. **Generative UI** lets the model show dashboards, tables, charts, and forms in the chat. The new interface is on by default. To use the previous interface, set `CHAT_UI_V2_ENABLED=false`.
+
+**A faster Edge Gateway**
+
+On our AWS benchmark, a 4-vCPU Edge Gateway with the full policy set now sustains about 9,000 requests per second. Before this release, it started at about 1,190 requests per second and dropped to about 640 within twenty minutes. Gateway overhead at p50 is less than 1 ms. When the gateway is close to its memory limit, it now rejects new requests with a `503` error instead of running out of memory.
+
+**Admin console and portal improvements**
+
+Before you delete an object, AI Studio now shows what uses it. Every form warns you about unsaved changes. Lists are searchable and sortable and support bulk actions. [Privacy levels](/ai-management/ai-studio/privacy-levels) have names. Every detail page has a "Used by" section, and [notifications](/ai-management/ai-studio/notifications) now appear in the console. The AI portal has a new Overview page, a single Browse catalog, and a detail page for each asset.
+
+#### Breaking Changes
+
+This release changes some default behavior, API responses, and status codes. Most upgrades need no action, but check each item below against your deployment.
+
+- **A budget of `0` now means zero spend.** To set no limit, use `null` or leave the field empty. On first start, AI Studio changes existing App and LLM budgets of `0` to `null`, so no App is blocked.
+- **`/metrics` is not served by default.** Set `METRICS_AUTH_TOKEN` and scrape with `Authorization: Bearer <token>`, or set `METRICS_ALLOW_UNAUTHENTICATED=true`. Until you set one of these, Prometheus scrape jobs get a 404 response.
+- **App grants apply to every authentication method.** A request that uses an App's Bearer secret, a custom-auth plugin, or a gateway auth plugin gets a `403` response if the App is not granted the LLM or data source. An unknown LLM slug on `/v1` or `/ai/` now returns `403` instead of `404`.
+- **New tools are chat-only by default.** REST and MCP access are now separate settings on each tool. A tool created after the upgrade returns `403` on `/tools/{slug}` and `/tools/{slug}/mcp` until you enable `rest_access_enabled` or `mcp_access_enabled`. Existing tools keep both access methods on. The REST endpoint also now rejects an `operation_id` that is not in the tool's operation list.
+- **Tool filter direction is now respected.** Before this release, every filter on a tool ran on the tool's response. A filter that is not marked as a response filter now runs on the tool's input. The gateway logs a warning the first time each affected filter runs.
+- **Filter scripts cannot use Tengo's `os` module.** Set `FILTER_SCRIPT_ALLOW_OS=true` if a script needs it. Scripts are also stopped after `FILTER_SCRIPT_TIMEOUT` (default `5s`) or `FILTER_SCRIPT_MAX_ALLOCS`, and when the caller disconnects. When a request filter is stopped, the request is blocked. HTTP requests from scripts are limited in size and time, and must go to hosts that `LLM_UPSTREAM_ALLOWED_HOSTS` allows, when it is set.
+- **Enterprise no longer adds new LLMs, tools, or data sources to the Default catalog.** Add them to a catalog before teams can see them. The Community edition still adds them automatically. In both editions, approved submissions are created inactive and added to the Default catalog, and an administrator activates them.
+- **Custom roles need the new `publish` permission to activate resources.** System roles are updated automatically. Custom roles are not changed. For example, a custom role with `llms:write` must also get `llms:publish` to activate LLM providers.
+- **SSO users cannot get personal API keys by default.** Set `ALLOW_SSO_USER_API_KEYS=true` to allow this. An existing key for an SSO user stops working when the user's last SSO login is older than `SSO_API_KEY_LIVENESS` (default `720h`).
+- **Some status codes changed.** Upstream connection failures return `502` or `504` instead of `500`. An Edge Gateway that cannot reach AI Studio to check a credential returns `503` with `Retry-After` instead of `401`. A budget check that cannot run returns `503`. On `/ai/` and `/v1`, budget refusals use the OpenAI error format with `code: budget_exceeded`. Update alerts and client retry logic that depend on the old codes.
+- **The Edge Gateway's built-in rate limit settings are removed.** `ENABLE_RATE_LIMITING`, `GATEWAY_DEFAULT_RATE_LIMIT`, and the `mgw --rate-limit` flags never had any effect. Use a rate limiting plugin instead.
+- **Importing tools from a Tyk Dashboard is now Enterprise only.** The import uses a saved Tyk connection, and the `/api/v1/providers/*` routes are removed.
+- **`/login-sso-profile` returns less data.** It returns only `profile_id`, `name`, the provider type, and `login_url`.
+- **Data sources use Embedders.** API clients that create data sources should send `embedder_id` instead of inline embedding settings.
+- **Some API responses changed.** `/common/me` has new fields, such as `permissions`, `roles`, `auth_source`, and `has_api_key`. `GET /common/api/v1/notifications` returns `{data, meta}` and accepts `limit`, `offset`, and `unread`. Users without `users:write` see other users' API keys masked, with `api_key_hint` and `has_api_key` instead. `PATCH /users/:id` no longer changes `is_admin` when you leave it out.
+- **The API validates more input.** List endpoints return `400` for an unknown `sort` field (use `-name` for descending order). A `privacy_score` outside 0 to 100 returns `400`. `POST /<type>/bulk` accepts up to 100 IDs. An explicit `team_id` on App create or update must be one of the owner's teams, unless the caller has `groups:write`.
+- **For plugin and SDK developers:** `aigateway.Gateway` has two new methods, `UnifiedRouterBasePath()` and `SetRouteResolver()`, and `sso.Service.HandleSSO` now takes a `*NonceTokenRequest`. New App bindings to plugin resources that an App cannot unlock are refused with `400`. You must build with Go 1.26.6. Plugin modules that use a `replace` directive must update their `go` directive.
+
+#### Upgrade Instructions
+
+- **Database changes are automatic.** The schema updates on first startup. The first startup also runs some one-time tasks: it encrypts stored secrets again in the new format in the background, moves inline embedding settings to Embedders, and assigns existing Apps and spend to teams.
+- **Upgrade AI Studio and your Edge Gateways together.** Older Edge Gateways ignore new configuration fields. They cannot serve Semantic Routers, enforce zero budgets or team budget blocks, or turn off a tool's REST or MCP access.
+- **Package-installed Edge Gateways need one manual change.** A package upgrade keeps your existing `/etc/default/tyk-microgateway` file. If the Edge Gateway was installed before 2.2, add `PLUGINS_CONFIG_PATH=/opt/tyk-microgateway/config/analytics-pulse-config.yaml` to that file. If you do not, AI Studio receives no analytics or spend data from that Edge Gateway. New package installations load the analytics pulse by default.
+- **Enterprise: RBAC roles are created on first startup.** User ID 1 becomes Owner, and every other admin user becomes Administrator.
+- **Check your Model Routers before you upgrade.** AI Studio now rejects a Model Router slug that is the same as an LLM slug. In earlier versions, the LLM always took priority, so such a router could not be reached. Also grant each Model Router to the Apps that use it. An App that calls a router it is not granted is still served, but only from the LLMs granted to the App directly. This fallback is deprecated.
+- **Edge Gateway analytics are now deleted after a retention period.** The default is 7 days when the analytics pulse is on, and 90 days otherwise. After the upgrade, the first cleanup deletes older rows in small batches. Set `ANALYTICS_RETENTION_DAYS` to keep them longer.
+- **Edge Gateway SQLite databases now use WAL mode.** Make sure the database directory is writable, because SQLite creates `-wal` and `-shm` files next to the database.
+- **Count requests with `failover_attempt = 0`.** Each failover attempt is now its own row in `proxy_logs`.
+
+#### Changelog
+
+##### Added
+
+<AccordionGroup>
+
+<Accordion title='Added a unified OpenAI-compatible endpoint'>
+AI Studio now provides a single OpenAI-compatible endpoint for every LLM, so an App can reach all its models with one URL and one credential. `POST /v1/chat/completions` and `/v1/completions` accept a `model` in the form `{llm-slug}/{model}` and send the request through the same authentication, access checks, streaming, and analytics as the per-LLM routes.
+
+`GET /v1/models` lists the models that the calling App can use, in the same `{slug}/{model}` format.
+
+You can move the endpoint with `UNIFIED_ROUTER_PATH` (AI Studio) and `GATEWAY_UNIFIED_ROUTER_PATH` (Edge Gateway), or turn it off with `UNIFIED_ROUTER_DISABLED` and `GATEWAY_UNIFIED_ROUTER_DISABLED`.
+
+The AI Portal shows the endpoint in a Main Ingress card on each App page. See [Proxy & API Gateway](/ai-management/ai-studio/proxy).
+</Accordion>
+
+<Accordion title='Added an Anthropic Messages endpoint for AWS Bedrock'>
+AI Studio now supports the native Anthropic Messages API for Claude models on AWS Bedrock, so tools such as Claude Code can use Bedrock through AI Studio. `POST /anthropic/{slug}/v1/messages` accepts native Anthropic Messages requests and sends them to Claude models on AWS Bedrock, with streaming, tool use, and prompt caching.
+
+Clients such as Claude Code work with it when you set `ANTHROPIC_BASE_URL`. Prompt-cache tokens appear in usage and cost data.
+
+`GET /anthropic/{slug}/v1/models` supports Claude Code's gateway model discovery, so the `/model` picker shows the Bedrock model that the connection serves. Region-prefixed model IDs (for example `us.anthropic…`) need Claude Code v2.1.223 or later.
+
+The endpoint is available on the embedded gateway and on Edge Gateways.
+</Accordion>
+
+<Accordion title='Added LLM failover'>
+AI Studio now retries a failed LLM request on a list of fallback LLMs, so an outage at one provider does not stop your Apps. Each LLM configuration can have up to 10 fallback LLM and model pairs. AI Studio tries them in order when the primary fails with a 408, 429, 500, 502, 503, or 504 error, a timeout, or a connection error. You can change these triggers.
+
+AI Studio never fails over on other 4xx errors or when the caller cancels the request. A streaming request fails over only if no data has been sent to the client.
+
+A fallback must be active, and its [privacy level](/ai-management/ai-studio/privacy-levels) must be the same as or higher than the primary's. This stops failover from sending data to a less trusted provider.
+
+Responses include `X-Tyk-Served-LLM`, `X-Tyk-Served-Model`, and `X-Tyk-Failover: true`, and analytics record each attempt separately.
+
+Failover applies to the OpenAI-compatible chat endpoints. It does not apply to `/llm/call`, the Anthropic endpoint, `/v1/completions`, or chat sessions. See [LLM Management](/ai-management/ai-studio/llm-management).
+</Accordion>
+
+<Accordion title='Added input and output filters for tools'>
+AI Studio now applies governance filters to tool calls in both directions, so you can check and change what goes into a tool and what comes out. Tool filters run on REST, all MCP transports, and chat, on AI Studio and on Edge Gateways.
+
+A filter can change the parameters, payload, and headers of a call, but it cannot change which operation is called.
+
+A blocked call returns a generic error, and every block records a compliance event. See [Filters](/ai-management/ai-studio/filters).
+</Accordion>
+
+<Accordion title='Added guardrail filters (Enterprise)'>
+AI Studio now supports guardrails, so you can detect and block, redact, or log sensitive content without writing a script. A guardrail is a filter that uses a detection provider instead of a script. You choose the provider, the detectors, and the action (block, redact, or log).
+
+Providers are a built-in pattern library, which runs with no network calls and validates matches such as payment card numbers and IBANs, and connectors for Lakera, Microsoft Presidio, Azure AI Content Safety, Azure AI Language PII, Amazon Bedrock Guardrails, and a generic HTTP classifier.
+
+Guardrails attach to LLMs, chat rooms, and tools, and run on requests, streamed and buffered responses, and tool calls. LLM responses can only be blocked, not redacted. Each hit records a compliance event without the matched text. The filter form has a test panel.
+
+New Enterprise installations include four default guardrails. They are not attached, so nothing is enforced until you attach them. Set `SKIP_FILTER_DEFAULTS=true` to skip them.
+
+In the Community edition, you can create guardrails, but they do not block or change anything. Script filters also get `tyk.detect` and `tyk.redact` helpers that use the same pattern library.
+</Accordion>
+
+<Accordion title='Added fine-grained RBAC (Enterprise)'>
+AI Studio now supports fine-grained role-based access control, so you can give each user exactly the access they need instead of full admin or no admin. Permissions are now `resource:action` pairs across 33 resources.
+
+The five system roles (Owner, Administrator, Editor, Viewer, Auditor) cannot be changed, but you can clone them to create custom roles. You can assign roles to users and teams.
+
+A `publish` action, separate from `write`, controls who can make a resource live. Plugins get their own permissions and can declare more. The console hides pages and controls that a user's role cannot use.
+
+Only a user with `roles:write` can change roles, only an Owner can grant the Owner role, and you cannot remove the last Owner. The Community edition is unchanged. See [User Management](/ai-management/ai-studio/user-management).
+</Accordion>
+
+<Accordion title='Added an audit trail (Enterprise)'>
+AI Studio now keeps an audit trail of management actions, so you can see who changed what, and when. It records every `POST`, `PUT`, `PATCH`, and `DELETE` request on the management API, and login, logout, failed login, registration, password reset, and SSO events.
+
+Each record includes the user, time, IP address, request ID, status, and a field-level diff with secrets redacted.
+
+Go to **Governance → Audit Trail** to filter records, view diffs, and export to CSV or JSON. Records can go to the database, a file, or both (`AUDIT_STORE_TYPE`), and are kept for 90 days by default (`AUDIT_RETENTION_DAYS`).
+
+The audit trail is on by default in the Enterprise edition. Set `AUDIT_ENABLED=false` to turn it off.
+</Accordion>
+
+<Accordion title='Added governed metadata (Enterprise)'>
+AI Studio now supports governed metadata, so you can require information such as owner, risk tier, and data classification on your AI assets. Administrators can define typed metadata schemas and controlled vocabularies for LLMs, tools, data sources, and plugin resource types.
+
+In advisory mode, AI Studio shows warnings. In enforced mode, it rejects saves that have missing or invalid fields. The **Metadata coverage** page shows which objects need attention.
+
+Fields marked as gateway-visible are synced to Edge Gateways and are available to gateway plugins. A default "Governance Core" schema is installed in advisory mode, so upgrades do not block any saves.
+</Accordion>
+
+<Accordion title='Added outbound webhooks (Enterprise)'>
+AI Studio now supports outbound webhooks, so external systems can react to changes in AI Studio. You can send any internal event to an HTTP endpoint as a signed JSON payload.
+
+AI Studio does not send anything until an administrator approves the endpoint URL, and any change to the URL or headers needs approval again. You can require that a different administrator approves it. Internal network ranges are blocked by default.
+
+Deliveries use HMAC-SHA256 signatures, retries with backoff, and a dead-letter queue. Go to **Governance → Webhooks** and **Deliveries** to manage endpoints, preview templates, rotate secrets, and replay failed deliveries.
+
+Set `TYK_AI_SECRET_KEY` so that webhook headers and signing secrets are encrypted at rest.
+</Accordion>
+
+<Accordion title='Added the asset catalog plugin (Enterprise)'>
+AI Studio now has an asset catalog plugin, so you can manage and share AI assets that do not go through the gateway. The plugin adds assets that do not go through the gateway, such as agents, prompts, skills, and guardrails, to the AI Portal. Each asset has an owner, versions, relationships, and lifecycle tags.
+
+Portal users submit assets through the existing submission queue, and request access through an approval workflow. The plugin respects every RBAC permission.
+
+It is available as `docker.tyk.io/studio-plugins/asset-catalog:1.1.3` and is not yet in the public marketplace.
+</Accordion>
+
+<Accordion title='Added Semantic Routers and Embedders (Enterprise)'>
+AI Studio now supports Semantic Routers, so each request can go to the most suitable model based on the prompt. A Semantic Router chooses a model based on what the prompt means. A client sends `{"model": "smart/auto"}` to the unified endpoint, and the router checks, in order: an explicit route, session affinity, keywords, similarity to example prompts for each route, and an optional LLM judge. If none of these match, it uses the default route.
+
+A route can target an LLM and model, or pass to a Model Router. If classification fails or times out, the router uses the default route.
+
+Shadow mode records the route that the router would choose, but always serves the default route. The editor has a **Test prompt** panel. You grant and publish Semantic Routers in the same way as LLMs.
+
+Semantic Routers use the new **Embedders** object. An Embedder is a reusable embedding configuration. It can link to an existing LLM or have its own endpoint, key, model, and privacy level. Data sources also use Embedders instead of their own embedding settings. You manage Embedders in **LLM management → Embedders**. Embedders are available in the Community and Enterprise editions.
+</Accordion>
+
+<Accordion title='Added team budgets (Enterprise)'>
+AI Studio now supports team budgets, so you can control the combined AI spend of each team. Each team can have a monthly budget. The budget is a limit on the total spend of the team's Apps, and new Apps take their budget from it.
+
+A team can be set to `alert_only` or `hard_block`. Administrators get notifications at 80% and 100%. A `hard_block` team has all its Apps refused when it reaches its budget, on AI Studio and on Edge Gateways.
+
+A new **Team Costs** table on the dashboard shows spend per team. To turn on team budgets, go to the Teams page. See [Budget Control](/ai-management/ai-studio/budgeting).
+</Accordion>
+
+<Accordion title='Added semantic caching to Advanced LLM Cache (Enterprise plugin)'>
+The Advanced LLM Cache plugin now supports semantic caching, so similar prompts can be answered from the cache and cost less. Version 1.2.1 is published as `docker.tyk.io/studio-plugins/advanced-llm-cache:1.2.1` in the pre-release marketplace index. Version 1.2.0 and later can answer a reworded prompt from the cache, as well as an exact repeat. Matches never cross Apps, models, system prompts, or tool sets.
+
+Requests with tool calls, images, or files use exact matching only, and Apps can opt out.
+
+The embedder can be any OpenAI-compatible `/embeddings` endpoint, and the index can be in memory or in Redis 8 or later. Semantic caching is off by default. The default similarity threshold is 0.95.
+</Accordion>
+
+<Accordion title='Added import of MCP Proxies from Tyk Dashboard (Enterprise)'>
+AI Studio now integrates with Tyk Dashboard, so you can publish Dashboard-managed MCP proxies in the AI Portal and give Apps access to them. AI Studio imports MCP proxies from one or more Tyk Dashboards on a schedule, and you can review them, set their privacy score, grant them to teams, and publish them.
+
+For MCP proxies that use API keys, AI Studio creates a Tyk key for each App from policies that an administrator selects. It automatically applies changes that reduce access and holds changes that increase access for approval.
+
+MCP proxies that use OAuth, mTLS, or no authentication appear in the catalog with connection instructions.
+
+Administrators can register new MCP proxies, including REST APIs turned into MCP tools on Tyk 5.15 and later. The registration wizard can read the upstream server's tool list.
+
+Portal users can submit MCP servers for review. Set `TYK_MCP_ENABLED=false` to turn off this feature.
+</Accordion>
+
+<Accordion title='Added client tools and generative UI in chat'>
+AI Studio chat now supports client tools and generative UI, so the model can ask the user for input and show rich content.
+
+**Client tools** are tools that the person in the chat answers, instead of an API. The model shows an approval card or a form, and administrators build the form with a field builder. AI Studio treats these answers as untrusted user input.
+
+**Generative UI** lets the model show dashboards, tables, charts, alerts, and forms in the chat. It is available as a built-in tool in the Default tool catalog.
+
+Plugins can also provide their own renderers for tool calls. See [Chat Interface](/ai-management/ai-studio/chat-interface).
+</Accordion>
+
+<Accordion title='Added user provenance, an SSO API-key policy, and user disabling'>
+AI Studio now tracks where each user comes from and lets you disable users, so you can control access more easily. Each user now records how they were created (`local`, `admin`, or `sso`), which SSO profile created them, and when they last logged in. The Users list shows this, with API key and status columns.
+
+An administrator can disable a user. A disabled user cannot log in or use any credential, and the Apps they own are deactivated.
+
+Users can manage their own API key from the new account menu. SSO profiles can set whether new users see the AI Portal and chat. See [Single Sign-On](/ai-management/ai-studio/sso).
+</Accordion>
+
+<Accordion title='Added a Models in use view'>
+AI Studio now shows which models are in use and by whom, so you can plan model upgrades and deprecations. The LLM provider page now shows a **Models in use** table with requests, Apps, and last-used time for each model.
+
+A model detail page lists the Apps and owners that use the model, so you can contact teams that still use a deprecated model.
+</Accordion>
+
+<Accordion title='Added upgrades for marketplace plugins'>
+AI Studio now lets you upgrade marketplace plugins in place, so you can move to a new version safely. You can now upgrade a plugin installed from the marketplace, or move it to another published version, without losing its configuration or data.
+
+A preview shows scope changes, configuration compatibility, the effect on Edge Gateways, and the changelog before you confirm. If the new version fails to start, AI Studio rolls back. The plugins list shows the installed version and an Update label.
+</Accordion>
+
+<Accordion title='Added OpenTelemetry metrics, tracing, and timing headers'>
+AI Studio now has more observability options, so you can monitor it with standard tools. It now publishes OpenTelemetry GenAI metrics such as `gen_ai.server.request.duration` and `gen_ai.client.token.usage`. The previous `aistudio_*` metrics are still available while `METRICS_LEGACY_NAMES` is `true`.
+
+`ENABLE_TRACING` and `TRACING_ENDPOINT` now send traces to an OTLP endpoint.
+
+Set `GATEWAY_SERVER_TIMING=true` to add a `Server-Timing` header that splits each LLM request into gateway time and upstream time. Edge Gateways can serve pprof with `ENABLE_PROFILING`.
+
+At startup, AI Studio and Edge Gateways log each configured file path and whether it exists. See [Analytics & Monitoring](/ai-management/ai-studio/analytics#prometheus-and-opentelemetry-metrics).
+</Accordion>
+
+<Accordion title='Added network and plugin security settings'>
+AI Studio now has settings to control network access and plugin locations, so you can limit which hosts it connects to:
+
+- `LLM_UPSTREAM_ALLOWED_HOSTS` sets the hosts that LLM upstreams can use.
+- `LLM_UPSTREAM_BLOCK_INTERNAL` blocks LLM upstreams that resolve to internal network ranges.
+- `LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS` allows specific in-cluster hosts.
+- `CORS_ALLOWED_ORIGINS` sets the origins that can call the OAuth, metadata, and plugin UI endpoints.
+- `AI_STUDIO_PLUGIN_ALLOWED_DIRS` sets the directories that plugin binaries can run from.
+
+When these settings are unset, existing behavior does not change. The exception is `AI_STUDIO_PLUGIN_ALLOWED_DIRS`, which uses a built-in list of directories by default.
+</Accordion>
+
+</AccordionGroup>
+
+##### Changed
+
+<AccordionGroup>
+
+<Accordion title='Updated Model Routers to be governed assets (Enterprise)'>
+Model Routers have been updated to work like LLMs in catalogs and Apps, so you control who can use each router. You can now publish [Model Routers](/ai-management/ai-studio/model-router) in LLM catalogs and grant them to Apps. Apps call a router on the unified endpoint as `{router}/{model}`. The `/router/{slug}/` path still works.
+
+A router grant gives access to the router's LLMs only through the router.
+
+Responses include `X-Tyk-Router`, `X-Tyk-Route`, and `X-Tyk-Route-Reason` headers, and the routing decision is saved in the request's proxy log. Model Router and Semantic Router routing runs on Edge Gateways only.
+</Accordion>
+
+<Accordion title='Updated tools to have separate REST and MCP access settings'>
+Tools have been updated so that you choose how each tool can be reached, and a tool is not exposed on the gateway until you allow it. Each [tool](/ai-management/ai-studio/tools) now has separate **REST API** and **MCP** access settings. See [Breaking Changes](#breaking-changes) for how this affects new tools.
+
+The tool page shows the gateway URL for each access method, and the Tools list has an Access column.
+
+In the AI Portal, each App page has one **Connect via MCP** section that lists the App's MCP-enabled tools and MCP servers with a single client configuration.
+</Accordion>
+
+<Accordion title='Updated the chat interface'>
+The chat interface has been rebuilt, so conversations are faster and easier to control. Chat rooms and agents use a new interface that streams one turn at a time. You can cancel a turn, edit an earlier message, or regenerate a reply.
+
+The interface shows prompt suggestions, reasoning, tool calls with their arguments and results, and attachments. It also tells you why a session failed to start.
+
+The new interface is on by default. Set `CHAT_UI_V2_ENABLED=false` to use the previous interface. See [Chat Interface](/ai-management/ai-studio/chat-interface).
+</Accordion>
+
+<Accordion title='Improved Edge Gateway performance'>
+The Edge Gateway has been updated to handle much more traffic with lower overhead. Edge Gateways no longer run database queries for configuration on each request, and analytics and budget updates are written in the background in batches.
+
+Gateway overhead at p50 is now about 0.3 ms, down from about 3 ms. On our AWS benchmark, a 4-vCPU Edge Gateway handles about 9,000 requests per second, and throughput does not drop over time.
+
+When memory use passes `OVERLOAD_MEMORY_THRESHOLD` (85% by default), the gateway rejects new requests with `503` and `Retry-After` until memory use falls. You can also set a limit on concurrent requests with `MAX_INFLIGHT_REQUESTS`.
+</Accordion>
+
+<Accordion title='Improved admin console and AI Portal usability'>
+The admin console and AI Portal have been updated to make common tasks safer and faster.
+
+Before you delete an object, a confirmation dialog shows what uses it. All relationship fields use the same picker, and changes apply when you save the form. Forms warn you before you leave with unsaved changes.
+
+List pages have server-side search and sorting, and bulk delete, activate, and deactivate. Privacy scores show named levels: Public, Internal, Confidential, and Restricted.
+
+Every detail page has a "Used by" section. Notifications appear in a bell panel and on a notifications page, and you can turn off email notifications.
+
+Before you push configuration to Edge Gateways, you can see exactly what changed. The sidebar has new **Access**, **Governance**, and **Settings** groups, and an account menu.
+
+The AI Portal now opens to an **Overview** page that shows your Apps, their spend and usage, and the newest assets. **Browse** replaces the per-catalog pages with one searchable, filterable grid of everything your teams can use. Old catalog links redirect to Browse.
+
+Detail pages replace the "More" pop-ups. The **Create New App** page lists requested access on one side and available assets, by type, on the other.
+</Accordion>
+
+<Accordion title='Improved encryption for stored secrets'>
+AI Studio has been updated to use stronger encryption for stored secrets. [Secrets](/ai-management/ai-studio/secrets) are now encrypted with AES-256-GCM and a scrypt-derived key. Existing secrets stay readable and are encrypted again in the new format in the background.
+
+If `TYK_AI_SECRET_KEY` is not set, AI Studio logs a warning at startup.
+</Accordion>
+
+<Accordion title='Added validation for model prices'>
+The model price API has been updated to reject values that are probably in the wrong unit. Model prices are stored per token, but the admin form collects them per million tokens. The API now rejects prices higher than 0.01 per token, and the error message shows the value per million tokens. This stops a price entered per million tokens from being saved one million times too high.
+</Accordion>
+
+<Accordion title='Updated Golang version to 1.26.6'>
+AI Studio and the Edge Gateway have been updated to build with Go 1.26.6, keeping the toolchain current with upstream Go security and performance updates.
+</Accordion>
+
+</AccordionGroup>
+
+##### Fixed
+
+<AccordionGroup>
+
+<Accordion title='Fixed response format issues with LLM vendors'>
+We have resolved several issues where AI Studio returned responses that did not match the OpenAI format, or recorded the wrong usage:
+
+- **Amazon Bedrock:** Tool call arguments were always empty, and streamed responses did not include tool calls.
+- **Anthropic:** A reply that contained text and a tool call was split into two choices, and its token usage was counted twice. Streamed responses also counted too many output tokens. An empty reply returned a `502` error instead of a successful response.
+- **Google Gemini:** Some responses could not be decoded, so their analytics records were lost. Tool calls were returned without an ID.
+- **All vendors:** A request with `stream: true` and tools returned a buffered response. Error responses did not follow the OpenAI error format, and some upstream 4xx errors were returned as 5xx errors.
+
+Responses now match the OpenAI format for every vendor, and usage and cost are recorded correctly.
+</Accordion>
+
+<Accordion title='Fixed request parameters being dropped or changed'>
+We have resolved several issues where AI Studio did not send the client's request parameters to the vendor as expected:
+
+- `max_tokens` was ignored on the Main Ingress and `/ai/`. OpenAI upstreams got no limit, and Anthropic and Bedrock got a limit of 2048 tokens.
+- `reasoning_effort` was not sent to the vendor through the Main Ingress or `/ai/`.
+- `/ai/` always used the LLM's default model instead of the `model` in the request. This also overrode the model mappings of Model Routers.
+- Anthropic requests included `temperature: 0` when the caller did not set a temperature, so models that no longer accept this parameter, such as `claude-sonnet-5`, returned `400`.
+- OpenAI requests required `stream_options.include_usage`, so models that reject this parameter could not be called with clients such as the Vercel AI SDK.
+- `X-Cache` headers from the cache plugin were not returned on the Main Ingress and `/ai/`.
+
+AI Studio now passes these parameters and headers through correctly.
+</Accordion>
+
+<Accordion title='Fixed Edge Gateways not reconnecting after an AI Studio restart'>
+We have resolved an issue where Edge Gateways did not reconnect after AI Studio was unavailable for more than about five seconds. After a restart, Edge Gateways also ignored budget syncs and stopped sending analytics. Edge Gateways now reconnect, accept budget syncs, and send analytics after every AI Studio restart.
+</Accordion>
+
+<Accordion title='Fixed analytics lost during Edge Gateway shutdown'>
+We have resolved an issue where a graceful Edge Gateway shutdown lost up to one pulse interval of analytics. The Edge Gateway now finishes open requests and sends its buffered analytics before it disconnects.
+</Accordion>
+
+<Accordion title='Fixed Edge Gateways serving outdated configuration after a push'>
+We have resolved an issue where an Edge Gateway could keep serving old LLMs after a configuration push. The **Config Sync** status could also stay on Pending after a successful push. Every push now reloads the gateway, and the status updates when the Edge Gateway receives the configuration.
+</Accordion>
+
+<Accordion title='Fixed Edge Gateways with PostgreSQL failing to sync'>
+We have resolved an issue where an Edge Gateway that used PostgreSQL could not sync after it had stored any analytics or budget data, and then refused every App with `403`. Edge Gateways now update Apps and LLMs in place during a sync.
+</Accordion>
+
+<Accordion title='Fixed post-auth plugins not running for LLMs with punctuation in their names'>
+We have resolved an issue where post-auth plugins, such as caching and rate limiting, did not run on Edge Gateways for LLMs whose names contained punctuation, for example `Mock GPT (host)`. Model Routers that used these LLMs returned `404`. Edge Gateways now use the correct LLM slug after the next configuration push.
+</Accordion>
+
+<Accordion title='Fixed Anthropic requests returning 404 through the unified endpoint'>
+We have resolved an issue where Anthropic requests returned `404` through the unified endpoint and `/ai/`, and where endpoints that already included `/v1` had it added again. AI Studio now joins the vendor URL and request path correctly, so an Anthropic endpoint works with or without `/v1`.
+</Accordion>
+
+<Accordion title='Fixed strict HTTP/2 clients failing on gateway responses'>
+We have resolved an issue where the gateway sent a `Keep-Alive` header on HTTP/2 responses, which caused strict clients such as curl 8.10 and later to fail. The header is now sent on HTTP/1 only.
+</Accordion>
+
+<Accordion title='Fixed OpenAI-compatible endpoints on a TLS Edge Gateway'>
+We have resolved an issue where every request to `/v1/chat/completions` or `/ai/` failed on an Edge Gateway with `TLS_ENABLED=true`. These requests now work on TLS Edge Gateways.
+</Accordion>
+
+<Accordion title='Fixed budget alerts and limits for Edge Gateway traffic'>
+We have resolved an issue where traffic through Edge Gateways did not trigger App, LLM, or team budget alerts. Each budget sync now checks the Apps whose spend changed. A configuration push also no longer lowers an App's recorded spend, which could reopen a spent budget.
+</Accordion>
+
+<Accordion title='Fixed Apps exceeding their budget on the embedded gateway (Enterprise)'>
+We have resolved an issue where the embedded gateway could let an App spend more than its budget for up to five minutes, because spend was cached. The cost of each request is now added as soon as it is recorded. Resetting an App budget now also clears the embedded gateway's cached spend.
+</Accordion>
+
+<Accordion title='Fixed missing reason in budget and filter errors'>
+We have resolved an issue where budget refusals and filter blocks on `/ai/` and `/v1` did not include the reason, or wrapped the error message twice. These errors now include the reason. See [Breaking Changes](#breaking-changes) for the new error format.
+</Accordion>
+
+<Accordion title='Fixed PATCH requests removing an App budget limit'>
+We have resolved an issue where `PATCH /api/v1/apps/:id` without `monthly_budget` removed the App's budget limit. An omitted field now keeps the stored value.
+</Accordion>
+
+<Accordion title='Fixed PATCH requests clearing LLM fields'>
+We have resolved an issue where `PATCH /api/v1/llms/:id` cleared every field that the request did not include, such as the name, endpoint, and API key. PATCH now changes only the fields that you send.
+</Accordion>
+
+<Accordion title='Fixed filter order on LLMs not being respected'>
+We have resolved an issue where filters on an LLM ran in database order, not in the order shown in the LLM form. You can now reorder filters, and they run from top to bottom. The first filter that blocks the request stops it.
+</Accordion>
+
+<Accordion title='Fixed MCP tool responses and schemas'>
+We have resolved several issues with tools served over MCP:
+
+- `tools/call` returned Go map text instead of JSON.
+- The tool `inputSchema` did not mark required parameters, and ignored descriptions written on OpenAPI parameters.
+- Every operation was marked as destructive. Annotations now depend on the HTTP method, and you can override them for each operation.
+</Accordion>
+
+<Accordion title='Fixed Edge Gateway MCP cache not refreshing'>
+We have resolved an issue where the Edge Gateway's MCP cache was never cleared. If you deleted a tool and created it again with the same name, the Edge Gateway could not find it until it restarted. The cache now refreshes when a tool changes.
+</Accordion>
+
+<Accordion title='Fixed browser MCP clients failing to connect'>
+We have resolved an issue where browser-based MCP clients could not connect to the tool and MCP endpoints because CORS headers were missing. Both gateways now send CORS headers on these endpoints.
+</Accordion>
+
+<Accordion title='Fixed missing tool analytics for Edge Gateway traffic'>
+We have resolved an issue where tool calls served by Edge Gateways did not appear in a tool's analytics. Each tool call is now sent to AI Studio and recorded with the same detail as calls served by AI Studio.
+</Accordion>
+
+<Accordion title='Fixed Edge Gateway request body storage settings being ignored'>
+We have resolved an issue where Edge Gateways stored request and response bodies even when `ANALYTICS_STORE_REQUESTS` and `ANALYTICS_STORE_RESPONSES` were off. Edge Gateways now respect these settings.
+</Accordion>
+
+<Accordion title='Fixed incomplete Edge Gateway analytics'>
+We have resolved an issue where Edge Gateway analytics rows could be mixed up and duplicated under load. Upstream connection failures and `total_time_ms` were also not recorded. Each request now produces one complete analytics row.
+</Accordion>
+
+<Accordion title='Fixed the Compliance dashboard failing on SQLite (Enterprise)'>
+We have resolved an issue where the Compliance dashboard failed with a scan error on SQLite after a filter recorded a warning or critical compliance event. The dashboard now loads on SQLite and PostgreSQL.
+</Accordion>
+
+<Accordion title='Fixed OCI plugin installs and large plugin downloads'>
+We have resolved an issue where every OCI plugin install failed with `invalid content digest`. Plugin layers larger than 32 MB also failed to download. Both now work, and the plugin size limit is 512 MB by default.
+</Accordion>
+
+<Accordion title='Fixed plugin data remaining after plugin deletion'>
+We have resolved an issue where deleting a plugin left its stored data in the database. A plugin that you install again now starts with no old data.
+</Accordion>
+
+<Accordion title='Fixed wrong cached answers in Advanced LLM Cache (Enterprise plugin)'>
+We have resolved an issue where exact-match cache keys ignored some parts of the prompt, so different prompts in the same App could get the same cached answer. This affected all Gemini requests, and some OpenAI and Anthropic requests. Streamed cache hits on Edge Gateways also came back empty, and updating a hit count could bring back a deleted entry. These are fixed in the plugin versions released with AI Studio 2.2.
+</Accordion>
+
+<Accordion title='Fixed community submission approvals on PostgreSQL'>
+We have resolved an issue where approving a community submission stopped responding on PostgreSQL, so the contribution workflow could not be used. Approvals now complete on PostgreSQL and SQLite.
+</Accordion>
+
+<Accordion title='Fixed new Apps returning 401 on Edge Gateways'>
+We have resolved an issue where a new App could return `401` on an Edge Gateway for up to four minutes, if a configuration push happened while the App was being created. Edge Gateways now keep Apps that are newer than the pushed configuration.
+</Accordion>
+
+<Accordion title='Fixed Model Router slugs and validation errors (Enterprise)'>
+We have resolved an issue where you could not reuse a Model Router slug after you deleted the router, and where invalid router configurations returned `500`. Deleted routers are now removed completely, and validation errors return `400`.
+</Accordion>
+
+<Accordion title='Fixed pickers and lookups showing only 10 items'>
+We have resolved an issue where pickers, lookups, the dashboard, and the AI Portal App list showed only the first 10 items. They now load up to 1,000 items and tell you when a list is capped.
+</Accordion>
+
+<Accordion title='Fixed catalog forms saving no members'>
+We have resolved an issue where a catalog form saved no members unless you clicked **+** after you selected an item. The form now saves the selected item when you save the catalog.
+</Accordion>
+
+<Accordion title='Fixed seeded LLM providers appearing configured'>
+We have resolved an issue where a new installation showed its seeded LLM providers as configured, even though their API keys were empty. Providers now show their credential status and name the secret that you must fill in.
+</Accordion>
+
+<Accordion title='Fixed the filter test panel removing messages'>
+We have resolved an issue where the filter test panel always removed `messages` from the request body that you pasted, and did not show compliance events. The panel now tests the input that you enter and shows the events that the filter records.
+</Accordion>
+
+<Accordion title='Fixed the PostgreSQL chat queue not delivering messages'>
+We have resolved an issue where, with `QUEUE_TYPE=postgres`, the chat queue never delivered a message, and stopped responding when its connection pool ran out. The queue now shares one listener for each database.
+</Accordion>
+
+<Accordion title='Fixed sign-up links redirecting to the login page'>
+We have resolved an issue where signed-out visitors were redirected from `/register` to `/login`, so shared sign-up links did not work. The sign-up and password pages are now available without login.
+</Accordion>
+
+</AccordionGroup>
+
+##### Security Fixes
+
+<AccordionGroup>
+
+<Accordion title='Resolved CVEs'>
+We have addressed CVEs reported in dependent libraries, including, but not limited to:
+
+- <a href="https://pkg.go.dev/vuln/GO-2026-6061" target="_blank">GO-2026-6061</a>
+- <a href="https://pkg.go.dev/vuln/GO-2026-4762" target="_blank">GO-2026-4762</a>
+- <a href="https://pkg.go.dev/vuln/GO-2026-5884" target="_blank">GO-2026-5884</a>
+- <a href="https://pkg.go.dev/vuln/GO-2026-5885" target="_blank">GO-2026-5885</a>
+- <a href="https://pkg.go.dev/vuln/GO-2026-5004" target="_blank">GO-2026-5004</a>
+- <a href="https://pkg.go.dev/vuln/GO-2026-6140" target="_blank">GO-2026-6140</a>
+
+We have also updated frontend dependencies to resolve npm security advisories.
+</Accordion>
+
+</AccordionGroup>
+
+---
+
 ## 2.1 Release Notes
 
 ### 2.1.0 Release Notes
