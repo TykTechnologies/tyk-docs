@@ -55,6 +55,11 @@ Tyk executes the middleware chain against the incoming `POST` request (authentic
 
 **`GET /mcp`**: Server-Sent Events. Clients open a persistent `GET /mcp` connection to receive server-initiated messages. The upstream MCP server uses this channel to push progress notifications, resource update notifications, and server-to-client requests such as `sampling/createMessage`. Tyk proxies the SSE stream transparently, maintaining the long-lived connection for the duration of the session.
 
+Tyk supports Streamable HTTP only. It does not support these transports:
+
+- The legacy HTTP+SSE transport from MCP versions before `2025-03-26`, which uses a separate POST endpoint and a `/sse` endpoint.
+- The stdio transport, which is for local, in-process MCP servers. If your MCP server uses stdio, put a stdio-to-HTTP bridge, such as the one in the MCP SDK, between it and Tyk.
+
 ### Protocol headers
 
 MCP defines several protocol-specific headers that Tyk passes through unchanged in both directions:
@@ -134,20 +139,27 @@ The `method` field identifies the category of operation: `tools/call` in this ex
 
 ### JSON-RPC methods
 
-The MCP specification defines a fixed set of JSON-RPC method names, grouped into four categories.
+The MCP specification groups its JSON-RPC methods by capability. The most common methods are:
 
 | Method | Category | Description |
 |---|---|---|
 | `initialize` | Session | Opens the session and negotiates capabilities. |
 | `notifications/initialized` | Session | Client confirms session is ready. |
+| `ping` | Session | Checks that the other side is still responsive. |
 | `tools/list` | Tools | Returns the list of tools the server exposes. |
 | `tools/call` | Tools | Invokes a named tool with the supplied arguments. |
 | `resources/list` | Resources | Returns the list of resources the server exposes. |
+| `resources/templates/list` | Resources | Returns the URI templates the server exposes. |
 | `resources/read` | Resources | Reads the content of a named resource URI. |
+| `resources/subscribe`, `resources/unsubscribe` | Resources | Starts or stops update notifications for a resource. |
 | `prompts/list` | Prompts | Returns the list of prompt templates the server exposes. |
 | `prompts/get` | Prompts | Retrieves a named prompt template, optionally with arguments. |
+| `completion/complete` | Completions | Requests autocompletion values for a prompt or resource argument. |
+| `logging/setLevel` | Logging | Sets the log level the server uses for log notifications. |
 | `sampling/createMessage` | Sampling | Requests the client to perform LLM sampling on behalf of the server. |
 | `notifications/tools/list_changed` | Notifications | Server-initiated notification that the tool list has changed. |
+
+Only three methods carry a primitive name: `tools/call` (`params.name`), `resources/read` (`params.uri`), and `prompts/get` (`params.name`). Tyk does not reject methods that are not in this table. It forwards them to the upstream, subject to any method-level access control, rate limit, or allowlist that you configure.
 
 Tyk can apply rate limits, access control, and middleware at the method level (for example, capping all `tools/call` requests) and at the primitive level (for example, rate limiting a specific named tool). The distinction matters: method-level controls apply to every invocation of that method regardless of which primitive is named; primitive-level controls apply only when that specific tool, resource, or prompt is requested.
 
@@ -252,7 +264,7 @@ sequenceDiagram
     end
 ```
 
-If the `GET /mcp` SSE connection drops, the client can reconnect by opening a new `GET /mcp` request with the `Last-Event-ID` header set to the ID of the last event received. Tyk passes this through to the upstream, which resumes the stream from that point.
+If the `GET /mcp` SSE connection drops, the client can reconnect by opening a new `GET /mcp` request with the `Last-Event-ID` header set to the ID of the last event received. Tyk passes this through to the upstream, which resumes the stream from that point. Tyk does not reconnect the stream itself. The client must open the new connection.
 
 ---
 
