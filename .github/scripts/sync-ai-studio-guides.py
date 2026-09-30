@@ -4,7 +4,6 @@
 import argparse
 import importlib.util
 import re
-import subprocess
 import sys
 import urllib.error
 from pathlib import Path
@@ -14,7 +13,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 GUIDES = REPO_ROOT / "ai-management/ai-studio"
 STUDIO_IMAGE = "tykio/tyk-ai-studio-ent"
 EDGE_IMAGE = "tykio/tyk-microgateway-ent"
-SOURCE_REPO = "https://github.com/TykTechnologies/ai-studio.git"
 TAG = r"v\d+\.\d+\.\d+"
 
 # (file, pattern, expected replacement count, label)
@@ -23,7 +21,6 @@ REPLACEMENTS = [
     ("quickstart.mdx", rf"(image: {re.escape(EDGE_IMAGE)}:){TAG}", 1, "Edge Gateway image"),
     ("deployment-k8s.mdx", rf"(repository: {re.escape(STUDIO_IMAGE)}\n\s+tag: ){TAG}", 2, "AI Studio chart tag"),
     ("deployment-k8s.mdx", rf"(repository: {re.escape(EDGE_IMAGE)}\n\s+tag: ){TAG}", 2, "Edge Gateway chart tag"),
-    ("deployment-k8s.mdx", rf"(git clone --branch ){TAG}", 1, "Helm chart source tag"),
 ]
 
 
@@ -41,18 +38,11 @@ def resolve_tag() -> str:
     updater = load_updater()
     studio = updater.latest_tag(STUDIO_IMAGE, allow_prerelease=False)
     edge = updater.latest_tag(EDGE_IMAGE, allow_prerelease=False)
-    # The tag is written into a shell command in the guides, so accept only a plain vX.Y.Z.
+    # The tag is written into the guides verbatim, so accept only a plain vX.Y.Z.
     if not re.fullmatch(TAG, studio):
         raise RuntimeError(f"Unexpected tag format from Docker Hub: {studio!r}")
     if studio != edge:
         raise RuntimeError(f"{STUDIO_IMAGE} is at {studio} but {EDGE_IMAGE} is at {edge}")
-    # The Kubernetes guide clones the Helm chart at this tag, so it must exist in the source repo.
-    result = subprocess.run(
-        ["git", "ls-remote", "--tags", SOURCE_REPO, f"refs/tags/{studio}"],
-        capture_output=True, text=True, check=True,
-    )
-    if not result.stdout.strip():
-        raise RuntimeError(f"Tag {studio} not found in {SOURCE_REPO}")
     return studio
 
 
@@ -75,7 +65,7 @@ def main() -> int:
         tag = resolve_tag()
         original = {name: (GUIDES / name).read_text() for name in names}
         updated = render(original, tag)
-    except (RuntimeError, ValueError, urllib.error.URLError, subprocess.CalledProcessError) as exc:
+    except (RuntimeError, ValueError, urllib.error.URLError) as exc:
         print(f"Failed to prepare AI Studio guide update: {exc}", file=sys.stderr)
         return 1
 
