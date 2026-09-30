@@ -253,7 +253,7 @@ The `rateLimit` middleware applies a rate limit to a specific primitive, counted
 
 The `rate` field is the maximum number of requests allowed in the time window specified by `per` (in seconds, or as a shorthand string such as `"1m"` or `"30s"`). Primitive-level rate limits are additive with method-level limits; a request must pass both.
 
-Rate limits configured in `mcpTools`, `mcpResources`, and `mcpPrompts` apply to all consumers of the proxy; they are shared ceilings. For per-consumer primitive rate limits that track each consumer key independently, use the `mcp_primitives` field in a security policy. Both can be active simultaneously: the middleware limit protects the upstream from aggregate overload; the policy limit enforces each consumer's individual entitlement. See [MCP proxy policies](/nightly/ai-management/mcp-gateway/policies).
+Rate limits configured in `mcpTools`, `mcpResources`, and `mcpPrompts` are shared by all consumers of the proxy. For per-consumer limits, see [Policies versus middleware](/nightly/ai-management/mcp-gateway/core-concepts#policies-versus-middleware).
 
 ### requestSizeLimit
 
@@ -304,6 +304,29 @@ The `circuitBreaker` middleware monitors the failure rate for a specific primiti
 - **`halfOpenStateEnabled`**: When `true`, allows a small number of probe requests through during the cool-down period to test whether the upstream has recovered, rather than waiting for the full period to elapse before reopening.
 
 Circuit breakers are most valuable for tools that call external services or perform expensive operations where failure is likely to persist, rather than being transient.
+
+### enforceTimeout
+
+The `enforceTimeout` middleware sets the maximum time Tyk waits for the upstream to respond to a specific primitive. Use it on slow tools, so that one slow call does not stall the agent's session.
+
+```json
+{
+  "middleware": {
+    "mcpTools": {
+      "generate-report": {
+        "enforceTimeout": {
+          "enabled": true,
+          "duration": "10s"
+        }
+      }
+    }
+  }
+}
+```
+
+Set `duration` as a duration string, such as `"500ms"` or `"10s"`. The `duration` field is available from Tyk 5.14.0. The older `value` field sets whole seconds and is deprecated.
+
+If the upstream does not respond in time, Tyk returns `504 Gateway Timeout` with the JSON-RPC error code `-32004`.
 
 ### cache
 
@@ -522,10 +545,10 @@ For example, given these entries:
 {
   "mcpResources": {
     "file:///config/database.json": {
-      "cache": { "enabled": true, "timeout": 3600 }
+      "rateLimit": { "enabled": true, "rate": 10, "per": 60 }
     },
     "file:///config/*": {
-      "cache": { "enabled": true, "timeout": 300 }
+      "rateLimit": { "enabled": true, "rate": 100, "per": 60 }
     },
     "file:///*": {
       "allow": { "enabled": true }
@@ -534,7 +557,7 @@ For example, given these entries:
 }
 ```
 
-A request for `file:///config/database.json` matches the exact entry and gets a 1-hour cache. A request for `file:///config/settings.json` matches the `file:///config/*` pattern and gets a 5-minute cache. A request for `file:///logs/app.log` matches the `file:///*` fallback and is allowed but not cached.
+A request for `file:///config/database.json` matches the exact entry and gets a limit of 10 requests per minute. A request for `file:///config/settings.json` matches the `file:///config/*` pattern and gets a limit of 100 requests per minute. A request for `file:///logs/app.log` matches the `file:///*` fallback and is allowed with no primitive rate limit.
 
 ---
 
@@ -552,6 +575,7 @@ The following table summarises every middleware capability available for MCP pro
 | Rate limiting | `rateLimit` | — | Yes | Yes |
 | Request size limit | `requestSizeLimit` | — | Yes | Yes |
 | Circuit breaker | `circuitBreaker` | — | Yes | Yes |
+| Enforce timeout | `enforceTimeout` | — | Yes | Yes |
 | Cache | `cache` | — | — | No, disabled for protocol compliance |
 | Transform request headers (global) | `middleware.global.transformRequestHeaders` | Yes | — | Yes |
 | Transform request headers (primitive) | `transformRequestHeaders` | — | Yes | Yes |

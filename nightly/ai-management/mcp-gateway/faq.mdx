@@ -73,7 +73,7 @@ The Primitives tab covers most per-primitive middleware. A few options require t
 
 - **Transform request body**: advanced request body transformation via Go template
 - **`middleware.operations`**: method-level middleware applying to all calls of a specific JSON-RPC method (for example, all `tools/call` requests)
-- **Policy ACL fields** (`mcp_access_rights`, `json_rpc_methods_access_rights`): per-consumer primitive and method access control configured via the Dashboard API
+- **Policy access fields** (`mcp_access_rights`, `json_rpc_methods_access_rights`): these are in a policy, not in the proxy definition. See [MCP Gateway policies](/nightly/ai-management/mcp-gateway/policies)
 
 <Note>
 `urlRewrite`, `transformRequestMethod`, and `mockResponse` are accepted by the configuration schema but have no effect on MCP primitives. See [MCP middleware](/nightly/ai-management/mcp-gateway/mcp-middleware) for the full capability reference.
@@ -209,17 +209,7 @@ If the proxy has a tool allowlist, Tyk blocks the new tools until you add them t
 
 ### Can I block specific MCP protocol operations for a consumer without affecting others?
 
-Yes. Use `json_rpc_methods_access_rights` in the policy access rights entry for the MCP proxy. This controls which JSON-RPC protocol methods (such as `tools/call`, `tools/list`, `resources/read`, or `sampling/createMessage`) the consumer's key is allowed to use.
-
-To restrict a consumer to tool listing and tool calls only, blocking server-initiated sampling requests:
-
-```json
-"json_rpc_methods_access_rights": {
-  "allowed": ["tools/call", "tools/list"]
-}
-```
-
-A non-empty `allowed` list acts as an explicit allowlist; only the listed methods are accessible. Use `blocked` to exclude specific methods while leaving all others accessible. This applies per consumer key; other keys with different policies are unaffected. Configure this field via the Dashboard API; it is not available in the Dashboard UI policy editor. See [MCP proxy policies](/nightly/ai-management/mcp-gateway/policies#access-rights-entry).
+Yes. Set `json_rpc_methods_access_rights` in the consumer's policy. It applies to each key separately. See [Access control](/nightly/ai-management/mcp-gateway/policies#access-control).
 
 ### Can I give different agents access to different tools on the same MCP server?
 
@@ -227,16 +217,7 @@ Yes, and there are two approaches depending on how different the access needs to
 
 **Separate proxy definitions** work well when agents have clearly distinct roles: for example, a read-only agent and a write-access agent. Create two proxies targeting the same upstream, each with a different tool allowlist. This is straightforward to reason about and administer.
 
-**Policy-level primitive ACLs** (`mcp_access_rights`) work well when you have many agents with overlapping but slightly different access needs and creating a separate proxy per agent is not practical. Set `mcp_access_rights` in the policy's access rights entry for the MCP proxy to control exactly which tools, resources, and prompts that policy's consumers can invoke. Each consumer key gets its own enforced view of the proxy's primitive catalog.
-
-```json
-"mcp_access_rights": {
-  "tools": { "allowed": ["search", "get_document"] },
-  "resources": { "blocked": ["internal://.*"] }
-}
-```
-
-The two approaches compose: a proxy-level allowlist controls what any consumer can ever call; policy ACLs then further restrict what specific consumers can call within that set. Configure `mcp_access_rights` via the Dashboard API. See [MCP proxy policies](/nightly/ai-management/mcp-gateway/policies) for details.
+**Policy-level primitive ACLs** (`mcp_access_rights`) work well when many agents have overlapping but different access needs. See [Access control](/nightly/ai-management/mcp-gateway/policies#access-control).
 
 ### What happens if two tools on a REST API to MCP proxy end up with the same name?
 
@@ -256,41 +237,11 @@ Co-locating your Tyk Gateway with your upstream MCP servers in the same network 
 
 ### How does rate limiting work for MCP traffic?
 
-Tyk applies rate limits at five levels. All active limits are evaluated on every request; whichever is exhausted first blocks the call.
-
-| Level | Scope | Configured in |
-|---|---|---|
-| 1. API-level | All consumers, shared ceiling | MCP proxy API definition |
-| 2. Policy global | Per consumer key, all APIs in the policy | Policy `rate` / `per` |
-| 3. Per MCP proxy | Per consumer key, this proxy only | Per-API limits in policy access rights |
-| 4. JSON-RPC method | Per consumer key, per protocol method (e.g. `tools/call`) | `json_rpc_methods` in policy access rights |
-| 5. MCP primitive | Per consumer key, per named tool/resource/prompt | `mcp_primitives` in policy access rights |
-
-Levels 1–3 apply to all traffic aggregated at their scope. Level 4 counts every invocation of a given JSON-RPC method regardless of which primitive is named; a `tools/call` counter covers all tool calls combined. Level 5 counts invocations of one specific named primitive.
-
-Levels 4 and 5 apply concurrently. A call to `get_report` increments both the `tools/call` method counter (level 4, if set) and the `get_report` primitive counter (level 5, if set). Either reaching its limit blocks the call.
-
-A middleware rate limit on a primitive is shared by all consumers of the proxy. See [Policies versus middleware](/nightly/ai-management/mcp-gateway/core-concepts#policies-versus-middleware).
-
-See [MCP proxy policies](/nightly/ai-management/mcp-gateway/policies) and [MCP middleware: traffic management](/nightly/ai-management/mcp-gateway/mcp-middleware#traffic-management).
+Tyk checks every rate limit that applies to a call, and the first limit that the call exceeds blocks it. For the policy levels, see [Rate limiting](/nightly/ai-management/mcp-gateway/policies#rate-limiting). For the limit shared by all consumers, see [Policies versus middleware](/nightly/ai-management/mcp-gateway/core-concepts#policies-versus-middleware).
 
 ### Can I set different rate limits on the same tool for different consumers?
 
-Yes. Use `mcp_primitives` in the policy access rights entry to set per-primitive rate limits that apply only to keys bound to that policy. Two consumers on different policies can have completely different limits on the same tool, and their counters are tracked independently.
-
-A standard tier policy might allow 10 calls per minute to an expensive `generate_report` tool, while a premium tier policy allows 100:
-
-```json
-"mcp_primitives": [
-  {
-    "type": "tool",
-    "name": "generate_report",
-    "limit": { "rate": 100, "per": 60 }
-  }
-]
-```
-
-To combine this with a limit shared by all consumers, see [Policies versus middleware](/nightly/ai-management/mcp-gateway/core-concepts#policies-versus-middleware).
+Yes. Set `mcp_primitives` in each tier's policy. Each key has its own counter. See [Rate limiting](/nightly/ai-management/mcp-gateway/policies#rate-limiting).
 
 ### What happens when an upstream MCP server is slow or unavailable?
 
