@@ -64,8 +64,11 @@ For local development or test clusters. Uses NodePort services, internal Postgre
 
 ### 1. Add the Helm Chart
 
+The Helm chart is in the [Tyk AI Studio GitHub repository](https://github.com/TykTechnologies/ai-studio).
+
 ```bash
-cd /path/to/tyk-ai-studio/helm
+git clone https://github.com/TykTechnologies/ai-studio.git
+cd ai-studio/helm
 helm dependency update .
 ```
 
@@ -77,7 +80,7 @@ Replace the placeholder secrets with your generated values. The `grpcAuthToken` 
 midsommar:
   image:
     repository: tykio/tyk-ai-studio-ent
-    tag: v2.0.0
+    tag: v2.2.0
   service:
     type: NodePort
     ports:
@@ -126,13 +129,12 @@ microgateway:
   enabled: true
   image:
     repository: tykio/tyk-microgateway-ent
-    tag: v2.0.0
+    tag: v2.2.0
   service:
     type: NodePort
     port: 8080
     nodePort: 32591
   config:
-    edgeId: "edge-1"
     edgeNamespace: "default"
   secrets:
     edgeAuthToken: "CHANGE-ME-third-secret"             # Must match config.grpcAuthToken
@@ -179,6 +181,16 @@ curl -s http://${NODE_IP}:32580/health
 curl -s http://${NODE_IP}:32591/health
 ```
 
+<Note>
+If you cannot reach the node IP from your machine (for example, with kind or Docker Desktop on macOS), use `kubectl port-forward` instead:
+
+```bash
+kubectl port-forward svc/midsommar 8080:8080
+```
+
+Then open `http://localhost:8080`. In step 4, set `SITE_URL` to `http://localhost:8080`.
+</Note>
+
 ### Access Points
 
 | Port | URL | Purpose |
@@ -201,7 +213,7 @@ Replace all placeholder values with your actual configuration.
 midsommar:
   image:
     repository: tykio/tyk-ai-studio-ent
-    tag: v2.0.0
+    tag: v2.2.0
   ingress:
     enabled: true
     certificateEnabled: true
@@ -256,7 +268,7 @@ microgateway:
   enabled: true
   image:
     repository: tykio/tyk-microgateway-ent
-    tag: v2.0.0
+    tag: v2.2.0
   ingress:
     enabled: true
     certificateEnabled: true
@@ -273,7 +285,6 @@ microgateway:
         hosts:
           - gateway.yourdomain.com
   config:
-    edgeId: "edge-1"
     edgeNamespace: "default"
     allowInsecure: "false"
     tlsEnabled: "false"                                  # gRPC client TLS to AI Studio
@@ -284,6 +295,8 @@ microgateway:
 ```
 
 ### 2. Install
+
+Run these commands from the `ai-studio/helm` directory. To get the chart, follow [step 1 of Option 1](#1-add-the-helm-chart).
 
 ```bash
 helm dependency update .
@@ -305,14 +318,14 @@ curl -s https://gateway.yourdomain.com/health
 
 ### First User Registration
 
-After deployment, you need to create your first admin user:
+After you start the services, create the first user:
 
-1. **Access the application**: Navigate to your configured `SITE_URL` (e.g., `https://studio.yourdomain.com`)
-2. **Register with admin email**: Use the EXACT email address you set in the `ADMIN_EMAIL` environment variable in your configuration.
-3. **Complete registration**: The first user who registers with the admin email will automatically become the administrator.
+1. Open your configured `siteUrl` (for example, `https://studio.yourdomain.com`) in your browser.
+2. Select **Sign up**, then enter a name, an email address, and a password.
+3. Log in with the new account.
 
 <Note>
-**Important**: The first user registration must use the same email address specified in the `ADMIN_EMAIL` environment variable. This user will have full administrative privileges.
+The first user who registers becomes the administrator. You can use any email address. Other users must verify their email address before they can log in, so configure SMTP before you invite them. AI Studio ignores the deprecated `ADMIN_EMAIL` variable.
 </Note>
 
 ### Add Your API Keys
@@ -327,7 +340,7 @@ AI Studio pre-populates OpenAI and Anthropic LLM configurations on first startup
 ### Push Configuration to the Edge Gateway
 
 1. Navigate to **AI Portal → Edge Gateways** in the sidebar
-2. Verify your edge gateway (`edge-1`) shows as **Connected**
+2. Verify that your Edge Gateway shows as **Connected**. Its Edge ID is the pod name, for example `midsommar-microgateway-64b5f9879d-mf5p2`.
 3. Click **Push Configuration** to sync the latest settings to the Edge Gateway
 
 Once the sync status shows **Synced**, the Edge Gateway is ready to proxy LLM requests.
@@ -411,16 +424,19 @@ transformer-server:
 
 ### Scaling Edge Gateways
 
-To deploy multiple edge gateways for different regions, override `edgeId` and `edgeNamespace` per instance. You can either deploy separate Helm releases or create additional Kubernetes Deployments with unique values:
+Each Edge Gateway pod registers with AI Studio under its own pod name as its Edge ID. To deploy Edge Gateways for different regions, deploy a separate Helm release for each region and set a different `edgeNamespace`:
 
 ```yaml
 microgateway:
   config:
-    edgeId: "edge-eu-west-1"
     edgeNamespace: "eu-west"
 ```
 
-Each edge instance registers independently with AI Studio and receives only the configuration assigned to its namespace.
+Each Edge Gateway receives only the configuration assigned to its namespace.
+
+<Note>
+A Deployment gives each pod a new name after a restart, and AI Studio removes the stale entries. For stable Edge IDs (for example, `midsommar-microgateway-0`), set `microgateway.kind: StatefulSet`.
+</Note>
 
 ### Database Options
 
@@ -498,6 +514,22 @@ kubectl describe pod <pod-name>
 * **Login fails on HTTP**: Set `devMode: "true"` — session cookies require this when not using HTTPS
 * **Marketplace page is empty**: Set `ociCacheDir: "./data/cache/plugins"` in your config values — the marketplace service will not start without it
 * **Plugin signature verification**: Docker images use distroless bases without cosign. Set `ociRequireSignature: "false"` to disable signature verification
+
+</Accordion>
+
+<Accordion title="Pods restart during the first install">
+
+On the first install, the AI Studio pod can restart until PostgreSQL is ready. The Edge Gateway pod can restart until the AI Studio gRPC server is ready. These restarts are normal. The pods recover without action. Check that all pods show `Running` and `READY 1/1`:
+
+```bash
+kubectl get pods
+```
+
+</Accordion>
+
+<Accordion title="Registration fails with an unexpected error">
+
+In AI Studio v2.1.x, over plain HTTP, the CSRF check accepts browser requests only from `localhost:3000`. Registration from any other address fails with `403 Forbidden - origin invalid`. Upgrade to v2.2.0 or later. From v2.2.0, AI Studio also accepts requests from the host in `SITE_URL`.
 
 </Accordion>
 
