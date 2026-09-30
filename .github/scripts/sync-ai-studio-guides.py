@@ -41,6 +41,9 @@ def resolve_tag() -> str:
     updater = load_updater()
     studio = updater.latest_tag(STUDIO_IMAGE, allow_prerelease=False)
     edge = updater.latest_tag(EDGE_IMAGE, allow_prerelease=False)
+    # The tag is written into a shell command in the guides, so accept only a plain vX.Y.Z.
+    if not re.fullmatch(TAG, studio):
+        raise RuntimeError(f"Unexpected tag format from Docker Hub: {studio!r}")
     if studio != edge:
         raise RuntimeError(f"{STUDIO_IMAGE} is at {studio} but {EDGE_IMAGE} is at {edge}")
     # The Kubernetes guide clones the Helm chart at this tag, so it must exist in the source repo.
