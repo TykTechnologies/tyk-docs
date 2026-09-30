@@ -24,7 +24,7 @@ Access logging must be enabled in your Tyk Gateway configuration. Set `access_lo
 
 ## MCP fields
 
-The following fields are added to access log records for MCP requests. Each field is only included when it has a non-empty value; fields are omitted from the record entirely when not applicable, keeping log volume low on lifecycle calls such as `initialize` and `ping`.
+The following fields are added to access log records for MCP requests. Each field is only included when it has a non-empty value; fields are omitted from the record entirely when not applicable.
 
 | Field | Type | Description |
 |---|---|---|
@@ -32,18 +32,26 @@ The following fields are added to access log records for MCP requests. Each fiel
 | `mcp_method` | string | JSON-RPC method invoked, for example `tools/call` or `resources/read`. Present on all MCP requests. |
 | `mcp_primitive_type` | string | MCP primitive category: `tool`, `resource`, or `prompt`. Present only when a primitive was matched. |
 | `mcp_primitive_name` | string | Name of the specific tool, resource, or prompt invoked, for example `get_current_weather`. Present only when a primitive was matched. |
-| `mcp_error_code` | integer | Gateway-mapped JSON-RPC error code. Present only when the request failed at the gateway layer. |
+| `mcp_error_code` | integer | Gateway-mapped JSON-RPC error code. Present only when the request failed at the gateway layer. Omitted when there is no error. |
 
-The `mcp_error_code` field reflects errors that occur within the gateway: authentication failures, rate limit rejections, and upstream errors. It does not capture error codes from within the upstream MCP server's JSON-RPC response body.
+The `mcp_error_code` field reflects errors that occur within the gateway: authentication failures, rate limit rejections, and upstream errors. It never carries error codes from within the upstream MCP server's JSON-RPC response body. A gateway error always has a `4xx` or `5xx` HTTP status, never `200`.
 
-| Error code | Meaning |
-|---|---|
-| `-32001` | Authentication required |
-| `-32002` | Access denied |
-| `-32003` | Rate limit exceeded |
-| `-32004` | Upstream error (502/503/504) |
-| `-32600` | Invalid request (400) |
-| `-32603` | Internal error (500) |
+Tyk maps the HTTP status of a gateway error to a JSON-RPC error code:
+
+| Error code | HTTP status | Meaning |
+|---|---|---|
+| `-32700` | `400` | Parse error: the request body is not valid JSON |
+| `-32600` | `400`, `405` | Invalid request |
+| `-32601` | `404` | Method not found |
+| `-32602` | `400` | Invalid params: Tyk could not read the primitive name from `params` |
+| `-32603` | `500` and other `5xx` | Internal error |
+| `-32000` | Other `4xx` | Other client error |
+| `-32001` | `401` | Authentication required |
+| `-32002` | `403` | Access denied |
+| `-32003` | `429` | Rate limit exceeded |
+| `-32004` | `502`, `503`, `504` | Upstream error |
+
+The codes `-32005` and `-32006` are reserved. Tyk does not currently return them.
 
 ## Access logs when the proxy fronts a Tyk-managed REST API
 
@@ -139,7 +147,7 @@ A successful `tools/call` request produces a record similar to the following:
 }
 ```
 
-A request that fails at the gateway due to a missing or invalid key produces a record with `mcp_error_code` set and no primitive fields (the primitive was never reached):
+A request that fails at the gateway due to a missing or invalid key produces a record with `mcp_error_code` set. Tyk reads the JSON-RPC body before it checks the key, so the record also has the primitive fields:
 
 ```json
 {
@@ -150,13 +158,15 @@ A request that fails at the gateway due to a missing or invalid key produces a r
   "method": "POST",
   "mcp_error_code": -32001,
   "mcp_method": "tools/call",
+  "mcp_primitive_name": "get_current_weather",
+  "mcp_primitive_type": "tool",
   "path": "/mcp",
   "prefix": "access-log",
   "status": 401
 }
 ```
 
-An `initialize` lifecycle call produces a record with `mcp_method` set but no primitive fields:
+An `initialize` lifecycle call produces a record with no `mcp_primitive_type`. Its `mcp_primitive_name` is the method name:
 
 ```json
 {
@@ -166,6 +176,7 @@ An `initialize` lifecycle call produces a record with `mcp_method` set but no pr
   "latency_total": 18,
   "method": "POST",
   "mcp_method": "initialize",
+  "mcp_primitive_name": "initialize",
   "path": "/mcp",
   "prefix": "access-log",
   "status": 200
