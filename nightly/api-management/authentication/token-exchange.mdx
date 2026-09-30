@@ -37,10 +37,10 @@ In open source deployments, token exchange does not execute at runtime. The inbo
 
 When a request arrives at a Tyk API with token exchange enabled:
 
-1. Tyk validates the inbound bearer token using the configured `oauth2` security scheme.
+1. JWT authentication validates the inbound bearer token. The `oauth2` security scheme reads its claims.
 2. If scope enforcement is enabled, Tyk checks the token's scopes against the operation's `security:` requirements.
 3. Tyk reads the `iss` claim from the validated token and matches it against the `issuers` list on each configured provider.
-4. Tyk POSTs an RFC 8693 exchange request to the matched provider's `tokenEndpoint`, presenting the inbound token as `subject_token`.
+4. Tyk POSTs an RFC 8693 exchange request to the matched provider's `tokenEndpoint`, presenting the inbound token as `subject_token`. With [grantType: jwt-bearer](#grant-type), Tyk sends an RFC 7523 request with the inbound token as `assertion` instead.
 5. The authorization server returns a new access token. Tyk replaces the `Authorization` header with the exchanged token.
 6. Tyk forwards the modified request upstream.
 
@@ -88,7 +88,7 @@ String fields in the API definition accept `env://`, `secrets://`, `vault://`, a
 
 ### Provider fields
 
-Each entry in `providers` matches inbound tokens by `iss` claim and routes exchange requests to the corresponding token endpoint. Provider names must be unique, and issuer values must not overlap across providers. If no provider matches the inbound token's issuer, the exchange fails and Tyk returns an error before the request reaches the upstream.
+Each entry in `providers` matches inbound tokens by `iss` claim and routes exchange requests to the corresponding token endpoint. Provider names must be unique. Tyk rejects the API definition at load time if the same exact issuer appears on two providers. It does not check `regex:` entries for overlap, so their order decides which provider matches (see [Multi-Tenant Issuer Matching](#multi-tenant-issuer-matching)). If no provider matches the inbound token's issuer, Tyk returns `403 Forbidden` with a JSON body that contains `no_matching_provider`, before the request reaches the upstream.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -396,5 +396,5 @@ On a cache miss, the call to the authorization server's token endpoint appears a
 ## Token exchange and upstream auth
 
 <Note>
-Do not configure `upstream.authentication.oauth` alongside token exchange. Token exchange replaces the `Authorization` header with the exchanged token before the reverse proxy; it is the upstream credential. The `upstream.authentication` block is for a separate scenario where Tyk authenticates to the upstream using its own static credentials, independent of any inbound token. Configuring both will produce a conflict.
+Do not configure `upstream.authentication.oauth` alongside token exchange. Token exchange replaces the `Authorization` header with the exchanged token before the reverse proxy; it is the upstream credential. The `upstream.authentication` block is for a separate scenario where Tyk authenticates to the upstream using its own credentials, independent of any inbound token. Tyk does not reject a definition that has both. Upstream OAuth runs after token exchange and overwrites the exchanged token, so the upstream never receives it.
 </Note>
