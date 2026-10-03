@@ -13,14 +13,20 @@ For an overview of all MCP observability signals, see [MCP observability](/ai-ma
 
 The following fields are derived from the JSON-RPC payload and available as `metadata` dimension sources in custom metrics.
 
-| Field | Description | Example values |
-|---|---|---|
-| `mcp_method` | JSON-RPC method invoked | `tools/call`, `initialize`, `resources/read`, `prompts/get` |
-| `mcp_primitive_type` | MCP primitive category | `tool`, `resource`, `prompt` |
-| `mcp_primitive_name` | Name of the specific tool, resource, or prompt | `get_current_weather`, `search_documents` |
-| `mcp_error_code` | Gateway-mapped JSON-RPC error code; empty string on success | `-32001` (auth required), `-32002` (access denied), `-32003` (rate limit exceeded), `-32004` (upstream error) |
+| Field | Description | Example values | Cardinality |
+|---|---|---|---|
+| `mcp_method` | JSON-RPC method invoked | `tools/call`, `initialize`, `resources/read`, `prompts/get` | Bounded |
+| `mcp_primitive_type` | MCP primitive category. Empty on methods that do not name a primitive. | `tool`, `resource`, `prompt` | Bounded (3 values) |
+| `mcp_primitive_name` | Name of the specific tool or prompt, or the resource URI. On methods that do not name a primitive, such as `initialize`, the method name. | `get_current_weather`, `search_documents`, `initialize` | Bounded per API |
+| `mcp_error_code` | Gateway-mapped JSON-RPC error code, as a string; empty string on success | `-32001` (auth required), `-32002` (access denied), `-32003` (rate limit exceeded), `-32004` (upstream error) | Bounded |
 
 All four fields are populated only for MCP APIs. For non-MCP requests they are empty strings, so existing metric instruments are unaffected.
+
+Tyk has no built-in MCP metric instruments. To get MCP metrics, define custom instruments that use these dimensions, as in the [use cases](#use-cases) below.
+
+Tyk records custom metrics only for requests that it tracks. If Traffic Logs are off for the proxy, or a primitive has `doNotTrackEndpoint` enabled, Tyk records no metrics for those requests.
+
+The Tyk Pump [Prometheus pump](/api-management/metrics/metrics-pumps#custom-metrics) is a separate path. It has only three MCP labels (`mcp_method`, `mcp_primitive_type`, and `mcp_primitive_name`) and no error code label.
 
 <Note>
 `mcp_error_code` reflects errors mapped by the gateway layer (authentication failures, rate limit rejections, and upstream errors), not error codes in the upstream MCP server's JSON-RPC response body. See [MCP access logs](/ai-management/mcp-gateway/mcp-access-logs) for the full list of gateway error codes.
@@ -48,7 +54,7 @@ Track how many requests each JSON-RPC method receives across all MCP APIs. This 
 
 ### Top tools by call volume
 
-Identify the most frequently invoked tools, useful for cost attribution and optimization. Add `api_id` to compare usage across multiple MCP backends.
+Identify the most frequently invoked tools, useful for cost attribution and optimization. Add `api_id` to compare usage across multiple MCP backends. Keep the `primitive_type` label: `tool_name` also holds method names such as `initialize`, and those rows have an empty `primitive_type`.
 
 ```json
 {
@@ -108,7 +114,7 @@ The `histogram_source` field accepts three values: `"upstream"` (upstream server
 
 ### JSON-RPC error classification
 
-Count MCP errors by their gateway-mapped JSON-RPC error code. Unlike HTTP errors, MCP errors are typically returned with HTTP 200; `mcp_error_code` is the only reliable way to detect gateway-layer failures.
+Count MCP errors by their gateway-mapped JSON-RPC error code. Tyk returns gateway errors with a `4xx` or `5xx` HTTP status. `mcp_error_code` adds the JSON-RPC code, so you can tell an authentication failure (`-32001`) from an access denial (`-32002`). For all codes, see [MCP fields](/ai-management/mcp-gateway/mcp-access-logs#mcp-fields).
 
 ```json
 {
