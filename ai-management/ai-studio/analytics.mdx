@@ -90,6 +90,27 @@ Administrators typically access analytics data via dashboards within the Tyk AI 
 
 From v2.1.0, proxy logs are attributed to the specific LLM configuration (`llm_id`) rather than the vendor string. Two LLM entries that share a vendor, for example a personal Anthropic key and a work Anthropic key, no longer cross-pollinate in the LLM detail page. Logs recorded before the upgrade have `llm_id = 0` and do not appear in per-LLM detail views.
 
+### Failover Attempts
+
+When an LLM fails over to a fallback, the proxy logs contain one row for each attempt that got an answer. The LLM and App detail pages show a **Failover** column. To count requests, filter on `failover_attempt = 0`. For more information, refer to [Failover in Analytics](/ai-management/ai-studio/llm-management#failover-in-analytics).
+
+### Delegated Identity in Proxy Logs
+
+From v2.2.1, an [auth plugin](/ai-management/ai-studio/plugins/edge-gateway) on an Edge Gateway can authenticate a delegated token. In this case, the proxy log and the chat record also store:
+
+*   `on_behalf_of`: The user that the call was for (the subject of the delegated token)
+*   `acting_agent`: The agent that made the call (from the `auth_actor` claim of the plugin)
+
+The proxy-log tables on the App and LLM pages show these values under the timestamp of the row, as **For** and **Agent**. These fields are for audit only. AI Studio does not use them to authorize requests. The App and its owner are still the identity for billing and authorization, and `user_id` is still the App owner.
+
+### Models in Use
+
+The LLM provider detail page shows the models that the provider served, and the Apps that use each model. Refer to [Find the Apps That Use a Model](/ai-management/ai-studio/llm-management#find-the-apps-that-use-a-model).
+
+### Team Costs
+
+In the Enterprise Edition, the dashboard shows a **Team Costs** table with the cost, share, tokens, and requests of each Team. Refer to [Team Costs](/ai-management/ai-studio/budgeting#team-costs).
+
 ### Compliance Dashboard
 
 From v2.1.0, the Compliance dashboard (`/admin/compliance`) surfaces [Compliance Events](/ai-management/ai-studio/compliance-events) emitted by filter scripts alongside the existing blocked-request data:
@@ -103,13 +124,19 @@ From v2.1.0, the Compliance dashboard (`/admin/compliance`) surfaces [Compliance
 
 From v2.1.0, both Tyk AI Studio and the Edge Gateway expose operational metrics on a Prometheus-compatible `/metrics` endpoint, with OpenTelemetry trace correlation through the analytics pipeline.
 
-Metrics are enabled by default. To configure them:
+<Warning>
+From v2.2.0, the `/metrics` endpoint is secure by default. If you do not set `METRICS_AUTH_TOKEN` or `METRICS_ALLOW_UNAUTHENTICATED=true`, AI Studio and the Edge Gateway do not register the endpoint, and log a warning. Existing Prometheus scrape configurations return `404` until you set one of these variables.
+</Warning>
+
+To configure metrics:
 
 | Component | Environment variable | Default |
 |---|---|---|
 | AI Studio (control plane) | `METRICS_ENABLED` (set to `false` or `0` to disable) | enabled |
 | AI Studio (control plane) | `METRICS_PATH` | `/metrics` |
 | Edge Gateway | `ENABLE_METRICS` | `true` |
+| AI Studio and Edge Gateway | `METRICS_AUTH_TOKEN` | not set. When set, scrapers must send `Authorization: Bearer <token>`. |
+| AI Studio and Edge Gateway | `METRICS_ALLOW_UNAUTHENTICATED` | `false`. Set to `true` to allow scrapes without a token, for example in a cluster. |
 
 The endpoint exposes the following metrics:
 
@@ -124,8 +151,12 @@ The endpoint exposes the following metrics:
 | `aistudio_llm_request_duration_seconds` | Histogram | LLM request latency |
 | `aistudio_tool_execution_duration_seconds` | Histogram | Tool execution latency |
 | `aistudio_llm_inflight_requests` | Gauge | Requests currently in flight |
+| `aistudio_llm_failover_total` | Counter | LLM failovers, labeled by source, target, and reason (v2.2.0 and later) |
+| `aistudio_guardrail_latency_seconds` | Histogram | Guardrail provider latency (v2.2.0 and later) |
+| `aistudio_guardrail_errors_total` | Counter | Guardrail provider calls that failed or timed out, by provider and fail mode (v2.2.0 and later) |
+| `aistudio_goroutine_panics_total` | Counter | Panics recovered in background work and gRPC handlers, by goroutine (v2.2.0 and later) |
 
-Point your Prometheus scrape configuration (or an OpenTelemetry Collector with a Prometheus receiver) at the `/metrics` path of each component you want to monitor.
+Point your Prometheus scrape configuration (or an OpenTelemetry Collector with a Prometheus receiver) at the `/metrics` path of each component you want to monitor. If you set `METRICS_AUTH_TOKEN`, add the token to the scrape configuration as a bearer token.
 
 ## Integration with Other Systems
 
