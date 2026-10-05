@@ -77,6 +77,34 @@ If these checks pass, AI Studio creates the Agent and generates a URL-friendly s
 
 LLM calls that the Agent makes still go through the [AI Gateway](/ai-management/ai-studio/proxy) and count against the App's [budgets](/ai-management/ai-studio/budgeting).
 
+## Chat API
+
+Users open an Agent from the [Chat Interface](/ai-management/ai-studio/chat-interface) at `/chat/agent/:id`. From v2.2.0, the chat front end (`CHAT_UI_V2_ENABLED`, on by default) uses the same per-turn API for Agents as for chat rooms:
+
+| Method | Path | Purpose |
+| :--- | :--- | :--- |
+| `POST` | `/common/agents/:id/sessions` | Creates an Agent session. To continue a session that is still in memory, send `{"session_id": "..."}`. |
+| `POST` | `/common/agent-sessions/:session_id/runs` | Sends `{"message": "..."}` and streams the reply as an AI SDK UI message stream |
+| `POST` | `/common/agent-sessions/:session_id/cancel` | Stops the plugin stream of the current turn |
+| `GET` | `/common/agent-sessions/:session_id/messages/v2` | Returns the transcript of the session: text, reasoning, tool calls, and results |
+
+An Agent session stays in memory between turns for `CHAT_SESSION_IDLE_TTL` (default 10 minutes). The session keeps a transcript in memory. AI Studio sends the transcript to the plugin as `history` on every turn. The plugin SDK contract (`HandleAgentMessage`, `AgentMessageChunk`) did not change. The v1 SSE endpoints (`/common/agents/:id/stream` and `/common/agents/:id/message`) still work.
+
+AI Studio maps the plugin chunks to the stream as follows:
+
+| Plugin chunk | Stream part |
+| :--- | :--- |
+| `CONTENT` | Text |
+| `THINKING` | Reasoning |
+| `TOOL_CALL` | A tool call. `metadata.tool_name` is the tool, and `metadata.parameters` are the arguments. |
+| `TOOL_RESULT` | The result of the most recent unanswered call with the same `tool_name` |
+| `ERROR` | An error |
+| `DONE`, or `is_final` | The end of the turn |
+
+AI Studio adds a `tool_call_id` to `TOOL_CALL` and `TOOL_RESULT` chunks, so that the chat can pair them. Plugins do not need to set it.
+
+To show specific tool calls of an Agent with a custom web component, use a plugin tool renderer. Refer to [Custom Tool Renderers From Plugins](/ai-management/ai-studio/chat-interface#custom-tool-renderers-from-plugins).
+
 ## Managing Existing Agents
 
 From the **Agents** list, you can filter by status. For each Agent, you can view its details, edit it, activate or deactivate it, or delete it.
