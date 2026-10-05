@@ -71,6 +71,8 @@ sequenceDiagram
 
 The `WWW-Authenticate` header Tyk sends on authentication failure is a standard Bearer challenge extended with the `resource_metadata` parameter defined in RFC 9728. Tyk also serves the PRM document at `/.well-known/oauth-protected-resource/{listen-path}`, the fallback location that clients try when the header is missing.
 
+In mirror mode, Tyk passes the upstream's authorization server metadata to clients. A client that checks `issuer` strictly can reject it. Enable the [OAuth broker](/api-management/authentication/oauth2-authentication#oauth-broker) to fix this.
+
 ### Configuring PRM
 
 PRM is configured within the `oauth2` security scheme block in the Tyk Vendor Extension. The scheme name (`idpAuth` in the example below) must match the scheme declared with `type: oauth2` in the OAS `components.securitySchemes` section — see [OAuth 2.0 (External IdP)](/api-management/authentication/oauth2-authentication) for the full scheme setup.
@@ -101,12 +103,14 @@ PRM is configured within the `oauth2` security scheme block in the Tyk Vendor Ex
 | Field | Required | Description |
 |---|---|---|
 | `enabled` | Yes | Activates the PRM endpoint. When `true`, Tyk serves the metadata document and includes the `WWW-Authenticate: Bearer resource_metadata=...` header on authentication failures. |
-| `resource` | Yes | The resource identifier for this API, typically the URL at which Tyk exposes the MCP proxy. Accepts `$tyk_context.*` variables for dynamic values. |
-| `authorizationServers` | Yes | One or more authorization server URLs that can issue tokens for this resource. Tyk validates that at least one entry is present for Tyk OAS API definitions. |
+| `resource` | Static mode only | The resource identifier for this API, typically the URL at which Tyk exposes the MCP proxy. Accepts `$tyk_context.*` variables for dynamic values. |
+| `authorizationServers` | Static mode only | One or more authorization server URLs that can issue tokens for this resource. Tyk validates that at least one entry is present for Tyk OAS API definitions. |
 | `wellKnownPath` | No | Overrides the default well-known path. Defaults to `.well-known/oauth-protected-resource`. Relative to the API's listen path. |
 | `autoDeriveScopes` | No | When `true` (default), the `scopes_supported` field in the PRM document is populated from the `flows.scopes` catalog in your OAS `components.securitySchemes` declaration and every `security:` array on the API. When `false`, only the `flows.scopes` catalog is used. |
 
 The PRM endpoint is served at `{listen-path}/{wellKnownPath}`. With the default path and a listen path of `/weather-mcp/`, the endpoint is available at `/weather-mcp/.well-known/oauth-protected-resource`.
+
+Static mode applies when you set `resource` or `authorizationServers`. If you set neither on an MCP proxy, Tyk runs in mirror mode and serves the upstream MCP server's PRM document with `resource` rewritten to the gateway URL.
 
 <Note>
 If you have an existing PRM configuration at `authentication.protectedResourceMetadata`, Tyk Dashboard migrates it automatically to `authentication.securitySchemes[name].protectedResourceMetadata` on startup. No manual action is required. APIs that already have a scheme-level PRM block are not modified.
@@ -302,6 +306,8 @@ Each feature on this page is independent. The example below uses all of them, bu
 **Scope enforcement** (`scopeCheck`) checks that the token carries the scopes required by the matched operation or MCP primitive. Use it when the IdP owns access decisions — the authorization server grants specific scopes and Tyk enforces them at the gateway. If you prefer Tyk's policy engine to control primitive access (a platform-owned model where keys are issued with policy-level permissions), omit `scopeCheck` and rely on policies instead. The two approaches are mutually exclusive per primitive: using both creates conflicting ownership of access decisions.
 
 **Token exchange** replaces the inbound agent token with an upstream-scoped token before forwarding. The MCP specification requires that the upstream never receives the original token — token exchange is how you satisfy that requirement while preserving the delegation chain. If you are using [Upstream OAuth](#upstream-oauth) with static client credentials instead, token exchange can be omitted.
+
+**The OAuth broker** applies to mirror-mode MCP proxies and cannot be combined with upstream authentication. See [OAuth Broker](/api-management/authentication/oauth2-authentication#oauth-broker).
 
 **PRM and scope enforcement are particularly complementary.** PRM advertises which scopes clients need to request; `scopeCheck` enforces at runtime that the presented token actually carries them. When `autoDeriveScopes` is enabled, both are driven by the same `security:` declarations in your OAS definition — so the scopes a client is told to request and the scopes Tyk enforces are derived from the same source and can't drift out of sync. Enabling PRM without `scopeCheck` means scopes are advertised but not enforced at the gateway. Enabling `scopeCheck` without PRM means enforcement works, but clients need to know the required scopes upfront rather than discovering them dynamically.
 
