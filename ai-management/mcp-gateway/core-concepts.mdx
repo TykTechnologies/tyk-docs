@@ -150,114 +150,15 @@ MCP definitions are supported in Tyk OAS format only. They are not available as 
 
 ---
 
-## Session Lifecycle
+## Request Lifecycle
 
-Revisions of MCP up to and including `2025-11-25` are stateful, and this section describes their session lifecycle. The `2026-07-28` revision has no sessions; see [Stateless Requests](#stateless-requests) below.
-
-When a client sends an `initialize` request, the upstream server responds with an `Mcp-Session-Id` header. The client includes this identifier on all subsequent requests, allowing the server to associate them with the established session context. Tyk passes the header through unmodified and does not maintain session state itself.
-
-A typical session proceeds through four phases.
-
-1. **Handshake**: the client and server negotiate capabilities and establish a session identifier.
-2. **Discovery**: the client queries the server's available tools, resources, and prompts.
-3. **Invocation**: the client calls primitives; Tyk applies rate limiting, access control, and observability on each request.
-4. **Session close**: the client terminates the session; the session identifier is invalidated.
-
-### Handshake
-
-Tyk authenticates the `initialize` request before proxying it to the upstream. The upstream responds with an `Mcp-Session-Id` header that Tyk passes through to the client unchanged. The client confirms readiness with a `notifications/initialized` message, and the session is established.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant C as MCP Client
-    participant T as Tyk Gateway
-    participant U as Upstream MCP Server
-
-    rect rgb(240, 236, 255)
-        Note over C,U: Handshake
-        C->>T: POST /mcp — initialize
-        Note over T: Authenticate request
-        T->>U: initialize (proxied unchanged)
-        U-->>T: 200 OK · Mcp-Session-Id: abc123
-        T-->>C: 200 OK · Mcp-Session-Id: abc123 (passed through)
-        C->>T: POST /mcp — notifications/initialized · Mcp-Session-Id: abc123
-        T->>U: notifications/initialized (proxied)
-        U-->>T: 202 Accepted
-        T-->>C: 202 Accepted
-    end
-```
-
-### Discovery
-
-Once the session is open, the client calls `tools/list` (and optionally `resources/list` and `prompts/list`) to learn what the server exposes. Tyk intercepts the upstream's response and strips any primitives the consumer is not permitted to see, based on the policy attached to their key. The client receives a filtered view of the server's capabilities.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant C as MCP Client
-    participant T as Tyk Gateway
-    participant U as Upstream MCP Server
-
-    rect rgb(235, 248, 255)
-        Note over C,U: Discovery
-        C->>T: POST /mcp — tools/list · Mcp-Session-Id: abc123
-        T->>U: tools/list (proxied)
-        U-->>T: Full tool list
-        Note over T: Filters to permitted tools only
-        T-->>C: Filtered tool list (scoped to consumer entitlements)
-    end
-```
-
-### Invocation
-
-Each primitive call passes through Tyk's full middleware chain. Rate limiting, access control, and observability all fire on every `tools/call` request. If scope enforcement is configured, Tyk validates the inbound token's scopes against the primitive's requirements before proxying. If token exchange is configured, Tyk exchanges the inbound token for a backend-scoped token — the inbound SSO token never reaches the upstream MCP server. If the consumer's policy permits the named tool and rate limits allow the request, Tyk proxies it to the upstream and returns the response. This phase repeats for every tool, resource, or prompt the client invokes.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant C as MCP Client
-    participant T as Tyk Gateway
-    participant U as Upstream MCP Server
-
-    rect rgb(235, 255, 244)
-        Note over C,U: Invocation (repeats per primitive call)
-        C->>T: POST /mcp — tools/call · Mcp-Session-Id: abc123
-        Note over T: Rate limiting · access control · observability
-        T->>U: tools/call (proxied)
-        U-->>T: Tool response
-        T-->>C: Tool response
-    end
-```
-
-### Session Close
-
-When the client has finished, it sends `DELETE /mcp` with the `Mcp-Session-Id` header. Tyk proxies the request to the upstream, which terminates the session. After session close, the `Mcp-Session-Id` is invalid; a new `initialize` request is required to open a new session.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant C as MCP Client
-    participant T as Tyk Gateway
-    participant U as Upstream MCP Server
-
-    rect rgb(255, 240, 240)
-        Note over C,U: Session close
-        C->>T: DELETE /mcp · Mcp-Session-Id: abc123
-        T->>U: DELETE /mcp (proxied)
-        U-->>T: 200 OK
-        T-->>C: 200 OK
-        Note over C,U: Session closed
-    end
-```
-
-If the `GET /mcp` SSE connection drops, the client can reconnect by opening a new `GET /mcp` request with the `Last-Event-ID` header set to the ID of the last event received. Tyk passes this through to the upstream, which resumes the stream from that point.
+Tyk authenticates every MCP request, applies the consumer's policy and middleware, and proxies the request to the upstream. How requests relate to each other depends on the protocol version. Clients on `2026-07-28` send each request independently. Clients on `2025-11-25` open a session first.
 
 ### Stateless Requests
 
-Clients on the `2026-07-28` revision skip the handshake and session close entirely. Each request declares its protocol version and the client's capabilities in the request body, and repeats the method and primitive name in the `Mcp-Method` and `Mcp-Name` headers. Clients call `server/discover` instead of `initialize` to learn what the server supports, and Tyk filters the response against the consumer's policy in the same way as it filters an `initialize` response.
+Clients on the `2026-07-28` revision do not open a session. Each request declares its protocol version and the client's capabilities in the request body, and repeats the method and primitive name in the `Mcp-Method` and `Mcp-Name` headers. Clients call `server/discover` to learn what the server supports, and Tyk filters the response against the consumer's policy in the same way as it filters an `initialize` response.
 
-Tyk authenticates and applies policy to every request exactly as it does within a session. Discovery and invocation look the same as in the diagrams above, without the `Mcp-Session-Id` header.
+Tyk authenticates and applies policy to every request.
 
 ```mermaid
 sequenceDiagram
@@ -282,6 +183,107 @@ sequenceDiagram
 ```
 
 See [MCP Protocol Versions](/ai-management/mcp-gateway/protocol-versions) for the full requirements of `2026-07-28` requests.
+
+### Session Lifecycle
+
+If your clients use `2025-11-25`, they work within a session. When a client sends an `initialize` request, the upstream server responds with an `Mcp-Session-Id` header. The client includes this identifier on all subsequent requests, allowing the server to associate them with the established session context. Tyk passes the header through unmodified and does not maintain session state itself.
+
+A typical session proceeds through four phases.
+
+1. **Handshake**: the client and server negotiate capabilities and establish a session identifier.
+2. **Discovery**: the client queries the server's available tools, resources, and prompts.
+3. **Invocation**: the client calls primitives; Tyk applies rate limiting, access control, and observability on each request.
+4. **Session close**: the client terminates the session; the session identifier is invalidated.
+
+#### Handshake
+
+Tyk authenticates the `initialize` request before proxying it to the upstream. The upstream responds with an `Mcp-Session-Id` header that Tyk passes through to the client unchanged. The client confirms readiness with a `notifications/initialized` message, and the session is established.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as MCP Client
+    participant T as Tyk Gateway
+    participant U as Upstream MCP Server
+
+    rect rgb(240, 236, 255)
+        Note over C,U: Handshake
+        C->>T: POST /mcp — initialize
+        Note over T: Authenticate request
+        T->>U: initialize (proxied unchanged)
+        U-->>T: 200 OK · Mcp-Session-Id: abc123
+        T-->>C: 200 OK · Mcp-Session-Id: abc123 (passed through)
+        C->>T: POST /mcp — notifications/initialized · Mcp-Session-Id: abc123
+        T->>U: notifications/initialized (proxied)
+        U-->>T: 202 Accepted
+        T-->>C: 202 Accepted
+    end
+```
+
+#### Discovery
+
+Once the session is open, the client calls `tools/list` (and optionally `resources/list` and `prompts/list`) to learn what the server exposes. Tyk intercepts the upstream's response and strips any primitives the consumer is not permitted to see, based on the policy attached to their key. The client receives a filtered view of the server's capabilities.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as MCP Client
+    participant T as Tyk Gateway
+    participant U as Upstream MCP Server
+
+    rect rgb(235, 248, 255)
+        Note over C,U: Discovery
+        C->>T: POST /mcp — tools/list · Mcp-Session-Id: abc123
+        T->>U: tools/list (proxied)
+        U-->>T: Full tool list
+        Note over T: Filters to permitted tools only
+        T-->>C: Filtered tool list (scoped to consumer entitlements)
+    end
+```
+
+#### Invocation
+
+Each primitive call passes through Tyk's full middleware chain. Rate limiting, access control, and observability all fire on every `tools/call` request. If scope enforcement is configured, Tyk validates the inbound token's scopes against the primitive's requirements before proxying. If token exchange is configured, Tyk exchanges the inbound token for a backend-scoped token — the inbound SSO token never reaches the upstream MCP server. If the consumer's policy permits the named tool and rate limits allow the request, Tyk proxies it to the upstream and returns the response. This phase repeats for every tool, resource, or prompt the client invokes.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as MCP Client
+    participant T as Tyk Gateway
+    participant U as Upstream MCP Server
+
+    rect rgb(235, 255, 244)
+        Note over C,U: Invocation (repeats per primitive call)
+        C->>T: POST /mcp — tools/call · Mcp-Session-Id: abc123
+        Note over T: Rate limiting · access control · observability
+        T->>U: tools/call (proxied)
+        U-->>T: Tool response
+        T-->>C: Tool response
+    end
+```
+
+#### Session Close
+
+When the client has finished, it sends `DELETE /mcp` with the `Mcp-Session-Id` header. Tyk proxies the request to the upstream, which terminates the session. After session close, the `Mcp-Session-Id` is invalid; a new `initialize` request is required to open a new session.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as MCP Client
+    participant T as Tyk Gateway
+    participant U as Upstream MCP Server
+
+    rect rgb(255, 240, 240)
+        Note over C,U: Session close
+        C->>T: DELETE /mcp · Mcp-Session-Id: abc123
+        T->>U: DELETE /mcp (proxied)
+        U-->>T: 200 OK
+        T-->>C: 200 OK
+        Note over C,U: Session closed
+    end
+```
+
+If the `GET /mcp` SSE connection drops, the client can reconnect by opening a new `GET /mcp` request with the `Last-Event-ID` header set to the ID of the last event received. Tyk passes this through to the upstream, which resumes the stream from that point.
 
 ---
 
