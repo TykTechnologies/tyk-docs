@@ -14,8 +14,6 @@ canonical: "https://tyk.io/docs/ai-management/ai-studio/proxy"
 
 The Edge Gateway operates as an independent, dedicated AI proxy. It processes AI requests, enforces policies, and reports analytics to the control plane. It is optimized for high performance and resilience in production.
 
-The Edge Gateway operates as an independent, dedicated AI proxy. It processes AI requests, enforces policies, and reports analytics to the control plane. It is optimized for high performance and resilience in production.
-
 > **Note:** The Edge Gateway is sometimes referred to as the Microgateway in configuration files. However, **Edge Gateway** is the preferred terminology.
 
 *   **Unified Access Point:** Provides a single, consistent endpoint for applications to interact with various LLMs.
@@ -43,6 +41,8 @@ Both variants rely on the core proxy library and access control mechanisms. The 
     *   Validates the API key provided by the client application.
     *   Identifies the associated Application and User.
     *   Checks if the Application/team has permission to access the requested LLM Configuration based on [RBAC rules](/ai-management/ai-studio/user-management).
+    *   Applies the same access check to every authentication method: App API key, `Authorization: Bearer` App secret, or an auth plugin. The check also applies to every entry point: `/llm/`, `/ai/`, `/anthropic/`, `/v1`, and `/datasource/`. An App can call only the LLMs and data sources that it has a grant for. It can also reach the fallbacks of a granted LLM's failover waterfall, but only through that waterfall. A request for any other LLM, or for a slug that does not exist, returns `403`.
+    *   If an endpoint has [auth plugins](/ai-management/ai-studio/plugins/edge-gateway) attached, only those plugins authenticate its requests on the Edge Gateway. The Edge Gateway refuses App keys on that endpoint.
 
 3.  **Policy Enforcement:** Before forwarding the request to the backend LLM, the Proxy enforces policies defined in the LLM Configuration or globally:
     *   **Budget Checks:** Verifies if the estimated cost exceeds the configured [Budgets](/ai-management/ai-studio/llm-management) for the App or LLM.
@@ -52,18 +52,164 @@ Both variants rely on the core proxy library and access control mechanisms. The 
 4.  **Analytics Logging:** After receiving the response from the backend LLM (and potentially applying response Filters), the Proxy logs detailed information about the interaction (user, app, model, tokens used, cost, latency, etc.) to the [Analytics](/ai-management/ai-studio/analytics) database.
 
 
-## Proxy Modes
+## Endpoints
 
-The Edge Gateway (and embedded gateway) offer two ways to proxy LLM traffic:
+All LLM endpoints accept the same App API key. They all apply the same policies, budgets, [Filters](/ai-management/ai-studio/filters), and analytics. The endpoints differ in two ways: how the gateway selects the target LLM, and which request format they accept.
 
-| Mode | Endpoint | Description | Tradeoff |
-|------|----------|-------------|----------|
-| **SDK-Compatible** (Unified) | `/llm/call/{slug}/...` | Pass-through to the vendor's native API format. No request manipulation beyond analytics/budget tracking. | Full feature access, resilient to vendor API changes. Best for users working directly with a vendor's SDK. |
-| **OpenAI-Compatible** | `/llm/call/{slug}/v1/chat/completions` | Accepts only OpenAI-format input and translates to the upstream vendor's API format. | Maximum client-side compatibility (one format for all vendors), but reduced feature access for vendor-specific capabilities. |
+| Endpoint | Gateway selects the LLM from | Request format | Use it when |
+| :--- | :--- | :--- | :--- |
+| **Main Ingress**: `/v1/chat/completions` | The `model` field, in the format `{llmSlug}/{model}` | OpenAI Chat Completions only | You want one base URL for all the LLMs that an App can use, and you select the model (and vendor) in each request. |
+| **Vendor-native**: `/llm/call/{llmSlug}/...` | The URL | The vendor's own API | You use the vendor's SDK, or you need a feature that the OpenAI schema cannot express. |
+| **OpenAI-compatible**: `/ai/{llmSlug}/v1/...` | The URL | OpenAI | A client must use only one LLM, or the client cannot send a model string with a slug prefix. |
+| **Anthropic Messages**: `/anthropic/{llmSlug}` | The URL | Anthropic Messages | The client uses the Anthropic Messages API, for example Claude Code. Bedrock LLMs only. |
+| **Legacy**: `/llm/rest/{llmSlug}/...`, `/llm/stream/{llmSlug}/...` | The URL | The vendor's own API | Existing integrations only. |
 
-Both modes support streaming and non-streaming responses.
+The [AI Portal](/ai-management/ai-studio/ai-portal) shows these endpoints on the detail page of each App, with the values for that App.
 
-There are also two **legacy endpoints** (`/llm/rest/{slug}/...` and `/llm/stream/{slug}/...`) from before the unified endpoint existed. While not actively used by end-users, the underlying code is still used internally by the proxy to handle each response style.
+### How the Gateway Builds the Vendor URL
+
+The gateway sends each request to `<LLM API endpoint> + <request path>`, and removes any part that the two have in common. For example, the LLM endpoint can be `https://api.anthropic.com`, `https://api.anthropic.com/v1`, `https://my-proxy/anthropic`, or `https://my-proxy/anthropic/v1`. In all four cases, the gateway calls `.../v1/messages`. The gateway does not repeat a version segment (`/v1/v1/...`) and does not remove one. The same rule applies to OpenAI-compatible providers that use a path prefix, such as `.../inference/v1` or `.../openai/v1`.
+
+The AI Studio chat interface and agents do not use the gateway. They use the vendor's client library directly. The Anthropic library expects an endpoint that ends in `/v1`, so AI Studio adds `/v1` when the endpoint has no version segment. If you put your own proxy in front of a vendor, set the LLM endpoint to the path that your proxy expects immediately before the vendor's versioned path.
+
+### Main Ingress
+
+The Main Ingress is one OpenAI-compatible endpoint at the root of the gateway. It gives access to all the LLMs that the calling App can use. The client selects the LLM in each request, so it can change the model or the vendor without a change to its base URL or credential.
+
+*   **Model strings have a prefix.** Send `{llmSlug}/{model}`, for example `openai-prod/gpt-4o`. The prefix selects the LLM. The gateway removes the prefix before it sends the request to the vendor. A model string without a prefix returns `400`. The gateway splits the string at the first slash, so model names that contain slashes (for example, fine-tune IDs) stay complete.
+*   **OpenAI format only.** Requests and responses use the OpenAI Chat Completions schema for all vendors. To use a vendor's SDK and native parameters, use the vendor-native endpoint.
+*   **Streaming.** The gateway streams the response when the request contains `stream: true`.
+*   **Model discovery.** `GET /v1/models` lists all the models that the authenticated App can call, with the prefix included. The gateway builds this list from the allowed models and the default model of each LLM. An LLM that has no allowed models and no default model is not in the list.
+*   **Legacy completions.** The gateway also serves `/v1/completions` for clients that use the older completions API.
+
+```bash
+curl -X POST "https://your-gateway-host/v1/chat/completions" \
+  -H "Authorization: Bearer YOUR_APP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "my-openai-config/gpt-4-turbo",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+```python
+# One client for every LLM in the App
+import openai
+
+client = openai.OpenAI(
+    base_url="https://your-gateway-host/v1",
+    api_key="YOUR_APP_API_KEY"
+)
+
+response = client.chat.completions.create(
+    model="my-openai-config/gpt-4-turbo",  # or "my-bedrock-config/claude-3-5-sonnet"
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+print(response.choices[0].message.content)
+```
+
+The default base path is `/v1`. You can change it, or turn off the Main Ingress. Refer to [Configure the Main Ingress](#configure-the-main-ingress).
+
+### Vendor-Native Endpoint
+
+This endpoint sends requests to the native API of one vendor. The gateway changes only the fields that it needs for analytics and budgets. It sends all of the path after the slug to the vendor without changes.
+
+*   You get access to all vendor features. When a vendor adds a new parameter, it works immediately, without a gateway change.
+*   One URL serves streaming and non-streaming requests. The gateway examines the request and selects the correct path.
+
+```bash
+# Anthropic LLM, Anthropic request format
+curl -X POST "https://your-gateway-host/llm/call/my-anthropic-config/v1/messages" \
+  -H "Authorization: Bearer YOUR_APP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-3-5-sonnet-20241022",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+### OpenAI-Compatible Endpoint
+
+This endpoint accepts OpenAI-format requests. The gateway translates each request to the API of the target vendor, and translates the response back to OpenAI format. The URL selects one LLM, so the `model` field takes a plain vendor model name. If you do not send `model`, the gateway uses the default model of the LLM.
+
+*   Use this endpoint when a client must use only one LLM. Also use it when a tool cannot send a model string with a slug prefix.
+*   Vendor features that the OpenAI schema cannot express are not available.
+*   Vertex and Hugging Face LLMs are not supported on this endpoint or on the Main Ingress. A request returns `400` with the code `unsupported_vendor`, and the gateway does not send the request to the vendor. Use `/llm/rest/{llmSlug}` or `/llm/stream/{llmSlug}` for these vendors. In a failover waterfall, the gateway skips such a fallback and tries the next one.
+
+```python
+# Pinned to one LLM
+import openai
+
+client = openai.OpenAI(
+    base_url="https://your-gateway-host/ai/my-openai-config/v1",
+    api_key="YOUR_APP_API_KEY"
+)
+
+response = client.chat.completions.create(
+    model="gpt-4-turbo",  # plain model name, no slug prefix
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+print(response.choices[0].message.content)
+```
+
+### Anthropic Messages Endpoint
+
+This endpoint accepts native Anthropic Messages API requests and translates them to Bedrock Converse. Clients that use the Anthropic API, such as Claude Code, can then use a Bedrock LLM through the gateway.
+
+*   This endpoint supports Bedrock LLMs only. Other vendors already accept their own API on the vendor-native endpoint. A request to a non-Bedrock LLM returns `400`.
+*   Set the endpoint URL as `ANTHROPIC_BASE_URL`, and set the App key as `ANTHROPIC_AUTH_TOKEN` (or `ANTHROPIC_API_KEY`). The client adds `/v1/messages` to the URL.
+
+```bash
+export ANTHROPIC_BASE_URL="https://your-gateway-host/anthropic/my-bedrock-config"
+export ANTHROPIC_AUTH_TOKEN="YOUR_APP_API_KEY"
+```
+
+#### Model Discovery in Claude Code
+
+The gateway sends every request on this endpoint to the default model of the LLM. The model name that the client sends has no effect. To show this model in the Claude Code `/model` picker, the endpoint also answers `GET /anthropic/{llmSlug}/v1/models`. To use discovery, set this variable in the Claude Code environment:
+
+```bash
+export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
+```
+
+The picker then shows one more entry, marked "From gateway", with the label `<LLM name> — <model id>`. For example: `Bedrock Claude — eu.anthropic.claude-3-5-sonnet-20241022-v2:0`. The ID is the Bedrock model ID from the LLM configuration.
+
+```json
+{"data":[{"type":"model","id":"eu.anthropic.claude-3-5-sonnet-20241022-v2:0","display_name":"Bedrock Claude — eu.anthropic.claude-3-5-sonnet-20241022-v2:0"}],"has_more":false}
+```
+
+*   The models request uses the same authentication and App access check as `/v1/messages`. It does not call a model, so it does not use budget, run filters, or record usage.
+*   The list is empty (`"data":[]`) when the LLM has no default model. It is also empty when the allowed models of the LLM do not include the default model. In both cases, Claude Code then shows its built-in list.
+*   Use Claude Code v2.1.223 or later. Claude Code keeps a model ID only if the ID contains "claude" or "anthropic". Versions v2.1.129 to v2.1.222 required the ID to start with one of these words. For this reason, they hid region-prefixed IDs such as `us.anthropic...` or `eu.anthropic...`.
+*   Claude Code does not show application inference profiles. An application inference profile ARN (`arn:aws:bedrock:...:application-inference-profile/...`) does not contain "claude" or "anthropic", so Claude Code drops it. Requests still work. Only the picker entry is missing. System inference profile ARNs contain "anthropic", so Claude Code shows them.
+*   Do not redirect this path. Claude Code treats any redirect as a failed discovery, including an `http://` to `https://` redirect at your ingress. Set `ANTHROPIC_BASE_URL` to the final URL.
+
+### Legacy Endpoints
+
+*   `/llm/rest/{llmSlug}/...` accepts only non-streaming (synchronous) requests.
+*   `/llm/stream/{llmSlug}/...` accepts only Server-Sent Events streaming requests.
+
+These endpoints are older than the vendor-native endpoint, which supports both modes. They remain available for existing integrations. For new integrations, use `/llm/call/{llmSlug}/...`.
+
+### Configure the Main Ingress
+
+The Main Ingress uses the root of the gateway. This can cause a conflict when you embed the gateway in a host that already uses `/v1`. You can change the base path, or turn off the Main Ingress. These settings have no effect on the per-LLM endpoints (`/ai/`, `/llm/`, `/anthropic/`).
+
+AI Studio (the hub) and the Edge Gateway (the edge) use different environment variables for the same setting. In a hub-and-spoke deployment, set both to the same value.
+
+| Setting | AI Studio (hub) | Edge Gateway | Default |
+| :--- | :--- | :--- | :--- |
+| Base path | `UNIFIED_ROUTER_PATH` | `GATEWAY_UNIFIED_ROUTER_PATH` | `/v1` |
+| Turn off | `UNIFIED_ROUTER_DISABLED` | `GATEWAY_UNIFIED_ROUTER_DISABLED` | `false` |
+
+For example, a base path of `/ai-gateway/v1` moves the three routes to `/ai-gateway/v1/chat/completions`, `/ai-gateway/v1/completions`, and `/ai-gateway/v1/models`. The gateway normalizes the value when it loads:
+
+*   It adds a leading slash if there is none.
+*   It removes a trailing slash and any empty or dot segments.
+*   It refuses `/` and uses the default, so that the Main Ingress cannot take the full gateway path.
+
+The AI Portal reads the value from AI Studio when it shows the Main Ingress on an App's detail page. For this reason, the two values must be the same. When the Main Ingress is off in AI Studio, the AI Portal does not show it.
 
 ### LLM Slug
 
@@ -71,9 +217,7 @@ The `{llmSlug}` in the endpoint path is automatically generated from the LLM con
 
 ## Model Router
 
-The Edge Gateway also includes a **Model Router** component that enables intelligent routing of requests across multiple LLM providers based on cost, performance, or availability. This allows you to build resilient AI applications that automatically failover or load balance between different models.
-
-For more information on configuring and using this feature, see the [Model Router documentation](/ai-management/ai-studio/model-router).
+The Edge Gateway also routes requests through [Model Routers](/ai-management/ai-studio/model-router). A Model Router selects an LLM from a pool of vendors by model name pattern. Clients call a router on the Main Ingress with the model string `{routerSlug}/{model}`, in the same way as an LLM. The embedded gateway in AI Studio does not route through Model Routers.
 
 ## Configuration Reference
 

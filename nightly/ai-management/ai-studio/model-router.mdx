@@ -16,16 +16,16 @@ robots: "noindex, follow"
 
 The **Model Router** is an Enterprise feature that provides intelligent request routing across multiple LLM vendors based on model name patterns. It enables organizations to create unified API endpoints that automatically route requests to the appropriate backend LLM based on configurable rules.
 
-### Use cases
+### Use Cases
 
-- **Multi-Vendor Failover:** Create a pool with multiple vendors for the same model pattern. If one vendor is unavailable or disabled, requests automatically go to other active vendors.
+- **Multi-Vendor Traffic Splitting:** Create a pool with multiple vendors for the same model pattern to spread traffic across them. For request-level failover, use a [failover waterfall](/nightly/ai-management/ai-studio/llm-management) on the LLM.
 - **Cost Optimization:** Route requests to different vendors based on cost. Use weights to prefer cheaper providers while maintaining access to premium ones.
 - **Model Abstraction:** Allow clients to request generic model names (e.g., `large-model`, `fast-model`) and map them to specific vendor models using model mappings.
 - **A/B Testing:** Use weighted routing to gradually shift traffic between model versions or vendors.
 
 ## Model Router
 
-The Model Router acts as a unified endpoint that routes to multiple LLM vendors. It is exposed at `/router/{slug}/v1/chat/completions` and provides an OpenAI-compatible interface.
+The Model Router routes requests to multiple LLM vendors. Clients call it on the gateway's [Main Ingress](/nightly/ai-management/ai-studio/proxy#endpoints) with the model string `{slug}/{model}`, for example `prod/gpt-4o`.
 
 Key components of a Model Router entity include:
 
@@ -33,12 +33,12 @@ Key components of a Model Router entity include:
 
 A **Router** is the top-level entity that defines a routing endpoint. Each router:
 
-- Has a unique **slug** that becomes part of the API endpoint URL
+- Has a unique **slug** that clients use as the model string prefix
 - Can be **active** or **inactive**
 - Contains one or more **pools** for routing logic
 - Supports **namespaces** for multi-tenant deployments
 
-Routers are exposed at `/router/{slug}/v1/chat/completions` and provide an OpenAI-compatible interface.
+The legacy endpoint `/router/{slug}/v1/chat/completions` is an alias of the same route.
 
 ### Pool
 
@@ -84,7 +84,7 @@ The `weighted` algorithm distributes requests based on vendor weights. A vendor 
 
 Administrators can configure Model Routers through the UI or API. The configuration includes:
 
-- **Basic Information:** Name, Slug (used in the URL), Description, Active status, and Available Namespaces.
+- **Basic Information:** Name, Slug (the model string prefix), Description, Active status, Available Namespaces, and the catalogs that publish the router.
 - **Model Pools:** Define the routing logic based on model patterns.
   - **Model Pattern:** Glob pattern to match (e.g., `claude-*`).
   - **Selection Algorithm:** Choose `round_robin` or `weighted`.
@@ -101,10 +101,12 @@ You can create and manage Model Routers through the Tyk AI Studio Admin UI.
 2. **Add New Router:** Click "Create Model Router".
 3. **Fill in the Basic Information:**
    - **Name:** Human-readable name for the router (Required).
-   - **Slug:** URL-safe identifier used in the endpoint path `/router/{slug}/v1/chat/completions` (Required).
+   - **Slug:** URL-safe identifier that clients use as the model string prefix (Required). The slug must not be the same as the slug of an LLM.
    - **Description:** Optional description for the router.
    - **Active:** Enable or disable the router.
    - **Available Namespaces:** Select which edge namespaces this configuration should be available to (leave empty for global availability).
+   - **Publish in catalogs:** Select the LLM catalogs that show the router in the AI Portal. Refer to [Publish a Router in the AI Portal](#publish-a-router-in-the-ai-portal).
+   - **Short Description**, **Long Description**, and **Logo URL:** The text and logo that the AI Portal shows for the router.
 4. **Add Model Pools:**
    - Click "Add Pool" to define routing logic.
    - **Name:** Pool identifier.
@@ -125,30 +127,87 @@ You can create and manage Model Routers through the Tyk AI Studio Admin UI.
 
 ## Using the Model Router
 
-Once a router is active, you can send OpenAI-compatible requests to its endpoint:
+The Edge Gateway serves Model Routers. The embedded gateway in AI Studio is for basic proxying and tests, and does not route through Model Routers.
+
+A router uses the same model namespace as your LLMs on the Main Ingress. Clients address a router with the model string `{router-slug}/{model}`, in the same way as they address an LLM with `{llm-slug}/{model}`:
 
 ```bash
-curl -X POST "https://your-host/router/{slug}/v1/chat/completions" \
+curl -X POST "https://your-gateway/v1/chat/completions" \
   -H "Authorization: Bearer YOUR_APP_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "claude-3-sonnet-20240229",
+    "model": "prod/claude-3-sonnet-20240229",
     "messages": [
       {"role": "user", "content": "Hello!"}
     ]
   }'
 ```
 
-The router will:
-1. Match the model name against pool patterns (in priority order)
-2. Select a vendor using the pool's selection algorithm
-3. Apply any model mappings for the selected vendor
-4. Forward the request to the vendor's LLM endpoint
-5. Return the response to the client
+For Apps that have a grant for the router, `GET /v1/models` lists the router's model strings. These are the literal entries of its pool patterns and the source models of its mappings.
 
-## Current Limitations
+The gateway does these steps:
 
-- **AI Portal integration:** Model Routers are not yet integrated with the AI Portal. Users cannot browse or subscribe to routers through the portal interface. Routers are currently managed exclusively through the Admin UI and API.
+1. Authenticates the App. The gateway refuses an anonymous caller before it starts to route.
+2. Checks that the App has a grant for the router. Refer to [Access Control](#access-control).
+3. Compares the model name with the pool patterns, in priority order.
+4. Selects a vendor with the pool's selection algorithm.
+5. Applies the model mappings of the selected vendor.
+6. Sends the request to the vendor's LLM. The filters, budget, plugins, and failover of that LLM apply as usual.
+
+The response headers show the routing decision:
+
+| Header | Value |
+| :--- | :--- |
+| `X-Tyk-Router` | The router slug |
+| `X-Tyk-Route` | The pool that matched |
+| `X-Tyk-Route-Reason` | `model_pattern` |
+| `X-Tyk-Served-LLM` | The LLM that served the request |
+| `X-Tyk-Served-Model` | The model that served the request |
+
+The proxy log of the request records the same fields, so you can filter analytics by router and pool.
+
+The legacy endpoint `/router/{slug}/v1/chat/completions` still works. It is an alias of the same route and has the same rules, including authentication before routing.
+
+### Slugs
+
+Routers and LLMs share one set of route names on the gateway. An LLM uses the slug of its name. AI Studio refuses a router slug that an LLM already uses, and an LLM name whose slug a router already uses. Before you upgrade from 2.1, check your routers for slug conflicts. In a conflict, the LLM wins, and the gateway cannot reach that router.
+
+### Traffic Splitting and Failover
+
+A pool with multiple vendors spreads traffic across them. When an administrator sets a vendor to **inactive**, the vendor stops receiving requests. The router does not detect a vendor that fails. It also does not retry a request that fails on the vendor it selected. For example, a weighted pool with weights 10 and 1 always sends approximately one request in eleven to the second vendor. This occurs at all times, not only when the first vendor is down.
+
+For request-level failover, configure a [failover waterfall](/nightly/ai-management/ai-studio/llm-management) on the LLM. The router gives each request to the LLM of the selected vendor, so that LLM's waterfall applies. When the upstream of that LLM fails, the gateway retries the same request on the fallbacks before it returns an error.
+
+## Access Control
+
+You grant a router to an App in the same way as an LLM. The grant lets the App reach every LLM that the router can select, but only through the router. For example, an App with a grant for router `prod` can call `prod/gpt-4o`. It cannot call the LLMs behind the router directly, unless it also has a grant for them. When an LLM that the router selected fails over to a fallback, the App can reach the fallback in the same way.
+
+For the [privacy level](/nightly/ai-management/ai-studio/privacy-levels) rule, a router has the lowest privacy score of the LLMs it can reach. The reason is that a request can go to any of them. The data sources and tools of the App must not have a higher score.
+
+<Warning>
+An App that calls a Model Router without a grant still gets a response. The router can select only the LLMs that the App has a grant for directly, so the App gets no additional access. AI Studio keeps this behavior for compatibility with versions before 2.2. The behavior is deprecated.
+
+To find the Apps that use this fallback, search the gateway logs for this warning. The gateway logs it one time for each App and router:
+
+`App called a Model Router it has not been granted; routing to its own LLMs only (deprecated; grant the router to the app)`
+
+Grant the router to each of these Apps. Semantic Routers do not have this fallback. They refuse an App without a grant with `403`.
+</Warning>
+
+## Publish a Router in the AI Portal
+
+You publish routers in **LLM catalogs**, together with the LLMs that they route to.
+
+1. Open the router in **Model Routers**. In **Publish in catalogs**, select the catalogs. You can also use `PUT /api/v1/model-routers/{id}/catalogues`.
+2. Teams that have one of these catalogs see the router in the AI Portal catalog. The portal shows the model strings for the router, the LLMs that it can route to, and its privacy score.
+3. Developers add the router to an App in the App builder, in the same way as an LLM. Administrators can grant the router in the App editor.
+
+The AI Portal shows the router's short description, long description, and logo URL.
+
+
+To grant routers to Apps, send `model_router_ids` on `POST /api/v1/apps`, `PATCH /api/v1/apps/{id}`, or the portal endpoint `POST /common/apps`. App responses list them in `model_router_ids` and `model_routers`.
+
+For all endpoints, refer to the [AI Studio API reference](/nightly/ai-management/ai-studio/ai-studio-swagger).
 
 ## Enterprise Feature
 
