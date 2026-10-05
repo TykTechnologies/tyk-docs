@@ -330,7 +330,7 @@ The first user who registers becomes the administrator. You can use any email ad
 AI Studio pre-populates OpenAI and Anthropic LLM configurations on first startup with placeholder secrets (`OPENAI_KEY` and `ANTHROPIC_KEY`). To start using them:
 
 1. Open AI Studio at the `siteUrl` you configured and log in with your admin account
-2. Navigate to **Governance → Secrets** in the sidebar
+2. Navigate to **Settings → Secrets** in the sidebar
 3. Click on **`OPENAI_KEY`** and edit it to add your OpenAI API key
 4. Click on **`ANTHROPIC_KEY`** and edit it to add your Anthropic API key
 
@@ -463,6 +463,90 @@ database:
 
 ---
 
+### Production Hardening
+
+The Edge Gateway subchart supports these production settings:
+
+```yaml
+microgateway:
+  # Get credentials from External Secrets, Sealed Secrets, or your own tooling
+  # instead of values. The Secret must contain EDGE_AUTH_TOKEN,
+  # ENCRYPTION_KEY, and TYK_AI_LICENSE.
+  secrets:
+    existingSecret: "microgateway-credentials"
+
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 75
+    # LLM requests are long, so scale in slowly.
+    scaleDownStabilizationSeconds: 300
+
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app: microgateway
+
+  # Keeps buffered analytics across a restart. Optional: the edge gets its
+  # configuration from AI Studio on every start.
+  kind: StatefulSet
+  persistence:
+    enabled: true
+    size: 2Gi
+```
+
+The chart defaults:
+
+- The container runs as non-root, with a read-only root filesystem. The chart mounts a writable `/tmp`, because SQLite needs a location for temporary files.
+- `terminationGracePeriodSeconds` is 40 seconds, more than the 30-second `SHUTDOWN_TIMEOUT`. This lets requests in progress complete before Kubernetes stops the pod.
+- The readiness probe uses `/ready`, which checks the database and the plugins. `/health` only shows that the process is alive.
+
+### Egress Policy
+
+By default, the Edge Gateway connects to any upstream that an LLM configuration names, including internal cluster addresses. To block internal addresses but allow specific model servers in the cluster:
+
+```yaml
+microgateway:
+  config:
+    blockInternalUpstreams: true
+    allowedInternalHosts: ".svc.cluster.local"
+```
+
+`allowedInternalHosts` adds exceptions to the block. It is not an allow list for all upstreams, so it does not restrict your external providers.
+
+### Monitoring and Tracing
+
+```yaml
+microgateway:
+  metrics:
+    enabled: true
+    allowUnauthenticated: true   # for scraping in the cluster
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+  tracing:
+    enabled: true
+    endpoint: "otel-collector.observability:4317"
+```
+
+From v2.2.0, the `/metrics` endpoint is secure by default. The Edge Gateway does not serve it until you set `allowUnauthenticated: true` or a `METRICS_AUTH_TOKEN`. If you enable the ServiceMonitor without one of these, the chart fails to render. To scrape with a token, keep `allowUnauthenticated: false` and set `bearerTokenSecret` to a Secret that contains the same value as `METRICS_AUTH_TOKEN`:
+
+```yaml
+microgateway:
+  metrics:
+    bearerTokenSecret:
+      name: microgateway-metrics
+      key: token
+```
+
 ## Maintenance
 
 ### Upgrading
@@ -470,6 +554,8 @@ database:
 ```bash
 helm upgrade midsommar . -f your-values.yaml
 ```
+
+From v2.2.1, the AI Studio Deployment uses the `Recreate` strategy (`midsommar.strategy`). Kubernetes stops the old AI Studio pod before it starts the new one, so two AI Studio instances never run at the same time. During an upgrade, AI Studio is not available for a short time. Edge Gateways continue to serve traffic.
 
 ### Uninstalling
 

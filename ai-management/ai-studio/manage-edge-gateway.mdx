@@ -48,7 +48,7 @@ sequenceDiagram
 
 ## Edge Gateway Properties
 
-When viewing the Edge Gateways list (**Admin > Edge Gateways**), administrators can monitor several key properties for each instance:
+When viewing the Edge Gateways list (**AI Portal > Edge Gateways**), administrators can monitor several key properties for each instance:
 
 | Property | Description |
 |--------|-------------|
@@ -61,20 +61,57 @@ When viewing the Edge Gateways list (**Admin > Edge Gateways**), administrators 
 
 Clicking on an individual Edge Gateway reveals additional details, such as the exact loaded and expected configuration checksums, session IDs, and custom metadata reported by the edge (e.g., region or environment).
 
+The list and the detail page also show **Last pushed** with the time of the last push to the namespace.
+
+### Checksum Behavior
+
+*   **Deterministic encryption:** The snapshot encrypts secrets (LLM API keys, tool auth keys, and data source credentials) with AES-GCM. The nonce comes from the secret itself. For this reason, an unchanged configuration always gives the same ciphertext and the same checksum.
+*   **Change detection:** A recalculation can give the same checksum. In that case, AI Studio does not change the sync status of the namespace or the edges. Only a change to the snapshot marks edges as pending.
+
+### Sync Status Banner
+
+When an edge is out of sync, a banner shows at the top of the admin UI. The banner shows what is waiting, for example "3 changes not yet pushed to 1 edge gateway in namespace default". Click the banner to open the **Push Configuration** dialog. After a push, the banner refreshes every 3 seconds, for a maximum of 30 seconds, until the edges confirm the new configuration.
+
 ## Admin Actions
 
 Administrators have full control over the lifecycle and configuration of Edge Gateways through the AI Studio UI.
 
 ### Pushing Configuration
 
-Configuration changes are not applied automatically. Administrators must explicitly push configurations to ensure they maintain control over deployment rollouts. 
+Configuration changes are not applied automatically. Administrators must explicitly push configurations to ensure they maintain control over deployment rollouts.
 
-When you click the **Push Configuration** button:
-1. You can select the target scope: **All Namespaces** or a **Specific Namespace**.
-2. The control plane generates a new configuration snapshot.
-3. A reload signal is sent to the targeted edge gateways via gRPC.
-4. The edges fetch the new configuration, update their local SQLite databases, and reload their in-memory caches.
-5. The sync status updates automatically as edges report their new checksums in subsequent heartbeats.
+<Note>
+AI Studio 2.2 supports one active instance, with an optional cold standby. Do not run more than one active AI Studio instance.
+</Note>
+
+To push configuration:
+
+1. Click **Push Configuration**.
+2. Select the target scope: **All Namespaces** or a **Specific Namespace** (Enterprise).
+3. Read the list of changes. The dialog shows each object that was created, updated, or deleted since the last push to the namespace, grouped by type. Each object links to its admin page. A summary line shows the number of changes, for example "12 changes since the last push at 13:12". With **All Namespaces**, each namespace has its own section.
+4. Click **Push**. If nothing has changed, the button is **Push anyway**. A push can still be useful, for example after an edge registers again.
+
+AI Studio then does these steps:
+
+1. It records the push, with one entry for each target edge and a deadline of 5 minutes. The dialog shows which edges are connected, and shows a warning for the others.
+2. It sends a reload request to each edge.
+3. Each edge gets the current configuration, applies it, and reports **ready** or **failed** with the reason.
+4. The dialog shows the result of each edge:
+    - **Updated**: The edge loaded the configuration.
+    - **Updated, with a warning**: The edge loaded a configuration that changed again after the push. Push again.
+    - **Failed**: The edge could not apply the configuration (the dialog shows the error), or three delivery attempts in sequence did not complete.
+    - **Timed out**: The edge did not connect, or did not finish, before the deadline.
+
+You can close the dialog at any time. The push continues. An edge that is offline receives the push when it reconnects, until the deadline. If an edge disconnects during a reload, AI Studio sends the push again when the edge reconnects. A push to a namespace or to all namespaces does not include edges that are offline for more than 5 minutes. The dialog lists these edges. If no edge can receive the push, the dialog shows a message and disables **Push**.
+
+The Community Edition shows the overall result of a push. The result for each edge is an Enterprise Edition feature.
+
+### How an Edge Applies a Snapshot
+
+- **In one transaction:** If a snapshot fails to apply, the edge keeps the previous configuration.
+- **Apps and LLMs are retired, not deleted:** A snapshot can remove an App or an LLM. The edge then stops serving it, but keeps the row. Its analytics and budget data stay valid. If the App comes back, the edge serves it again.
+- **Newer Apps are kept:** An edge can learn about an App from token validation after AI Studio took the snapshot. The snapshot does not remove that App.
+- **Spend is never lowered:** The snapshot contains the spend of each App as AI Studio knows it. This value can be older than the edge's own value. The edge uses the higher of the two.
 
 ### Removing Edge Gateways
 
@@ -85,9 +122,87 @@ If an edge gateway is decommissioned or needs to be reset, administrators can re
 
 > **Note:** This action only removes the entry from the control plane database. If the edge gateway process is still running, it will automatically re-register on its next connection attempt.
 
+## Push API
+
+```
+POST /api/v1/edges/{edge_id}/reload          # one edge
+POST /api/v1/namespaces/{namespace}/reload   # one namespace (Enterprise)
+POST /api/v1/edges/reload-all                # all edges
+```
+
+Each endpoint returns `202 Accepted` with the push operation. The response contains these fields:
+
+- `operation_id` and `target_edges`
+- `targets`: Each target has `reachable` and, if it is not reachable, the reason.
+- `skipped`: Edges that are offline for more than 5 minutes.
+- `warnings` and `deadline_at`
+ The endpoints return `404` for an unknown edge, `409` when there is no edge to push to, and `503` when this AI Studio does not run a control server.
+
+```
+GET /api/v1/reload-operations/{operation_id}/status   # Enterprise
+GET /api/v1/edges/reload-operations                  # pushes from the last day
+```
+
+The status endpoint returns the `status` of the operation, `progress`, `counts` for each result, and `edges`. For each edge, it returns the `status`, the last phase, `message`, `warning`, `attempts`, and the history of each delivery attempt. The final status is one of `succeeded`, `succeeded_with_warnings`, `partially_failed`, `failed`, or `expired`. The status is `in_progress` until then.
+
+`GET /api/v1/sync/pending-changes?namespace=default` returns the changes since the last push, as the push dialog shows them. The list contains a maximum of 200 changes. `total` is the real count.
+
+### Upgrading Scripts from 2.2.0
+
+From v2.2.1, the paths and the response envelope are the same, and all the 2.2.0 attributes are still returned. Update scripts for these changes:
+
+- **Final status:** In 2.2.0, an operation ended as `completed`, `failed`, or `timed_out`. Now it ends as `succeeded` or `succeeded_with_warnings` when all edges loaded the configuration, and as `partially_failed`, `failed`, or `expired` if not. A script that waits for `completed` never finishes.
+- **Operation IDs:** Operation IDs start with `push-` (in 2.2.0: `reload-` or `edge-reload-`).
+- **Reload-all (Enterprise):** `reload-all` starts one operation for all edges, not one for each namespace. `data.operations` has one entry for each namespace, all with the same `operation_id`.
+- **Status codes:** A namespace with no edge returns `409` (in 2.2.0: `404`). `reload-all` with no edge returns `409` (in 2.2.0: `202` with no operations). A push to an offline edge returns `202` and waits for the edge (in 2.2.0: `500`).
+- **Listing:** `GET /api/v1/edges/reload-operations` returns the pushes of the last day from the database, with `counts` for each result instead of `target_edges`.
+- **Community Edition:** `GET /api/v1/edges/{edge_id}` returns the edge inside `{"data": …}`, in the same way as the Enterprise Edition. Clients must read `.data`.
+
+## Connection Settings
+
+### TLS
+
+AI Studio serves the control connection with TLS, unless `GRPC_TLS_INSECURE=true`. It uses `GRPC_TLS_CERT_PATH` and `GRPC_TLS_KEY_PATH`. The edge verifies the certificate with these settings:
+
+| Edge setting | Purpose |
+| :--- | :--- |
+| `EDGE_TLS_CA_PATH` | A PEM file with the CA certificates that issued the AI Studio certificate, for a private CA. When set, it replaces the system root certificates. When not set, the edge uses the system root certificates. |
+| `EDGE_TLS_SERVER_NAME` | The name to verify on the certificate, when it is different from the host in `CONTROL_ENDPOINT`. For example, an IP address or the internal name of a load balancer. From v2.2.1. |
+| `EDGE_TLS_CERT_PATH`, `EDGE_TLS_KEY_PATH` | A client certificate for mutual TLS. |
+| `EDGE_SKIP_TLS_VERIFY` | Turns off verification. Use it for development only. |
+
+The edge requires TLS 1.2 or later. If the edge cannot read `EDGE_TLS_CA_PATH`, or the file has no PEM certificates, the connection stops with an error that names the setting.
+
+<Warning>
+Before v2.2.1, the edge checked that `EDGE_TLS_CA_PATH` existed, but did not use it. If you set this variable, make sure that it points to the issuer of the AI Studio certificate before you upgrade.
+</Warning>
+
+### Keepalive and Message Size
+
+Edges ping AI Studio every 30 seconds, also when no stream is open. An edge drops a connection if a ping gets no answer in 5 seconds. AI Studio accepts pings as often as every 10 seconds, and pings idle edges on the same schedule. This finds connections that are half open behind a load balancer or NAT.
+
+| AI Studio setting | Default | Purpose |
+| :--- | :--- | :--- |
+| `GRPC_MAX_MESSAGE_SIZE` | 16 MB | The largest message in each direction: configuration snapshots to edges, and analytics pulses and plugin data from edges. Set it to the same value as `GRPC_MAX_MESSAGE_SIZE` on the edges. From v2.2.1. |
+
+## Edge Gateway Resilience
+
+| Edge setting | Default | Purpose |
+| :--- | :--- | :--- |
+| `OVERLOAD_SHEDDING_ENABLED` | `true` | Refuses new requests with `503` and `Retry-After` when memory use is near the limit. The edge recovers when memory use falls. |
+| `OVERLOAD_MEMORY_LIMIT` | automatic | The memory limit for load shedding. If not set, the edge uses `GOMEMLIMIT`, and then the container limit. If no limit is known, load shedding is off. |
+| `OVERLOAD_MEMORY_THRESHOLD` | `0.85` | The fraction of the memory limit at which load shedding starts. |
+| `MAX_INFLIGHT_REQUESTS` | `0` (off) | An optional limit on the number of proxy requests at the same time. |
+| `EDGE_TOKEN_CACHE_STALE_GRACE` | `0` | Lets the edge use a token validation that just expired, but only while AI Studio cannot be reached. `0` fails closed. Any grace period lets a token that was revoked in AI Studio work on the edge for that time during an outage. |
+| `ANALYTICS_RETENTION_DAYS` | `7` with the analytics pulse, `90` without | The edge deletes older analytics. After an upgrade, the first cleanup deletes old rows in small batches. |
+
+Edge SQLite databases use WAL mode, unless the DSN sets a different mode. Make sure that the database directory is writable, because SQLite creates `-wal` and `-shm` files next to the database.
+
 ## Troubleshooting Synchronization
 
 If an Edge Gateway shows a `Pending` or `Stale` sync status, or if a checksum mismatch persists:
 - **Check Connectivity:** Ensure the edge gateway is running and firewall rules allow gRPC traffic (default port 50051) to the control plane.
 - **Wait for Heartbeat:** After a push, it may take a few seconds for the heartbeat cycle to complete and the UI to update.
 - **Review Logs:** Check the edge gateway logs for configuration load errors or permission issues preventing it from fetching the latest snapshot.
+- **Reconnect After an Outage:** After AI Studio restarts or has an outage, edges reconnect automatically. They retry with exponential backoff, from `EDGE_RECONNECT_INTERVAL` (default 5 seconds) to a maximum of 30 seconds.
+- **Analytics Missing in AI Studio:** Edges send analytics and spend to AI Studio in the analytics pulse. They load the pulse from `PLUGINS_CONFIG_PATH`. If AI Studio shows no data for an edge that serves traffic, make sure that `PLUGINS_CONFIG_PATH` points to an existing analytics pulse configuration. Search the edge logs for `startup path` and for `Failed to send analytics pulse`.
