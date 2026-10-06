@@ -1,0 +1,192 @@
+---
+title: "Submit a form with a Callout"
+description: "Add a custom Page that submits a support request through Tyk Developer Portal and handles the result."
+sidebarTitle: "Submit a form with a Callout"
+---
+
+In this guide, you will build a support-request form for your Portal users. You will add it to the Live Portal, the user-facing website in Tyk Developer Portal. This is one example of using a Callout to connect a custom Page to an external service.
+
+When a signed-in Portal user submits the form, it sends their subject and description to your service and displays the returned request reference.
+
+You will add a template and a JavaScript file to a custom theme, then select that template and a [Callout](/portal/customization/callouts) on a Page. The template displays the form. The Callout defines how Tyk Developer Portal sends the submission to your service without exposing its credentials in the browser.
+
+## Before you start
+
+You need:
+
+- An [API Owner](/portal/api-owner) account to manage Callouts, Pages and themes in the Admin Portal.
+- A deployment with Callouts support and CSRF protection enabled.
+- An enabled Callout using `POST`, configured for a test endpoint you control. Follow [Create a Callout](/portal/customization/callouts#create-a-callout) if you do not have one.
+- An [API Consumer](/portal/api-consumer) account to test the form in the Live Portal.
+- A custom theme based on the default theme. A theme contains the templates, styles and scripts used to display the Live Portal. Follow the [Create a theme](/portal/customization/themes#create-a-theme) instructions if you do not have one.
+
+The service receiving the submission is the *target*. It must validate the submitted fields and enforce any additional authorization your workflow requires. Use test data rather than personal or production data while developing the integration.
+
+## Prepare the target
+
+The form sends `subject` and `description` fields to Tyk Developer Portal. Portal wraps them in a JSON object called an *envelope*, with the submitted fields inside `payload`. See [Request format](/portal/customization/callouts#request-format) for supported input formats and optional user identity.
+
+For this example, make sure **Include user identity** is not selected on the Callout. The target receives:
+
+```json
+{
+  "payload": {
+    "subject": "Unable to access the sandbox API",
+    "description": "My test request returns an authorization error."
+  }
+}
+```
+
+The target must return JSON or an empty response body. For this example, configure it to return HTTP `201` with `Content-Type: application/json` and a request reference:
+
+```json
+{
+  "id": "REQ-123"
+}
+```
+
+If the service accepts this envelope and returns only information your Portal users may see, you can call it directly. Otherwise, you can use an intermediate API as described below.
+
+### Optional: adapt requests and responses with Tyk Gateway
+
+A Callout does not transform its request envelope into a service-specific format or filter the target's response. You can configure an API on Tyk Gateway to perform those operations between Portal and your service.
+
+For the support-request example:
+
+1. Create a [Tyk OAS API](/api-management/gateway-config-managing-oas) with your ticketing service as its upstream. Set the Callout's **Target URL** to this API's endpoint instead of the ticketing service URL.
+2. Configure [request body transformation](/api-management/traffic-transformation/request-body) if the service expects a different format. Map `payload.subject` and `payload.description` from the Callout envelope to the fields your service accepts.
+3. Configure [response body transformation](/api-management/traffic-transformation/response-body) to return only the fields needed by the Page. For this example, return the `id` field shown above and omit internal notes or other service details.
+4. Test successful requests and error responses. Check what the browser actually receives, not just what the Page displays. Make sure sensitive fields and internal error details do not reach the browser.
+
+The Callout authenticates with the Gateway API; configure authentication from Tyk Gateway to the upstream service separately. Routing through Tyk Gateway does not filter content unless you configure it to do so.
+
+Tyk Developer Portal wraps the Gateway API's response in its normal [response envelope](/portal/customization/callouts#handle-the-response). Returning `id` preserves the response expected by this tutorial's JavaScript. Keep the `X-Callout-Request-ID` header when forwarding requests to the upstream service so you can trace the request across all three systems.
+
+## Add the Page template
+
+The template defines the form's fields and where the result appears. When you assign the Callout to a Page, Tyk Developer Portal supplies its submission URL to the template as `.calloutAction`. The form uses that URL as its `action`.
+
+Create `views/support_request.tmpl` in your custom theme:
+
+```html
+{{ $user := CurrentUser req }}
+<div class="container">
+  <h1>{{ .page.Title }}</h1>
+  {{ if not $user }}
+    <p>Log in to submit a support request.</p>
+  {{ else if not .calloutAction }}
+    <p>The support request form is unavailable.</p>
+  {{ else }}
+    <form id="support-request" action="{{ .calloutAction }}" method="post">
+      <div class="form-group">
+        <label for="subject">Subject</label>
+        <input class="form-control" id="subject" name="subject" required>
+      </div>
+      <div class="form-group">
+        <label for="description">Description</label>
+        <textarea class="form-control" id="description" name="description" required></textarea>
+      </div>
+      <button class="btn btn-primary" type="submit">Submit request</button>
+    </form>
+    <p id="submission-result" role="status" aria-live="polite"></p>
+    <script src="/assets/javascripts/support-request.js" defer></script>
+  {{ end }}
+</div>
+```
+
+The template checks the user and the submission URL before displaying the form. It shows a login message for anonymous visitors and an unavailable message when no usable Callout is selected. These checks improve the Page experience; the Callout endpoint enforces authentication independently. Use your deployment's normal login flow, including single sign-on (SSO) if configured.
+
+The theme's `theme.json` file lists the templates available in the Page editor. Add this entry to its existing `templates` array:
+
+```json
+{
+  "name": "Support Request",
+  "template": "support_request",
+  "layout": "portal_layout"
+}
+```
+
+Keep the existing template entries. The example uses the default theme's `portal_layout` and Bootstrap styles. It does not require the legacy `AllowFormSubmission` field.
+
+## Add submission handling
+
+The JavaScript sends the form data without navigating away from the Page, then displays the result. It checks two outcomes: whether the browser request succeeded and whether the target accepted the submission.
+
+A target error can arrive at the browser with HTTP `200`, so the script checks both `response.ok` and the returned `result.ok` value. See [Handle the response](/portal/customization/callouts#handle-the-response) for the full response format.
+
+The request also needs the user's session cookie and a cross-site request forgery (CSRF) token. The token helps prevent another website from submitting a request using the user's session. The script reads it from the Page and sends it in the `X-CSRF-Token` header. Never add an Admin Portal API token or a target credential to this script.
+
+Create `assets/javascripts/support-request.js`:
+
+```javascript
+const form = document.getElementById('support-request');
+
+if (form) {
+  const output = document.getElementById('submission-result');
+  const button = form.querySelector('button[type="submit"]');
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
+    if (!csrfToken) {
+      output.textContent = 'Refresh the page before submitting.';
+      return;
+    }
+
+    button.disabled = true;
+    output.textContent = 'Submitting request...';
+    let requestID = '';
+
+    try {
+      const response = await fetch(form.action, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          Accept: 'application/json',
+          'X-CSRF-Token': csrfToken,
+        },
+        body: new URLSearchParams(new FormData(form)),
+      });
+      requestID = response.headers.get('X-Callout-Request-ID') || '';
+
+      if (!(response.headers.get('Content-Type') || '').includes('application/json')) {
+        throw new Error('Unexpected response. Refresh the page and sign in if prompted. Contact support before submitting again.');
+      }
+
+      const result = await response.json();
+      if (!response.ok || result.ok !== true) {
+        throw new Error('The request was not confirmed. Contact support before submitting again.');
+      }
+
+      const recordID = result.data?.id;
+      output.textContent = recordID
+        ? `Request created: ${recordID}.`
+        : 'Request completed.';
+      form.reset();
+    } catch (error) {
+      output.textContent = error instanceof TypeError
+        ? 'The result is unknown. Check your connection and contact support before submitting again.'
+        : error.message;
+    } finally {
+      if (requestID) output.textContent += ` Reference: ${requestID}`;
+      button.disabled = false;
+    }
+  });
+}
+```
+
+With CSRF protection enabled, Tyk Developer Portal adds the `csrf-token` meta element to the default `portal_layout` used in this example. Custom layouts must retain the closing `</head>` and `</body>` tags for this injection to work.
+
+The script converts `FormData` to URL-encoded data because Callouts do not accept `multipart/form-data`. It uses `textContent` to display the result as text, not executable HTML. It disables the button while the request is in progress but does not guarantee that repeated submissions create only one record. If your workflow needs that guarantee, the target must detect and handle duplicate submissions.
+
+## Upload the theme and create the Page
+
+1. Package your modified theme using the [theme upload instructions](/portal/customization/themes#create-a-theme).
+2. Upload it in **Customise > Themes**, then activate it in your test deployment.
+3. Open **Customise > Pages** and add a Page.
+4. Set its **Page name** to `Support`, its **Path URL** to `/support`, and its **Template** to **Support Request**.
+5. Select your enabled **Callout**, save the Page, and publish it.
+6. Log in as an API Consumer and open `/support` in the Live Portal.
+7. Submit the form and confirm that the target creates the test record.
+
+The expected confirmation is `Request created: REQ-123.`, followed by a request ID. Check that the target also receives that ID in the `X-Callout-Request-ID` header. See [Trace a request](/portal/customization/callouts#trace-a-request) to follow the request through application logs.
