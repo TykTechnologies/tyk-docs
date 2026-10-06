@@ -79,7 +79,7 @@ Agent plugins use the **Unified Plugin SDK** (`pkg/plugin_sdk`), just like all o
 
 ### Import and Structure
 
-```go
+```go expandable
 import "github.com/TykTechnologies/midsommar/v2/pkg/plugin_sdk"
 
 type MyAgentPlugin struct {
@@ -97,7 +97,7 @@ func NewMyAgentPlugin() *MyAgentPlugin {
 
 ### Lifecycle Methods
 
-```go Expandable
+```go Expandable expandable
 // Initialize - called when plugin starts
 func (p *MyAgentPlugin) Initialize(ctx plugin_sdk.Context, config map[string]string) error {
     // Extract broker ID for Service API calls
@@ -119,7 +119,7 @@ func (p *MyAgentPlugin) Shutdown(ctx plugin_sdk.Context) error {
 
 Implement the `AgentPlugin` capability:
 
-```go Expandable
+```go Expandable expandable
 // HandleAgentMessage processes incoming messages and streams responses
 func (p *MyAgentPlugin) HandleAgentMessage(
     req *pb.AgentMessageRequest,
@@ -183,7 +183,7 @@ my-agent-plugin/
 
 [server/plugin.manifest.json](https://github.com/TykTechnologies/ai-studio/blob/main/examples/plugins/studio/echo-agent/server/plugin.manifest.json):
 
-```json Expandable
+```json Expandable expandable
 {
   "id": "com.example.my-agent",
   "name": "My Agent",
@@ -207,7 +207,7 @@ my-agent-plugin/
 
 [server/main.go](https://github.com/TykTechnologies/ai-studio/blob/main/examples/plugins/studio/echo-agent/server/main.go):
 
-```go Expandable
+```go Expandable expandable
 package main
 
 import (
@@ -398,7 +398,7 @@ func main() {
 
 ### 4. Build and Deploy
 
-```bash Expandable
+```bash Expandable expandable
 # Build plugin
 go build -o my-agent main.go
 
@@ -423,7 +423,7 @@ Create an Agent Object that binds the plugin to an App. You can do this via the 
 - An active plugin with `hook_type: agent`
 - An App with at least one LLM assigned, active credential, and optionally tools and datasources
 
-```bash Expandable
+```bash Expandable expandable
 curl -X POST http://localhost:3000/api/v1/agents \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
@@ -542,7 +542,7 @@ for _, llm := range req.AvailableLlms {
 
 Parse custom configuration from JSON:
 
-```go
+```go expandable
 type Config struct {
     SystemPrompt string  `json:"system_prompt"`
     Temperature  float64 `json:"temperature"`
@@ -606,7 +606,7 @@ stream.Send(&pb.AgentMessageChunk{
 
 ### Send Tool Call
 
-```go
+```go expandable
 metadata := map[string]interface{}{
     "tool_name":  "weather_api",
     "operation":  "get_forecast",
@@ -646,7 +646,7 @@ stream.Send(&pb.AgentMessageChunk{
 
 A simple agent that wraps LLM responses with custom formatting:
 
-```go Expandable
+```go Expandable expandable
 package main
 
 import (
@@ -921,7 +921,7 @@ func main() {
 
 [config.schema.json](https://github.com/TykTechnologies/ai-studio/blob/main/examples/plugins/studio/echo-agent/server/config.schema.json):
 
-```json Expandable
+```json Expandable expandable
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
@@ -950,7 +950,7 @@ func main() {
 
 ### Multi-Step Reasoning
 
-```go Expandable
+```go Expandable expandable
 func (p *MyAgent) HandleAgentMessage(
     req *pb.AgentMessageRequest,
     stream pb.PluginService_HandleAgentMessageServer) error {
@@ -1007,7 +1007,7 @@ func (p *MyAgent) HandleAgentMessage(
 
 ### Tool Integration
 
-```go Expandable
+```go Expandable expandable
 func (p *MyAgent) executeTool(ctx context.Context, toolID uint32, operation string, params map[string]interface{}) (string, error) {
     // Execute tool via SDK
     result, err := ai_studio_sdk.ExecuteTool(ctx, toolID, operation, params)
@@ -1118,7 +1118,7 @@ func (p *MyAgent) HandleAgentMessage(
 
 Agent plugins should implement the `SessionAware` interface to warm up the Service API connection:
 
-```go
+```go expandable
 // OnSessionReady is called when the session broker is ready
 func (p *MyAgentPlugin) OnSessionReady(ctx plugin_sdk.Context) {
     // Warm up Service API connection
@@ -1205,7 +1205,33 @@ The Echo Agent demonstrates:
 
 ## Limitations (Experimental)
 
-- No built-in conversation persistence (agents must manage their own state if needed)
+- No built-in conversation persistence across sessions. From v2.2.0, AI Studio keeps an in-memory transcript in each session. It sends the transcript to the plugin as `history` on every turn.
 - Tool execution must be implemented by the agent
 - No automatic retry on LLM failures
 - Single concurrent conversation per session
+
+## Chat Interface Integration
+
+From v2.2.0, users open agents in the chat interface (`/chat/agent/:id`). The new chat front end (`CHAT_UI_V2_ENABLED`, on by default) uses the same per-turn API for agents as for chat rooms:
+
+| Method | Path | Purpose |
+| :--- | :--- | :--- |
+| `POST` | `/common/agents/:id/sessions` | Create an agent session, or resume one with `{"session_id": "..."}` while it is still in memory. |
+| `POST` | `/common/agent-sessions/:session_id/runs` | Send `{"message": "..."}` and stream the reply as an AI SDK UI message stream. |
+| `POST` | `/common/agent-sessions/:session_id/cancel` | Stop the plugin stream of the current turn. |
+| `GET` | `/common/agent-sessions/:session_id/messages/v2` | Get the transcript of the session (text, reasoning, tool calls, and results). |
+
+AI Studio maps the chunk types to the stream as follows:
+
+| Chunk Type | Stream Part |
+| :--- | :--- |
+| `CONTENT` | Text delta |
+| `THINKING` | Reasoning delta |
+| `TOOL_CALL` | A tool call. `metadata.tool_name` is the tool, and `metadata.parameters` are the arguments. |
+| `TOOL_RESULT` | The result of the most recent open call with the same `tool_name` |
+| `ERROR` | An error part |
+| `DONE`, or `is_final` | The end of the turn |
+
+AI Studio adds a `tool_call_id` to `TOOL_CALL` and `TOOL_RESULT` chunks, so that the UI can pair them. Plugins do not need to set it.
+
+Agent sessions stay in memory between turns for `CHAT_SESSION_IDLE_TTL` (default 10 minutes). The plugin SDK contract (`HandleAgentMessage`, `AgentMessageChunk`) does not change. The v1 SSE endpoints (`/common/agents/:id/stream` and `/common/agents/:id/message`) still work.
