@@ -11,6 +11,21 @@ sidebarTitle: "Filters & Policies"
 | :------------- | :---------------------- |
 | [Community](/ai-management/ai-studio/overview#community-edition) & [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed, Hybrid |
 
+<Note>
+Filter execution is an Enterprise Edition feature. In the Community Edition, you can create filters and attach them, but AI Studio does not run them. Each filter passes the content through without changes, and AI Studio logs a warning.
+</Note>
+
+## Filter Types
+
+A filter is one of two types. You select the type in **Filter type** on the filter form.
+
+| Type | What it does |
+| :--- | :--- |
+| **Script** | Runs Tengo code that you write against the request or the response. Most of this page describes script filters. |
+| **Guardrail** (Enterprise Edition) | Runs a detection provider and blocks, redacts, or logs the content when the provider finds a match. You do not write code. The providers are a built-in pattern library, Lakera, Microsoft Presidio, Azure AI Content Safety, Azure AI Language PII, Amazon Bedrock Guardrails, and a generic HTTP classifier. |
+
+Both types attach, run, and record compliance events in the same way. In the API, the type is the `kind` field of a filter (`script` or `guardrail`). Filters that existed before v2.2.0 are `script` filters. New Enterprise installations include four default guardrails. They are not attached, so they have no effect until you attach them. To skip them, set `SKIP_FILTER_DEFAULTS=true`.
+
 The **Filters List View** allows administrators to manage filters and middleware applied to prompts or data sent to Large Language Models (LLMs) via the AI Gateway or Chat Rooms. Filters and middleware ensure data governance, compliance, and security by processing or controlling the flow of information. Below is an enhanced description with the distinction between **Filters** and **Middleware**:
 
 ---
@@ -47,6 +62,9 @@ Filters in Tyk AI Studio provide comprehensive request/response processing with 
 - ✅ **Response Filters**: Block LLM responses based on content
   - LLM Proxy Responses (REST and streaming)
   - Chat Session Responses (regular and streaming)
+- ✅ **Tool Filters**: Run on the arguments sent to a tool and on the response from the tool. Refer to [Tool Filters](#tool-filters).
+
+When you attach several filters to an LLM, they run from top to bottom in the order on the LLM form. Use the arrows on the form to change the order. The first filter that blocks stops the request. AI Studio stores the order and sends it to Edge Gateways.
 
 ---
 
@@ -133,7 +151,10 @@ The **Filter Edit View** enables administrators to create or modify filters usin
 2. **Description** *(Optional)*:
    - A brief summary of the filter's purpose and functionality (e.g., "Simple Regex-based PII detector to prevent the wrong data being sent to LLMs").
 
-3. **Script** *(Required)*:
+3. **Filter type** *(Required)*:
+   - **Script** or **Guardrail**. Refer to [Filter Types](#filter-types). The rest of this section describes script filters.
+
+4. **Script** *(Required)*:
    - A **Tengo script** that defines the logic of the filter. The script evaluates input data and determines whether the filter approves or blocks it.
    - The example script detects PII using a collection of regex patterns and blocks the data if a match is found.
 
@@ -639,13 +660,13 @@ user_id := input.context.user_id
 
 #### Testing Filter Scripts
 
-A collapsible **Test Script** panel sits below the script editor on the Add/Edit Filter form. Use it to run the current script against sample input and check the output, without saving the filter first.
+A collapsible **Test** panel sits below the script editor on the Add/Edit Filter form. Use it to run the current script against sample input and check the output, without saving the filter first.
 
 <Note>
 Testing a filter script, like creating or updating one, requires Tyk AI Studio Enterprise edition. On Community edition, the test request returns an "Enterprise Feature" error.
 </Note>
 
-Expand the panel, fill in the fields, and click **Test Script**. The fields map directly onto the [script input object](#new-unified-script-api) described earlier on this page:
+Expand the panel, fill in the fields, and click **Run filter**. The fields map directly onto the [script input object](#new-unified-script-api) described earlier on this page:
 
 | Field | Maps To | Description |
 | :--- | :--- | :--- |
@@ -658,13 +679,11 @@ Expand the panel, fill in the fields, and click **Test Script**. The fields map 
 | Chunk Index | `chunk_index` | Chunk number, shown only when Is Chunk is selected. |
 | Status Code | `status_code` | HTTP status code from the LLM, shown only when Is Chunk is selected. |
 | Current Buffer | `current_buffer` | Accumulated response text so far, shown only when Is Chunk is selected. |
-| Context (JSON) | `context` | Free-form JSON object, for example `{"app_id": 1, "user_id": 5}`. |
+| Context (JSON) | `context` | Free-form JSON object. The default is `{"llm_id": 1, "app_id": 1, "request_id": "test-request-id"}`, which matches the context that the proxy sends. |
 
-<Note>
-The test panel always sends an empty `messages` array. If your script reads `input.messages`, it sees no messages during a test even though Raw Input has a value. Test message-array logic by pasting a full JSON payload into Raw Input and inspecting it in your script instead.
-</Note>
+From v2.2.0, if Raw Input is a JSON request body with a `messages` array, the panel sends that array as `input.messages`. If Raw Input is plain text, `input.messages` is empty. If the script raises [compliance events](#compliance-event-reporting), the panel shows them below the result.
 
-AI Studio runs the script in a sandbox with a 5 second timeout. If the script does not finish in time, the panel reports "Script execution timed out after 5 seconds" instead of hanging the request. On success, the panel shows the resulting `output` object: `block`, `payload`, `message`, and `messages` when the script sets it. On failure, it shows the Tengo runtime error.
+AI Studio runs the script in a sandbox with a 5 second timeout. If the script does not finish in time, AI Studio stops the script and the panel reports a timeout. On success, the panel shows the resulting `output` object: `block`, `payload`, `message`, and `messages` when the script sets it. On failure, it shows the Tengo runtime error.
 
 Under the hood, the panel calls:
 
@@ -973,11 +992,73 @@ The platform enriches each event with the app, user, LLM, vendor, model, filter 
 
 ---
 
-## Tool Response Filters
+## Runtime Limits and Outbound Calls (Enterprise)
 
-Filters can also be applied to tool responses (e.g., API calls, database queries). Tool responses are **plain strings**, not JSON-structured messages, so they require simpler handling.
+Filter scripts run on the goroutine that serves the request. For this reason, AI Studio limits every script execution. Each limit is an environment variable with a safe default. A change takes effect on the next execution, without a restart.
 
-### **Example 1: Block Tool Responses Containing Errors**
+| Variable | Default | Limit |
+| :--- | :--- | :--- |
+| `FILTER_SCRIPT_TIMEOUT` | `5s` | The maximum time for one script execution. When the time ends, AI Studio stops the script and the filter reports `script timed out`. A request filter then blocks the request. A response filter lets the response through. `0` removes the limit. A number without a unit is read as seconds. |
+| `FILTER_SCRIPT_MAX_ALLOCS` | `10000000` | The maximum number of objects that one execution can allocate in the script VM. `0` removes the limit. |
+| `FILTER_SCRIPT_ALLOW_OS` | `false` | Gives scripts access to the Tengo `os` module (environment variables, file system, and process execution). Keep it off. The process environment contains the secrets master key (`TYK_AI_SECRET_KEY`). A script with `os` access can read the key and decrypt all stored secrets. Set it to `true` only for old scripts that need the module. |
+| `FILTER_HTTP_TIMEOUT` | `10s` | The maximum time for one `tyk.makeHTTPRequest` call. |
+| `FILTER_HTTP_MAX_RESPONSE_BYTES` | `1048576` | The largest response body that `tyk.makeHTTPRequest` returns. A larger body is an error. AI Studio does not truncate it. |
+| `FILTER_LLM_TIMEOUT` | `30s` | The maximum time for one `tyk.llm` call. |
+
+`tyk.makeHTTPRequest` uses the same outbound rules as LLM upstreams:
+
+- Only `http` and `https` URLs are allowed.
+- When `LLM_UPSTREAM_ALLOWED_HOSTS` is set, only those hosts are allowed.
+- When `LLM_UPSTREAM_BLOCK_INTERNAL=true`, internal addresses are blocked. To allow an internal classifier, add it to `LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS`.
+- AI Studio checks redirects against the same rules.
+
+`tyk.llm` gets the credential of the target LLM in the same way as the gateway. An LLM with a key stored as a `$SECRET/...` or `$ENV/...` reference works from a script.
+
+Because response filters let the response through when they time out, a slow response filter does not block. If a response filter removes sensitive data, such as PII, a timeout sends the response to the user without that change. Keep response filter scripts fast, and test them with large responses.
+
+AI Studio compiles each script one time and caches it. Each execution runs on its own copy, so executions do not share state. When the caller of a request or chat session disconnects, AI Studio stops the script.
+
+<Warning>
+From v2.2.0, scripts cannot use the Tengo `os` module unless you set `FILTER_SCRIPT_ALLOW_OS=true`. Scripts that call `os` fail after the upgrade.
+</Warning>
+
+---
+
+## Tool Filters
+
+You can attach filters to [tools](/ai-management/ai-studio/tools). From v2.2.0, tool filters run in two directions:
+
+| Filter direction | When it runs | What the script gets |
+| :--- | :--- | :--- |
+| Request filter (**Is this a Response Filter?** cleared) | Before AI Studio calls the tool | The tool call arguments, as JSON |
+| Response filter (**Is this a Response Filter?** selected) | After the tool returns, before the response goes to the caller | The tool response body |
+
+Tool filters run on every way that a tool is called: in chat, on the REST endpoint, and on all MCP transports. They run on AI Studio and on Edge Gateways.
+
+The arguments that a request filter gets have the same format on every transport:
+
+```json
+{
+  "operation_id": "getExchangeRate",
+  "parameters": {"currency": ["EUR"]},
+  "payload": {},
+  "headers": {}
+}
+```
+
+A request filter can change `parameters`, `payload`, and `headers`, and return them in `output.payload`. It cannot change `operation_id`. If it tries, AI Studio ignores the change and logs a warning. `input.context` contains `tool_id`, `tool_name`, `app_id`, and `user_id`, and also `session_id` and `call_id` when they are available.
+
+Tool filters fail closed in both directions. If a filter blocks the call, or the script fails, the caller gets a generic refusal: HTTP `403` with `blocked by policy`, or the MCP equivalent. The refusal is the same for input and output blocks. It does not contain the filter name or the reason, so a caller cannot use it to learn your filter configuration. AI Studio writes the reason to the logs and records a [compliance event](/ai-management/ai-studio/compliance-events) for every block.
+
+<Warning>
+In versions before v2.2.0, every filter on a tool ran on the tool's response, whatever its direction. From v2.2.0, a filter that is not a response filter runs on the tool's input. After the upgrade, check the filters on your tools. The gateway logs a warning the first time that each such filter runs.
+</Warning>
+
+### Tool Response Filter Examples
+
+Tool responses are **plain strings**, not JSON-structured messages, so they require simpler handling.
+
+#### **Example 1: Block Tool Responses Containing Errors**
 
 ```tengo
 text := import("text")
@@ -998,7 +1079,7 @@ output := {
 }
 ```
 
-### **Example 2: Redact PII from Tool Responses**
+#### **Example 2: Redact PII from Tool Responses**
 
 ```tengo
 text := import("text")
@@ -1024,7 +1105,7 @@ output := {
 }
 ```
 
-### **Example 3: Filter Based on Tool Name**
+#### **Example 3: Filter Based on Tool Name**
 
 ```tengo
 // Access tool metadata from context
@@ -1141,7 +1222,7 @@ output := {
 ### Key Characteristics
 
 1. **Block-Only**: Response filters can only block responses, not modify them
-2. **Works on LLM Responses**: Applied to LLM responses only (not tool responses)
+2. **Works on LLM Responses**: On LLMs and chat, response filters run on the LLM response. On tools, the same flag selects the tool output direction. Refer to [Tool Filters](#tool-filters).
 3. **Streaming Support**: Execute per-chunk during streaming with access to accumulated buffer
 4. **Script-Controlled**: Filter scripts decide when to evaluate based on buffer length
 
@@ -1178,6 +1259,7 @@ input := {
     raw_input: "current chunk text",
     is_response: true,
     is_chunk: true,
+    is_final: false,        // true on the extra run after the last chunk
     chunk_index: 5,
     current_buffer: "accumulated response text so far",
     vendor_name: "openai",
@@ -1321,8 +1403,10 @@ if !input.is_chunk || len(response_text) >= 200 {
 
 **Proxy (Streaming)**:
 - Executes on every chunk
+- Executes one more time when the stream is complete, with `is_final: true`, an empty `raw_input`, and the full response in `current_buffer`. A short response that never reached the buffer threshold of the script is then still checked.
 - Access to both `raw_input` (current chunk) and `current_buffer` (accumulated text)
 - If blocked: Streaming stops, error sent to client
+- If blocked on the final run: The stream ends with an error event, and AI Studio logs a blocked response. The chunks that the client already received are not removed. To block content before the client receives it, check `current_buffer` on each chunk. Do not rely only on the final run.
 
 **Chat (Non-Streaming)**:
 - Executes before adding to chat history
