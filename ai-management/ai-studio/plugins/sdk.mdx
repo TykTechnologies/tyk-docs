@@ -36,6 +36,15 @@ The Unified SDK (`pkg/plugin_sdk`) is the modern, recommended approach for all p
 go get github.com/TykTechnologies/midsommar/v2/pkg/plugin_sdk
 ```
 
+From v2.2.1, the module uses the `go 1.26.5` directive with `toolchain go1.26.6`. Build plugins with Go 1.26.6 or later. If your plugin module uses a `replace` directive for the AI Studio module, update its `go` directive to match.
+
+<Note>
+**Changes for Go plugin authors in v2.2.1:**
+- The gateway plugin interfaces moved to `pkg/gatewayplugin` (for example `github.com/TykTechnologies/midsommar/v2/pkg/gatewayplugin/sdk`). The old `microgateway/plugins` paths forward to the new location.
+- The enterprise module path is now `github.com/TykTechnologies/ai-studio-enterprise/v2`.
+- The Go `StudioServices` interface has thirteen new methods. If you wrote a custom fake of this interface for tests, add the new methods. Plugins that you already built continue to work.
+</Note>
+
 ### Basic Plugin Structure
 
 ```go Expandable
@@ -237,6 +246,35 @@ func (p *MyAuthPlugin) GetUserByCredential(ctx plugin_sdk.Context, credential st
 }
 ```
 
+#### Delegated Identity
+
+Return `Authenticated: true` with the `AppId` that the caller acts as. From v2.2.1, the gateway refuses an authenticated response without a valid `AppId`. In earlier versions, it used App 1.
+
+You can also set these values for audit:
+
+- `UserId`: The user that the call is for. For example, the subject of a delegated token.
+- `Claims["auth_actor"]`: The agent that acts for the user, for example the `act` or `azp` claim of the token
+
+The gateway passes them to post-auth plugins and custom endpoints. It also records them as `on_behalf_of` and `acting_agent` in the proxy log and chat record. The App and LLM proxy logs show them as **For** and **Agent**. They are for audit only. The grants of the App control what the request can reach.
+
+#### Where Auth Plugins Run
+
+From v2.2.1, every gateway endpoint has an ordered list of auth plugins:
+
+| Endpoint | List |
+| :--- | :--- |
+| `/llm/...` | The plugins of the LLM (those with the auth hook) |
+| `/ai/{slug}`, the unified `/v1`, `/anthropic/{slug}`, `/router/{slug}` | The list of the LLM, or of the Model Router or Semantic Router when the slug is a router |
+| `/datasource/{slug}` | The list of the data source |
+| `/tools/{slug}` and its MCP transports | The list of the tool |
+| `/plugins/{slug}/...` (endpoints that require auth) | The list of the custom-endpoint plugin |
+
+- When an endpoint has auth plugins, only these plugins authenticate its requests. The gateway asks them in order, and the first plugin that authenticates the request wins. If all plugins refuse, the request gets `401 invalid credential`. The gateway logs the plugin's reason, but does not send it to the caller.
+- The endpoint refuses App keys. Studio OAuth access tokens for MCP still work on tools.
+- If none of the attached plugins can load, the request gets `503`. The gateway does not fall back to App keys.
+- An endpoint without auth plugins authenticates with App keys, and no auth plugin sees its traffic.
+- Auth plugin lists apply on Edge Gateways only. The embedded gateway in AI Studio does not run gateway auth plugins.
+
 #### Common Pitfalls
 
 | Pitfall | Symptom | Solution |
@@ -364,6 +402,13 @@ type ObjectHookHandler interface {
 }
 ```
 
+Object types are `llm`, `datasource`, `tool`, `user`, and (Enterprise Edition, from v2.2.0) `governed_metadata`. For `governed_metadata`:
+
+- The object JSON is the metadata record (`object_type`, `object_id`, `values`, and so on).
+- Only `before_update`, `after_update`, `before_delete`, and `after_delete` fire.
+- A rejection blocks the metadata save.
+- A modification can change `values`. AI Studio validates the new values against the schema again.
+
 ### 8. UIProvider
 
 Serve web UI assets for AI Studio plugins. See [UI Plugins Guide](/ai-management/ai-studio/plugins/studio-ui) for details.
@@ -376,6 +421,19 @@ type UIProvider interface {
     HandleRPC(method string, payload []byte) ([]byte, error)
 }
 ```
+
+To receive the calling administrator on admin RPC calls, also implement `UserAwareRPCHandler`. The user context includes the RBAC permissions of the caller:
+
+```go
+func (p *MyPlugin) HandleRPCWithUser(method string, payload []byte, user *plugin_sdk.PortalUserContext) ([]byte, error) {
+    if !user.Can("write") {              // this plugin's base write; "assets:publish" for a declared sub-resource
+        return nil, fmt.Errorf("forbidden")
+    }
+    return p.HandleRPC(method, payload)
+}
+```
+
+Every plugin with pages or resource types has a row in the role editor (`plugin:<manifest id>`: `read`, `write`, `execute`). To declare more rows and the permission of each method, use the `rbac` block of the manifest. To register resources at runtime, use `RegisterPermissionResources`. Refer to [Permissions (RBAC) Block](/ai-management/ai-studio/plugins/manifests#permissions-rbac-block) and [Permission Resources](/ai-management/ai-studio/plugins/service-api#permission-resources-runtime).
 
 ### 9. ConfigProvider
 
@@ -702,6 +760,12 @@ return &pb.PluginResponse{
     ErrorMessage: "Request blocked: invalid input",
 }, nil
 ```
+
+A blocking plugin can return its own `StatusCode`, `Headers`, and `Body`, for example for a cache hit. The gateway sets `Content-Length` and `Transfer-Encoding` from the body that it writes, and ignores the plugin's values for these headers. It also ignores the connection headers (`Connection`, `Keep-Alive`, `Trailer`, and `Upgrade`). Set `Content-Type` to match the body.
+
+<Note>
+In v2.2.0 and earlier, the Edge Gateway copied these framing headers from the plugin response without changes. An incorrect `Content-Length` gave the client an empty body. v2.2.1 fixes this.
+</Note>
 
 ### Non-Blocking Errors
 

@@ -1202,7 +1202,33 @@ The Echo Agent demonstrates:
 
 ## Limitations (Experimental)
 
-- No built-in conversation persistence (agents must manage their own state if needed)
+- No built-in conversation persistence across sessions. From v2.2.0, AI Studio keeps an in-memory transcript in each session. It sends the transcript to the plugin as `history` on every turn.
 - Tool execution must be implemented by the agent
 - No automatic retry on LLM failures
 - Single concurrent conversation per session
+
+## Chat Interface Integration
+
+From v2.2.0, users open agents in the chat interface (`/chat/agent/:id`). The new chat front end (`CHAT_UI_V2_ENABLED`, on by default) uses the same per-turn API for agents as for chat rooms:
+
+| Method | Path | Purpose |
+| :--- | :--- | :--- |
+| `POST` | `/common/agents/:id/sessions` | Create an agent session, or resume one with `{"session_id": "..."}` while it is still in memory. |
+| `POST` | `/common/agent-sessions/:session_id/runs` | Send `{"message": "..."}` and stream the reply as an AI SDK UI message stream. |
+| `POST` | `/common/agent-sessions/:session_id/cancel` | Stop the plugin stream of the current turn. |
+| `GET` | `/common/agent-sessions/:session_id/messages/v2` | Get the transcript of the session (text, reasoning, tool calls, and results). |
+
+AI Studio maps the chunk types to the stream as follows:
+
+| Chunk Type | Stream Part |
+| :--- | :--- |
+| `CONTENT` | Text delta |
+| `THINKING` | Reasoning delta |
+| `TOOL_CALL` | A tool call. `metadata.tool_name` is the tool, and `metadata.parameters` are the arguments. |
+| `TOOL_RESULT` | The result of the most recent open call with the same `tool_name` |
+| `ERROR` | An error part |
+| `DONE`, or `is_final` | The end of the turn |
+
+AI Studio adds a `tool_call_id` to `TOOL_CALL` and `TOOL_RESULT` chunks, so that the UI can pair them. Plugins do not need to set it.
+
+Agent sessions stay in memory between turns for `CHAT_SESSION_IDLE_TTL` (default 10 minutes). The plugin SDK contract (`HandleAgentMessage`, `AgentMessageChunk`) does not change. The v1 SSE endpoints (`/common/agents/:id/stream` and `/common/agents/:id/message`) still work.

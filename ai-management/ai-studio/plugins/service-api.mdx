@@ -148,6 +148,8 @@ Key-value storage for plugin data:
 - **Studio**: PostgreSQL-backed, shared across hosts, durable
 - **Gateway**: Local database, per-instance, ephemeral
 
+The KV namespace belongs to the plugin record. When you delete the plugin in AI Studio, AI Studio also deletes its KV data. If you install the plugin again, it starts with an empty store.
+
 #### Write Data
 
 ```go
@@ -273,6 +275,8 @@ Events have a direction that controls routing:
 | Local | `plugin_sdk.DirLocal` | Stays on local bus only, never forwarded |
 | Up | `plugin_sdk.DirUp` | Flows from edge (Edge Gateway) to control (AI Studio) |
 | Down | `plugin_sdk.DirDown` | Flows from control (AI Studio) to edge(s) |
+
+Topics that start with `system.` are reserved for the object change events of AI Studio. The control plane drops `system.*` events that come from an edge. Gateway plugins must publish events under their own topics.
 
 #### Publish Event
 
@@ -549,9 +553,16 @@ type ObjectEventPayload struct {
 
 #### Subscribing to System Events
 
+<Note>
+Topics must match exactly. The event bus does not support wildcards, so `Subscribe("system.app.*", ...)` never receives an event. Subscribe to each topic that you need (`system.app.created`, `system.app.updated`, and so on), or use `SubscribeAll` and filter on `ev.Topic`.
+</Note>
+
 ```go Expandable
-// Subscribe to all App events using wildcard
-subID, err := ctx.Services.Events().Subscribe("system.app.*", func(ev plugin_sdk.Event) {
+// Subscribe to every event and filter by topic prefix
+subID, err := ctx.Services.Events().SubscribeAll(func(ev plugin_sdk.Event) {
+    if !strings.HasPrefix(ev.Topic, "system.app.") {
+        return
+    }
     var payload struct {
         ObjectType string      `json:"object_type"`
         Action     string      `json:"action"`
@@ -654,6 +665,112 @@ func (p *AuditLogPlugin) OnSessionClosing(ctx plugin_sdk.Context) {
 ## Studio Services
 
 Available when `ctx.Runtime == plugin_sdk.RuntimeStudio`.
+
+### Notifications
+
+From v2.2.0, plugins can create in-app notifications. AI Studio shows them in the notification bell, and also sends them by email when SMTP is configured. A notification can go to all administrators, to one user, or to both.
+
+Requires: `notifications.write` scope. Studio only.
+
+```go
+err := ctx.Services.Studio().CreateNotification(ctx.Context, plugin_sdk.Notification{
+    ID:           "req_" + request.ID,          // optional dedupe key, scoped to your plugin
+    Type:         "asset_access_request",       // free-form label stored on the notification
+    Title:        "Access request: Triage Agent",
+    Content:      "**alice@acme.com** asked for access.\n\n[Review](/admin/enterprise/asset-catalog/requests)",
+    NotifyAdmins: true,                         // every admin with notifications enabled
+    UserID:       0,                            // or a specific user ID (both may be set)
+    Links: map[string]string{                   // what clicking the bell entry opens
+        "admin":  "/admin/enterprise/asset-catalog/requests#req_" + request.ID,
+        "portal": "/portal/plugins/asset-catalog#/assets/" + asset.ID,
+    },
+})
+```
+
+| Field | Notes |
+| :--- | :--- |
+| `ID` | Optional. AI Studio adds the prefix `plugin_<id>_`. Two calls with the same ID create one notification for each recipient. If the ID is empty, every call creates a new notification. |
+| `Title` | Required. Maximum 255 characters. |
+| `Content` | Markdown. Maximum 10000 characters. |
+| `NotifyAdmins` / `UserID` | Set at least one of these fields. |
+| `Link` | Optional. The page that opens when the user clicks the notification. Use a same-origin path (`/admin/...`, `/portal/...`) or an `http(s)` URL. AI Studio drops other values, such as `javascript:` or protocol-relative URLs. Without a link, the notification is for information only. |
+| `Links` | Optional. Overrides `Link` for each audience: `"admin"` for administrators, and `"portal"` for the user in `UserID`. Each value falls back to the other, then to `Link`. |
+
+### Resource Type Registration (Runtime)
+
+AI Studio registers the resource types in the manifest when the plugin loads. If the plugin defines its types at runtime (for example, administrators define them inside the plugin), register the types with `SyncResourceTypes`.
+
+Requires: `resource-types.manage` scope. Studio only.
+
+```go
+// Registers the given types for this plugin and deactivates any of its
+// previously registered types that are missing from the list.
+err := plugin_sdk.SyncResourceTypes(ctx, []*plugin_sdk.ResourceTypeRegistration{
+    {Slug: "agent", Name: "Agent", SupportsSubmissions: true, SubmissionSchema: agentSchemaJSON},
+})
+
+// Lower level: keep missing types active
+registered, deactivated, err := ctx.Services.Studio().RegisterResourceTypes(ctx.Context, regs, false)
+```
+
+AI Studio takes the plugin ID from the authenticated connection, so a plugin can manage only its own types. During the call, AI Studio calls your `ListResourceInstances` method for each type. Do not hold locks that this method needs. For more information, refer to [Resource Provider Plugins](/ai-management/ai-studio/plugins/resource-types).
+
+### Permission Resources (Runtime)
+
+Every plugin with an admin UI has a row in the role editor: `plugin:<manifest id>`, with `read`, `write`, and `execute`. Declare sub-resources that you know in advance in the `rbac` block of the manifest. Refer to [Permissions (RBAC) Block](/ai-management/ai-studio/plugins/manifests#permissions-rbac-block). Register resources that exist only at runtime with `RegisterPermissionResources`.
+
+Requires: `rbac.register` scope. Studio only.
+
+```go
+registered, removed, pluginKey, err := ctx.Services.Studio().RegisterPermissionResources(ctx.Context, []plugin_sdk.PermissionResource{
+    {
+        Key:     "assets-agent",              // becomes "plugin:<manifest id>:assets-agent"
+        Label:   "Assets: Agent",
+        Actions: []plugin_sdk.PermissionAction{plugin_sdk.PermissionRead, plugin_sdk.PermissionWrite, plugin_sdk.PermissionDelete, plugin_sdk.PermissionPublish},
+    },
+}, true) // removeMissing: drop runtime resources absent from the list (manifest ones are never touched)
+```
+
+The new rows appear under the plugin in the role editor immediately. AI Studio also updates the computed system roles (Editor, Viewer, and Auditor). Administrators and users with `plugins:execute` have every plugin permission. Grants for each plugin limit access further.
+
+To check a permission in an RPC handler, implement `UserAwareRPCHandler` and use the user context:
+
+```go
+func (p *MyPlugin) HandleRPCWithUser(method string, payload []byte, user *plugin_sdk.PortalUserContext) ([]byte, error) {
+    if !user.Can("assets-agent:publish") {          // plugin-relative: "<key>:<action>" or a bare action ("write")
+        return forbidden("assets-agent:publish")
+    }
+    ...
+}
+```
+
+`Can` also accepts platform permissions, for example `user.Can("llms:read")`. AI Studio gives the plugin the permissions of the caller, with the plugin's own grants included. For this reason, users with `plugins:execute` and full administrators pass the check. On a host that does not support permissions for each plugin, `Can` uses `IsAdmin`. AI Studio checks the admin RPC methods in the `rbac.rpc_methods` block of the manifest before the call reaches the plugin. Methods that are not in the list need the base `write` permission of the plugin.
+
+### Team Access to Resource Instances (Runtime)
+
+From v2.2.1, a plugin can control which Teams see its resource instances. By default, AI Studio grants every active instance of a plugin resource type to the **Default** Team. Every user is a member of this Team, so every user sees the instance in the AI Portal.
+
+For a type whose instances must reach only specific Teams, register the type with `DefaultAccess: plugin_sdk.DefaultAccessExplicit` (manifest: `"default_access": "explicit"`). The plugin then manages the grants itself.
+
+Requires: `resource-access.manage` scope. Studio only. Each call works only for resource types that this plugin registered. Other calls return `PermissionDenied`.
+
+```go
+studio := ctx.Services.Studio()
+
+teams, err := studio.ListGroups(ctx)                           // [{ID, Name, IsDefault}]
+granted, err := studio.GetResourceInstanceGroups(ctx, "agent", "ast_1")
+// Add teams (replace=false) or set exactly these teams (replace=true; empty revokes all)
+granted, err = studio.SetResourceInstanceGroups(ctx, "agent", "ast_1", []uint32{defaultTeamID}, false)
+
+// Which instances may this portal user see? The platform's own rule: team
+// managers (groups:write) see everything, everyone else what their teams hold.
+seeAll, ids, err := studio.ListAccessibleResourceInstances(ctx, "agent", userID)
+```
+
+- These grants are the same grants that the Teams page edits. The calls read the changes that an administrator makes on the Teams page.
+- An instance must be active (`ResourceInstance.IsActive`) to appear anywhere.
+- The Community Edition has no Team segmentation. It ignores `explicit`, and instances always join the Default Team.
+- Active instances of `auto` types (the default) join the Default Team at registration. They also join it when the plugin reports a change with `NotifyResourceInstanceChanged`.
 
 ### LLM Operations
 
@@ -785,6 +902,116 @@ log.Printf("Total LLMs: %d", count)
 
 **Note**: For complete Studio Services documentation including Tools, Apps, Plugins, Datasources, and Filters, see the examples in the working plugins at `examples/plugins/studio/service-api-test/`.
 
+### Model Prices
+
+From v2.1.0, Studio plugins can list model prices from the control plane.
+
+Requires: `pricing.read` scope.
+
+```go
+import "github.com/TykTechnologies/midsommar/v2/pkg/ai_studio_sdk"
+
+// All prices, with an optional vendor filter and pagination
+resp, err := ai_studio_sdk.ListModelPrices(ctx, "", 1, 100)
+if err != nil {
+    return fmt.Errorf("list model prices: %w", err)
+}
+for _, p := range resp.ModelPrices {
+    log.Printf("%s/%s", p.Vendor, p.Model)
+}
+
+// All prices for one vendor
+byVendor, err := ai_studio_sdk.GetModelPricesByVendor(ctx, "anthropic")
+```
+
+## Governed Metadata (Enterprise)
+
+From v2.2.0, Studio plugins can read, validate, write, and delete the governed metadata of LLMs, tools, data sources, and plugin resource types that support metadata.
+
+- Object types are `llm`, `tool`, `datasource`, or `plugin_resource:<plugin_id>:<slug>`. For its own resource types, a plugin can use `plugin_resource:self:<slug>` (`plugin_sdk.SelfResourceObjectType`), and AI Studio resolves it.
+- Object IDs are the numeric ID as a string, or the resource instance ID.
+- Scopes: `metadata.read` (get, resolve schema, validate, and read the change history) and `metadata.write` (set and delete). Declare them under `permissions.services` in the manifest.
+- In the Community Edition, writes fail with `FailedPrecondition`.
+
+```go
+studio := ctx.Services.Studio()
+objectType := plugin_sdk.SelfResourceObjectType("prompts") // or "llm", "tool", "datasource"
+
+// Which fields apply, is the schema enforced, and which vocabulary terms do the fields use?
+schema, err := studio.GetResolvedMetadataSchema(ctx, objectType)
+if schema.HasFields() && schema.IsEnforced() { /* saves must pass validation */ }
+
+// Read what is stored (every field)
+valuesJSON, found, err := studio.GetObjectMetadata(ctx, objectType, "ast_1")
+
+// Read for an audience: only portal-visible fields, plus a display-ready list
+valuesJSON, displayJSON, found, err := studio.GetObjectMetadataForAudience(ctx, objectType, "ast_1", plugin_sdk.MetadataVisibilityPortal)
+
+// Validate without saving
+valid, enforced, resultJSON, err := studio.ValidateObjectMetadata(ctx, objectType, `{"risk_tier":"high"}`)
+
+// Write (merge=true keeps keys not present in the payload)
+ok, storedJSON, resultJSON, err := studio.SetObjectMetadata(ctx, objectType, "ast_1", `{"risk_tier":"high"}`, true)
+if err == nil && !ok {
+    // an enforced schema rejected the values; resultJSON holds {errors[], warnings[]}
+}
+
+// Remove when the object itself is deleted (absent records succeed)
+err = studio.DeleteObjectMetadata(ctx, objectType, "ast_1")
+
+// Change history, newest first (limit 0 means 100, maximum 500)
+entries, err := studio.ListObjectMetadataAudit(ctx, objectType, "ast_1", 50)
+```
+
+- If the `governed_metadata` object hook of another plugin rejects a write, the call returns `PermissionDenied`.
+- AI Studio audits every successful write or delete with the source `plugin:<id>`, and emits `system.governed_metadata.updated` or `system.governed_metadata.deleted`.
+- If you use `plugin_resource:self:` without a plugin context, the call returns `InvalidArgument`.
+- In the Community Edition, `ListObjectMetadataAudit` returns an empty list.
+
+## Governance Reads (Enterprise)
+
+From v2.2.1, governance plugins can read the parts of AI Studio objects and their audit records. For example, an asset catalog can map which agents depend on which LLMs, tools, and MCP servers. Studio only.
+
+```go
+studio := ctx.Services.Studio()
+
+// Audit trail of one resource (audit.read): newest first, never request or
+// response bodies; diffs are redacted at storage. mutationsOnly drops reads.
+records, err := studio.ListAuditRecords(ctx, "llm", "42", 50, true)
+
+// MCP servers (mcp-servers.read): never upstream URLs, auth details or definitions
+servers, total, err := studio.ListMCPServers(ctx, 1, 50)
+server, err := studio.GetMCPServer(ctx, 7)
+
+// Routers (routers.read), with what they can route to
+routers, total, err := studio.ListModelRouters(ctx, 1, 50)      // RouterSummary.LLMIDs
+semantic, total, err := studio.ListSemanticRouters(ctx, 1, 50)  // LLMIDs (targets + judge), ModelRouterIDs
+```
+
+- `ListAuditRecords` uses the resource type names of the audit trail: `llm`, `tool`, `datasource`, `mcp_server`, `model_router`, `semantic_router`, and `app`.
+- The Community Edition returns `Unimplemented` for the audit trail and routers. A node that does not store audit records in the database returns `FailedPrecondition`.
+- `GetApp` and `ListApps` (`apps.read`) return every binding of the App: `LlmIds`, `ToolIds`, `DatasourceIds`, `McpServerIds`, `ModelRouterIds`, `SemanticRouterIds`, and `PluginResources` (`{PluginId, ResourceTypeSlug, InstanceId}`).
+
+### App Lifecycle Control
+
+From v2.2.1, a governance plugin can suspend or reactivate an App, and set flags on it. For example, an asset catalog can suspend the App of an agent when its review lapses. The plugin cannot change what the App can access. Bindings, credentials, and budgets need `apps.write`, and a governance plugin must not ask for that scope.
+
+Requires: `apps.lifecycle` scope. Studio only.
+
+```go
+inactive := false
+changed, err := studio.SetAppGovernanceState(ctx, appID, &inactive,
+    map[string]string{"review_lapsed": "2026-09-01"}, // "" clears a flag
+    "review of asset \"Claims agent\" lapsed")
+```
+
+- If `isActive` is `nil`, the App state does not change. You can send only flags.
+- AI Studio stores flags on the App under `metadata.governance_flags.<name>`, as `{value, reason, set_by: "plugin:<id>", at}`. The App details page shows them.
+- A call can set a maximum of 16 flags. Flag names can have a maximum of 64 characters, without spaces. Values can have a maximum of 256 characters.
+- The `governance_flags` key is reserved. App edits keep the stored flags, App creation drops a supplied `governance_flags`, and `PatchAppMetadata` refuses the key with `InvalidArgument`.
+- AI Studio writes each change to the audit trail as `Plugin Update App Governance State`, with the reason.
+- A state change emits `system.app.updated`. A plugin that subscribes to this topic also receives its own changes, so its handler must be idempotent.
+
 ## Gateway Services
 
 Available when `ctx.Runtime == plugin_sdk.RuntimeGateway`.
@@ -895,6 +1122,32 @@ if ctx.Runtime == plugin_sdk.RuntimeGateway {
     }
 }
 ```
+
+### Store App
+
+From v2.1.0, gateway plugins can write an App into the local Edge Gateway database. Auth plugins use this to provision Apps without waiting for the next configuration sync. For example, the OAuth2 client-credentials plugin stores an App that AI Studio created for a new client.
+
+Requires: `apps.write` scope. Gateway only. The Studio runtime returns an error, so multi-runtime plugins must check `ctx.Runtime`.
+
+```go
+if ctx.Runtime == plugin_sdk.RuntimeGateway {
+    err := ctx.Services.Gateway().StoreApp(
+        ctx,
+        appConfig.AppID,
+        appConfig.Name,
+        appConfig.Description,
+        true,                 // isActive
+        appConfig.UserID,
+        appConfig.MetadataJSON,
+        appConfig.Namespace,
+        appConfig.LLMIDs,
+        appConfig.ToolIDs,
+        appConfig.DatasourceIDs,
+    )
+}
+```
+
+`StoreApp` creates the App if it does not exist, and updates it if it exists. On update, it replaces the tool and data source associations in one transaction.
 
 ## Tool Operations (Studio Only)
 
@@ -1103,6 +1356,8 @@ func PatchAppMetadata(ctx context.Context, appID uint32, key, value string, dele
 ```
 
 Atomically updates a single metadata key on an app without requiring a full app update. This is safer than `UpdateAppWithMetadata` for concurrent modifications since it uses database-level transactions with row locking.
+
+Requires: `apps.write` scope. In versions before 2.2.0, the scope was not mapped, and calls to `PatchAppMetadata` failed. The key `governance_flags` is reserved and returns `InvalidArgument`.
 
 **Set a metadata key** (value must be JSON-encoded):
 ```go
@@ -1441,6 +1696,32 @@ llmsResp, err := ai_studio_sdk.ListLLMs(ctx, 1, 10)
 | GenerateEmbedding, StoreDocuments, ProcessAndStoreDocuments | `datasources.embeddings` |
 | QueryDatasource, QueryDatasourceByVector | `datasources.query` |
 | CreateSchedule, GetSchedule, ListSchedules, UpdateSchedule, DeleteSchedule | `scheduler.manage` |
+| StoreApp (Gateway) | `apps.write` |
+| ListModelPrices, GetModelPricesByVendor | `pricing.read` |
+| CreateNotification | `notifications.write` |
+| RegisterResourceTypes, SyncResourceTypes | `resource-types.manage` |
+| RegisterPermissionResources | `rbac.register` |
+| GetObjectMetadata, GetResolvedMetadataSchema, ValidateObjectMetadata, ListObjectMetadataAudit | `metadata.read` |
+| SetObjectMetadata, DeleteObjectMetadata | `metadata.write` |
+| ListAuditRecords (v2.2.1) | `audit.read` |
+| ListMCPServers, GetMCPServer (v2.2.1) | `mcp-servers.read` |
+| ListModelRouters, GetModelRouter, ListSemanticRouters, GetSemanticRouter (v2.2.1) | `routers.read` |
+| ListGroups, GetResourceInstanceGroups, SetResourceInstanceGroups, ListAccessibleResourceInstances (v2.2.1) | `resource-access.manage` |
+| SetAppGovernanceState (v2.2.1) | `apps.lifecycle` |
+
+### Valid UTF-8 in Protobuf Strings
+
+Protobuf string fields must contain valid UTF-8. From v2.1.0, the SDK cleans strings at its own gRPC boundary, for example in `Call()` and `PortalCall()`. If your plugin puts external data (file content, third-party responses) into a protobuf string field, clean the data first. Otherwise the call fails with `string field contains invalid UTF-8`.
+
+```go
+content, _ := os.ReadFile(path)
+resp := &pb.ProcessFileResponse{
+    Content: plugin_sdk.SanitizeUTF8(content),   // []byte to valid string
+}
+clean := plugin_sdk.SanitizeUTF8String(rawString) // string to valid string
+```
+
+Both functions replace invalid sequences with the Unicode replacement character (U+FFFD).
 
 ## RAG & Embedding Services
 
