@@ -44,13 +44,49 @@ Executes **before** authentication. Use for:
 ### 2. AuthHandler
 
 **Interface**: `AuthHandler`
-**Method**: `HandleAuth(ctx Context, req *pb.EnrichedRequest) (*pb.PluginResponse, error)`
+**Method**: `HandleAuth(ctx Context, req *pb.AuthRequest) (*pb.AuthResponse, error)`
 
-**Replaces** default token authentication. Use for:
+**Replaces** App key authentication on the endpoints that it is attached to. Use for:
 - Custom authentication schemes (OAuth, JWT, API keys)
 - Integration with external identity providers
 - Multi-factor authentication
-- Custom authorization logic
+
+Return `Authenticated: true` with the `AppId` that the caller acts as. The gateway treats a response without a valid `AppId` as a rejection. The gateway uses the grants of that App to decide what the request can reach.
+
+You can also return identity information for audit. From v2.2.1, the gateway records these values with the request:
+
+- `UserId`: The user that the call is for, for example the subject of a delegated token. The proxy log stores it as `on_behalf_of`.
+- `Claims["auth_actor"]`: The agent that acts for the user, for example the `act` or `azp` claim of the token. The proxy log stores it as `acting_agent`.
+- Other `Claims`: Other values for audit.
+
+The gateway sends these values to post-auth plugins and custom endpoints. The proxy logs on the App and LLM pages show them as **For** and **Agent**. These values are for audit only. The plugin does not decide what the request can reach.
+
+#### Where Auth Plugins Run
+
+From v2.2.1, every endpoint of the Edge Gateway has an ordered list of auth plugins:
+
+| Endpoint | List |
+| :--- | :--- |
+| `/llm/...` | The plugins of the LLM that have the auth hook |
+| `/ai/{slug}`, `/v1`, `/anthropic/{slug}`, `/router/{slug}` | The list of the LLM, or the list of the Model Router or Semantic Router when the slug is a router |
+| `/datasource/{slug}` | The list of the data source |
+| `/tools/{slug}` and its MCP transports | The list of the tool |
+| `/plugins/{slug}/...` (endpoints that require authentication) | The list of the custom endpoint plugin |
+
+When an endpoint has auth plugins, the gateway uses only these plugins to authenticate its requests:
+
+- The gateway asks the plugins in order. The first plugin that authenticates the request wins. Put the plugin that authenticates the most requests first, to make fewer plugin calls.
+- If all plugins refuse the request, the gateway returns `401` with `invalid credential`. The gateway logs the reason of the plugin, but does not send it to the caller.
+- The gateway refuses App keys on that endpoint. AI Studio OAuth access tokens for MCP still work on tools.
+- If the gateway cannot load any of the attached plugins, it returns `503`. It does not use App keys instead.
+
+An endpoint without auth plugins uses App keys as usual.
+
+<Warning>
+- Auth plugin lists apply on Edge Gateways only. The embedded gateway in AI Studio does not run auth plugins. It accepts App keys and refuses plugin tokens on every endpoint. Serve plugin-authenticated traffic through an Edge Gateway. If an endpoint must accept only plugin tokens, do not make the embedded gateway available to its clients.
+- If you deactivate an attached auth plugin, its endpoints accept App keys again. An endpoint is protected only while its plugin is active. To stop access to an endpoint, deactivate the endpoint or remove its grants, not its plugin.
+- In v2.2.0, the auth plugins of an LLM ran only on `/llm/`. From v2.2.1, they also run on `/ai`, `/v1`, `/anthropic`, and `/router`. For an LLM with an auth plugin, clients on these endpoints need tokens that the plugin accepts.
+</Warning>
 
 **Note**: Unified SDK provides credential validation via `ctx.Services.Gateway().ValidateCredential()`
 
@@ -357,6 +393,23 @@ curl -X PUT http://localhost:3000/api/v1/llms/1/plugins \
   }'
 ```
 
+### 7. Attach an Auth Plugin to Other Endpoints
+
+From v2.2.1, data sources, tools, Model Routers, Semantic Routers, and custom endpoint plugins have their own ordered list of auth plugins. Set the list in the **Authentication plugins** section of the detail page in the admin UI, or use the API:
+
+```bash
+curl -X PUT http://localhost:3000/api/v1/datasources/4/auth-plugins \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"plugin_ids": [7]}'
+```
+
+The same `GET` and `PUT .../auth-plugins` endpoints exist under `/api/v1/tools/{id}`, `/api/v1/model-routers/{id}`, `/api/v1/semantic-routers/{id}`, and `/api/v1/plugins/{id}`.
+
+- You can add only plugins that have the auth hook.
+- An empty list removes all the auth plugins.
+- Edges use the new list after the next configuration push. Edges must run v2.2.1 or later. An older edge still accepts App keys on these endpoints.
+
 ## Configuration Schema
 
 Provide JSON Schema for plugin configuration using the `ConfigSchemaProvider` interface:
@@ -515,7 +568,7 @@ import (
     "net/http"
     "time"
 
-    "github.com/TykTechnologies/midsommar/microgateway/plugins/sdk"
+    "github.com/TykTechnologies/midsommar/v2/pkg/gatewayplugin/sdk"
 )
 
 type ElasticsearchCollector struct {
@@ -852,7 +905,7 @@ Gateway plugins can send data back to AI Studio (the control plane) using the `S
 - Sending alerts or notifications to central plugins
 
 ```go Expandable
-import "github.com/TykTechnologies/midsommar/v2/microgateway/plugins/sdk"
+import "github.com/TykTechnologies/midsommar/v2/pkg/gatewayplugin/sdk"
 
 func (p *MyPlugin) HandlePostAuth(ctx sdk.Context, req *pb.EnrichedRequest) (*pb.PluginResponse, error) {
     // Send JSON data to control plane
