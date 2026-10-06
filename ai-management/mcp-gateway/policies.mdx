@@ -1,11 +1,11 @@
 ---
 title: "MCP Gateway Policies"
-description: "How Tyk security policies govern MCP proxy access: which proxies a consumer can reach, which tools and resources they can invoke, and what rate limits and quotas apply, all configured in one place and applied consistently across every key."
+description: "Configure Tyk security policies for MCP proxies: per-tool access and rate limits, JSON-RPC method restrictions, and how Tyk merges multiple policies."
 keywords: "MCP, Model Context Protocol, MCP policies, access control, rate limiting, mcp_primitives, mcp_access_rights, json_rpc_methods_access_rights, security policy, MCP proxy"
-sidebarTitle: "MCP Policies"
+sidebarTitle: "Policies"
 ---
 
-A Tyk security policy defines the access rules and usage limits for a consumer. For MCP proxies, policies go beyond the standard rate limit and quota controls available for REST APIs. They let you control access and apply rate limits at the level of individual tools, resources, and prompts, and restrict which JSON-RPC protocol methods a consumer can use at all. This page explains what MCP policies control, how to configure them, and how Tyk merges multiple policies applied to the same key.
+A Tyk security policy defines the access rules and usage limits for a consumer. For MCP proxies, policies go beyond the standard rate limit and quota controls available for REST APIs. They let you control access and apply rate limits at the level of individual tools, resources, and prompts, and restrict which JSON-RPC protocol methods a consumer can use at all.
 
 ---
 
@@ -19,7 +19,7 @@ For MCP proxies, policies serve three purposes:
 
 **Governing MCP capabilities**: beyond proxy-level access, policies let you restrict which JSON-RPC methods a consumer can use and which specific tools, resources, and prompts they can invoke. This lets you give different consumers different views of the same MCP proxy without creating separate proxy definitions.
 
-**Enforcing usage limits**: policies apply rate limits and quotas at multiple levels: across the whole policy, per MCP proxy, per JSON-RPC method, and per named primitive. Each consumer key tracks its own independent counters.
+**Enforcing usage limits**: policies apply rate limits at several levels: across the whole policy, per MCP proxy, per JSON-RPC method, and per named primitive. Each consumer key tracks its own independent counters.
 
 ---
 
@@ -36,6 +36,8 @@ Tyk evaluates access control at three levels, in order:
 Method rules match the methods that clients actually send, and those depend on the protocol version. Clients using `2026-07-28` don't send session methods such as `initialize` and `ping`, so a method rule or rate limit keyed on one of them never matches that traffic. See [Session Methods and Headers](/ai-management/mcp-gateway/protocol-versions#session-methods-and-headers).
 
 **Primitive access** (`mcp_access_rights`): controls which specific tools, resources, and prompts the consumer can invoke. Each primitive type (tools, resources, prompts) has its own `allowed` and `blocked` list. Values are Go regular expressions, so `"internal_.*"` matches any tool whose name starts with `internal_`. A non-empty `allowed` list acts as an explicit allowlist; `blocked` entries are excluded from whatever is otherwise permitted.
+
+Policy rules apply in addition to the proxy's own `allow` and `block` middleware. A policy cannot give a key access to a primitive that the proxy blocks.
 
 ### How Access Rules Shape Discovery
 
@@ -63,7 +65,11 @@ Rate limits can be applied at four levels within a policy entry for an MCP proxy
 
 **Per primitive** (`mcp_primitives`): sets a rate limit scoped to a specific named tool, resource, or prompt. A consumer who exhausts their limit on `generate_report` is blocked from calling that tool while remaining free to call others.
 
-All applicable limits are checked independently on every call. Whichever is exhausted first blocks the request.
+All applicable limits are checked independently on every call. Whichever is exhausted first blocks the request. For example, a call to `get_report` counts against both the `tools/call` method limit and the `get_report` primitive limit, if both are set.
+
+Method and primitive limits (`json_rpc_methods` and `mcp_primitives`) are rate limits only. They do not support quotas or throttling.
+
+The proxy's own middleware rate limit also applies. It is shared by all consumers. See [Policies versus middleware](/ai-management/mcp-gateway/core-concepts#policies-versus-middleware).
 
 ### Quotas
 
@@ -82,7 +88,7 @@ A quota sets a maximum total number of calls over a renewal period (daily, weekl
 2. On the **Access Rights** tab, find your MCP proxy in the list and click it to add it to the policy.
 3. Expand the proxy's access rights block. You will see sections for primitive rate limits and access control.
 4. To configure **primitive rate limits**, click **Add Rate Limit**. Set the **Rate** and **Per** (in seconds) values, then click **Add Primitive** to associate a named tool, resource, or prompt with that limit. Add multiple primitives to the same group if they share a limit; create separate groups for different limits.
-5. To configure **access control** for methods and primitives, use the access control tabs within the access rights block. Add tool, resource, prompt, or method names and toggle them between allowed and blocked.
+5. To configure **access control** for tools, resources, and prompts, use the **Primitive based access** section within the access rights block. Add a name, select the type, and set it to **Allowed** or **Blocked**.
 6. On the **Configurations** tab, set the policy name, key expiry, and global rate limit.
 7. Click **Create Policy**.
 
@@ -94,7 +100,7 @@ The following example creates a policy that grants access to a weather MCP proxy
 
 ```json expandable
 {
-  "name": "Weather Agent - Standard Tier",
+  "name": "Weather Agent Standard Tier",
   "state": "active",
   "rate": 1000,
   "per": 60,
@@ -238,6 +244,8 @@ A consumer key can have multiple policies applied to it. Tyk merges MCP-specific
 - **Rate limits**: the highest effective request rate wins. If two policies define a limit for the same primitive, Tyk compares `rate` divided by `per` and applies the limit that allows more requests. See [Combining Multiple Policies Configuring Rate Limits](/api-management/rate-limit#combining-multiple-policies-configuring-rate-limits).
 - **`mcp_access_rights` and `json_rpc_methods_access_rights`**: `allowed` lists are merged by union (the consumer gains access to the combined set). `blocked` lists are also unioned, so a primitive blocked in any policy remains blocked. A policy that sets no rules for a field is ignored when merging, so it does not widen an allowlist that another policy sets. For example, if one policy allows only `tools/list` and `tools/call` and a second policy sets no method rules, the consumer can call only those two methods.
 - **Proxy access**: the consumer gains access to the union of all proxies listed across all their policies.
+
+A policy with no MCP access rules does not widen access. For example, if policy A allows four tools and policy B has no `mcp_access_rights`, the key can call only those four tools. A primitive that any policy blocks stays blocked, even if another policy allows it.
 
 ---
 
