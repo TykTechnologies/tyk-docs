@@ -1,0 +1,83 @@
+---
+title: "MCP Error Codes"
+sidebarTitle: "Error Codes"
+description: "Reference for the JSON-RPC error codes Tyk MCP Gateway returns, including the codes used for each MCP protocol version and the HTTP status that accompanies each code."
+keywords: "MCP, error codes, JSON-RPC, -32001, -32002, -32003, -33001, -33004, -32020, -32022, -32600, -32601, -32602, HTTP status, Tyk MCP Gateway"
+---
+
+When Tyk MCP Gateway rejects an MCP request, it returns a JSON-RPC error that tells the client what went wrong, together with a matching HTTP status. The error code depends on the reason for the rejection and, for gateway errors, on the MCP protocol version the request uses. This page lists every code Tyk returns, so you can handle them in clients and match them in logs, metrics, and alerts.
+
+## Error Response Format
+
+Tyk returns errors as standard JSON-RPC 2.0 error responses. The `id` matches the request's `id`, and `data.http_code` repeats the HTTP status. For example, a stateful client that exceeds its rate limit receives:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "error": {
+    "code": -32003,
+    "message": "Rate Limit Exceeded",
+    "data": {
+      "http_code": 429
+    }
+  },
+  "id": 7
+}
+```
+
+The same rejection for a request that uses `2026-07-28` carries code `-33004` instead. The rest of the response is unchanged.
+
+Errors that the upstream MCP server returns are passed to the client unchanged. The codes on this page are the ones Tyk itself generates.
+
+## Gateway Errors
+
+Tyk returns gateway errors when a request fails authentication, policy, traffic, or upstream checks. The code depends on the protocol version the request uses, which Tyk detects as described in [MCP Protocol Versions](/ai-management/mcp-gateway/protocol-versions):
+
+| Condition | 2025-11-25 | 2026-07-28 | HTTP status |
+|---|---|---|---|
+| Server error (any other gateway rejection) | `-32000` | `-33000` | Varies |
+| Authentication required | `-32001` | `-33001` | `401 Unauthorized` |
+| Access denied | `-32002` | `-33002` | `403 Forbidden` |
+| Rate limit exceeded | `-32003` | `-33004` | `429 Too Many Requests` |
+| Upstream error | `-32004` | `-33006` | `502`, `503`, or `504` |
+| Quota exceeded | `-32005` | `-33003` | `403 Forbidden` |
+| IP address blocked | `-32006` | `-33005` | `403 Forbidden` |
+
+The two ranges don't follow the same order. For example, quota exceeded is `-32005` for stateful requests but `-33003` for `2026-07-28` requests, and rate limit exceeded is `-32003` and `-33004`. Match each code explicitly rather than calculating one from the other.
+
+The `2026-07-28` revision retires `-32002`, which earlier revisions used for "resource not found", and forbids servers on that revision from returning it. Tyk uses the `-33000` range for all gateway errors on `2026-07-28` requests, so none of its codes overlap with codes the specification defines.
+
+## Request Validation Errors
+
+Tyk checks the protocol declarations and mirrored headers of each request before authentication runs. These codes are the same for every protocol version and always return `400 Bad Request`:
+
+| Code | Name | Returned when |
+|---|---|---|
+| `-32020` | Header mismatch | `MCP-Protocol-Version` is repeated or malformed, declarations in the header and body conflict, or a `2026-07-28` request's `MCP-Protocol-Version`, `Mcp-Method`, or `Mcp-Name` header is missing or doesn't match the body. |
+| `-32022` | Unsupported protocol version | The request declares a version that Tyk doesn't support. `data.requested` holds the requested version and `data.supported` lists the supported versions. |
+
+For the rules behind these checks, see [Requests Using 2026-07-28](/ai-management/mcp-gateway/protocol-versions#requests-using-2026-07-28).
+
+## Standard JSON-RPC Errors
+
+Tyk also returns the standard error codes defined by the JSON-RPC 2.0 specification:
+
+| Code | Name | HTTP status | Returned when |
+|---|---|---|---|
+| `-32700` | Parse error | `400 Bad Request` | The request body isn't a valid JSON-RPC request object. Includes a request body that is a JSON array. |
+| `-32600` | Invalid request | `400 Bad Request` | The request isn't a valid JSON-RPC request, has no `method` field, is larger than 1 MB, or doesn't have exactly one `Content-Type` header with the media type `application/json`. |
+| `-32601` | Method not found | `404 Not Found` | The method isn't available. Includes the session methods that `2026-07-28` requests can't use, such as `initialize` and `ping`. |
+| `-32602` | Invalid params | `400 Bad Request` | The request's parameters are invalid. Includes `2026-07-28` requests with missing or malformed `_meta` fields. |
+| `-32603` | Internal error | `500 Internal Server Error` | Tyk failed to process the request. |
+
+## Responses Without a JSON-RPC Error
+
+Some rejections happen at the HTTP layer and don't include a JSON-RPC error body:
+
+- **Origin validation**: a request from an untrusted browser origin receives a plain-text `403 Forbidden` before Tyk reads the request body. See [Origin Validation](/ai-management/mcp-gateway/protocol-versions#origin-validation).
+- **Unsupported HTTP method**: a `GET` or `DELETE` request that uses `2026-07-28`, or that doesn't belong to an existing session on a REST API to MCP proxy, receives `405 Method Not Allowed` with an `Allow: POST` header.
+- **Invalid discovery response**: when the upstream returns a malformed `server/discover` response, Tyk returns `502 Bad Gateway` to the client.
+
+## Error Codes in Logs and Metrics
+
+Tyk records the JSON-RPC error code of a failed request in the `mcp_error_code` field of [access logs](/ai-management/mcp-gateway/mcp-access-logs) and in the `mcp_error_code` attribute of [MCP metrics](/ai-management/mcp-gateway/mcp-metrics). If you serve clients on more than one protocol version, include both ranges in log filters and alert rules. For example, an alert on rate limiting should match both `-32003` and `-33004`.
