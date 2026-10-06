@@ -23,7 +23,7 @@ Resource Provider plugins allow you to **register custom resource types** that i
 
 By default, Apps in AI Studio bundle three built-in resource types: LLMs, Datasources, and Tools. The Resource Provider capability lets plugins register additional resource types that:
 
-- **Appear in the Create App form** as selectable resources (via a plugin-provided Web Component or a platform-rendered multi-select)
+- **Appear in the Create App form** as selectable resources. In the AI Portal, each type has its own tab in the **Add access** picker. In the admin App form, the type uses a plugin-provided Web Component or a platform-rendered multi-select.
 - **Participate in privacy scoring** with the generalized rule: no resource privacy score may exceed the maximum LLM privacy score in the app
 - **Integrate with group-based access control** so admins can assign resource instances to groups, and users only see resources available to their groups
 - **Support the community submission workflow** so end-users can submit new resource instances for admin review
@@ -38,7 +38,7 @@ By default, Apps in AI Studio bundle three built-in resource types: LLMs, Dataso
 
 ### How It Works
 
-```
+```text expandable
 Plugin declares resource types via manifest or GetResourceTypeRegistrations()
     |
 Platform registers types in DB, shows them in the App Form
@@ -58,7 +58,7 @@ Config snapshot includes associations for gateway access
 
 ### 1. Implement the ResourceProvider Interface
 
-```go Expandable
+```go Expandable expandable
 import "github.com/TykTechnologies/midsommar/v2/pkg/plugin_sdk"
 
 type MyPlugin struct {
@@ -144,7 +144,7 @@ func (p *MyPlugin) CreateResourceInstance(ctx plugin_sdk.Context, slug string, p
 
 Add the `resource_types` section to your plugin manifest:
 
-```json Expandable
+```json Expandable expandable
 {
   "id": "com.example.mcp-registry",
   "name": "MCP Registry",
@@ -159,13 +159,31 @@ Add the `resource_types` section to your plugin manifest:
       "description": "Model Context Protocol servers for tool access",
       "icon": "Hub",
       "has_privacy_score": true,
-      "supports_submissions": true
+      "supports_submissions": true,
+      "access_granted_via_app": true
     }
   ]
 }
 ```
 
 Resource types declared in the manifest are automatically registered when the plugin loads. The `GetResourceTypeRegistrations()` method provides a runtime fallback and can return additional types not in the manifest.
+
+### Access Class: Does an App Credential Give Access?
+
+From v2.2.0, each type declares if an App credential gives access to its instances. For example, an App credential gives access to an MCP server behind the plugin's gateway proxy. The proxy checks the bindings of the calling App on every request. An App credential does not give access to a cataloged agent or prompt. A developer reads it, or requests access through the plugin's own workflow, and an App binding grants nothing.
+
+`access_granted_via_app` records this difference for each type. Only types where the value is `true`:
+
+- Appear in the App forms (portal builder and admin form)
+- Can be bound to an App
+- Show the **Build app** action in the AI Portal catalog
+- Go to the gateway configuration snapshot (`plugin_resources`)
+
+Types where the value is `false` still appear in the AI Portal catalog, and you can assign them to Teams for visibility. If such a type sets `portal_detail_path`, the catalog card opens the plugin's own page instead of the built-in detail page. Types where the value is `true` can also set `portal_detail_path`. They keep the built-in page and **Build app**, and the built-in page adds a **View in ...** link to the plugin page.
+
+If you leave out the key, AI Studio decides from the plugin hooks. The value is `true` when the plugin declares `resource_provider` and `custom_endpoint`, and `false` if not. Existing plugins need no change. A resource instance can override the value of its type with `ResourceInstance.AccessGrantedViaApp` (`nil` uses the type value).
+
+AI Studio stores the value each time it registers the type (plugin load, or `SyncResourceTypes`). After you upgrade AI Studio, the types of an installed plugin read as `false` until the plugin loads again. This occurs on the first start after the upgrade.
 
 ### 3. Serve the Plugin
 
@@ -183,13 +201,13 @@ func main() {
 | `ListResourceInstances(ctx, slug)` | App form load, Group form load | List available instances |
 | `GetResourceInstance(ctx, slug, id)` | Config snapshot build | Get instance details for gateway |
 | `ValidateResourceSelection(ctx, slug, ids, appID)` | App create/update | Custom validation logic |
-| `CreateResourceInstance(ctx, slug, payload)` | Submission approval | Create instance from approved submission |
+| `CreateResourceInstance(ctx, slug, payload)` | Submission approval | Create instance from approved submission (payload is a `SubmissionEnvelope`) |
 
 ## SDK Types
 
 ### ResourceTypeRegistration
 
-```go
+```go expandable
 type ResourceTypeRegistration struct {
     Slug                string                 // Machine-readable ID (unique per plugin)
     Name                string                 // Display name in the UI
@@ -198,6 +216,10 @@ type ResourceTypeRegistration struct {
     HasPrivacyScore     bool                   // Whether instances carry privacy scores
     SupportsSubmissions bool                   // Whether community submissions are supported
     FormComponent       *ResourceFormComponent // Custom Web Component (nil = standard multi-select)
+    SubmissionSchema    string                 // JSON Schema (object) for community submissions
+    AccessGrantedViaApp *bool                  // An App credential grants access; nil = platform default
+    PortalDetailPath    string                 // Same-origin portal path template, "{id}" replaced
+    DefaultAccess       string                 // DefaultAccessAuto (default) or DefaultAccessExplicit (v2.2.1)
 }
 ```
 
@@ -205,12 +227,13 @@ type ResourceTypeRegistration struct {
 
 ```go
 type ResourceInstance struct {
-    ID           string // Plugin-assigned unique identifier
-    Name         string // Display name
-    Description  string // Optional description
-    PrivacyScore int    // 0-100 (only meaningful if type has HasPrivacyScore)
-    Metadata     []byte // Opaque JSON included in config snapshots
-    IsActive     bool   // Whether instance is currently usable
+    ID                  string // Plugin-assigned unique identifier
+    Name                string // Display name
+    Description         string // Optional description
+    PrivacyScore        int    // 0-100 (only meaningful if type has HasPrivacyScore)
+    Metadata            []byte // Opaque JSON included in config snapshots
+    IsActive            bool   // Whether instance is currently usable
+    AccessGrantedViaApp *bool  // Per-instance override of the type's value; nil inherits
 }
 ```
 
@@ -268,6 +291,14 @@ User -> Group -> Catalogue -> LLM/Datasource/Tool
 
 When a user creates an App, they only see resource instances accessible via their group memberships. Admins bypass this filter and see all instances.
 
+### Default Access
+
+By default (`default_access: auto`), AI Studio grants every active instance to the Default Team, so every user sees it. From v2.2.1, AI Studio grants a new `auto` instance immediately. In earlier versions, the instance was not visible until the plugin loaded again.
+
+In the Enterprise Edition, a type can set `default_access: explicit`. Its instances then reach only the Teams that they are granted to. An administrator grants them on the Teams page, or the plugin grants them with `SetResourceInstanceGroups` (scope `resource-access.manage`). Refer to [Team Access to Resource Instances](/ai-management/ai-studio/plugins/service-api#team-access-to-resource-instances-runtime). The Community Edition always uses `auto`.
+
+From v2.2.1, the Teams page lists each plugin resource type and its published instances.
+
 ## Custom Form Components
 
 For richer selection UX, plugins can provide a **Web Component** instead of the platform's standard multi-select. Declare it in the `FormComponent` field:
@@ -299,7 +330,7 @@ The platform loads your Web Component JS from plugin assets and renders it in th
 
 ### Example Web Component
 
-```javascript Expandable
+```javascript Expandable expandable
 class MCPServerSelector extends HTMLElement {
   connectedCallback() {
     this.render();
@@ -355,20 +386,60 @@ message PluginResourceAssociation {
 
 Gateway plugins can access these associations from the app's config to make routing or authorization decisions. For example, an MCP proxy plugin could check if the requesting app has access to a specific MCP server by examining the `plugin_resources` field.
 
+The snapshot includes only types where `access_granted_via_app` is `true`. Bindings to other types stay on the App record in AI Studio, but AI Studio does not send them to gateways.
+
 ## Community Submissions
 
 When `SupportsSubmissions` is `true`, community users can submit new resource instances through the existing submission workflow:
 
-1. User fills out a submission form with `resource_type: "plugin"` and a `plugin_resource_type_id`
-2. The `resource_payload` contains plugin-defined JSON describing the new instance
-3. Admin reviews the submission (including a suggested privacy score)
-4. On approval, the platform calls the plugin's `CreateResourceInstance()` with the payload
-5. The plugin creates the instance and returns its ID
-6. The instance becomes available for selection in the App form
+1. The portal submission form lists the type next to Data Source and Tool. If the type declares a `SubmissionSchema`, AI Studio builds the form from the schema. If not, the user enters a name and free-form JSON.
+2. The user submits with `resource_type: "plugin"`, `plugin_resource_type_id`, and a `resource_payload`. AI Studio validates the payload against `SubmissionSchema` and refuses invalid payloads with `400`.
+3. An administrator reviews the submission in the Submission Queue, and sets the final privacy score.
+4. On approval, AI Studio calls the plugin's `CreateResourceInstance(ctx, slug, payload)`. The `payload` is a JSON submission envelope:
+
+```json expandable
+{
+  "source": "submission",
+  "submission_id": 123,
+  "submitter": {"id": 7, "email": "alice@acme.com", "name": "Alice"},
+  "reviewer":  {"id": 1, "email": "admin@acme.com", "name": "Admin"},
+  "final_privacy_score": 40,
+  "suggested_privacy": 30,
+  "privacy_justification": "...",
+  "assigned_catalogues": [],
+  "documentation_url": "...",
+  "notes": "...",
+  "attestations": [],
+  "resource_payload": { "name": "...", "purpose": "the user's form" }
+}
+```
+
+   Decode it with `plugin_sdk.ParseSubmissionEnvelope(payload)`. This function also accepts a bare payload from older callers.
+5. The plugin creates the instance and returns it. The RPC runs outside the database transaction of AI Studio, so use `submission_id` as an idempotency key. If an instance already exists for the submission, return that instance.
+6. The instance becomes available for selection in the App form.
+
+AI Studio does not support update proposals (`POST /common/submissions/update`) for plugin resource types. Plugins version their own instances.
+
+### Declare a Submission Schema
+
+```go
+{
+    Slug:                "agent",
+    Name:                "Agent",
+    SupportsSubmissions: true,
+    SubmissionSchema:    `{"type":"object","properties":{"name":{"type":"string"},"purpose":{"type":"string"}},"required":["name","purpose"]}`,
+}
+```
+
+The schema must describe an object. AI Studio validates it when it registers the type, and returns `ErrInvalidSubmissionSchema` if it is not valid.
+
+## Runtime Registration
+
+AI Studio registers the manifest `resource_types` at load time. If the plugin defines its types at runtime (for example, administrators define them inside the plugin), call `plugin_sdk.SyncResourceTypes(ctx, regs)` each time the set changes. The call registers the types in the list and deactivates the plugin's other types. It needs the `resource-types.manage` scope. During the call, AI Studio calls `ListResourceInstances` for each type, so return an empty list (not an error) while your state is still loading.
 
 ## Manifest Reference
 
-```json Expandable
+```json Expandable expandable
 {
   "resource_types": [
     {
@@ -378,6 +449,9 @@ When `SupportsSubmissions` is `true`, community users can submit new resource in
       "icon": "string",
       "has_privacy_score": false,
       "supports_submissions": false,
+      "access_granted_via_app": true,
+      "portal_detail_path": "/portal/plugins/my-plugin#/items/{id}",
+      "default_access": "auto",
       "form_component": {
         "tag": "string (custom element tag)",
         "entry_point": "string (JS asset path)"
@@ -395,6 +469,9 @@ When `SupportsSubmissions` is `true`, community users can submit new resource in
 | `icon` | No | `""` | Material icon name or plugin asset path |
 | `has_privacy_score` | No | `false` | Whether instances carry privacy scores |
 | `supports_submissions` | No | `false` | Whether community submissions are enabled |
+| `access_granted_via_app` | No | Based on hooks | Whether an App credential gives access to instances. If you leave it out, the value is `true` when the plugin declares `resource_provider` and `custom_endpoint`, and `false` if not. Controls the App forms, the **Build app** action, and the gateway snapshot. |
+| `portal_detail_path` | No | `""` | Same-origin path template to the portal page of an instance. AI Studio replaces `{id}` with the escaped instance ID. Portal plugin routes match the path exactly, so put the instance ID in the hash of a registered portal route. |
+| `default_access` | No | `"auto"` | `auto`: AI Studio grants active instances to the Default Team. `explicit` (Enterprise Edition, v2.2.1 and later): instances reach only the Teams that they are granted to. |
 | `form_component` | No | `null` | Custom Web Component for the App form (null = standard multi-select) |
 
 ## API Endpoints
@@ -403,14 +480,15 @@ These endpoints are available for frontend integration:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/v1/plugin-resource-types` | List all active registered resource types |
+| `GET` | `/api/v1/plugin-resource-types` | List all active registered resource types. Each type includes `access_granted_via_app` and `portal_detail_path`. |
+| `GET` | `/common/accessible-plugin-resources` | The types and instances that the caller can use. Each instance includes its effective `access_granted_via_app`. |
 | `GET` | `/api/v1/apps/:id/plugin-resources` | Get plugin resources for an app |
 | `GET` | `/api/v1/groups/:id/plugin-resources` | Get plugin resource access for a group |
 | `PUT` | `/api/v1/groups/:id/plugin-resources` | Set plugin resource access for a group (admin) |
 
 ### Set Group Plugin Resources
 
-```bash
+```bash expandable
 curl -X PUT /api/v1/groups/5/plugin-resources \
   -H "Authorization: Bearer $TOKEN" \
   -d '{
@@ -438,7 +516,7 @@ Resource Provider plugins often combine with other capabilities for a complete s
 
 ### Example: Complete MCP Registry Plugin
 
-```go Expandable
+```go Expandable expandable
 type MCPRegistryPlugin struct {
     plugin_sdk.BasePlugin
 }
