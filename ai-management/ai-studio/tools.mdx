@@ -32,7 +32,7 @@ Tools bridge the gap between conversational AI and external functionalities. By 
 
     Privacy levels define how data is protected by controlling LLM access based on its sensitivity. See [Privacy Levels](/ai-management/ai-studio/privacy-levels) for the full score mapping and how the comparison works.
 *   **Tool Catalogues:** Tools are grouped into logical collections called Catalogues. This simplifies management and access control.
-*   **Filters:** Optional [Filters](/ai-management/ai-studio/filters) can pre-process requests sent to the tool. They can also post-process responses received from it, for example for data sanitization.
+*   **Filters:** Optional [Filters](/ai-management/ai-studio/filters) can check and change the arguments sent to the tool and the responses from it. For example, they can remove sensitive data. Refer to [Tool Filters](/ai-management/ai-studio/filters#tool-filters).
 *   **Documentation:** Administrators can provide additional natural language documentation or instructions for the LLM. This guides the LLM on how and when to use the tool effectively.
 *   **Dependencies:** Tools can declare dependencies on other tools, although the exact usage pattern may vary.
 
@@ -40,11 +40,55 @@ Tools bridge the gap between conversational AI and external functionalities. By 
 
 Tools are available on both **AI Studio** (embedded gateway) and **Edge Gateway** (edge gateways). Tool configurations, OpenAPI specs, auth credentials, and app access associations are synced to edge gateways via the hub-spoke configuration system. Tools support namespace filtering for enterprise multi-tenant deployments.
 
-Tools are accessible in three ways:
+## Access Methods
 
-1. **Chat Interface** — LLMs invoke tools automatically during conversations (the primary use case).
-2. **REST API** — Each tool is also available as a direct REST API endpoint for developers. They can call it programmatically, independent of LLM interactions.
-3. **MCP Interface**: An MCP-compliant shim wraps the OpenAPI-generated tools, so MCP clients can call them. It works with tools that require authentication, and you don't need a separate MCP server.
+A tool is a chat capability first. You can also make it available to [Apps](/ai-management/ai-studio/admin-apps) on the gateway. Each way to do this is an **access method**, and an administrator turns each method on for each tool:
+
+| Access method | What it gives you | Default |
+| :--- | :--- | :--- |
+| **Chat** | LLMs call the tool's operations during conversations. This is the primary use case. | Always on |
+| **REST API** | Developers call the tool's operations over HTTP at `/tools/{slug}`, with their App credential. | Off for a new tool |
+| **MCP** | MCP clients, such as Claude Desktop, connect to the tool at `/tools/{slug}/mcp`, with the App credential or with an OAuth sign-in. The tool's operations become MCP tools. | Off for a new tool |
+
+The switches are in the **Access methods** section of the tool form and of the last step of the import wizard. The section also shows the gateway URL of each method that is on. The Tools list shows the methods in its **Access** column. Tools that existed before v2.2.0 keep both methods on.
+
+A tool with both methods off is **chat only**:
+
+*   It is available in the chat tool picker.
+*   It is not visible in the AI Portal. It is not in Browse, on an asset or documentation page, or in the App builder.
+*   You cannot add it to an App. If you turn off both methods on a tool that Apps already use, the Apps keep the tool. The gateway refuses their calls with `403`, and the App page tells the owner why.
+
+Client (human-in-the-loop) tools, including the built-in **Generative UI** tool, run in the chat interface. They are always chat only.
+
+Both access methods apply the same rules:
+
+*   The calling App must have the tool. This check applies to every authentication method, including OAuth tokens on the MCP endpoint.
+*   Callers can use only the operations that are selected on the tool. A REST call with an `operation_id` that is not selected returns `403`. A REST call without an `operation_id` returns `400`.
+*   The tool's [filters](/ai-management/ai-studio/filters#tool-filters) run on the arguments and on the response.
+
+A call over a method that is off returns `403`.
+
+<Warning>
+From v2.2.0, a new tool is chat only. This applies to tools that you create in the admin UI, with the import wizard, with `POST /api/v1/tools`, from an approved submission, or through the plugin API. The tool returns `403` on `/tools/{slug}` and `/tools/{slug}/mcp` until you turn on a method. Automation that creates a tool and then calls it or adds it to an App must turn on the method that it needs. Upgrade your Edge Gateways too. An older Edge Gateway ignores the switches and serves both methods.
+</Warning>
+
+### Tools and MCP Servers
+
+In the Enterprise Edition, the admin UI also has an **MCP servers** section (**Context management > MCP servers**). A tool and an MCP server are different, although you can reach a tool over MCP:
+
+| | Tool | MCP server |
+| :--- | :--- | :--- |
+| Served by | AI Studio (embedded gateway and Edge Gateways) | A Tyk Gateway. AI Studio lists it in the catalog, but its traffic does not go through AI Studio. |
+| Built from | An OpenAPI specification | An MCP proxy on a Tyk Dashboard (a remote MCP server, or a REST API converted to MCP) |
+| Used by | Chats and agents, and Apps over REST or MCP | Apps, over MCP |
+| Credential | The App's own credential | A Tyk access key that AI Studio issues for the App |
+| Governed by | AI Studio filters, privacy levels, and tool analytics | Tyk policies, rate limits, and quotas |
+
+Use a **tool** when chats and agents in AI Studio must use the API. Also use a tool when AI Studio filters must apply to it. Use an **MCP server** when your Tyk Gateway must serve and govern the MCP traffic. The AI Portal shows which component serves each endpoint. The App page gives developers one MCP client configuration that includes both.
+
+### Authentication Plugins
+
+From v2.2.1, a tool can have an ordered list of authentication plugins. You set the list in the **Authentication plugins** section of the tool detail page, or with `GET` and `PUT /api/v1/tools/{id}/auth-plugins`. When the list is not empty, only these plugins authenticate calls to the tool on Edge Gateways, on REST and on every MCP transport. The Edge Gateways then refuse App keys for the tool. The embedded gateway in AI Studio does not run authentication plugins. For more information, refer to [Edge Gateway Plugins](/ai-management/ai-studio/plugins/edge-gateway).
 ## How it Works
 
 When a user interacts with an LLM via the [Chat Interface](/ai-management/ai-studio/chat-interface):
@@ -64,53 +108,64 @@ When a user interacts with an LLM via the [Chat Interface](/ai-management/ai-stu
 
 Administrators define and manage Tools via the UI or API:
 
-1.  **Define Tool:** Provide a name, description, and privacy level.
+1.  **Define Tool:** Provide a name, description, and privacy level. In **Tool type**, keep **REST API (OpenAPI)** for a tool that calls an HTTP API. **Client (human-in-the-loop)** tools run in the chat interface. Refer to [Chat Interface](/ai-management/ai-studio/chat-interface).
 2.  **Upload OpenAPI Spec:** Provide the OAS document (JSON/YAML).
 3.  **Select Operations:** Choose the specific `operationIds` the LLM can use.
 4.  **Configure Authentication:** Select the OAS security scheme and link to a stored [Secret](/ai-management/ai-studio/secrets) for credentials.
 5.  **Add Documentation:** Provide natural language instructions for the LLM.
 6.  **Assign Filters (Optional):** Add request/response filters.
+7.  **Choose Access Methods (Optional):** Turn on **REST API** or **MCP** if Apps must reach the tool on the gateway. A new tool is chat only. Refer to [Access Methods](#access-methods).
 
     <img src="/img/ai-management/tool-configuration.png" alt="Tool Config" />
 
+In the API, the two switches are the `rest_access_enabled` and `mcp_access_enabled` attributes of a tool. If you do not send them in a create request, the tool is chat only. If you do not send them in an update request, they keep their current values. Tool responses also contain `slug`, `app_grantable`, `rest_endpoint_url`, and `mcp_endpoint_url`.
+
+When an App is created, AI Studio checks the privacy level of each tool against the LLMs of the App. A tool with a higher privacy level than the LLMs is refused, and the error names the tool and the LLM.
+
 ## Importing Tools from a Tyk Dashboard (Admin)
 
-The **Import OpenAPI** wizard on the Tools page creates a Tool automatically from an OpenAPI specification. It supports two import methods:
+The **Import OpenAPI** wizard on the Tools page creates a tool from an OpenAPI specification. It has two import methods:
 
-*   **Tyk Dashboard:** Pulls the specification for an active API directly from a Tyk Dashboard instance.
-*   **Direct Import:** Imports a specification from a URL, an uploaded file, or pasted text.
+*   **Direct Import:** Imports a specification from a URL, an uploaded file, or pasted text. This method is available in all editions.
+*   **Tyk Dashboard** (Enterprise Edition): Imports an API from a Tyk Dashboard, through a saved Tyk connection.
 
-This section describes the Tyk Dashboard method.
+This section describes the Tyk Dashboard method. In v2.2.0 and later, the wizard uses the same Tyk connections as the Tyk Dashboard MCP integration. You connect a Dashboard one time, AI Studio stores its access token encrypted, and you use the connection again for each import.
 
 ### Start the Wizard
 
-1.  Go to **Admin > Tools**.
+1.  Go to **Context management > Tools**.
 2.  Click **Import OpenAPI**.
 3.  Select **Tyk Dashboard**.
 4.  Click **Next**.
 
 <img src="/img/ai-management/import-openapi-select-provider.png" alt="Import OpenAPI wizard with Tyk Dashboard selected as the import method" />
 
-### Connect to the Dashboard
+### Choose a Connection
 
-Enter these values:
+The wizard lists the saved Tyk connections and their status. Select a connection, then click **Next**.
 
-*   **URL:** The base URL of your Tyk Dashboard (e.g., `http://localhost:3000`). Do not include a trailing slash.
-*   **Access Token or Secret Reference:** Your Tyk Dashboard API access token, or a [secret reference](/ai-management/ai-studio/secrets) such as `$SECRET/DashboardKey`.
+If there is no correct connection, add one in the wizard:
 
-You must fill in both fields.
+1.  Click **Add connection**.
+2.  Enter the **Name** of the connection.
+3.  Enter the **Dashboard URL**, for example `https://dashboard.example.com`.
+4.  Enter the **Dashboard access token**. Use the API access key of a dedicated Dashboard user.
+5.  (Optional) Enter the **Organisation ID**.
+6.  If the Dashboard has a private network address, select **Allow an internal Dashboard host (private network address)**. This option lets AI Studio connect to an internal address. By default, AI Studio refuses internal addresses, so that a connection cannot send requests to other services on your internal network. Select it only for a Dashboard at a fixed internal address that you trust.
+7.  Click **Test connection**. AI Studio checks the URL and the token against the Dashboard API.
+8.  Click **Save connection**. AI Studio creates the connection in `catalogue` mode and selects it.
 
-Click **Next**. Tyk AI Studio checks the URL and token against the Dashboard API. If the check fails, the wizard shows an error. Fix the values and try again.
+To add a connection, you need the `tyk-connections:write` permission. To import a tool, you need `tools:write`. To change the other settings of a connection (trust mode, gateway URLs, MDCB, and API template), go to **Settings > Tyk Connections**.
 
-<img src="/img/ai-management/import-openapi-connect-dashboard.png" alt="Connect to the Dashboard step with URL and Access Token fields" />
+<img src="/img/ai-management/import-openapi-connect-dashboard.png" alt="Choose Connection step with the form to add a Tyk connection" />
 
 ### Select an API
 
-Tyk AI Studio lists only active Tyk OAS APIs from your Dashboard. It does not list Tyk Classic API definitions or inactive APIs.
+The wizard lists the Tyk OAS APIs on the Dashboard, by name and listen path. Inactive APIs show an **inactive** label. You cannot import Tyk Classic API definitions as tools.
 
 Select one API from the list, then click **Next**. To import more APIs, repeat the wizard.
 
-<img src="/img/ai-management/import-openapi-select-api.png" alt="Select an API step listing active Tyk OAS APIs from the Dashboard" />
+<img src="/img/ai-management/import-openapi-select-api.png" alt="Select an API step listing Tyk OAS APIs from the Dashboard" />
 
 ### Configure the Tool
 
@@ -118,17 +173,24 @@ The wizard pre-fills the following fields from the selected API. Review and edit
 
 *   **Name:** The API's name in Tyk Dashboard.
 *   **Description:** A generated summary of the API. It includes the API ID, authentication type, protocol, listen path, and available operations.
-*   **Privacy Level:** Defaults to 50 (Confidential). Change it to match the sensitivity of the data the API returns. See [Privacy Levels](/ai-management/ai-studio/privacy-levels) for more details.
+*   **Privacy Level:** Select a level, or enter a score from 0 to 100. Change it to match the sensitivity of the data the API returns. See [Privacy Levels](/ai-management/ai-studio/privacy-levels) for more details.
 *   **Auth Schema Name:** The name of the security scheme detected in the specification.
 *   **Auth Key:** The credential the tool uses to call the imported API. Tyk AI Studio does not fetch this value for you. Enter it yourself, as a direct value or as a secret reference such as `$SECRET/JiraAuthToken`. Leave this field blank if the API needs no authentication.
+*   **Access methods:** Turn on **REST API** or **MCP** if Apps must reach the tool on the gateway. Refer to [Access Methods](#access-methods).
 
-<img src="/img/ai-management/import-openapi-configure-tool.png" alt="Configure Tool step with fields pre-filled from the selected API" />
+The imported document keeps its `x-tyk-api-gateway` extension. AI Studio masks every credential in it (upstream authentication and request headers that look like credentials) before the document reaches AI Studio.
+
+<img src="/img/ai-management/import-openapi-configure-tool.png" alt="Configure Tool step with the name, description, privacy level, and access methods of the new tool" />
 
 The wizard also lists every operation it found in the specification, and adds all of them to the new tool automatically. To limit which operations the LLM can use, edit the tool after import and remove the ones you do not need.
 
 Click **Create Tool**. Tyk AI Studio creates the tool and opens its details page.
 
 The imported tool works like any other tool. Add it to a Tool Catalogue and assign that catalogue to a team to make it available in chat.
+
+<Note>
+In versions before v2.2.0, you entered a URL and a token in the wizard, and the import used the `/api/v1/providers/*` API. This API is removed. The Community Edition supports Direct Import only.
+</Note>
 
 ## Organizing & Assigning Tools (Admin)
 
