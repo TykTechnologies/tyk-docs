@@ -1,0 +1,172 @@
+---
+title: "Audit Trail in Tyk AI Studio"
+description: "How the Tyk AI Studio audit trail records actions on the management API, what each record contains, how AI Studio redacts secrets, and how to query and export records."
+keywords: "AI Studio, AI Management, Audit Trail, Audit Log, Governance, Compliance, SIEM, Enterprise"
+sidebarTitle: "Audit Trail"
+canonical: "https://tyk.io/docs/ai-management/ai-studio/audit-trail"
+noindex: true
+robots: "noindex, follow"
+---
+
+## Availability
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| [Enterprise](/nightly/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed, Hybrid |
+
+The audit trail is available from v2.2.0. The Community Edition records nothing. Its audit API endpoints return `403` with the title `Enterprise Feature`.
+
+## Overview
+
+The audit trail is an append-only record of the actions on the AI Studio management API, and of some background actions. Each record shows:
+
+- Who did the action, and how they authenticated.
+- When they did it, and from which IP address.
+- Which object the action changed.
+- If the action was successful.
+- For a change, which fields changed, with their old and new values.
+
+Use the audit trail to investigate an incident. You can also use it to see the history of an object, such as an LLM, an App, or a user.
+
+The design follows the [Tyk Dashboard audit log](/nightly/api-management/logs/audit-logs). If you already use Tyk Dashboard audit records, the field names are similar.
+
+The audit trail does not record LLM proxy traffic. For proxy traffic, refer to [Analytics](/nightly/ai-management/ai-studio/analytics). For governance events from filter scripts, refer to [Compliance Events](/nightly/ai-management/ai-studio/compliance-events). To send configuration changes to an external system when they occur, use [Webhooks](/nightly/ai-management/ai-studio/webhooks).
+
+## What AI Studio Records
+
+AI Studio records one entry for each request to the management paths: `/api/v1/*`, `/common/*`, `/auth/*`, `/oauth/*`, `/api/sso*`, and `/analytics/*`.
+
+| Recorded by default | Not recorded by default |
+| :--- | :--- |
+| Every `POST`, `PUT`, `PATCH`, and `DELETE` request. For example: create, update, delete, activate, reload, and approve. | `GET` requests. To record them, set `AUDIT_RECORD_READS=true`. A `GET` request that AI Studio refuses with `403` is always recorded. |
+| Authentication events: login, logout, failed login, registration, password reset, and email verification. | Chat and agent message traffic. The chat history already keeps this content. |
+| SSO login start and callback. OAuth authorize, token, and consent requests. | Notification polling, plugin asset delivery, and streaming endpoints. |
+| Refused and failed requests (`401`, `403`, `404`, and `5xx`), with the error message. A handler panic is recorded as `500`. | LLM proxy traffic and Edge Gateway data plane traffic. |
+
+Actions on Edge Gateways through the management API, such as a configuration push or an edge deletion, are recorded.
+
+### Records Without an HTTP Request
+
+Some actions do not come from a request to the management API. AI Studio records these actions too.
+
+In the Enterprise Edition, background workers write records with the method `SYSTEM` and the user email `system`. The user name shows which worker wrote the record:
+
+| User Name | What AI Studio Records |
+| :--- | :--- |
+| Team budgets | A Team reaches 80% or 100% of its budget. When the budget blocks the Apps of the Team, the action is "Team budget exceeded, team Apps blocked". Refer to [Alerts for Team Budgets](/nightly/ai-management/ai-studio/budgeting#alerts-for-team-budgets). |
+| Webhook worker | A webhook delivery goes to the dead letters. To also record successful deliveries, set `WEBHOOKS_AUDIT_DELIVERIES=true`. |
+| Tyk MCP worker | Changes from the Tyk Dashboard sync and the MCP credential broker. For example, an MCP server is imported, updated, or unpublished, or an MCP credential is minted, suspended, or revoked. |
+
+When a plugin changes the governance state of an App, AI Studio writes a record with the method `RPC`. The user name is `plugin: <plugin name>`.
+
+### How AI Studio Writes Records
+
+AI Studio writes records after the request completes, outside the request path:
+
+1. AI Studio puts each record in an in-memory queue (`AUDIT_QUEUE_SIZE`).
+2. A background worker writes the queued records in batches.
+3. If the queue is full, AI Studio drops the record and counts it. It does not block the request. The **Audit trail** page shows a warning with the number of dropped records. AI Studio also logs `audit: write queue full, dropped N record(s) so far` for the first dropped record and for every 100th. To detect lost records, alert on this log message.
+4. On a graceful shutdown, AI Studio writes all queued records. If the process stops suddenly, the queued records are lost.
+
+A slow database does not slow down administrator actions.
+
+## Record Fields
+
+| Field | Description |
+| :--- | :--- |
+| `id` | The database identifier of the record. |
+| `req_id` | The request identifier. AI Studio uses a valid inbound `X-Request-ID` header. If there is none, it creates an identifier. AI Studio returns the value in the `X-Request-ID` header of each recorded response, so a client can quote it. |
+| `timestamp` | The start time of the request, in UTC. |
+| `ip` | The client IP address. |
+| `user`, `user_id`, `user_name` | The authenticated user. For a failed login, `user` is the email that the visitor entered, and `user_id` is `0`. |
+| `auth_method` | How the user authenticated: `session` (browser) or `api_key`. It is empty for requests without authentication, such as a failed login. |
+| `user_agent` | The user agent of the client. |
+| `action` | A readable name of the action. For example: `Update LLM`, `Delete User`, `Login Failed`, or `SSO Login`. |
+| `method`, `url`, `route` | The HTTP method, the full request URI, and the route template, for example `/api/v1/llms/:id`. For a record without an HTTP request, the method is `SYSTEM` or `RPC`. Refer to [Records Without an HTTP Request](#records-without-an-http-request). |
+| `status` | The HTTP response status. |
+| `resource_type`, `resource_id`, `resource_name` | The object of the action, for example `llm`, `12`, and `gpt-4-prod`. AI Studio reads the name from the object, so a deleted object stays identifiable. |
+| `diff` | The changed fields. Refer to [Diffs](#diffs). |
+| `error` | The error message, when the request failed. |
+| `duration_ms` | The time that the handler took, in milliseconds. |
+| `request_dump`, `response_dump` | The redacted headers and body of the request and the response. AI Studio fills these fields only when `AUDIT_DETAILED_RECORDING=true`. |
+
+<Note>
+For a failed login, `user` contains the text that the visitor entered, with a maximum of 255 characters. It can contain typing errors, or addresses that do not exist. Treat this value as untrusted input when you review or export records.
+</Note>
+
+### Diffs
+
+When an action changes an object that has a database row, AI Studio reads the row before and after the action. The `diff` field contains the columns that changed:
+
+```json
+{
+  "name":    { "old": "gpt-4",  "new": "gpt-4-turbo" },
+  "api_key": { "old": "[REDACTED]", "new": "[REDACTED]" }
+}
+```
+
+- For an update, the diff contains only the columns that changed.
+- For a create, the diff contains all columns, with `old` set to `null`.
+- For a delete, the diff contains all columns, with `new` set to `null`. The last configuration of a deleted object stays in the audit trail.
+- The diff does not include `created_at`, `updated_at`, `deleted_at`, session tokens, or heartbeat timestamps.
+- If a diff is larger than `AUDIT_MAX_BODY_BYTES`, AI Studio removes the largest fields first. It lists the removed fields in `_truncated_fields`.
+
+### Redaction
+
+AI Studio does not store secret values in the audit trail. A changed secret still shows as changed, with the value `[REDACTED]`.
+
+- **Columns and JSON keys:** AI Studio redacts a column or JSON key when its name contains one of these fragments: `password`, `secret`, `api_key`, `apikey`, `token`, `auth_key`, `authkey`, `conn_string`, `connstring`, `private_key`, `privatekey`, `passphrase`, `credentials`, `client_key`, `access_key`, `authorization`, or `cookie`. The match is not case-sensitive.
+- **Nested values:** AI Studio also redacts secrets inside JSON columns, such as plugin configuration and SSO profile settings.
+- **Secrets:** AI Studio always redacts the `value` column of [Secrets](/nightly/ai-management/ai-studio/secrets).
+- **Headers:** In detailed recording, AI Studio masks the `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-CSRF-Token`, `X-API-Key`, and `X-Auth-Token` headers.
+
+To redact more fields, add fragments to `AUDIT_REDACT_KEYS`. To mask more headers, add names to `AUDIT_REDACT_HEADERS`. You cannot remove the built-in rules.
+
+## Configuration
+
+Set these environment variables on the AI Studio server. For the full reference, refer to [AI Studio Environment Variables](/nightly/ai-management/ai-studio/ai-studio-env).
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `AUDIT_ENABLED` | `true` | Turns recording on or off. |
+| `AUDIT_STORE_TYPE` | `db` | Where AI Studio stores records: `db`, `file`, or `both`. Only `db` and `both` make records available in the console and the API. |
+| `AUDIT_FILE_PATH` | `./data/audit/audit.log` | The log file for the `file` and `both` store types. In a container, mount this path on a volume. |
+| `AUDIT_FILE_FORMAT` | `json` | The format of the log file: `json` (one object on each line) or `text` (one line for each record). The `text` format does not escape all fields. For a SIEM or another automated reader, use `json`. |
+| `AUDIT_DETAILED_RECORDING` | `false` | Also stores the redacted headers and body of each request and response. This increases storage a lot. |
+| `AUDIT_RECORD_READS` | `false` | Also records `GET` requests. The admin console reads data frequently, so this adds many records. |
+| `AUDIT_RETENTION_DAYS` | `90` | AI Studio deletes database records that are older than this value. It checks one time each hour. `0` keeps records forever. |
+| `AUDIT_MAX_BODY_BYTES` | `65536` | The maximum size of each stored diff, request dump, and response dump. |
+| `AUDIT_QUEUE_SIZE` | `4096` | The size of the in-memory queue for records that AI Studio did not write yet. |
+| `AUDIT_REDACT_KEYS` | Empty | A comma-separated list of more key fragments to redact, for example `ssn,customer_ref`. |
+| `AUDIT_REDACT_HEADERS` | Empty | A comma-separated list of more headers to mask in detailed recording, for example `X-Tenant-Key`. |
+
+Detailed recording makes each record larger. Plan your retention period and database storage for this. If you keep long-term evidence in the `file` store, archive the log file outside AI Studio.
+
+### Forward Records to a SIEM
+
+To send records to a SIEM, set these values:
+
+```bash
+AUDIT_STORE_TYPE=both
+AUDIT_FILE_FORMAT=json
+```
+
+Then, collect the log file with your log forwarder. Each line is one complete record. The records also stay available in the console.
+
+## View the Audit Trail
+
+To view the audit trail, go to **Governance > Audit trail** in the admin console. You need the `audit:read` permission. Refer to [User Management](/nightly/ai-management/ai-studio/user-management).
+
+The page shows records with the newest first. It has these features:
+
+- A date range, a text search, and filters for user, action, resource type, HTTP method, status, and authentication method.
+- Summary tiles for the date range: recorded actions, failed actions (`4xx` and `5xx`), and distinct users. A fourth tile shows the retention period.
+- A row for each record that you can expand. The row shows the request ID, route, resource, error, field changes, and the dumps, when detailed recording is on.
+- CSV and JSON export of the filtered records. An export contains a maximum of 50,000 records. In a CSV export, AI Studio escapes cells that start with `=`, `+`, `-`, `@`, a tab, or a carriage return. This stops a spreadsheet from running the value as a formula.
+
+<img src="/img/ai-management/ai-studio-audit-trail.png" alt="Audit trail page with summary tiles, filters, and records" />
+ 
+<img src="/img/ai-management/ai-studio-audit-trail-record.png" alt="Expanded audit record with the changed fields of an LLM" />
+
+The page shows records only when AI Studio stores them in the database. With `AUDIT_STORE_TYPE=file`, read the records from the log file.
+
