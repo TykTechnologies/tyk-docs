@@ -11,7 +11,7 @@ sidebarTitle: "Governed Metadata"
 | :------------- | :---------------------- |
 | [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed, Hybrid |
 
-Governed Metadata is available from v2.2.0. In the Community Edition, the metadata pages are not in the admin sidebar, and `GET /api/v1/metadata/available` returns `false`.
+Governed Metadata is available from v2.2.0. In the Community Edition, the metadata pages are not in the admin sidebar.
 
 ## Overview
 
@@ -104,22 +104,6 @@ You can edit the schema and the vocabularies, or add more schemas.
 
 When a schema applies, the LLM, tool, and data source forms show a **Governance Metadata** section. AI Studio validates the values while you type. When a save fails, the form marks the fields that are not valid. The detail page of the object shows the stored values and the validation status.
 
-You can also set the values with the API:
-
-```http
-PUT /api/v1/metadata/objects/llm/12
-{ "values": { "lifecycle_state": "active", "risk_tier": "high", "data_classification": "confidential" }, "merge": true }
-```
-
-Or send them with the object, in the `governed_metadata` attribute:
-
-```http
-PATCH /api/v1/llms/12
-{ "data": { "type": "LLM", "attributes": { "governed_metadata": { "risk_tier": "high" } } } }
-```
-
-If you leave out `governed_metadata`, AI Studio keeps the stored values. If you send `{}`, AI Studio removes them.
-
 ## Compliance Report
 
 Go to **Governance > Metadata coverage**. AI Studio validates each object again against the current schemas. The report puts each object in one of these groups:
@@ -132,17 +116,11 @@ Go to **Governance > Metadata coverage**. AI Studio validates each object again 
 
 Each row has a link to the object, so you can fix it. The report also lists the instances of plugin resource types that opt in, and MCP servers.
 
-To get the report with the API:
-
-```http
-GET /api/v1/metadata/compliance?object_type=llm&status=missing
-```
-
 ## Where the Values Go
 
 | Destination | Fields |
 | :--- | :--- |
-| Admin API | All values. Each object also has `governed_metadata_status`. |
+| Admin console and API | All values, and the validation status of each object. |
 | AI Portal | Only the fields with **Visible in portal**. The portal shows them as badges, with labels and user names. |
 | Edge Gateways | Only the fields with **Sent to gateways**. They are part of the configuration snapshot for LLMs, tools, and data sources. |
 | Events | `system.governed_metadata.updated` and `system.governed_metadata.deleted` |
@@ -151,7 +129,7 @@ A change to a field with **Sent to gateways** changes the configuration snapshot
 
 ## Change History
 
-AI Studio records each change to the metadata of an object, and who made it. To read the history, use `GET /api/v1/metadata/objects/{object_type}/{object_id}/audit`. A change from a plugin shows as `plugin:<id>`.
+AI Studio records each change to the metadata of an object, and who made it. A change from a plugin shows as `plugin:<id>`.
 
 ## Permissions
 
@@ -168,42 +146,6 @@ To read or set the metadata of an object, you need the permission for that objec
 
 The default Editor role does not have `metadata:publish`.
 
-## Validation Result
-
-Each validation returns the same structure:
-
-```json
-{
-  "valid": false,
-  "enforced": true,
-  "errors":   [{ "field": "risk_tier", "code": "required", "message": "Risk tier is required" }],
-  "warnings": [{ "field": "expiration_date", "code": "expired", "message": "Expiration date is in the past (2025-01-01)" }]
-}
-```
-
-The codes are `required`, `required_on_publish`, `unknown_field`, `invalid_type`, `invalid_format`, `invalid_enum`, `pattern`, `range`, `length`, `expired`, `deprecated_term`, `user_not_found`, and `hook_rejected`.
-
-When an enforced schema blocks the create or update of an object, the `422` response has one error for each field. The `source.pointer` of each error is `/data/attributes/governed_metadata/<field>`.
-
-## API Summary
-
-All endpoints are under `/api/v1/metadata`.
-
-| Method | Path | Purpose |
-| :--- | :--- | :--- |
-| `GET` | `/available` | Returns `{"available": true}` in the Enterprise Edition |
-| `GET` | `/object-types` | Lists the built-in object types and the plugin object types that opt in |
-| `GET`, `POST` | `/schemas` | Lists or creates schemas |
-| `GET`, `PATCH`, `DELETE` | `/schemas/{id}` | Reads, updates, or deletes a schema |
-| `POST` | `/schemas/{id}/activate`, `/schemas/{id}/deactivate` | Activates or deactivates a schema |
-| `GET` | `/schemas/resolve?object_type=` | Returns the merged fields, a JSON Schema, and the enforcement level for an object type |
-| `GET`, `POST` | `/vocabularies` | Lists or creates vocabularies |
-| `GET`, `PATCH`, `DELETE` | `/vocabularies/{id}` | Reads, updates, or deletes a vocabulary |
-| `POST` | `/validate` | Validates values without saving them |
-| `GET`, `PUT`, `DELETE` | `/objects/{object_type}/{object_id}` | Reads, sets (`{values, merge}`), or removes the metadata of an object |
-| `GET` | `/objects/{object_type}/{object_id}/audit` | Returns the change history of an object |
-| `GET` | `/compliance` | Returns the compliance report |
-
 ## Plugins
 
 Plugins can use Governed Metadata in these ways:
@@ -212,32 +154,7 @@ Plugins can use Governed Metadata in these ways:
 - **Check or change values before AI Studio saves them** with object hooks on the `governed_metadata` object type. Refer to [Object Hooks](/ai-management/ai-studio/plugins/object-hooks).
 - **Add schemas and vocabularies** from the plugin manifest. AI Studio creates them as inactive and advisory. An administrator activates them. Refer to [Governed Metadata Contributions](/ai-management/ai-studio/plugins/manifests#governed-metadata-contributions-enterprise).
 - **Opt a resource type in** with `supports_metadata: true`. The instances of the type then use the object type `plugin_resource:<plugin_id>:<slug>`. A plugin can write `plugin_resource:self:<slug>` for its own types.
+- **Show the metadata form in a plugin UI** with the `<governed-metadata-fields>` and `<governed-metadata-badges>` web components. Refer to [Governed Metadata Web Components](/ai-management/ai-studio/plugins/studio-ui#governed-metadata-web-components).
+- **Read the gateway-visible fields of an LLM** in a gateway plugin. Refer to [Governed Metadata in the Plugin Context](/ai-management/ai-studio/plugins/edge-gateway#governed-metadata-in-the-plugin-context).
 
-### Govern the Objects of a Plugin
-
-A plugin that publishes its own objects, such as prompts or agents, keeps them in its own storage. AI Studio does not validate these objects for the plugin. The plugin must call AI Studio at the correct time:
-
-1. On save, call `SetObjectMetadata`. If an enforced schema refuses the values, the call returns `ok=false` with the validation result. Show the field errors and refuse the save.
-2. On delete, call `DeleteObjectMetadata`, so that no record stays in the compliance report.
-
-AI Studio never blocks the create path of a plugin. For plugin objects, enforcement works only if the plugin refuses the save when `ok` is `false`.
-
-### Web Components
-
-The admin console registers two web components that plugin UIs can use:
-
-- `<governed-metadata-fields>` shows the standard metadata form with live validation. Set the `object-type` attribute, for example `plugin_resource:12:prompts`, and the element loads the schema from the admin API. Where the admin API is not available, such as on portal pages, set `el.schema` to the result of `GetResolvedMetadataSchema`. The element has the `value` property, the `getValues()`, `validate()`, and `setErrors()` methods, and the `ready`, `change`, and `error` events.
-- `<governed-metadata-badges>` shows the portal badges. Set `el.items` to the display list that `GetObjectMetadata` returns for the `portal` visibility.
-
-```html
-<governed-metadata-fields object-type="plugin_resource:12:prompts"></governed-metadata-fields>
-```
-
-### Gateway Plugins
-
-Gateway plugins can read the gateway-visible fields of an LLM from the plugin context:
-
-- `ctx.Metadata["governed_metadata"]` contains all the fields as a JSON string.
-- `ctx.Metadata["governed_metadata.<key>"]` contains one field, for example `governed_metadata.data_classification`. A list value is a comma-separated string.
-
-The fields of tools and data sources are in the configuration snapshot, but gateway plugins cannot read them at request time.
+A plugin that publishes its own objects, such as prompts or agents, keeps them in its own storage. AI Studio does not validate these objects for the plugin. For plugin objects, enforcement works only if the plugin calls `SetObjectMetadata` on save and refuses the save when the call returns `ok=false`.
