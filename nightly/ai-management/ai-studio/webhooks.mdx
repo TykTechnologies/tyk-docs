@@ -1,0 +1,278 @@
+---
+title: "Webhooks in Tyk AI Studio"
+description: "How Tyk AI Studio sends platform events to external HTTP endpoints, how administrators approve webhook targets, how receivers verify signed deliveries, and how to use the delivery log."
+keywords: "AI Studio, AI Management, Webhooks, Events, SIEM, Slack, Governance, Enterprise"
+sidebarTitle: "Webhooks"
+canonical: "https://tyk.io/docs/ai-management/ai-studio/webhooks"
+noindex: true
+robots: "noindex, follow"
+---
+
+## Availability
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| [Enterprise](/nightly/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed, Hybrid |
+
+Webhooks are available from v2.2.0. In the Community Edition, the **Webhooks** page is not in the admin sidebar. The webhook API endpoints return `403` with the title `Enterprise Feature`.
+
+## Overview
+
+A webhook sends an AI Studio event to an HTTP endpoint that you operate. For example, AI Studio can tell your SIEM when an administrator deletes an LLM. It can also post a message to a Slack channel when an administrator approves an App.
+
+Each endpoint is a **target**. A target has a URL, a list of the topics that it receives, and a payload template. AI Studio sends each event as a signed JSON document. If the receiver is not available, AI Studio tries again. When all attempts fail, AI Studio keeps the delivery in a dead-letter queue, so that you can send it again later.
+
+A target URL can send platform data out of your organization. For this reason, a target receives nothing until an administrator approves its URL.
+
+Webhooks are one-way. AI Studio does not accept data back from the receiver. A `2xx` response is the only acknowledgement.
+
+## Target Lifecycle
+
+Each target has one of these states:
+
+| State | What AI Studio does |
+| :--- | :--- |
+| `pending` | Sends nothing. AI Studio notifies administrators that the target waits for approval. |
+| `approved` | Sends the events that match the topic filters of the target. |
+| `rejected` | Sends nothing. An administrator refused the target and gave a reason. |
+| `revoked` | Sends nothing. An administrator stopped an approved target. AI Studio cancels the deliveries that are in the queue. |
+
+A new target always starts as `pending`. These changes also put a target back to `pending`:
+
+- A change to the URL or the custom headers of an approved target. The destination changes, so an administrator must approve it again.
+- Any change to a rejected or revoked target. This submits the target again.
+
+A change to the name, description, topic filters, payload template, or maximum concurrency does not change the state. These fields change what AI Studio sends, not where it sends it.
+
+You can also **pause** an approved target. AI Studio continues to put new deliveries in the queue, but it does not send them. When you **resume** the target, AI Studio sends the queued deliveries.
+
+By default, the administrator who creates a target can also approve it. To require a second administrator, set `WEBHOOKS_REQUIRE_DIFFERENT_APPROVER=true`.
+
+The [audit trail](/nightly/ai-management/ai-studio/audit-trail) records each action on a target, such as create, approve, reject, revoke, pause, and secret rotation. For each change, it records which fields changed. It does not record header values or signing secrets.
+
+## URL Policy
+
+AI Studio checks each target URL when you create, edit, or approve the target, and again before each delivery:
+
+- The URL must use `http` or `https`.
+- The URL must not contain a user name, a password, or a fragment (`#...`). To send credentials, use a custom header.
+- By default, AI Studio rejects internal destinations. These are loopback, private (RFC 1918), link-local, cloud metadata, and unique-local IPv6 addresses. They also include `localhost` and host names that end in `.local` or `.internal`.
+- AI Studio also checks the IP address that a host name resolves to when it connects. A host name that later points to an internal address is still blocked.
+- AI Studio does not follow redirects. A `3xx` response stops the delivery. To use a new location, change the target URL and approve it again.
+
+To change the policy, use these environment variables:
+
+| Variable | Description |
+| :--- | :--- |
+| `WEBHOOKS_ALLOW_INTERNAL_TARGETS` | Set to `true` to permit internal destinations. The default is `false`. |
+| `WEBHOOKS_ALLOWED_HOSTS` | A comma-separated list of hosts. When you set it, AI Studio accepts only these hosts. Use `hooks.example.com` for one exact host, or `.example.com` for a domain and all its subdomains. A host that you list exactly can also be internal. |
+| `WEBHOOKS_DENIED_HOSTS` | A comma-separated list of hosts that AI Studio always rejects. This list has priority over `WEBHOOKS_ALLOWED_HOSTS`. |
+
+## Topics
+
+Each event has a topic. The topics for configuration changes have the format `system.<object>.<action>`, for example `system.llm.created`.
+
+AI Studio publishes these topics:
+
+| Object | Topics |
+| :--- | :--- |
+| LLMs | `system.llm.created`, `system.llm.updated`, `system.llm.deleted` |
+| Apps | `system.app.created`, `system.app.updated`, `system.app.deleted`, `system.app.approved`, `system.app.plugin_resources.changed` |
+| Data sources | `system.datasource.created`, `system.datasource.updated`, `system.datasource.deleted` |
+| Users | `system.user.created`, `system.user.updated`, `system.user.deleted` |
+| Teams | `system.group.created`, `system.group.updated`, `system.group.deleted` |
+| Tools | `system.tool.created`, `system.tool.updated`, `system.tool.deleted` |
+| Filters | `system.filter.created`, `system.filter.updated`, `system.filter.deleted` |
+| Plugins | `system.plugin.created`, `system.plugin.updated`, `system.plugin.deleted`, `system.plugin_resource.instance_changed` |
+| Model prices | `system.model_price.created`, `system.model_price.updated`, `system.model_price.deleted` |
+| Model Routers | `system.model_router.created`, `system.model_router.updated`, `system.model_router.deleted` |
+| Semantic Routers | `system.semantic_router.created`, `system.semantic_router.updated`, `system.semantic_router.deleted` |
+| Embedders | `system.embedder.created`, `system.embedder.updated`, `system.embedder.deleted` |
+| Governed Metadata | `system.governed_metadata.updated`, `system.governed_metadata.deleted` |
+| Team budgets | `budget.team.threshold` (a team reaches 80% or 100% of its budget), `budget.team.over_allocated` |
+
+Enterprise plugins can publish more topics, for example the Asset Catalog plugin. The target editor shows the topics in the list above and all other topics that AI Studio received in the last 30 days.
+
+### Topic Filters
+
+A target subscribes to topics with one or more filters. A filter is a topic name or a glob pattern:
+
+| Filter | Matches |
+| :--- | :--- |
+| `system.llm.deleted` | Only this topic. |
+| `system.llm.*` | `system.llm.created`, `system.llm.updated`, and `system.llm.deleted`. |
+| `system.*.deleted` | Each deletion. |
+| `budget.team.*` | All team budget events. |
+| `*` | All topics. |
+
+A target can have a maximum of 50 filters.
+
+## Payloads
+
+Each target uses a payload template. Select one of these presets, or write your own template:
+
+| Preset | Content |
+| :--- | :--- |
+| `standard` | The full event: the event ID, topic, and time, the object type and action, the ID of the user who did the action, the object, delivery information, and the AI Studio edition and version. This is the default. |
+| `slack` | A message for a Slack incoming webhook that summarizes the event. |
+| `minimal` | Identifiers only: the event ID, topic, object type, action, object ID, and time. |
+| `custom` | A Go `text/template` that you write. The output must be valid JSON. |
+
+To see the output of a template, select **Preview** in the target editor. AI Studio renders the template with a sample event. It also checks the template when you save the target, and it rejects a template that does not produce valid JSON. A custom template can be a maximum of 64 KB. AI Studio stops a render after 2 seconds or 1 MB of output.
+
+A custom template can use the event data, for example `.Event.ID`, `.Event.Topic`, `.ObjectType`, `.Action`, `.ObjectID`, `.ActorUserID`, `.Object`, and `.Target.Name`. It can also use helper functions such as `toJson`, `jsonStr`, `default`, `get`, and `date`. The functions cannot read environment variables or files, and they cannot make network calls.
+
+This custom template sends the object type, the action, and the name of the object:
+
+```text
+{
+  "text": {{ jsonStr (printf "%s %s: %s" (title .ObjectType) .Action (default "-" (get .Object "name"))) }},
+  "event_id": {{ jsonStr .Event.ID }}
+}
+```
+
+### Redaction
+
+Before AI Studio stores an event, it replaces secret values with `[REDACTED]`. It also redacts each value that a template reads. AI Studio does not store the original object.
+
+AI Studio redacts a JSON key when its name contains one of these fragments: `password`, `secret`, `api_key`, `apikey`, `token`, `auth_key`, `authkey`, `conn_string`, `connstring`, `private_key`, `privatekey`, `passphrase`, `credential`, `client_key`, `access_key`, `authorization`, `cookie`, or `bearer`. The match is not case-sensitive. For example, the API key of an LLM is always redacted.
+
+To redact more keys, add fragments to `WEBHOOKS_REDACT_KEYS`.
+
+## Verify a Delivery
+
+AI Studio sends each delivery as an HTTP `POST` with a JSON body and these headers:
+
+| Header | Value |
+| :--- | :--- |
+| `X-Webhook-Id` | The delivery ID. It stays the same on each retry. |
+| `X-Webhook-Event-Id` | The event ID. A replay of a delivery keeps the same event ID. |
+| `X-Webhook-Topic` | The topic of the event. |
+| `X-Webhook-Timestamp` | The time of the attempt, in Unix seconds. |
+| `X-Webhook-Attempt` | The number of the attempt, from `1`. |
+| `X-Webhook-Signature` | The signature, in the format `v1=<hex>`. |
+| `User-Agent` | `tyk-ai-studio-webhooks/<version>` |
+
+AI Studio also sends the custom headers of the target, for example an `Authorization` header that your receiver expects. A custom header cannot replace an `X-Webhook-*` header, `Content-Type`, `Content-Length`, or `Host`.
+
+Each target has a signing secret. You can enter your own secret (16 to 256 characters) when you create the target. If you do not, AI Studio makes a random secret. The console shows the secret one time only, after you create the target. Keep it in your receiver.
+
+The signature is an HMAC-SHA256 of the timestamp, a period, and the raw body, with the signing secret as the key. To verify a delivery:
+
+1. Read the `X-Webhook-Timestamp` header and the raw request body.
+2. Calculate `HMAC-SHA256(secret, timestamp + "." + body)` and encode it as hexadecimal.
+3. Compare `v1=<your value>` with each comma-separated entry in `X-Webhook-Signature`. Use a constant-time comparison.
+4. Reject the request if no entry matches, or if the timestamp is older than a few minutes.
+5. Send a `2xx` response.
+
+```javascript
+const crypto = require("crypto");
+function verify(header, secret, ts, body) {
+  const want = "v1=" + crypto.createHmac("sha256", secret).update(`${ts}.`).update(body).digest("hex");
+  return header.split(",").some((p) => crypto.timingSafeEqual(Buffer.from(p.trim()), Buffer.from(want)));
+}
+```
+
+### Rotate the Signing Secret
+
+When you select **Rotate signing secret** for a target, AI Studio makes a new secret and shows it one time. For a grace period, each delivery has two signatures: first with the new secret, then with the old secret. Update your receiver during this period. The default period is 24 hours. To change it, set `WEBHOOKS_SECRET_ROTATION_GRACE`.
+
+## Retries and Dead Letters
+
+AI Studio puts each matching event in a queue for each approved target. A delivery worker then sends it. The result of each attempt decides what happens next:
+
+| Result | What AI Studio does |
+| :--- | :--- |
+| `2xx` | Marks the delivery as `succeeded`. |
+| `408`, `425`, `429`, `5xx`, a timeout, or a connection error | Tries again later. The delivery is `retrying`. |
+| Other `4xx`, `3xx`, or a destination that the URL policy blocks | Stops at once and marks the delivery as `dead_lettered`. |
+
+The time between attempts doubles after each attempt, with a random variation. It starts at 5 seconds and has a maximum of 1 hour. If the receiver sends a `Retry-After` header with a longer time, AI Studio waits for that time. After 10 attempts, AI Studio marks the delivery as `dead_lettered`.
+
+Each attempt sends the same body and the same `X-Webhook-Id`. The `X-Webhook-Attempt`, `X-Webhook-Timestamp`, and `X-Webhook-Signature` headers change.
+
+AI Studio delivers each event at least one time. A receiver can get the same event more than one time, for example after a replay. If your receiver must process each event only one time, use the `X-Webhook-Event-Id` header to find duplicates.
+
+When AI Studio dead-letters a delivery, it:
+
+- Notifies administrators. It sends a maximum of one notification for each target in each hour.
+- Records a `Webhook Delivery Dead-Lettered` entry in the audit trail, with the user `system`.
+
+## Delivery Log
+
+To manage targets, go to **Governance > Webhooks** in the admin console. The page shows each target with its state, topic filters, time of the last successful delivery, and number of failures in a row. The **Awaiting approval** filter shows the targets that need a decision. The status bar shows the number of queued, retrying, and dead-lettered deliveries.
+
+<img src="/img/ai-management/ai-studio-webhooks-targets.png" alt="Webhooks page with approved and pending targets" />
+
+To add a target, select **New target**. Enter a name, the URL, the topic filters, and the payload template. You can also add custom headers and a signing secret. The new target stays `pending` until an administrator approves it.
+
+<img src="/img/ai-management/ai-studio-webhooks-new-target.png" alt="New webhook target dialog with a URL and two topic filters" />
+
+To see each delivery, select **Deliveries**. The page shows:
+
+- Tiles with the number of succeeded and dead-lettered deliveries in the last 24 hours. Two more tiles show the deliveries that wait and the deliveries in progress.
+- Filters for the target, topic, status, kind (event, test, or replay), date range, and a text search.
+- A row for each delivery with its status, number of attempts, last status code, and last error.
+
+<img src="/img/ai-management/ai-studio-webhooks-deliveries.png" alt="Webhook Deliveries page with summary tiles, filters, and deliveries" />
+
+Expand a row to see each attempt with its status code, latency, and the start of the response. The row also shows the payload that AI Studio sent and the redacted event.
+
+<img src="/img/ai-management/ai-studio-webhooks-delivery-detail.png" alt="Expanded dead-lettered delivery with its attempts, the payload sent, and the redacted event" />
+
+From the delivery log, you can:
+
+- **Replay** a finished delivery. AI Studio sends the same event to the target again as a new delivery. This works only for an approved target.
+- Replay all dead-lettered deliveries in one action. Select **Dead letters**, then **Replay all dead letters**.
+- **Cancel** a delivery that waits in the queue or for a retry.
+- Export the filtered deliveries as CSV or JSON, with a maximum of 50,000 rows.
+
+To check an approved target, open the menu of the target and select **Send test event**. AI Studio sends a sample event with the topic `webhooks.test`. The other actions in this menu are **Approve**, **Reject**, **Revoke**, **Rotate signing secret**, **Edit**, and **Delete**.
+
+## Permissions
+
+Webhooks use the `webhooks` resource in the **Governance** group. Refer to [Role-Based Access Control](/nightly/ai-management/ai-studio/rbac).
+
+| Permission | Allows |
+| :--- | :--- |
+| `read` | View targets, topics, presets, template previews, and the delivery log. Export deliveries. |
+| `write` | Create and edit targets. Pause and resume targets. Rotate signing secrets. |
+| `delete` | Delete targets. |
+| `execute` | Approve, reject, and revoke targets. Send test events. Replay and cancel deliveries. |
+
+These actions send platform data to an external URL, so the `webhooks` resource is sensitive and privileged.
+
+## Configuration
+
+Webhooks need the `TYK_AI_SECRET_KEY` environment variable. AI Studio encrypts the custom header values and signing secrets with this key. If the key is not set, the webhook feature does not start, and the **Webhooks** page shows the reason. Refer to [Secrets Management](/nightly/ai-management/ai-studio/secrets).
+
+Set these environment variables on the AI Studio server:
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `WEBHOOKS_ENABLED` | `true` | Turns the feature on or off. |
+| `WEBHOOKS_WORKER_ENABLED` | `true` | Runs the delivery worker on this node. Set to `false` on nodes that only manage targets. |
+| `WEBHOOKS_WORKER_COUNT` | `4` | The number of delivery workers on each node, from 1 to 64. |
+| `WEBHOOKS_MAX_ATTEMPTS` | `10` | The number of attempts before AI Studio dead-letters a delivery, from 1 to 50. |
+| `WEBHOOKS_BASE_BACKOFF` | `5s` | The time before the first retry. |
+| `WEBHOOKS_MAX_BACKOFF` | `1h` | The maximum time between retries. |
+| `WEBHOOKS_REQUEST_TIMEOUT` | `10s` | The timeout of each attempt. The maximum is `60s`. |
+| `WEBHOOKS_ALLOW_INTERNAL_TARGETS` | `false` | Permits internal destinations. Refer to [URL Policy](#url-policy). |
+| `WEBHOOKS_ALLOWED_HOSTS` | Empty | Accepts only these hosts. |
+| `WEBHOOKS_DENIED_HOSTS` | Empty | Always rejects these hosts. |
+| `WEBHOOKS_RETENTION_DAYS` | `14` | AI Studio deletes succeeded and cancelled deliveries that are older than this value. `0` keeps them forever. |
+| `WEBHOOKS_DEAD_LETTER_RETENTION_DAYS` | `30` | AI Studio deletes dead-lettered deliveries that are older than this value. `0` keeps them forever. |
+| `WEBHOOKS_MAX_RESPONSE_SNIPPET_BYTES` | `4096` | The maximum size of the response body that AI Studio stores for each attempt. |
+| `WEBHOOKS_REQUIRE_DIFFERENT_APPROVER` | `false` | Stops the administrator who created a target from approving it. |
+| `WEBHOOKS_SECRET_ROTATION_GRACE` | `24h` | How long AI Studio also signs with the old secret after a rotation. |
+| `WEBHOOKS_REDACT_KEYS` | Empty | A comma-separated list of more key fragments to redact. |
+| `WEBHOOKS_AUDIT_DELIVERIES` | `false` | Also records successful deliveries in the audit trail. Dead letters are always recorded. |
+| `WEBHOOKS_SHUTDOWN_DRAIN_TIMEOUT` | `15s` | How long AI Studio waits for deliveries in progress when it stops. |
+
+### Multiple AI Studio Nodes
+
+Each AI Studio node receives the events that it creates and stores them in the shared database. Each node with a delivery worker takes deliveries from the database. Two nodes do not send the same delivery at the same time. AI Studio does not guarantee the order of deliveries.
+
+Edge Gateways do not publish `system.*` events. Only changes on the AI Studio control plane create webhook events.
+
+AI Studio sends an event only after it saves the change. If AI Studio stops between the save and the event, that one event is lost.
