@@ -1,0 +1,229 @@
+---
+title: "Tyk Dashboard MCP Integration"
+description: "Connect Tyk AI Studio to a Tyk Dashboard to publish MCP proxies in the AI Portal, issue Tyk access keys to Apps, and register new MCP proxies."
+keywords: "AI Studio, AI Management, MCP, MCP Gateway, Tyk Dashboard, Tyk connection, MCP credentials, policy bundle"
+sidebarTitle: "Tyk Dashboard MCP Integration"
+canonical: "https://tyk.io/docs/ai-management/ai-studio/tyk-mcp-integration"
+noindex: true
+robots: "noindex, follow"
+---
+
+## Availability
+
+| Edition | Deployment Type |
+| :------------- | :---------------------- |
+| [Enterprise](/nightly/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed, Hybrid |
+
+The integration is available from v2.2.0. In the Community Edition, the **Tyk Connections** page describes the feature, and the integration API refuses each request with `403`.
+
+## Overview
+
+The Tyk Dashboard MCP integration connects AI Studio to the MCP proxies that a [Tyk Dashboard](/nightly/ai-management/mcp-gateway/managing-proxies) manages. With the integration, AI Studio does these tasks:
+
+- It imports the MCP proxies of the Dashboard. An administrator reviews each one and publishes it in the [AI Portal](/nightly/ai-management/ai-studio/ai-portal), next to LLMs, tools, and data sources.
+- It gives each App that uses an MCP server a Tyk access key. The key gets its access rights and limits from Tyk policies that an administrator selects.
+- It creates new MCP proxies on the Dashboard, from the admin UI or from a community submission.
+- It records each key, change, and registration in the [audit trail](/nightly/ai-management/ai-studio/audit-trail).
+
+Tyk MCP Gateway serves all MCP traffic. A client calls the listen path of the proxy on the gateway, with its Tyk access key. AI Studio is not on that path. The gateway applies the MCP access rules, rate limits, and quotas. For the gateway side, refer to [Tyk MCP Gateway](/nightly/ai-management/mcp-gateway/overview).
+
+An MCP server in AI Studio is not the same as a [tool](/nightly/ai-management/ai-studio/tools) that you can call over MCP. AI Studio serves a tool, and chats and agents can use it. Tyk Gateway serves an MCP server, and only Apps can use it. Refer to [Tools and MCP Servers](/nightly/ai-management/ai-studio/tools#tools-and-mcp-servers).
+
+## Connections
+
+A connection is one Tyk Dashboard URL, one Dashboard user access key, and one Organisation. You can add more than one connection. Each imported server, each cached policy, and each issued key belongs to one connection.
+
+To manage connections, go to **Settings > Tyk Connections**. To add one, click **Connect Dashboard**. You can also add a connection inline in the **Import OpenAPI** wizard on the **Tools** page. Refer to [Importing Tools from a Tyk Dashboard](/nightly/ai-management/ai-studio/tools#importing-tools-from-a-tyk-dashboard-admin).
+
+<img src="/img/ai-management/ai-studio-tyk-mcp-connections.png" alt="Tyk Connections page with one active connection in Full mode" />
+
+### Trust Modes
+
+The permissions of the Dashboard user set the limit of what AI Studio can do. The trust mode of the connection can only make that set smaller:
+
+| Mode | What AI Studio Can Do |
+| :--- | :--- |
+| Catalogue | Import MCP proxies and policies. Read the keys that it issued before. |
+| Broker | Catalogue, and also issue, change, and revoke keys from the selected policies. |
+| Full | Broker, and also create and edit MCP proxies and policies on the Dashboard. |
+
+Use a dedicated Dashboard user for each connection, with only the permissions that the mode needs:
+
+- Catalogue mode: read access to APIs, policies, and MCP proxies.
+- Broker mode: also write access to keys.
+- Full mode: also write access to APIs, policies, and MCP proxies.
+
+AI Studio does not accept the Dashboard admin secret.
+
+### Capabilities
+
+When you activate a connection, and at each sync, AI Studio probes the Dashboard. The probe uses only calls that change nothing. The connection page shows the result for each capability.
+
+<img src="/img/ai-management/ai-studio-tyk-mcp-connection-capabilities.png" alt="Edit connection page with the capability badges from the last probe and the Full trust mode" />
+
+- A read capability shows **ok** when the Dashboard answers.
+- Some write capabilities show **unverified** until the first real write. For example, the first issued key proves **Mint keys**.
+- If the Dashboard refuses a request with `401` or `403`, AI Studio marks the connection as degraded. It names the failed capability.
+- The effective mode is the highest mode that the capabilities permit, up to the mode that you selected. If the probe cannot prove a capability, AI Studio uses a lower mode and shows a warning.
+
+Activating a connection needs the `execute` action on `tyk-connections`. To require that a different person activates the connection, set `TYK_MCP_REQUIRE_DIFFERENT_ACTIVATOR=true`.
+
+When AI Studio runs inside a Tyk Dashboard, the Dashboard supplies one connection. This connection shows **Managed by host**. The Dashboard sets its URL, Organisation, trust mode, gateway URL, and access key. You cannot delete it, but you can change its name, sync interval, and governance settings, and you can disable it.
+
+### API Template
+
+A connection can name a Tyk Dashboard API template. AI Studio merges the defaults of the template into each MCP proxy that it creates on that connection. It does this again each time it pushes a definition. Use a template to give each proxy the traffic logs, middleware, and tags that your platform team requires. If AI Studio cannot read the template, the registration fails, and AI Studio does not create the proxy.
+
+### Segmented Gateways
+
+If your gateways are [segmented](/nightly/api-management/multiple-environments), a proxy loads only on the gateways that have its tags. A connection can learn the tags from MDCB, or you can enter a list of known tags. When a connection knows at least one tag, the registration wizard and the submission form show a deployment target. You can also set a public gateway URL for each tag, so the AI Portal shows the correct endpoint.
+
+## Discover and Publish MCP Servers
+
+AI Studio syncs each active connection at its sync interval. To sync at once, click **Sync now** on the **MCP servers** page. A sync does these steps:
+
+1. It lists each MCP proxy on the Dashboard and reads its listen path, kind, authentication, tools, and gateway tags.
+2. It stores the definition. It masks the upstream credentials.
+3. It updates the cached policies, and it checks the keys that it issued.
+
+The imported servers show on the **Context management > MCP servers** page. You can also register a new server from this page. Refer to [Register an MCP Proxy From AI Studio](#register-an-mcp-proxy-from-ai-studio).
+
+<img src="/img/ai-management/ai-studio-tyk-mcp-servers.png" alt="MCP servers page with one published server registered from AI Studio and one unpublished server imported from the Dashboard" />
+
+An imported server is not published. Before you publish a server, do these steps:
+
+1. Set a **Privacy score**. An imported server has no privacy score until you set one.
+2. Add the server to the [tool catalogs](/nightly/ai-management/ai-studio/catalogs) of the Teams that must see it in the AI Portal.
+3. To let AI Studio issue keys for the server, select a policy bundle. Refer to [Policy Bundles](#policy-bundles).
+
+You can publish a server only while its proxy is active on the Dashboard. If a connection has **Auto-publish imported servers** on and a default privacy score, AI Studio publishes each new active server in the Default tool catalog.
+
+In the AI Portal, a published server has its own page with its authentication, its MCP endpoint, and its tools.
+
+<img src="/img/ai-management/ai-studio-tyk-mcp-ai-portal-server.png" alt="MCP server page in the AI Portal with the authentication, kind, deployment, MCP endpoint, and the Build app button" />
+
+<img src="/img/ai-management/ai-studio-tyk-mcp-server-detail.png" alt="MCP server detail page with the connection, listen path, endpoint, upstream, consumer authentication, and privacy level" />
+
+AI Studio keeps its own name override, descriptions, logo, tags, privacy score, catalogs, and bundle for each server. A sync does not change them. The other fields always follow the Dashboard.
+
+If a proxy is no longer on the Dashboard, AI Studio marks the server as missing, unpublishes it, and suspends its keys. If the proxy comes back with the same ID, AI Studio resumes the server and its keys.
+
+## Policy Bundles
+
+A Tyk key does not carry its own access rights. It carries policy IDs, and Tyk Gateway applies those policies to each request. AI Studio does not create a policy for each App. Instead, you select a bundle of policies for each MCP server:
+
+- One access policy. Its access rights must include the MCP proxy. It must be unpartitioned, or it must use the ACL partition.
+- Zero or more consumption policies. Each one must use the rate limit, quota, or complexity partition, and must not use the ACL partition.
+
+You cannot select a policy that uses the `per_api` partition. For the partitions, refer to [Partitioned Policies](/nightly/api-management/access-control/policies/applying-policies#partitioned-policies). For the MCP access rules in a policy, refer to [MCP Gateway Policies](/nightly/ai-management/mcp-gateway/policies).
+
+<img src="/img/ai-management/ai-studio-tyk-mcp-policy-bundle.png" alt="Access policies section of an MCP server with one access policy, one consumption policy, and the two tools that the proxy allows" />
+
+On a Full mode connection, you can also create a policy from the server page. AI Studio creates a partitioned policy on the Dashboard, tags it `studio-managed`, and adds it to the bundle. You can edit these policies from AI Studio. Policies from other sources link to the Dashboard.
+
+When you change a policy on the Dashboard, the change applies to every key that uses it. AI Studio does not need to do anything.
+
+## Access Keys for Apps
+
+A user adds MCP servers to an App, in the same way as tools. Only servers with an API key authentication can go into an App.
+
+After an administrator approves the App, the App page shows a **Connect via MCP** section. It has one card for each connection, with the endpoint of each server and the key actions. The section also gives one MCP client configuration for all the MCP servers and tools of the App.
+
+<img src="/img/ai-management/ai-studio-tyk-mcp-app-connect.png" alt="Connect via MCP section of an App in the AI Portal, with the Tyk key for one connection and the MCP client configuration" />
+
+A key is issued in one of two ways:
+
+- The App owner requests the key on the App page in the AI Portal.
+- An administrator clicks **Mint key** on the **AI Portal > MCP credentials** page, for an App.
+
+Each App gets one key for each connection. The key carries the policies of the bundles of all the App's MCP servers on that connection. AI Studio shows the key one time only. It does not store the key in plain text.
+
+<img src="/img/ai-management/ai-studio-tyk-mcp-credentials.png" alt="MCP credentials page with one issued key, its two policies, and an In sync drift status" />
+
+On the **MCP credentials** page, an administrator can rotate, suspend, resume, and revoke keys. The **Access report** tab shows which App reaches which MCP server, and with which key.
+
+When you rotate a key, the old key stops at once. There is no grace period.
+
+When you revoke a key, AI Studio deletes it on the Dashboard. Some gateways do not let AI Studio delete a key by its hash. In this case, AI Studio switches the key off and records this on the connection.
+
+### Policy Changes on Keys
+
+A key must get different policies when a bundle changes, when an App gains or loses a server, or when a policy is deleted. AI Studio checks this at once and at each sync:
+
+| Change | What AI Studio Does |
+| :--- | :--- |
+| The key loses access, for example a policy is removed | It applies the change at once. |
+| The key gets access to an MCP proxy that it did not reach before | It waits for an administrator to apply the change. The key shows **Change pending**. If the person who made the change has the `execute` action on `mcp-credentials`, AI Studio applies it at once. |
+| No access policy is left | It switches the key off. |
+| Someone added a policy to the key on the Dashboard | It keeps the policy and shows it as external. |
+
+### Servers Without Keys
+
+AI Studio catalogs and publishes servers that use OAuth 2.1, external OAuth, JWT, mTLS, or no authentication. It does not issue keys for them. You cannot add these servers to an App. Their page in the AI Portal tells the user how to connect directly. The access report does not show them.
+
+## Register an MCP Proxy From AI Studio
+
+On a Full mode connection, you can create a new MCP proxy on the Dashboard. Go to **Context management > MCP servers**, and click **Register MCP server**. The wizard has four steps:
+
+1. **Connection and kind:** Select the connection and the kind. **Remote MCP server** proxies an existing MCP endpoint. **REST API to MCP** makes the operations of a Tyk OAS API into MCP tools. It needs Tyk 5.15 or later.
+2. **Proxy details:** Enter the name and the listen path. Then do one of these steps:
+   - For a remote MCP server, enter the upstream MCP URL, and select which tools the gateway allows. Enter the base URL of the server. The gateway adds `/mcp` itself, so AI Studio removes a `/mcp` suffix from the URL that you enter.
+   - For REST API to MCP, select the source API and its operations.
+3. **Access and governance:** Select the consumer authentication: API key, OAuth 2.1, or keyless. Then select the deployment target, the privacy score, the tool catalogs, and whether to publish at once.
+4. **Review and create:** Examine the definition, the endpoint, and the warnings. Then create the proxy.
+
+<img src="/img/ai-management/ai-studio-tyk-mcp-register-tools.png" alt="Proxy details step of the Register MCP server wizard with the tools that AI Studio found on the upstream server" />
+
+To find the tools of a remote server, AI Studio calls the upstream server one time. It does this only from the wizard, and only for users with the `execute` action on `mcp-servers`. The call uses the same host rules as connections, with no exception for internal hosts. To permit an internal upstream host, add it to `TYK_MCP_ALLOWED_HOSTS`. If AI Studio cannot reach the upstream server, type the tool names. The gateway blocks each tool that you do not select, including tools that the server adds later.
+
+AI Studio sends the upstream credential to the Dashboard and does not store it.
+
+You can edit the definition on the server page and push it to the Dashboard. AI Studio refuses the push if the proxy changed on the Dashboard after you opened the page. Before AI Studio overwrites a proxy that was created on the Dashboard, it asks you to confirm.
+
+When you delete a proxy that AI Studio registered, AI Studio deletes it from the Dashboard. For a proxy created on the Dashboard, you can only unpublish it in AI Studio.
+
+## Community Submissions
+
+AI Portal users can submit an MCP server for review, in the same way as a tool or a data source. Refer to [Community Submissions](/nightly/ai-management/ai-studio/community). AI Studio encrypts the upstream credential of a submission, and does not show it in responses.
+
+What happens when a reviewer approves a submission depends on the connection:
+
+- **Full mode:** AI Studio creates the proxy on the Dashboard. The submitter owns the new server.
+- **Catalogue or Broker mode, with handoffs accepted:** AI Studio records the server as awaiting the platform team, and notifies administrators. The server page gives a handoff package with the definition, the policy shape, and the steps. After the platform team creates the proxy and a sync imports it, click **Link** on the server page. AI Studio then moves the owner, privacy score, catalogs, and submission to the imported server.
+
+The handoff publishes the `system.mcp_server.registration_handoff` event. You can send it to a [webhook](/nightly/ai-management/ai-studio/webhooks).
+
+## Permissions
+
+Three resources in the [permission catalog](/nightly/ai-management/ai-studio/rbac#permission-reference) control the integration:
+
+- `tyk-connections` controls the connections. The `execute` action activates, disables, probes, and syncs a connection.
+- `mcp-servers` controls the MCP servers. The `execute` action registers servers, finds the tools of an upstream server, pushes definitions, links handoffs, and creates policies. The `publish` action shows a server in the AI Portal.
+- `mcp-credentials` controls the issued keys. The `execute` action issues, rotates, suspends, resumes, and revokes keys, and applies pending changes.
+
+Roles do not control actions in the AI Portal. A user can add a server to their own App and request a key for it when one of their Teams can see the server.
+
+## Configuration
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `TYK_MCP_ENABLED` | `true` | Set to `false` to turn off the integration. |
+| `TYK_MCP_SYNC_MIN_INTERVAL` | `60s` | The shortest sync interval that a connection can use. The minimum is `10s`. |
+| `TYK_MCP_REQUEST_TIMEOUT` | `10s` | The timeout for Dashboard reads. Writes get three times this value. The maximum is `60s`. |
+| `TYK_MCP_RATE_LIMIT_PER_SECOND` | `10` | The maximum outbound requests per second for each connection. |
+| `TYK_MCP_ALLOWED_HOSTS` | Empty | The Dashboard, MDCB, and upstream MCP hosts that AI Studio can call. Empty means any public host. |
+| `TYK_MCP_DENIED_HOSTS` | Empty | Hosts that AI Studio never calls. |
+| `TYK_MCP_REQUIRE_DIFFERENT_ACTIVATOR` | `false` | Requires that a different person activates a connection. |
+| `TYK_MCP_SYNC_RUN_RETENTION` | `720h` | How long AI Studio keeps the sync run records. |
+
+<Warning>
+You must set `TYK_AI_SECRET_KEY`. AI Studio uses it to encrypt the Dashboard access keys and the submitted upstream credentials. If it is not set, the integration does not start.
+</Warning>
+
+By default, AI Studio refuses Dashboard and MDCB URLs on internal network addresses. To permit one, select **Allow this Dashboard host to be on an internal network address** on the connection.
+
+## Limitations
+
+- Chats and agents in AI Studio do not use Tyk-managed MCP servers. Only Apps use them.
+- Each server has one policy bundle.
+- When you rotate a key, the old key stops at once.
