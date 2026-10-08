@@ -13,6 +13,180 @@ Tyk AI Studio is available as a [Community edition](/ai-management/ai-studio/ove
 
 ## 2.2 Release Notes
 
+### 2.2.1 Release Notes
+
+#### Release Date 2 October 2026
+
+#### Release Highlights
+
+Tyk AI Studio 2.2.1 is a patch release. It extends authentication plugins to every gateway endpoint and records who made a delegated call. It also fixes several issues with the connection between AI Studio and Edge Gateways. Read the Breaking Changes section below before you upgrade.
+
+
+#### Breaking Changes
+
+- **Authentication plugins now protect more endpoints, so App keys stop working there.** On Edge Gateways, the authentication plugins of an LLM now also run on `/ai`, `/v1`, `/anthropic`, and `/router`, not only on `/llm/`. On these endpoints, an LLM with an authentication plugin no longer accepts App keys. Give these clients tokens that the plugin accepts, or remove the plugin from the LLM. A rejected request now returns `401 invalid credential`, not `500` with the reason of the plugin. AI Studio also refuses a plugin result without an App ID. The embedded gateway in AI Studio does not run authentication plugins, and still accepts App keys.
+- **The push API and the Community Edition edge detail API changed.** A push now ends as `succeeded`, `succeeded_with_warnings`, `partially_failed`, `failed`, or `expired`. The `completed` and `timed_out` states are removed, so update scripts that wait for `completed`. A push with no Edge Gateway to send to returns `409`. In the Community Edition, `GET /api/v1/edges/{edge_id}` now wraps its response in `{"data": …}`, as in Enterprise.
+- **The connection between AI Studio and Edge Gateways is stricter.** Edge Gateways require TLS 1.2 or later. AI Studio limits gRPC messages to 16 MB. If you increased `GRPC_MAX_MESSAGE_SIZE` on an Edge Gateway, set the same value on AI Studio. Edge Gateways now load `EDGE_TLS_CA_PATH`. The file replaces the system root certificates, so it must contain the issuer of the AI Studio certificate.
+- **For plugin and SDK developers:** The enterprise module path is now `github.com/TykTechnologies/ai-studio-enterprise/v2`. The gateway plugin interfaces moved to `pkg/gatewayplugin`. The old `microgateway/plugins` paths forward to it. The Go `StudioServices` interface has thirteen new methods, so custom fakes must add them. Built plugins continue to work.
+
+
+#### Upgrade Instructions
+
+- **Database changes are automatic, and you can roll back.** The schema moves to version 6. A 2.2.0 binary still runs on a 2.2.1 database.
+- **Upgrade AI Studio and your Edge Gateways together.** Edge Gateways apply the new authentication plugin lists after the next configuration push.
+- **Helm upgrades briefly stop AI Studio.** The AI Studio Deployment now uses the `Recreate` strategy. During the upgrade, Edge Gateways continue to serve traffic.
+
+#### Changelog
+
+##### Added
+
+<AccordionGroup>
+
+<Accordion title='Added authentication plugin lists for every gateway endpoint'>
+Data sources, tools, Model Routers, Semantic Routers, and plugin custom endpoints now have an ordered list of authentication plugins, in the same way as LLMs. An LLM's list now also applies on `/ai/{slug}`, `/v1`, `/anthropic/{slug}`, and `/router/{slug}`, not only on `/llm/`.
+
+You edit the lists in the **Authentication plugins** section of each detail page, or with `GET` and `PUT /api/v1/{datasources,tools,model-routers,semantic-routers,plugins}/{id}/auth-plugins`. Edge Gateways receive the lists, in order, with the next configuration push.
+
+There is no fallback to "any loaded authentication plugin". The App access check, the inactive App check, and the budget apply to the App that the plugin returns.
+</Accordion>
+
+<Accordion title='Added the user and agent of delegated calls to proxy logs'>
+When an authentication plugin accepts a delegated token, AI Studio now records two values. `on_behalf_of` is the user that the call was made for. `acting_agent` is the agent that made it, from the plugin's `auth_actor` claim. AI Studio stores the values in the proxy logs, the chat records, and the Edge Gateway analytics. Edge Gateways send them to AI Studio in the analytics pulse.
+
+The proxy logs on the App and LLM pages show them as **For** and **Agent**. These values are for audit only. `user_id` is still the App owner.
+</Accordion>
+
+<Accordion title='Added governance features for plugins'>
+Plugins can now control who sees their resources. A plugin resource type declares `default_access: auto` or `default_access: explicit`. AI Studio does not grant `explicit` types to the Default team, and the plugin manages the team grants itself. The grants are the same as the ones on the Teams page.
+
+New plugin RPCs let a plugin do these tasks:
+
+- List teams.
+- Read and set the teams of a resource instance.
+- List the resource instances that a user can access.
+- Read audit records and the parts of AI Studio objects.
+- Suspend, resume, or flag an App.
+
+Five new plugin scopes control these RPCs.
+
+The Teams page now lists each plugin resource type and its published instances.
+</Accordion>
+
+<Accordion title='Added support for OpenAI prompt-cache tokens'>
+AI Studio now reads OpenAI prompt-cache tokens (`prompt_tokens_details.cached_tokens` and `cache_write_tokens`) on the chat completions path. It removes them from the prompt token count and bills them at the model's cache prices. For OpenAI and Google, a cache price of 0 means "not set", and AI Studio bills the tokens at the input price.
+</Accordion>
+
+<Accordion title='Added new configuration options'>
+AI Studio 2.2.1 adds these configuration options. None of them is required, and none of them changes behavior when it is not set.
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `BASE_PATH` | not set | Serves the API, OAuth, and the console under a path prefix |
+| `DATABASE_SCHEMA` | not set | PostgreSQL only. Keeps all AI Studio tables in this schema. Use 41 characters or fewer. |
+| `MIGRATION_LOCK_TIMEOUT` | `15m` | How long an instance that starts waits for the migrations of another instance |
+| `CSRF_KEY` | random for each process | The secret for the CSRF key. Set it so that CSRF tokens stay valid after a restart. |
+| `CSRF_COOKIE_NAME` | `_gorilla_csrf` | The name of the CSRF cookie |
+| `GRPC_MAX_MESSAGE_SIZE` (AI Studio) | 16 MB | The send and receive limit of the control server. Edge Gateways already had this setting. |
+| `GRPC_MAX_CONNECTION_AGE` | off | Closes Edge Gateway streams after this age, so that they rebalance behind a load balancer |
+| `GRPC_MAX_CONNECTION_AGE_GRACE` | off | The grace period for `GRPC_MAX_CONNECTION_AGE`. It must not be zero, or streams never close. |
+| `EDGE_TLS_SERVER_NAME` (Edge Gateway) | not set | The server name to verify on the AI Studio certificate |
+
+Each `GRPC_MAX_CONNECTION_AGE` cycle disconnects an Edge Gateway for about 5 seconds. Use ages of minutes or hours.
+</Accordion>
+
+</AccordionGroup>
+
+##### Changed
+
+<AccordionGroup>
+
+<Accordion title='Updated configuration pushes to be durable'>
+AI Studio now stores each configuration push in the database. An Edge Gateway that is offline receives the push when it reconnects, until the deadline. If an Edge Gateway disconnects during a reload, AI Studio sends the push again. The push status now shows what each Edge Gateway did.
+
+The reconnect backoff of an Edge Gateway is now limited to about 30 seconds. In 2.2.0, it was 5 minutes.
+</Accordion>
+
+<Accordion title='Updated the OAuth2 client-credentials plugin to 1.3.1 (Enterprise)'>
+The OAuth2 client-credentials plugin adds revocation, validation, and audit identity. It can also require approval for Apps that it provisions automatically. Approval is off by default, and you can override it for each mapping. When approval is on, the plugin creates the App inactive, and the approval fails closed.
+
+The plugin requires AI Studio 2.2.1. AI Studio shows `min_studio_version` but does not enforce it, so do not install the plugin on 2.2.0.
+</Accordion>
+
+<Accordion title='Updated the Asset Catalog plugin to 1.2.0 (Enterprise)'>
+The Asset Catalog plugin adds a governance inventory, dependency graphs, risk ratings, a composer, CycloneDX export, and the App governance chain.
+
+The plugin requires AI Studio 2.2.1. AI Studio shows `min_studio_version` but does not enforce it, so do not install the plugin on 2.2.0.
+</Accordion>
+
+<Accordion title='Updated the LLM cache plugin to 1.2.0 (Community)'>
+The LLM cache plugin now returns the correct response format for every endpoint and vendor.
+</Accordion>
+
+
+</AccordionGroup>
+
+##### Fixed
+
+<AccordionGroup>
+
+<Accordion title='Fixed Vertex and Hugging Face LLMs on the OpenAI-compatible endpoints'>
+We have resolved an issue where Vertex and Hugging Face LLMs failed on `/ai` and `/v1`. These vendors are not supported on the OpenAI-compatible endpoints. A request now returns `400` with the code `unsupported_vendor` and names the `/llm/rest` and `/llm/stream` endpoints that support them. AI Studio sends nothing to the vendor. In a failover waterfall, the gateway still tries the next LLM.
+</Accordion>
+
+<Accordion title='Fixed OpenAI prompt-cache tokens not being recorded'>
+We have resolved an issue where OpenAI prompt-cache tokens were not recorded on `/v1/chat/completions`, `/ai`, and `/llm`. A prompt that was mostly cached was billed as new tokens.
+</Accordion>
+
+<Accordion title='Fixed Edge Gateway sync failing for a plugin on two LLMs'>
+We have resolved an issue where a plugin attached to two LLMs stopped Edge Gateway sync with `UNIQUE constraint failed: plugins.id`. Edge Gateways also lost the order of an LLM's plugins. Both issues are fixed.
+</Accordion>
+
+<Accordion title='Fixed empty responses from blocked plugin responses'>
+We have resolved an issue where the Edge Gateway copied the framing headers (such as `Content-Length` and `Transfer-Encoding`) of a blocked plugin response without changes. A wrong `Content-Length` gave the client an empty body. For example, the LLM cache plugin did this on every streamed cache hit. The Edge Gateway now frames the body itself.
+</Accordion>
+
+<Accordion title='Fixed quiet Edge Gateways disconnecting every 90 seconds'>
+We have resolved an issue where an Edge Gateway with little traffic was disconnected about every 90 seconds with `GOAWAY too_many_pings`. The control server now has a keepalive policy.
+</Accordion>
+
+<Accordion title='Fixed analytics pulses larger than 4 MB being refused'>
+We have resolved an issue where AI Studio refused an analytics pulse or plugin batch larger than 4 MB. The Edge Gateway retried it forever, and no more analytics from that Edge Gateway arrived. AI Studio now accepts messages up to 16 MB.
+</Accordion>
+
+<Accordion title='Fixed EDGE_TLS_CA_PATH not being loaded'>
+We have resolved an issue where the Edge Gateway checked that `EDGE_TLS_CA_PATH` existed, but did not load it. As a result, an Edge Gateway did not trust an AI Studio certificate from a private CA.
+</Accordion>
+
+<Accordion title='Fixed pushes being lost while an Edge Gateway starts'>
+We have resolved an issue where AI Studio dropped a push that arrived while an Edge Gateway was still starting. The push then waited for the one-minute timeout.
+</Accordion>
+
+<Accordion title='Fixed AI Studio not stopping on SIGTERM'>
+We have resolved an issue where AI Studio did not stop on SIGTERM while an Edge Gateway was connected. It closed its database but continued to serve requests. The embedded gateway returned `401` to every request, and buffered analytics were lost. AI Studio now stops in less than one second, and writes nothing after the analytics handler stops.
+</Accordion>
+
+<Accordion title='Fixed background errors stopping AI Studio'>
+We have resolved an issue where a panic in a background loop or a gRPC handler stopped AI Studio. AI Studio now recovers the panic, logs it, and counts it in the `aistudio_goroutine_panics_total` metric.
+</Accordion>
+
+<Accordion title='Fixed the edge detail page in the Community Edition'>
+We have resolved an issue where the Community Edition edge detail page showed "Edge Gateway Not Found".
+</Accordion>
+
+<Accordion title='Fixed new plugin resources not being visible to non-admins'>
+We have resolved an issue where new `auto` plugin resource instances were not visible to non-admin users until the plugin loaded again. AI Studio now grants them to the Default team immediately.
+</Accordion>
+
+<Accordion title='Fixed the chat view losing the base path'>
+We have resolved an issue where the chat view removed the base path when it changed its URL.
+</Accordion>
+
+<Accordion title='Fixed plugin pages showing a permission error'>
+We have resolved an issue where plugin pages wrote to the server every time a user opened them. Users without the `plugins:write` permission saw a `403` message.
+</Accordion>
+
+</AccordionGroup>
+
 ### 2.2.0 Release Notes
 
 #### Release Date 29 September 2026
