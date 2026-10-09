@@ -1,0 +1,94 @@
+---
+title: "Cross-Region Rate Limits and Quotas with MDCB"
+description: "How Tyk enforces rate limits and quotas when Data Planes run in more than one region, and which patterns give which accuracy guarantee."
+keywords: "MDCB, multi-region, cross-region, active-active, rate limits, quotas, Data Plane, Redis, DRL"
+sidebarTitle: "Cross-Region Limits and Quotas"
+type: concept
+---
+
+## Overview
+
+When you run Tyk Gateways in more than one region with [Tyk MDCB](/api-management/mdcb), each region is a separate [Data Plane](/api-management/mdcb#data-plane). The Gateways in a Data Plane share one Redis. Tyk stores rate limit and quota counters in that Redis, or in Gateway memory for the Distributed Rate Limiter.
+
+MDCB synchronizes configuration, not counters. It sends API definitions, policies, keys, certificates, and OAuth clients from the Control Plane to each Data Plane. It does not send request counts between regions or back to the Control Plane.
+
+This design keeps every rate limit and quota check local. No request waits for a call to another region. A Data Plane also continues to enforce limits when it loses its connection to the Control Plane. The tradeoff is that each Data Plane enforces limits on its own traffic only. This page describes what that means for accuracy, and the patterns you can use when you need a global limit.
+
+## What MDCB Synchronizes
+
+| Item | Synchronized to Data Planes | Notes |
+| :--- | :--- | :--- |
+| API definitions and policies | Yes | Includes the rate limit and quota values that a key or policy grants. |
+| Keys (sessions) | Yes | On demand at first use, or in advance with the [Synchroniser](/api-management/mdcb#mdcb-synchroniser). |
+| Quota resets | Yes | See [Quota Resets](#quota-resets). |
+| Rate limit counters | No | Local to each Data Plane. |
+| Quota counters | No | Local to each Data Plane. |
+
+## Default Behavior Across Regions
+
+### Quotas
+
+Each Data Plane keeps its own quota counter for a key in its local Redis. The counter has its own renewal time, which starts at the first request that the Data Plane receives in a quota period.
+
+A key with a quota of 1,000 requests per day can make 1,000 requests in each region. With two regions, the key can make up to 2,000 requests per day in total.
+
+### Rate Limits
+
+Every [rate limiting algorithm](/api-management/rate-limit#rate-limiting-algorithms) enforces the full limit inside one Data Plane. A key with a limit of 100 requests per second can make 100 requests per second in each region. With two regions, the key can make up to 200 requests per second in total. This also applies to failover: when you move a client to another region, that region starts with a fresh limit for the client.
+
+Two algorithms have an additional effect across regions:
+
+- **[Distributed Rate Limiter](/api-management/rate-limit#distributed-rate-limiter) (default):** It divides the limit between the Gateways of one Data Plane. Gateways find their peers through Redis publish and subscribe messages, and these messages do not reach the Redis of another Data Plane. Thus, the Distributed Rate Limiter never divides a limit between Gateways in different regions.
+- **[Fixed Window Rate Limiter](/api-management/rate-limit#fixed-window-rate-limiter):** A client can use the full limit at the end of one window and again at the start of the next window. At a window boundary, a key can make up to 2x the limit in each region, and up to 4x the limit across two regions.
+
+### Quota Resets
+
+A quota reset is the one counter operation that reaches every region. When you reset a quota in Tyk Dashboard, MDCB sends a reset event to each Data Plane. Each Data Plane then deletes its local quota counter for that key. The Data Plane receives the event the next time it checks for key changes, as set by [slave_options.key_space_sync_interval](/tyk-oss-gateway/configuration#slave_options-key_space_sync_interval).
+
+<Note>
+An update to a key in Tyk Dashboard also resets the quota of that key in every Data Plane. To keep the current counters, add `suppress_reset=1` to the update request. Refer to the [Tyk Dashboard API](/tyk-dashboard-api) for the key endpoints.
+</Note>
+
+## Patterns for a Global Limit
+
+If a consumer must not exceed one total limit across all regions, select one of these patterns. Each pattern has a different accuracy guarantee.
+
+| Pattern | Accuracy guarantee | Latency | Failure isolation |
+| :--- | :--- | :--- | :--- |
+| [Per-region allocation](#per-region-allocation) | Exact in each region. The global total never exceeds the sum of the regional allocations. | Local | Full |
+| [Consumer affinity](#consumer-affinity) | Exact, because all traffic for a key goes to one region | Local | Full, until failover |
+| [Replicated Redis](#replicated-redis) | Eventually consistent. Concurrent traffic in two regions can exceed the limit before replication completes. | Local | Depends on the Redis product |
+| [One shared Redis](#one-shared-redis) | Exact | A cross-region round trip on each request | None. Loss of the shared Redis stops every region. |
+
+### Per-Region Allocation
+
+Divide the global limit between the regions, so that each region enforces only its share. Keys reach every Data Plane. Thus, you must attach each share to an API that only one region loads:
+
+1. Use [API sharding](/api-management/api-sharding) to load a separate copy of the API in each Data Plane.
+2. In the key or policy, give each regional copy its own [API-level quota](/api-management/access-control/sessions-and-keys/access-rights#api-level-limits-and-quotas). For example, 600,000 requests per month for one region and 400,000 for the other.
+
+- **Guarantee:** Each region enforces its share exactly. The consumer cannot exceed the global total.
+- **Tradeoff:** A region cannot use the unused share of another region. If traffic moves between regions, you must change the allocation.
+
+### Consumer Affinity
+
+Route all traffic for a consumer to one region, for example with geo-DNS or with routing rules in front of Tyk. The other region serves that consumer only when you fail over.
+
+- **Guarantee:** The home region enforces the full limit exactly.
+- **Tradeoff:** After a failover, the new region starts with its own counter. The consumer can use more than the limit in the failover period.
+
+### Replicated Redis
+
+Use a Redis product that replicates data between regions, for example an active-active database, under each region's Data Plane. The counters in each region then converge over time.
+
+- **Guarantee:** Eventually consistent. Each region checks the limit against its local copy of the counter before the other region's requests arrive. Thus, concurrent traffic in two regions can exceed the limit. The size of the overshoot depends on replication lag and traffic rate.
+- **Tradeoff:** Replication lag is often longer than a short rate limit window. This pattern is more suitable for quotas than for per-second rate limits.
+
+{/* TODO before merge: confirm with Engineering whether Tyk supports a specific active-active Redis product, and which Gateway settings it needs (for example enable_non_transactional_rate_limiter). Source code does not state this. */}
+
+### One Shared Redis
+
+Connect the Data Planes in all regions to one Redis instance.
+
+- **Guarantee:** Exact, because all Gateways use the same counters.
+- **Tradeoff:** Each request makes Redis calls across regions, which adds latency. If the shared Redis or the network link fails, Gateways in the remote regions cannot validate keys or count requests. This pattern removes the main benefits of MDCB.
