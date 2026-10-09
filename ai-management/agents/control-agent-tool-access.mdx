@@ -1,0 +1,169 @@
+---
+title: "How do I control which tools and APIs an AI agent can call?"
+description: "Limit the MCP tools and REST endpoints an AI agent can call with Tyk, keep upstream credentials away from the model, and plan egress controls for agent tool calls."
+keywords: "AI agent tool access, MCP tool allowlist, block MCP tool, REST API to MCP, excessive agency, confused deputy, SSRF prevention, egress filtering, upstream authentication, Tyk MCP Gateway"
+sidebarTitle: "Control Agent Tool Access"
+---
+
+Send the agent's tool calls through a Tyk MCP proxy. Tyk checks every `tools/call` request against the allow and block lists in the proxy definition and in the agent's policy. It removes forbidden tools from `tools/list`, and it adds upstream credentials so that the model never sees them. Tyk Gateway does not filter outbound network destinations, so use network policy for egress.
+
+| Item | Detail |
+|---|---|
+| Applies to | MCP proxies on Tyk Gateway |
+| Edition | Tool allow and block lists, filtered discovery, and header injection: all editions. REST API to MCP, upstream OAuth, and upstream basic authentication: Enterprise Edition only. |
+| Version | Tyk Gateway 5.13 or later. REST API to MCP: 5.15.0 or later. |
+| API definition | Tyk OAS APIs only |
+
+---
+
+## Why Agents Need Tool Limits
+
+An AI agent selects its own tools. A prompt injection or a poisoned tool description can make it call a tool that it does not need. The [OWASP Top 10 for LLM Applications](https://genai.owasp.org/llmrisk/llm062025-excessive-agency/) calls this risk LLM06 Excessive Agency. The fix is to give each agent the smallest set of tools that does its job.
+
+Tyk applies tool limits at three levels:
+
+| Level | Where you set it | Applies to |
+|---|---|---|
+| Operations that become tools | `x-tyk-mcp-server` allow list (REST API to MCP only) | The whole MCP proxy |
+| Tools that no agent can call | `block` middleware in the MCP proxy definition | All consumers |
+| Tools that one agent can call | `mcp_access_rights` in the agent's policy | One agent or role |
+
+Network egress is a fourth level, outside Tyk. See [An Agent Built a URL and Hit Our Metadata Service](#an-agent-built-a-url-and-hit-our-metadata-service-how-do-i-allowlist-tool-http).
+
+---
+
+## How Do I Expose Only Some REST Endpoints to an LLM Agent, Not the Admin API?
+
+Use [REST API to MCP](/ai-management/mcps/api-to-mcp) with an allow list. Tyk generates MCP tools from the operations in your Tyk OAS API. By default, every operation becomes a tool. When one entry has `allow: true`, Tyk exposes only the entries with `allow: true`.
+
+```json
+{
+  "x-tyk-mcp-server": {
+    "primitives": [
+      { "source": { "operationId": "getOrderStatus" }, "allow": true },
+      { "source": { "operationId": "listOrders" }, "allow": true }
+    ]
+  }
+}
+```
+
+With this configuration, the agent sees two tools. The admin operations in the same API do not become tools.
+
+Tyk also leaves out operations that the source API marks as internal or blocked. New operations in the source API do not become tools until you add them to the allow list.
+
+To give different agents different sets of operations from one API, create more than one MCP proxy. See [How to slice one API into multiple MCP proxies](/ai-management/mcp-gateway/how-to-slice-one-api-into-multiple-mcp-proxies). For all fields, see [REST API to MCP definitions](/ai-management/mcp-gateway/api-to-mcp-definitions).
+
+---
+
+## How Do I Block One MCP Tool for Every Agent?
+
+Add the `block` middleware to the tool in the MCP proxy definition:
+
+```json
+{
+  "x-tyk-api-gateway": {
+    "middleware": {
+      "mcpTools": {
+        "delete_user": {
+          "block": { "enabled": true }
+        }
+      }
+    }
+  }
+}
+```
+
+Tyk removes `delete_user` from `tools/list` for all consumers. If an agent calls the tool by name, Tyk does not send the call upstream. It returns this error:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "error": {
+    "code": -32002,
+    "message": "Requested endpoint is forbidden",
+    "data": { "http_code": 403 }
+  },
+  "id": 6
+}
+```
+
+A policy cannot override this block. For the Tyk Dashboard procedure, see [How to block a tool](/ai-management/mcp-gateway/how-to-block-tool).
+
+To give each agent a different list of tools, use policies. See [How to implement role-based access control for an MCP proxy](/ai-management/mcp-gateway/how-to-mcp-rbac).
+
+---
+
+## Should a Gateway Inject API Keys So the Model Never Sees Them?
+
+Yes. If the agent holds the upstream credential, a prompt injection can make the model show it or use it for a different purpose. Give the agent a Tyk credential only. Tyk adds the upstream credential to the request after it checks the agent's access.
+
+| Method | Configuration | Edition |
+|---|---|---|
+| OAuth 2.0 client credentials. Tyk gets, caches, and refreshes the token. | `upstream.authentication.oauth` | Enterprise |
+| HTTP basic authentication | `upstream.authentication.basicAuth` | Enterprise |
+| Static API key or token in a header | `middleware.global.transformRequestHeaders` | All editions |
+| Token exchange ([RFC 8693](https://www.rfc-editor.org/rfc/rfc8693)). Tyk exchanges the caller's token for an upstream token. | `oauth2` security scheme | Enterprise, 5.14.0 or later |
+
+For configuration examples, see [Upstream OAuth](/ai-management/mcp-gateway/oauth-2-1#upstream-oauth) and [Token exchange](/api-management/authentication/token-exchange).
+
+With REST API to MCP, Tyk builds a new HTTP request from the tool arguments. It does not copy the agent's `Authorization` header to the request. The upstream authentication of the source REST API then applies. The tool schema in `tools/list` does not show the upstream security schemes.
+
+---
+
+## An Agent Built a URL and Hit Our Metadata Service: How Do I Allowlist Tool HTTP?
+
+This attack is server-side request forgery (SSRF). See [OWASP API7:2023 Server Side Request Forgery](https://owasp.org/API-Security/editions/2023/en/0xa7-server-side-request-forgery/). A common target is the cloud instance metadata endpoint at `169.254.169.254`, which can return cloud credentials.
+
+### What Tyk Gateway Does
+
+- Each MCP proxy sends requests to the upstream URL in its API definition. An agent cannot change this host through a tool call.
+- With REST API to MCP, a tool call goes only to the target URL of the source REST API.
+- Tool access control stops calls to tools that the agent is not allowed to use.
+
+### What Tyk Gateway Does Not Do
+
+- It does not filter outbound requests by destination host or IP address.
+- It does not block private IP ranges or link-local addresses such as `169.254.169.254`.
+- It does not protect against DNS rebinding.
+
+Tyk does not apply these checks because administrators control the API definition, and many upstream services are on private networks.
+
+An MCP server can have a tool that fetches a URL from its arguments. That request comes from the MCP server, not from Tyk. Tyk sees the tool call, but it does not see the URL that the MCP server opens.
+
+### Recommended Controls
+
+Use defense in depth:
+
+1. Block URL-fetching tools, or leave them out of each agent's allow list. Allow them only for agents that need them.
+2. Restrict egress from the MCP server and from Tyk Gateway with network policy. Use cloud security groups or a [Kubernetes NetworkPolicy](https://kubernetes.io/docs/concepts/services-networking/network-policies/). Deny `169.254.169.254/32` and private ranges that the workload does not need.
+3. Require IMDSv2 on AWS, and set the metadata hop limit to `1`. Containers then cannot reach the metadata service through the host.
+4. Send upstream traffic through an egress forward proxy that has a host allowlist. Set the proxy for an API with [`upstream.proxy`](/api-management/implement-tls#routing-through-a-forward-proxy). Set the proxy for requests that Tyk Gateway makes itself, such as JWKS and OAuth metadata, with [`external_services`](/configure/external-service).
+5. Validate redirects and resolved IP addresses in the MCP server code that fetches URLs.
+
+---
+
+## Verify the Setup
+
+1. Connect [MCP Inspector](https://github.com/modelcontextprotocol/inspector) to the MCP proxy with the agent's credential.
+2. Send `tools/list`. Make sure that the list contains only the allowed tools.
+3. Call a blocked tool by name. Make sure that Tyk returns error `-32002` and that the upstream does not receive the call.
+4. Examine the [MCP access logs](/ai-management/mcp-gateway/mcp-access-logs). Each record shows `mcp_method` and `mcp_primitive_name`, so you can see which tool each agent called.
+
+---
+
+## Limitations
+
+- Tyk Gateway does not filter outbound destinations. Use network policy for egress control.
+- The REST API to MCP allow list applies to the whole proxy. Use policies for limits on each agent.
+- Do not configure `upstream.authentication.oauth` and token exchange on the same API.
+
+---
+
+## Related Pages
+
+- [REST API to MCP](/ai-management/mcps/api-to-mcp)
+- [MCP Gateway overview](/ai-management/mcp-gateway/overview)
+- [MCP Gateway core concepts](/ai-management/mcp-gateway/core-concepts)
+- [MCP Gateway policies](/ai-management/mcp-gateway/policies)
+- [OAuth 2.1 for MCP proxies](/ai-management/mcp-gateway/oauth-2-1)
+- [MCP server security guide](https://tyk.io/learning-center/mcp-server-security-ai-enterprise-guide/)
