@@ -604,6 +604,128 @@ PORTAL_CORS_ALLOWED_METHODS=GET,POST,HEAD
 **Description**: Defines the frequency of the notifications job that fetches notifications from the portal's database in minutes. The default value is `30` minutes.
 
 
+## Callouts settings
+
+These settings apply to all [Callouts](/portal/customization/callouts) in a Tyk Developer Portal instance. They control feature availability, permitted destinations and request limits. Configure each Callout's target URL, authentication and outbound timeout in the Admin Portal instead.
+
+Callouts are enabled by default. A public HTTPS target on port 443 needs no deployment configuration changes. Restart Tyk Developer Portal after changing these settings.
+
+New deployments should use the `TYK_PORTAL_` prefix shown below. The equivalent `PORTAL_CALLOUTS_*` names are also accepted. Environment variables override file settings; `TYK_PORTAL_` takes precedence over `PORTAL_` when both are set. Use comma-separated values for host and port lists.
+
+### TYK_PORTAL_CALLOUTS_ENABLE
+
+**Config file:** `Callouts.Enable` <br/>
+**Type:** `bool` <br/>
+**Default:** `true` <br/>
+**Description:** Enables Callout administration, Page selection and the browser-facing Callout endpoint. Set it to `false` to make these features unavailable. Disabling Callouts preserves existing Callouts and Page associations. Keep `DisableCSRFCheck` set to `false`; Callout requests fail when cross-site request forgery (CSRF) protection is disabled.
+
+To disable Callouts for the deployment:
+
+<Tabs>
+<Tab title="Environment variables">
+
+```bash
+TYK_PORTAL_CALLOUTS_ENABLE=false
+```
+
+</Tab>
+<Tab title="Configuration file">
+
+Add the `Callouts` object to your existing configuration:
+
+```json
+{
+  "Callouts": {
+    "Enable": false
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+### TYK_PORTAL_CALLOUTS_ALLOWEDHOSTS
+
+**Config file:** `Callouts.AllowedHosts` <br/>
+**Type:** `[]string` <br/>
+**Default:** `[]` <br/>
+**Description:** Restricts target and OAuth token URLs to the listed hostnames or IPv4 addresses. Empty means no host allowlist restriction, not unrestricted networking: scheme, address and port checks still apply. Entries are exact hosts, not URLs or wildcard patterns. Matching ignores case and a trailing dot. Include the OAuth token host if it differs from the target host.
+
+Set an explicit list of required hosts to limit where administrators can configure Callouts to send requests.
+
+```bash
+TYK_PORTAL_CALLOUTS_ALLOWEDHOSTS=service.example.com,auth.example.com
+```
+
+### TYK_PORTAL_CALLOUTS_ALLOWEDPORTS
+
+**Config file:** `Callouts.AllowedPorts` <br/>
+**Type:** `[]int` <br/>
+**Default:** `[80, 443]` <br/>
+**Description:** Permitted destination ports for target and OAuth token URLs. Values must be from 1 through 65535. A configured list replaces the defaults; an empty list uses the defaults. If the URL omits a port, its scheme supplies 80 for HTTP or 443 for HTTPS. Allowing a port does not enable HTTP.
+
+```bash
+TYK_PORTAL_CALLOUTS_ALLOWEDPORTS=443,8443
+```
+
+### TYK_PORTAL_CALLOUTS_ALLOWHTTP
+
+**Config file:** `Callouts.AllowHTTP` <br/>
+**Type:** `bool` <br/>
+**Default:** `false` <br/>
+**Description:** Permits unencrypted HTTP for target and OAuth token URLs. The destination port must also be allowed. Tyk Developer Portal logs a startup warning when this option is enabled.
+
+<Warning>
+HTTP can expose request data and authentication credentials in transit. Keep this setting disabled for production connections unless you have explicitly assessed and accepted that risk.
+</Warning>
+
+### TYK_PORTAL_CALLOUTS_ALLOWPRIVATENETWORKS
+
+**Config file:** `Callouts.AllowPrivateNetworks` <br/>
+**Type:** `bool` <br/>
+**Default:** `false` <br/>
+**Description:** Permits RFC 1918 IPv4 destinations: `10.0.0.0/8`, `172.16.0.0/12` and `192.168.0.0/16`. Enable this only when a target or OAuth token endpoint must be reached through your private network. It does not permit loopback, link-local or IPv6 addresses, and it does not bypass host or port restrictions.
+
+An internal Tyk Gateway can be a valid production destination. Limit allowed hosts and ports to those required, and apply network-level egress controls. This option allows access to internal services; it is not a general switch to disable destination validation.
+
+### TYK_PORTAL_CALLOUTS_MAXCONCURRENT
+
+**Config file:** `Callouts.MaxConcurrent` <br/>
+**Type:** `int` <br/>
+**Default:** `20` <br/>
+**Description:** Maximum concurrent browser Callout requests per Portal instance, shared across Callouts. Requests occupy a slot while the body is read and the request is processed. Excess requests receive HTTP `503`; they are not queued. Must be greater than zero when Callouts are enabled. This is a concurrency limit, not a per-user rate limit.
+
+### TYK_PORTAL_CALLOUTS_MAXREQUESTBYTES
+
+**Config file:** `Callouts.MaxRequestBytes` <br/>
+**Type:** `int64` <br/>
+**Default:** `1048576` (1 MiB) <br/>
+**Description:** Maximum browser request body size in bytes, checked before CSRF form parsing. Larger bodies receive HTTP `413`. This limits the incoming body, not the outbound JSON envelope after encoding and optional identity are added. Must be greater than zero when Callouts are enabled.
+
+### TYK_PORTAL_CALLOUTS_MAXRESPONSEBYTES
+
+**Config file:** `Callouts.MaxResponseBytes` <br/>
+**Type:** `int64` <br/>
+**Default:** `1048576` (1 MiB) <br/>
+**Description:** Maximum target response body size in bytes. A response above this limit fails the Callout request with HTTP `502`. Must be greater than zero when Callouts are enabled.
+
+Request and response bodies are buffered within these limits. Increasing them together with the concurrency limit increases potential memory use. Raise limits only for a known workload and test the deployment's capacity.
+
+### TYK_PORTAL_CALLOUTS_REQUESTBODYREADTIMEOUT
+
+**Config file:** `Callouts.RequestBodyReadTimeout` <br/>
+**Type:** `int` <br/>
+**Default:** `10` seconds <br/>
+**Description:** Time allowed to read the browser's request body, before authentication and outbound execution. Set a positive integer in seconds. This prevents an incomplete request from holding a concurrency slot indefinitely. It is separate from each Callout's **Timeout (seconds)** setting, which governs the outbound operation.
+
+### Destination restrictions
+
+The same outbound policy applies to Callout requests and connection tests, including OAuth token acquisition. Tyk Developer Portal checks URLs and the IPv4 addresses selected when it opens connections. Connections to loopback, link-local, shared address space and other reserved ranges are blocked even if the hostname is allowed.
+
+Callouts use IPv4 connections and TLS 1.2 or later for HTTPS. They do not follow redirects or use the `HTTP_PROXY` and `HTTPS_PROXY` environment variables. Use a destination reachable directly from the Portal deployment. Changing the allowlist does not create a network route or firewall rule.
+
+For Tyk Cloud deployments, confirm access to these settings and network egress requirements with your Tyk support contact.
+
 ## Webhooks settings
 
 This section explains how to configure webhooks in the portal.
