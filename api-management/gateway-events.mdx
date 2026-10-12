@@ -102,14 +102,14 @@ The built-in events that Tyk Gateway will generate are:
 ### OAuth 2.0 events
 
 - `OAuth2ScopeCheckFailed`: a request has a valid OAuth 2.0 access token, but the token does not have the [scopes](/api-management/authentication/oauth2-authentication#scope-enforcement) that the endpoint requires
-- `OAuth2ExchangeSucceeded`: Tyk Gateway has [exchanged](/api-management/authentication/token-exchange) an inbound token for an upstream token, including tokens served from cache
-- `OAuth2ExchangeFailed`: a token exchange has failed because the identity provider returned an error or no provider matched the inbound token
+- `OAuth2ExchangeSucceeded`: Tyk Gateway has [exchanged](/api-management/authentication/token-exchange) an inbound token for an upstream token, which includes a token from the cache
+- `OAuth2ExchangeFailed`: a token exchange has failed because the identity provider rejected the exchange or could not be reached, or because no provider matched the inbound token
 
 ## Event Metadata
 
-When an event is fired, and an *event handler* is registered for that specific API and event combination, Tyk Gateway provides the handler with a set of metadata about the event. The external system (webhook) or custom (JavaScript) code can then use this metadata to decide what action to take.
+Tyk Gateway sends metadata about an event to each *event handler* that you register for that API and event. The external system (webhook) or custom (JavaScript) code can then use this metadata to decide what action to take.
 
-The field names on this page are the names that a webhook template uses. For example, a template reads the request path as `{{.Meta.Path}}`. Custom event handlers receive the same metadata as a JSON object. A field that has a different key in this JSON object shows the JSON key next to its type.
+The field names on this page are the names that a webhook template uses. For example, a template reads the request path as `{{.Meta.Path}}`. Custom event handlers receive the same metadata as a JSON object. If the JSON key is different from the field name, the list shows the JSON key next to the type.
 
 ### Common Metadata
 
@@ -118,28 +118,30 @@ Most events provide these fields:
 - `Message` (string): a human-readable message from Tyk Gateway that provides details about the event
 - `OriginatingRequest` (string): a Base64-encoded [raw inbound request](#raw-request-data)
 
-`OriginatingRequest` is empty for circuit breaker, uptime, token lifecycle, quota monitor and certificate expiry events.
+`OriginatingRequest` is empty for circuit breaker, uptime, token lifecycle, quota monitor and certificate expiry events. It can also be empty for organization quota and rate limit events.
 
 ### Specific Event Metadata
 
-Each event also provides metadata specific to that event. The following sections list the metadata that each event provides.
+Most events also provide fields that are specific to the event. The following sections list these fields. A section shows `Message` only when the message has a fixed value or a special meaning for that event.
 
 <ul>
 
 <li>
 <Expandable title='RatelimitExceeded, RateLimitSmoothingUp, RateLimitSmoothingDown, QuotaExceeded, AuthFailure, KeyExpired'>
-- `Message` (string): a human-readable message from Tyk Gateway that provides details about the event
-- `OriginatingRequest` (string): a Base64-encoded [raw inbound request](#raw-request-data)
 - `Path` (string): the path of the API endpoint request that led to the event being fired
 - `Origin` (string): the IP address of the client that sent the request
-- `Key` (string): the key that was used in the request; for an API-level rate limit, this is the internal rate limit key of the API
+- `Key` (string): the key that was used in the request
+
+`Key` has a different value in these cases:
+
+- For an API-level rate limit, `Key` is the internal rate limit key of the API.
+- If the key metadata sets `rate_limit_pattern`, rate limit events use the custom rate limit key that this pattern creates.
+- If a Go plugin fires `AuthFailure`, `Key` is `n/a`.
 </Expandable>
 </li>
 
 <li>
 <Expandable title='OrgQuotaExceeded, OrgRateLimitExceeded'>
-- `Message` (string): a human-readable message from Tyk Gateway that provides details about the event
-- `OriginatingRequest` (string): a Base64-encoded [raw inbound request](#raw-request-data); this can be empty
 - `Path` (string): the path of the API endpoint request that led to the event being fired
 - `Origin` (string): the IP address of the client that sent the request
 - `Key` (string): the ID of the organization that exceeded its limit
@@ -148,8 +150,6 @@ Each event also provides metadata specific to that event. The following sections
 
 <li>
 <Expandable title='VersionFailure'>
-- `Message` (string): a human-readable message from Tyk Gateway that provides details about the event
-- `OriginatingRequest` (string): a Base64-encoded [raw inbound request](#raw-request-data)
 - `Path` (string): the path of the API endpoint request that led to the event being fired
 - `Origin` (string): the IP address of the client that sent the request
 - `Reason` (string): the reason why Tyk Gateway rejected the request, for example `This API version does not seem to exist`
@@ -159,7 +159,6 @@ Each event also provides metadata specific to that event. The following sections
 <li>
 <Expandable title='UpstreamOAuthError'>
 - `Message` (string): the error that occurred when Tyk Gateway tried to get a token from the upstream OAuth provider
-- `OriginatingRequest` (string): a Base64-encoded [raw inbound request](#raw-request-data)
 - `APIID` (string): the ID of the API that triggered the event
 </Expandable>
 </li>
@@ -169,7 +168,7 @@ Each event also provides metadata specific to that event. The following sections
 - `Message` (string): `Breaker Tripped` or `Breaker Reset`
 - `Path` (string): the path of the endpoint that has the circuit breaker
 - `APIID` (string): the ID of the API that triggered the event
-- `CircuitEvent` (integer): the new state of the circuit breaker; `0` means that the breaker tripped and `1` means that the breaker reset
+- `CircuitEvent` (integer): the new state of the circuit breaker, where `0` means tripped and `1` means reset
 </Expandable>
 </li>
 
@@ -180,7 +179,7 @@ Each event also provides metadata specific to that event. The following sections
   - `CheckURL` (string): the URL that the uptime test checked
   - `Method` (string): the HTTP method of the uptime test
   - `Protocol` (string): the protocol of the uptime test
-  - `Timeout` (duration): the timeout of the uptime test; a webhook template shows this as text such as `10s`, and the JSON object shows it in nanoseconds
+  - `Timeout` (duration): the timeout of the uptime test, for example `10s` in a webhook template or `10000000000` (nanoseconds) in the JSON object
   - `Headers` (object): the headers that the uptime test sent
   - `Body` (string): the body that the uptime test sent
   - `Commands` (array): the commands of a TCP uptime test
@@ -194,30 +193,28 @@ Each event also provides metadata specific to that event. The following sections
 
 <li>
 <Expandable title='TokenCreated, TokenUpdated, TokenDeleted'>
-- `Message` (string): a human-readable message from Tyk Gateway that provides details about the event
 - `Org` (string): the ID of the organization that owns the key
-- `Key` (string): the key that was created, updated or deleted
+- `Key` (string): the key that the operation created, updated or deleted
 </Expandable>
 </li>
 
 <li>
 <Expandable title='TriggerExceeded'>
-This event is fired by the [quota consumption monitor](#monitoring-quota-consumption).
+The [quota consumption monitor](#monitoring-quota-consumption) fires this event. Only the monitor webhook receives it.
 
 - `Message` (string): `Quota trigger reached`
-- `OrgID` (string, JSON key `org_id`): the ID of the organization
-- `Key` (string, JSON key `key`): the key that reached the threshold; empty when an organization threshold fired the event
-- `TriggerLimit` (integer, JSON key `trigger_limit`): the threshold that was reached
-- `UsagePercentage` (integer, JSON key `usage_percentage`): the percentage of the quota that has been used
+- `OrgID` (string): the ID of the organization
+- `Key` (string): the key that reached the threshold, or empty if an organization threshold fired the event
+- `TriggerLimit` (integer): the threshold that the key or organization reached
+- `UsagePercentage` (integer): the percentage of the quota that the key or organization has used
 </Expandable>
 </li>
 
 <li>
 <Expandable title='CertificateExpiringSoon'>
-- `Message` (string): a human-readable message from Tyk Gateway that provides details about the event
 - `CertID` (string, JSON key `cert_id`): the certificate ID
 - `CertName` (string, JSON key `cert_name`): the name of the certificate
-- `ExpiresAt` (string, RFC3339, JSON key `expires_at`): the certificate expiry date
+- `ExpiresAt` (time, JSON key `expires_at`): the certificate expiry date
 - `DaysRemaining` (integer, JSON key `days_remaining`): the remaining days until the certificate expires
 - `APIID` (string, JSON key `api_id`): the ID of the API that triggered the event
 - `CertRole` (string, JSON key `cert_role`): `client` for a client certificate or `upstream` for an upstream certificate
@@ -226,10 +223,9 @@ This event is fired by the [quota consumption monitor](#monitoring-quota-consump
 
 <li>
 <Expandable title='CertificateExpired'>
-- `Message` (string): a human-readable message from Tyk Gateway that provides details about the event
 - `CertID` (string, JSON key `cert_id`): the certificate ID
 - `CertName` (string, JSON key `cert_name`): the name of the certificate
-- `ExpiredAt` (string, RFC3339, JSON key `expired_at`): the date when the certificate expired
+- `ExpiredAt` (time, JSON key `expired_at`): the date when the certificate expired
 - `DaysSinceExpiry` (integer, JSON key `days_since_expiry`): the number of days since the certificate expired
 - `APIID` (string, JSON key `api_id`): the ID of the API that triggered the event
 - `CertRole` (string, JSON key `cert_role`): `client` for a client certificate or `upstream` for an upstream certificate
@@ -256,7 +252,7 @@ This event does not provide the common metadata. It provides only these fields:
 These events do not provide the common metadata. They provide only these fields:
 
 - `oauth2_api_id` (string): the ID of the API that triggered the event
-- `oauth2_provider` (string): the token exchange provider that Tyk Gateway used
+- `oauth2_provider` (string): the token exchange provider that Tyk Gateway used, or empty for the `no_matching_provider` outcome
 - `oauth2_exchange_outcome` (string): `ok`, `idp_error` or `no_matching_provider`
 - `oauth2_exchange_cache_hit` (boolean): `true` if the exchanged token came from the cache
 - `trace_id` (string): the trace ID of the request, if present
@@ -272,6 +268,8 @@ For more details, see [token exchange audit events](/api-management/authenticati
 </li>
 
 </ul>
+
+The `ExpiresAt` and `ExpiredAt` fields are Go time values. The JSON object shows them in RFC3339 format. In a webhook template, use the `as_rfc3339` function to get the same format, for example `{{.Meta.ExpiresAt | as_rfc3339}}`.
 
 ### Using the metadata
 
