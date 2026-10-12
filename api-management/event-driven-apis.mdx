@@ -102,68 +102,42 @@ The following sections will guide you through the prerequisites and steps to con
 
 ### Prerequisites
 
-- **Docker**: We will run the entire Tyk Stack on Docker. For installation, refer to this [guide](https://docs.docker.com/desktop/setup/install/mac-install/).
-- **Git**: A CLI tool to work with git repositories. For installation, refer to this [guide](https://git-scm.com/downloads)
-- **Dashboard License**: We will configure Streams API using Dashboard. [Contact our team](https://tyk.io/contact/) to obtain a license or get self-managed trial license by completing the registration on our [website](https://tyk.io/self-managed-trial/). **Note:** To use the dashboard to design streams APIs, the dashboard license must include the `streams` scope.
-- **Curl and JQ**: These tools will be used for testing.
+- **Tyk Self-Managed**: Install it with the [Tyk Self-Managed quick start](/getting-started/quick-start). Your Dashboard license must include the `streams` scope. To get a license, complete the [Self-Managed trial registration](https://tyk.io/self-managed-trial/) or [contact our team](https://tyk.io/contact/).
+- **Docker**: The quick start runs Tyk on Docker. For installation, refer to the [Docker guide](https://docs.docker.com/get-started/get-docker/).
+- **Curl and JQ**: You use these tools to test the APIs.
 
 ### Instructions
 
-1. **Clone Git Repository:**
+1. **Check Tyk Streams and Get Your API Key:**
 
-    The [tyk-demo](https://github.com/TykTechnologies/tyk-demo) repository offers a docker-compose environment you can run locally to explore Tyk streams. Open your terminal and clone the git repository using the command below.
+    The quick start deployment already enables Tyk Streams. It uses the Enterprise Edition of Tyk Gateway (`tykio/tyk-gateway-ee`) and sets `TYK_GW_STREAMING_ENABLED` and `TYK_DB_STREAMING_ENABLED` to `true`. If you use a different deployment, set these two variables to `true` in Tyk Gateway and Tyk Dashboard. Also use the Enterprise Edition image of Tyk Gateway. Refer to the [configuration options](/tyk-oss-gateway/configuration#streaming) for more details.
+
+    To get your Tyk Dashboard API key:
+
+    - Log in to Tyk Dashboard at [http://localhost:3000](http://localhost:3000) with `developer@tyk.io` / `specialpassword`.
+    - Select **Edit profile** from the menu under your username in the top right corner.
+    - Copy the key from **Tyk Dashboard API Access Credentials** at the bottom of the page. You use it as `<your-api-key>` in the next steps.
+
+2. **Start Kafka:**
+
+    Run a single-node Kafka broker on the `tyk` Docker network that the quick start creates. Tyk Gateway connects to it at `kafka:9092`.
 
     ```bash
-    git clone https://github.com/TykTechnologies/tyk-demo
-    cd tyk-demo
+    docker run -d --name kafka --network tyk -p 9092:9092 \
+      -e KAFKA_NODE_ID=1 \
+      -e KAFKA_PROCESS_ROLES=broker,controller \
+      -e KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093 \
+      -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092 \
+      -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER \
+      -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT \
+      -e KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093 \
+      -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
+      apache/kafka:3.8.0
     ```
 
-2. **Enable Tyk Streams:**
+3. **Create Producer API:**
 
-   By default, Tyk Streams is disabled. To enable Tyk Streams in the Gateway and Dashboard, you need to configure the following settings:
-
-   Create an `.env` file and populate it with the values below:
-
-   ```bash
-   DASHBOARD_LICENCE=<your-dashboard-license>
-   GATEWAY_IMAGE_REPO=tyk-gateway-ee
-   TYK_DB_STREAMING_ENABLED=true
-   TYK_GW_STREAMING_ENABLED=true
-   ```
-
-   - `DASHBOARD_LICENCE`: Add your license key. Contact [our team](https://tyk.io/contact/) to obtain a license.
-   - `GATEWAY_IMAGE_REPO`: Tyk Streams is available as part of the Enterprise Edition of the Gateway.
-   - `TYK_DB_STREAMING_ENABLED` and `TYK_GW_STREAMING_ENABLED`: These must be set to `true` to enable Tyk Streams in the Dashboard and Gateway, respectively. Refer to the [configuration options](/tyk-oss-gateway/configuration#streaming) for more details.
-
-3. **Start Tyk Streams**
-
-    Execute the following command:
-    ```bash
-    ./up.sh
-    ```
-
-    
-
-    <Note>
-    This script also starts `Kafka` within a Docker container, which is necessary for this guide.
-    </Note>
-
-
-    This process will take a few minutes to complete and will display some credentials upon completion. Copy the Dashboard **username, password, and API key**, and save them for later use.
-    ```
-            ▾ Tyk Demo Organisation
-                  Username : admin-user@example.org
-                  Password : 3LEsHO1jv1dt9Xgf
-          Dashboard API Key : 5ff97f66188e48646557ba7c25d8c601
-    ```
-
-4. **Verify Setup:**
-
-    Open Tyk Dashboard in your browser by visiting [http://localhost:3000](http://localhost:3000) or [http://tyk-dashboard.localhost:3000](http://tyk-dashboard.localhost:3000) and login with the provided **admin** credentials.
-
-5. **Create Producer API:**
-
-    Create a file `producer.json` with the below content: (**Note:** `tyk-demo-kafka-1` is the hostname used to access Kafka running in a container; alternatively, you can use the IP address assigned to your computer.)
+    Create a file `producer.json` with the below content: (**Note:** `kafka` is the hostname of the Kafka container on the `tyk` Docker network.)
 
     
 
@@ -179,7 +153,7 @@ The following sections will guide you through the prerequisites and steps to con
             "paths": {},
             "servers": [
                 {
-                    "url": "http://tyk-gateway.localhost:8080/jippity-chat/"
+                    "url": "http://localhost:8080/jippity-chat/"
                 }
             ],
             "x-tyk-api-gateway": {
@@ -216,7 +190,7 @@ The following sections will guide you through the prerequisites and steps to con
                         },
                         "output": {
                             "kafka": {
-                                "addresses": ["tyk-demo-kafka-1:9092"],
+                                "addresses": ["kafka:9092"],
                                 "max_in_flight": 10,
                                 "topic": "chat"
                             },
@@ -243,9 +217,9 @@ The following sections will guide you through the prerequisites and steps to con
     {"Status":"OK","Message":"API created","Meta":"67e54cadbfa2f900013b501c","ID":"3ddcc8e1b1534d1d4336dc6b64a0d22f"}
     ```
 
-5. **Create Consumer API:**
+4. **Create Consumer API:**
 
-    Create a file `consumer.json` with the below content: (**Note:** `tyk-demo-kafka-1` is the hostname used to access Kafka running in a container; alternatively, you can use the IP address assigned to your computer.)
+    Create a file `consumer.json` with the below content: (**Note:** `kafka` is the hostname of the Kafka container on the `tyk` Docker network.)
 
     
 
@@ -261,7 +235,7 @@ The following sections will guide you through the prerequisites and steps to con
             "paths": {},
             "servers": [
                 {
-                    "url": "http://tyk-gateway.localhost:8080/jippity-discuss/"
+                    "url": "http://localhost:8080/jippity-discuss/"
                 }
             ],
             "x-tyk-api-gateway": {
@@ -286,7 +260,7 @@ The following sections will guide you through the prerequisites and steps to con
                     "default_stream": {
                         "input": {
                             "kafka": {
-                                "addresses": ["tyk-demo-kafka-1:9092"],
+                                "addresses": ["kafka:9092"],
                                 "auto_replay_nacks": true,
                                 "checkpoint_limit": 1024,
                                 "consumer_group": "tyk-streams",
@@ -326,7 +300,7 @@ The following sections will guide you through the prerequisites and steps to con
     {"Status":"OK","Message":"API created","Meta":"67e54cadbfa2f900013b501c","ID":"3ddcc8e1b1534d1d4336dc6b64a0d22f"}
     ```
 
-7. **Start Joker Service:**
+5. **Start Joker Service:**
 
     Create a file `joker-service.sh` with the below content:
 
@@ -337,7 +311,7 @@ The following sections will guide you through the prerequisites and steps to con
         #!/bin/bash
 
         # Container name
-        CONTAINER="tyk-demo-kafka-1"
+        CONTAINER="kafka"
 
         # Kafka bootstrap server
         BOOTSTRAP_SERVER="localhost:9092"
@@ -392,18 +366,18 @@ The following sections will guide you through the prerequisites and steps to con
     ./joker-service.sh
     ```
 
-8. **Test the API:**
+6. **Test the API:**
 
    Open a terminal and execute the following command to start listening for messages from the Consumer API you created:
 
    ```bash
-   curl -N http://tyk-gateway.localhost:8080/jippity-discuss/sse
+   curl -N http://localhost:8080/jippity-discuss/sse
    ```
 
    In a second terminal, execute the command below to send a message to the Producer API. You can run this command multiple times and modify the message to send different messages:
 
    ```bash
-   curl -X POST http://tyk-gateway.localhost:8080/jippity-chat/chat -H "Content-Type: text/plain" -d "Tell me a joke."
+   curl -X POST http://localhost:8080/jippity-chat/chat -H "Content-Type: text/plain" -d "Tell me a joke."
    ```
 
    Now, you will see the message appear in the terminal window where you are listening for messages.
