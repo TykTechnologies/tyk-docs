@@ -79,28 +79,44 @@ If you want to be able to use the key's hashed value instead, then you must set 
 
 ## Migrating Hashing Algorithms
 
-You cannot convert a one-way hash to a different algorithm. But you do not have to revoke your existing keys when you change `hash_key_function` (for example, from murmur64 to sha256). The Gateway can look up keys with the old algorithm while new keys use the new one.
+You cannot convert a one-way hash to a different algorithm. You also do not have to revoke all your keys when you change `hash_key_function` (for example, from murmur64 to sha256). Tyk Gateway can look up some keys with the old algorithm while new keys use the new algorithm.
 
 ### How a Change Affects Existing Keys
 
-The effect of a change depends on how Tyk builds the key that it looks up in Redis:
+The effect of a change depends on how Tyk builds the key that it looks up in Redis.
 
 | Key type | Effect after the change | What to do |
 |----------|-------------------------|------------|
-| Keys that Tyk generates, such as Auth Tokens without a custom key ID and OAuth access tokens | They continue to work. Each key records the algorithm that Tyk used to create it. | Nothing |
-| Auth Tokens with a custom key ID, Basic Auth users, and keys for [client certificate authentication](/api-management/authentication/certificate-auth) | Tyk cannot find them, unless the old algorithm is in [`hash_key_function_fallback`](/tyk-oss-gateway/configuration#hash_key_function_fallback). | Add the old algorithm to the fallback list. |
-| Sessions that Tyk creates from a JWT, an OpenID Connect token, or a custom plugin ID extractor | Tyk cannot find the existing session. It does not use the fallback list for these sessions. For JWT, Tyk creates a new session from the policy, so quota counters start again. | Expect new sessions. |
+| Keys that Tyk generates | They continue to work. Each key records its algorithm. | Nothing |
+| OAuth access tokens | They continue to work. Each token records its algorithm. | Nothing |
+| Custom keys | Clients that send the custom key ID need the fallback list. | Add the old algorithm to [hash_key_function_fallback](/tyk-oss-gateway/configuration#hash_key_function_fallback). |
+| Basic Auth users | Tyk needs the fallback list to find them. | Add the old algorithm to the fallback list. |
+| Client certificate keys | Tyk does not use the fallback list for them in deployments that use Tyk Dashboard. | Create these keys again after the change. |
+| JWT and OpenID Connect sessions | Tyk cannot find the existing session and does not use the fallback list. | Nothing. Tyk creates a new session. |
+| Sessions from a custom plugin ID extractor | Tyk cannot find the existing session and does not use the fallback list. | Make sure that your plugin can create a new session. |
+
+<Note>
+For JWT and OpenID Connect, Tyk creates the new session from the policy. Quota counters start again from zero.
+</Note>
+
+The fallback list works only when [disable_key_actions_by_username](/tyk-oss-gateway/configuration#disable_key_actions_by_username) is `false`. This is the default value. If you set it to `true`, Tyk does not look up custom keys or Basic Auth users by name.
+
+<Note>
+The fallback list does not help if `hash_key_function` is not set in your current configuration. In this case, keys use an older format that the fallback list cannot rebuild. Custom keys that clients send by their custom key ID stop working.
+</Note>
 
 ### Change the Algorithm
 
 1. Find the current value of `hash_key_function` (or `TYK_GW_HASHKEYFUNCTION`) in your Gateway configuration.
-2. On every Gateway, set `hash_key_function` to the new algorithm. In a distributed deployment that uses MDCB, this includes the data plane Gateways.
-3. On every Gateway, add the old algorithm to `hash_key_function_fallback`.
-4. If you use custom key IDs, Basic Auth, or client certificate authentication, make sure that [`disable_key_actions_by_username`](/tyk-oss-gateway/configuration#disable_key_actions_by_username) is `false`. When it is `true`, Tyk does not use the fallback list.
-5. Restart all Gateways at the same time, or in a short window. A Gateway that still uses the old configuration cannot find custom keys or Basic Auth users that another Gateway created with the new algorithm.
-6. Test one existing key of each type that you use. Then create a new key and test it.
+2. Set `hash_key_function` to the new algorithm on every Gateway. In an MDCB deployment, this includes the Data Plane Gateways.
+3. Add the old algorithm to `hash_key_function_fallback` on every Gateway.
+4. Restart all Gateways at the same time. If you cannot, restart them in a short window.
+5. Test one existing key of each type that you use.
+6. Create a new key and test it.
 
-For example, to change from murmur64 to sha256, set this configuration in `tyk.conf`:
+A Gateway with the old configuration cannot find custom keys or Basic Auth users that use the new algorithm. For this reason, do not keep the old and new configurations active for a long time.
+
+For example, to change from murmur64 to sha256, use this configuration in `tyk.conf`:
 
 ```json
 "hash_key_function": "sha256",
@@ -109,11 +125,11 @@ For example, to change from murmur64 to sha256, set this configuration in `tyk.c
 
 New keys use sha256. Existing custom keys and Basic Auth users that use murmur64 continue to work.
 
-`hash_key_function` is a Gateway setting only. Tyk Dashboard does not have this setting. Basic Auth passwords use a different setting, [`basic_auth_hash_key_function`](/tyk-oss-gateway/configuration#basic_auth_hash_key_function), and this procedure does not change them.
+`hash_key_function` is a Gateway setting only. Tyk Dashboard does not have this setting. Basic Auth passwords use a different setting, [basic_auth_hash_key_function](/tyk-oss-gateway/configuration#basic_auth_hash_key_function). This procedure does not change them.
 
 ### Remove the Fallback
 
-Keep the old algorithm in `hash_key_function_fallback` until all custom keys, Basic Auth users, and client certificate keys that use it expire or you replace them. Then remove the old algorithm from the fallback list and restart the Gateways.
+Keep the old algorithm in `hash_key_function_fallback` until all keys that need it expire or you replace them. These are custom keys and Basic Auth users. Then remove the old algorithm from the fallback list and restart the Gateways.
 
 ## Configuration Summary
 
