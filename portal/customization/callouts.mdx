@@ -123,11 +123,23 @@ Disabling certificate verification can expose credentials and request data to an
 
 **Test connection** checks whether the Portal server can reach the target using the current settings in the Callout editor. It sends an `OPTIONS` request using the selected authentication method, destination policy and TLS setting, but sends no request payload and does not save the settings.
 
-A successful result means that the target returned a 2xx response to this probe. It does not prove that the configured method or a real payload will succeed. A target that returns `405` or `501` does not support this probe; a Callout request can still work. Test through the Page as well.
+A successful result means that the target returned a 2xx response to this probe. It does not prove that the configured method or a real payload will succeed. Test through the Page as well.
 
 For OAuth, the probe obtains a token for the current settings. Changing a destination can require you to re-enter a saved credential before testing.
 
-If the test fails, its message can identify a certificate verification failure, a timeout, a connection failure or a rejected token request. Where known, the message distinguishes the OAuth token endpoint from the target. Unrecognized failures receive a generic message. Use the response's `X-Callout-Request-ID` header to [find the attempt in the application logs](#trace-a-request).
+If the test fails, use the message to identify what to check. Where known, the message names the failed service: the target or the OAuth token endpoint.
+
+| Reported problem | What to check |
+| :--- | :--- |
+| Certificate verification failed | Check the certificate's validity, hostname and trust chain for the service named in the message. |
+| Could not connect | Check the URL, DNS resolution and network access from the Portal server to the service named in the message. |
+| Token endpoint rejected authentication | Check the client ID, client secret and the token service's client-authentication requirements. |
+| Token request failed | Check the token service and any HTTP status shown. This does not necessarily mean the credentials are wrong. |
+| Request timed out | Check response times for the target and, if used, the token service. The timeout covers both requests. |
+| Target does not accept OPTIONS | The target returned `405` or `501` to the test. Test a normal Callout request; the configured method may still work. |
+| Redirect blocked | Configure the destination URL directly. Callouts do not follow redirects. |
+
+Unrecognized failures receive a generic message. For more detail, use the response's `X-Callout-Request-ID` header to [find the attempt in the application logs](#trace-a-request).
 
 ## Use a Callout on a Page
 
@@ -239,25 +251,40 @@ Do not automatically retry a request after a timeout or network failure. The tar
 
 Use the request ID to follow a request from the browser through Tyk Developer Portal to the target service. Each system must record or display that ID for you to connect its observations to the same request.
 
-For requests that reach execution, Tyk Developer Portal writes `Callout started` and `Callout completed` at the `info` log level. The records contain `request_id`, `callout_cid`, `target_host` and `actor_cid`. Completion also includes `duration` and a result such as `success`, `target_error` or `timeout`.
-
-Execution failures also include `failure_reason`, such as `tls_failed` or `connection_failed`. When known, `phase` identifies the failed step (`oauth_token` or `target`), and `upstream_status` records the service's HTTP status. Token-endpoint failures also include `token_host`. These diagnostic fields do not change the response returned to the Page. A usable target error response has `result=target_error` and its upstream status, without a `failure_reason`.
-
-Connection tests write a separate `Callout connection test completed` event at the `info` level, with their request ID and `result=success` or `failed`. Failures use the same diagnostic fields; settings preparation or validation failures use `phase=settings`. Session, permission or CSRF checks that reject the attempt before the connection-test handler do not produce this event.
-
-For both execution and connection tests, the same request ID is returned in the browser's `X-Callout-Request-ID` response header and sent to the target and OAuth token endpoint in a header with that name, when those requests occur. Ask the services to record it. If an intermediate API is involved, preserve the header when forwarding the request.
-
 To investigate a Callout request:
 
-1. Obtain the request ID returned to your Page's code, if available. Your code can display or record it to help with investigation.
-2. Search the Portal's application logs for that ID and check the completion result.
-3. Search the target's logs for the same ID to check what happened after it received the request.
+1. Obtain the request ID from the browser response's `X-Callout-Request-ID` header, if available. Your Page's code can display or record it. For a connection test, inspect the response in your browser's network tools.
+2. Search the Portal's application logs for that ID and check the result and any failure details.
+3. Search the target's logs, or the token service's logs for an OAuth failure, for the same ID to check what happened after it received the request.
+
+Portal sends the same ID to the target and OAuth token endpoint in an `X-Callout-Request-ID` header when those requests occur. Ask the services to record it. If an intermediate API is involved, preserve the header when forwarding the request.
+
+For requests that reach execution, Tyk Developer Portal writes `Callout started` and `Callout completed` at the `info` log level. Connection tests write a separate `Callout connection test completed` event at the same level.
+
+Use these fields to interpret the records. Failure details appear only when applicable and known.
+
+| Log field | Meaning |
+| :--- | :--- |
+| `request_id` | Identifies the request so you can match records across services. |
+| `callout_cid` | Identifies the saved Callout. A connection test for a new, unsaved Callout has no Callout ID. |
+| `actor_cid` | Identifies the Portal user who made the request or ran the connection test. |
+| `target_host` | The target hostname. Connection tests include it after the settings pass validation. |
+| `duration` | Time taken to complete execution or the connection test. |
+| `result` | Execution outcome, such as `success`, `target_error`, `failed` or `timeout`. Connection tests use `success` or `failed`. |
+| `failure_reason` | The type of failure, such as `tls_failed`, `connection_failed` or `auth_rejected`. |
+| `phase` | The step that failed: `oauth_token` for obtaining a token, or `target` for contacting the target. Connection tests also use `settings` when preparing or validating settings fails. |
+| `upstream_status` | The HTTP status returned by the target or token service for the failure. |
+| `token_host` | The token endpoint's hostname, included for failures at that step. |
+
+If the target returns an error that Portal can pass back to the Page, the completion record has `result=target_error` and `upstream_status`, without a `failure_reason`. The diagnostic log fields do not change the [response returned to the Page](#handle-the-response).
 
 These execution records do not contain the request payload, response body or authentication secrets. They are separate from [admin audit logs](/tyk-developer-portal/enable-audit-logs-portal). Collect and retain application logs using your deployment's logging system; Callouts has no request-history screen or built-in retention setting.
 
 A missing execution record is not proof that the browser never sent a Callout request. Authentication, CSRF, input validation or request limits can reject a request before execution. A browser or network failure can also prevent it from reaching the Portal.
 
 Some rejections before execution return a request ID without an execution log. CSRF rejection returns neither a Callout request ID nor an execution log. Check the HTTP status and response body as well as any request ID.
+
+For connection tests, session, permission or CSRF checks can reject an attempt before the test starts. These attempts do not produce a `Callout connection test completed` event.
 
 ## Troubleshooting
 
