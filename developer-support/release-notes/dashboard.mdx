@@ -27,9 +27,11 @@ This release introduces API Fragments, a new way to define a piece of API config
 
 Fragments are managed from a new **Fragments** page under the new **Assets** section of the Dashboard, where you can tag them, search them, and see which APIs use each one. In the API Designer, fields supplied by a fragment are clearly marked as shared configuration. Tyk protects the APIs that depend on a fragment: a fragment in use cannot be deleted, and a change that would make any referencing API invalid is rejected.
 
-**Monitor your Dashboard with OpenTelemetry metrics**
+**Control plane observability with Dashboard OpenTelemetry metrics**
  
-Tyk Dashboard can now export metrics via OpenTelemetry (OTLP), using the same configuration model as Tyk Gateway and MDCB. Once enabled, the Dashboard reports on the health of your control plane in your existing observability stack: the Gateways registered to it, license capacity and expiry, the latency and error rate of its own API, whether configuration changes are reaching your Gateways, the health of its data stores and Redis, certificate expiry, and an inventory of your APIs, policies and governance compliance. Every metric family can be switched on or off individually.
+We have introduced real-time metrics export through OpenTelemetry for Tyk Dashboard, extending the OpenTelemetry metrics already available in Tyk Gateway to the control plane. Together with the new metrics in MDCB 2.14.0, teams can now monitor their Tyk deployment from the same observability stack.
+ 
+Teams get operational visibility into the health of the Dashboard and the Gateways it manages: Gateway fleet state, license capacity and expiry, management API performance (Rate, Errors, Duration), configuration change propagation, data store and Redis health, connection pool pressure, certificate expiry and Go runtime health. Every group of metrics can be switched on or off individually, and a shared control plane identity lets you correlate Dashboard and MDCB metrics from the same deployment, so issues such as a failed configuration publish or an approaching license limit are caught before they affect your APIs.
 
 **Support for the MCP 2026-07-28 protocol**
  
@@ -148,38 +150,46 @@ API Fragments let you define a piece of API configuration once and reuse it acro
 - With MongoDB, API Fragments require MongoDB 5.0 or later.
 </Accordion>
 
-
-
-
-<Accordion title='Added OpenTelemetry metrics for Tyk Dashboard'>
+<Accordion title='Added OpenTelemetry metrics export for Tyk Dashboard'>
 {/* TT-18194, TT-18201, TT-18202, TT-18233, TT-18203, TT-18235, TT-18220, TT-18221, TT-18222, TT-18247, TT-18243, TT-18244, TT-18236 */}
-Tyk Dashboard can now export metrics via OpenTelemetry (OTLP), giving you visibility into the health of your control plane in your existing observability stack. Metrics are disabled by default, so there is no change in behavior unless you enable them.
+We have introduced OpenTelemetry metrics export for Tyk Dashboard, providing real-time operational visibility into the health of your control plane and the Gateways it manages. This extends the OpenTelemetry metrics available in Tyk Gateway to the Dashboard, and works alongside the new metrics in MDCB 2.14.0.
  
-**Configuration**
+**Key Features:**
  
-Metrics are configured in a new `opentelemetry.metrics` section, which follows the same structure as Tyk Gateway and MDCB: `enabled`, `exporter` (`grpc` or `http`), `endpoint`, `headers`, `connection_timeout`, `resource_name`, `tls`, `export_interval`, `temporality`, `shutdown_timeout`, `retry` and `cardinality_limit`, plus a new `deployment_environment` option. Each option can be set with an environment variable using the `TYK_DB_OPENTELEMETRY_METRICS_` prefix, for example `TYK_DB_OPENTELEMETRY_METRICS_ENABLED`.
+- **Gateway Fleet Metrics:** Track the Gateways registered directly with the Dashboard, including how many are connected, their versions, their last heartbeat, and the number of APIs and policies each has loaded. Full detail requires Tyk Gateway 5.16.0 or later, which now sends this information to the Dashboard; older Gateways are still counted, with fewer details.
+- **License Metrics:** Monitor the license's Gateway limit, the number of Gateways in use and the license expiry time, so capacity and renewal can be handled through your existing alerting.
+- **Management API Metrics:** Automatic RED metrics (Rate, Errors, Duration) for the Dashboard's management API, by method, route and status class, following OpenTelemetry semantic conventions.
+- **Change Propagation Metrics:** Count the configuration changes the Dashboard publishes to Gateways, and any publishes that fail, by resource type (for example, APIs, policies or keys).
+- **Dependency and Health Metrics:** Monitor connection pool usage for Redis and the Dashboard's data stores, and whether each data store and Redis is reachable.
+- **Certificate Expiry Metrics:** Track the expiry time of each of the Dashboard's own TLS certificates.
+- **Go Runtime and Build Metrics:** Go runtime health metrics identical to Tyk Gateway and MDCB, plus the Dashboard version and whether metric export is succeeding.
+- **Control Plane Identity:** Every metric carries a `control_plane_id` shared with MDCB, so Dashboard and MDCB metrics from the same deployment can be correlated.
+- **Universal Backend Support:** Export via OTLP to Prometheus, Grafana, Datadog, New Relic, Dynatrace and any other OpenTelemetry-compatible platform.
  
-Every metric carries the resource attributes `service.name` (`tyk-dashboard` by default), `service.instance.id`, `service.version`, `deployment.environment` and `control_plane_id`. The `control_plane_id` identifies your control plane and is shared with MDCB, so metrics from both components can be correlated. You can set it with the new top-level `control_plane_id` option (or `TYK_DB_CONTROLPLANEID`); otherwise it is generated once and shared automatically between Dashboard replicas. If you run more than one control plane, we recommend setting it explicitly.
+**Configuration:** Metrics are disabled by default and are configured under the [opentelemetry.metrics](PLACEHOLDER: Dashboard configuration reference link) object in `tyk_analytics.conf`, using the same options as Tyk Gateway. Environment variables use the `TYK_DB_OPENTELEMETRY_METRICS_` prefix (for example, `TYK_DB_OPENTELEMETRY_METRICS_ENABLED`). Each group of metrics has its own on/off option under `opentelemetry.metrics` (`gateway_metrics`, `license_metrics`, `http_metrics`, `notification_metrics`, `dependency_metrics`, `health_metrics`, `certificate_metrics`, `runtime_metrics` and `meta_metrics`), all enabled by default once metrics are turned on.
  
-**Metric families**
+Two new options help you correlate metrics across components:
  
-Once metrics are enabled, each family below is on by default and can be turned off individually under `opentelemetry.metrics`:
+- `control_plane_id` (top-level option; environment variable `TYK_DB_CONTROLPLANEID`) identifies the control plane. If left blank, it is generated once and shared with MDCB through the Redis they already share. Set it explicitly, to the same value on Dashboard and MDCB, if they do not share Redis or if you run more than one control plane.
+- `opentelemetry.metrics.deployment_environment` is exported as the `deployment.environment` resource attribute. Set the same value on the Dashboard, MDCB and the Developer Portal.
  
-| Option | What it reports |
-|---|---|
-| `gateway_metrics` | Gateways registered directly with the Dashboard: number connected, and per Gateway its version, last heartbeat, and number of loaded APIs and policies (for example, `tyk.dashboard.gateways.connected`). Requires Tyk Gateway 5.16.0 for the full set; older Gateways are counted with `node_version="unknown"`. |
-| `license_metrics` | License Gateway limit, Gateways in use, and license expiry time (`tyk.dashboard.license.*`). |
-| `http_metrics` | Request duration and in-flight requests for the Dashboard's own API and UI, following OpenTelemetry semantic conventions (`http.server.request.duration`, `http.server.active_requests`). |
-| `notification_metrics` | Configuration changes published to Gateways, and failed publishes, by resource type (`tyk.dashboard.notifications.published`, `tyk.dashboard.notifications.failures`). |
-| `dependency_metrics` | Connection pool usage for Redis and the Dashboard's data stores (`tyk.dashboard.redis.pool.*`, `tyk.dashboard.datastore.pool.*`). |
-| `health_metrics` | Reachability of each data store and Redis, checked every 10 seconds (`tyk.dashboard.health`). |
-| `runtime_metrics` | Go runtime metrics such as memory use and goroutine count (`go.*`), matching Tyk Gateway and MDCB. |
-| `meta_metrics` | Dashboard build information and whether metric export is succeeding (`tyk.dashboard.build.info`, `tyk.dashboard.telemetry.exporter.healthy`). |
-| `certificate_metrics` | Expiry time of the Dashboard's own HTTPS certificates, when `http_server_options.use_ssl` is enabled (`tyk.dashboard.cert.expiry_timestamp`). |
-| `objects_metrics` | Counts of organizations, APIs, policies, users and rulesets, and API Governance compliance. This family is configured as an object with `enabled`, `collection_interval` (default `300` seconds), `org_ids`, `categories` and `governance`. |
+**Default Metrics Exported:**
  
-Each family has an equivalent environment variable, for example `TYK_DB_OPENTELEMETRY_METRICS_LICENSEMETRICS`. Tyk Gateway 5.16.0 sends additional node information to the Dashboard on registration and heartbeat to support the Gateway metrics.
+- **Gateway Fleet Metrics:** `tyk.dashboard.gateways.connected`, `tyk.dashboard.gateways.heartbeat_timestamp`, `tyk.dashboard.gateways.loaded_apis`, `tyk.dashboard.gateways.loaded_policies`
+- **License Metrics:** `tyk.dashboard.license.gateways_limit`, `tyk.dashboard.license.gateways_used`, `tyk.dashboard.license.expiry_timestamp`
+- **Management API Metrics:** `http.server.request.duration`, `http.server.active_requests`
+- **Change Propagation Metrics:** `tyk.dashboard.notifications.published`, `tyk.dashboard.notifications.failures`
+- **Dependency Metrics:** `tyk.dashboard.redis.pool.active`, `tyk.dashboard.redis.pool.idle`, `tyk.dashboard.redis.pool.max`, `tyk.dashboard.datastore.pool.active`, `tyk.dashboard.datastore.pool.idle`, `tyk.dashboard.datastore.pool.max`, `tyk.dashboard.datastore.pool.wait_duration`
+- **Health Metrics:** `tyk.dashboard.health`
+- **Certificate Metrics:** `tyk.dashboard.cert.expiry_timestamp`
+- **Build and Exporter Metrics:** `tyk.dashboard.build.info`, `tyk.dashboard.telemetry.exporter.healthy`
+- **Go Runtime Metrics:** memory usage, allocations, garbage collection targets, goroutine count and processor limits (`go.*`)
+- **Uptime:** `process.uptime`, always exported once metrics are enabled, confirming the metrics pipeline is working
+
+For the full list of metrics and their labels, see [PLACEHOLDER: Default Metrics Reference link].
 </Accordion>
+
+
 
 <Accordion title='Added support for the MCP 2026-07-28 protocol'>
 {/* TT-18011, TT-18010, TT-18012, TT-18007, TT-18008, TT-18014, TT-18015, TT-18031 */}
