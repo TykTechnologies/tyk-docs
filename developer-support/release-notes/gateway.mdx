@@ -795,13 +795,23 @@ We have addressed CVEs reported in dependent libraries, providing increased prot
 
 #### Release Highlights
 
-
+This patch implements several changes and fixes to improve the stability and correct the behavior of the Gateway, and adds support for loading multiple plugin bundles per API. It also addresses several CVEs in dependent libraries.
 
 For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-v5.13.4) below.
 
 #### Breaking Changes
 
-There are no breaking changes implemented in this release.
+**Authorization headers are now masked in detailed traffic logs**
+ 
+When detailed recording is enabled, the value of the `Authorization` header, and of any custom authentication header configured on the API, is now replaced with `***` in the recorded request before the traffic log leaves the Gateway. This prevents access tokens from being exposed to anyone with access to the Log Browser or your analytics data store.
+ 
+If you rely on seeing the raw token in detailed traffic logs, you can restore the previous behavior by setting the new Gateway configuration option `analytics_config.allow_unsafe_detailed_logs` to `true` (default `false`). See the [changelog](#Changelog-v5.13.4) for details.
+ 
+**File-based templates are now restricted to the configured template directory**
+ 
+For improved security, file-based templates used by the request and response body transform middleware and by webhooks must now be located inside the Gateway's configured `template_path` directory. Templates referenced from outside this directory will no longer load: a body transform request returns `400 Bad Request`, and the webhook is not sent.
+ 
+Before upgrading, check that every file-based body transform and webhook template you use is stored inside your `template_path` directory. Templates that are already in that directory continue to work unchanged.
 
 
 #### Dependencies 
@@ -851,9 +861,74 @@ If you are upgrading to 5.13.4, please follow the detailed [upgrade instructions
 #### Changelog
 <a id="Changelog-v5.13.4" data-scroll-offset></a>
 
+##### Added
+
+<AccordionGroup>
+
+<Accordion title='Added support for loading multiple plugin bundles per API'>
+{/* TT-17786 */}
+A single API can now load more than one plugin bundle. Set `custom_middleware_bundle` to a comma-separated list of bundle names, and the middleware from each bundle is combined in the order listed. This lets you reuse common plugins across APIs without repackaging them into a single bundle.
+ 
+In Tyk 5.13.4, multiple bundles are supported for gRPC and Go plugins. All bundles used by an API must use the same plugin driver, and only one bundle can define an authentication (`AuthCheck`) plugin; other combinations are rejected with a clear error. An API that uses a single bundle name works exactly as before, and existing bundles are not downloaded again after upgrading.
+</Accordion>
+
+</AccordionGroup>
+
+##### Fixed
+
+<AccordionGroup>
+
+<Accordion title='Authorization headers are now masked in detailed traffic logs'>
+{/* TT-431 */}
+When detailed recording is enabled, Tyk Gateway now replaces the value of the `Authorization` header, and of any custom authentication header configured on the API, with `***` in the recorded request before the traffic log is written. Request processing is unaffected; only the recorded copy is masked. This applies to all authentication methods and to both Tyk OAS and Tyk Classic APIs, preventing access tokens from being exposed to anyone with access to the Log Browser or your analytics data store.
+ 
+This is a breaking change. To restore the previous behavior, set the new configuration option `analytics_config.allow_unsafe_detailed_logs` to `true` (default `false`).
+</Accordion>
+
+<Accordion title='Fixed Gateway reloads getting stuck after a failed sync with the Dashboard'>
+{/* TT-17765 */}
+We've resolved an issue in Dashboard-managed, hybrid and MDCB deployments where a network or nonce error during a Gateway reload could cause all subsequent reloads to queue indefinitely. APIs not yet loaded, often MCP Proxies, returned `404 Not Found` until the Gateway was restarted, and MCP clients saw a misleading `session not found` error. Reloads now recover from these errors and complete as expected, without a restart.
+</Accordion>
+ 
+<Accordion title='Fixed Enforced Timeout being overridden by the default upstream timeout'>
+{/* TT-17873 */}
+We've resolved a regression where the Enforced Timeout middleware could be overridden by `proxy_default_timeout`, so requests to an endpoint with a longer enforced timeout were cut off at the default. Timeouts are now applied per request, so the most specific configured timeout (endpoint, then API, then Gateway default) is always respected. Streaming responses (SSE, gRPC and GraphQL) are no longer cancelled prematurely.
+</Accordion>
+ 
+<Accordion title='Fixed URL rewrite targets being altered by Strip Listen Path'>
+{/* TT-1860 */}
+We've resolved an issue where, on APIs using both Strip Listen Path and URL Rewrite, the listen path was stripped from the rewritten URL if the rewritten path happened to start with the same string. The Gateway now leaves rewritten URLs untouched, so requests reach the exact rewrite target. APIs without URL Rewrite are unaffected.
+</Accordion>
+ 
+<Accordion title='Fixed GraphQL and UDG APIs always generating detailed traffic logs'>
+{/* TT-14404 */}
+We've resolved a regression where traffic logs for GraphQL and Universal Data Graph (UDG) APIs were always generated with full request and response bodies, ignoring the detailed recording setting. This produced large analytics records and unnecessary storage growth. GraphQL and UDG APIs now respect the detailed recording setting like any other API, and GraphQL analytics continue to be collected as before.
+</Accordion>
+ 
+<Accordion title='Fixed inconsistent paths recorded in analytics for cached responses'>
+{/* TT-14684 */}
+We've resolved an issue where the path recorded in analytics differed depending on whether the response was served from the cache or from the upstream: cached responses included the listen path, while upstream responses did not. The recorded path is now consistent in all cases, including responses from virtual endpoints, for both Tyk OAS and Tyk Classic APIs.
+</Accordion>
+ 
+<Accordion title='Fixed enum arguments missing from UDG REST data source requests'>
+{/* TT-14951 */}
+We've resolved an issue in Universal Data Graph where GraphQL enum arguments used as query parameters in a REST data source URL were silently left out of the upstream request. Enum arguments are now included correctly.
+</Accordion>
+
+</AccordionGroup>
+
 ##### Security Fixes
 
 <AccordionGroup>
+
+<Accordion title='Hardened handling of file-based templates'>
+{/* TT-6554, TT-6555 */}
+We've improved the security of file-based templates used by the request and response body transform middleware and by webhooks. Tyk Gateway now only loads these templates from inside its configured `template_path` directory, and rejects templates located anywhere else.
+ 
+Tyk Dashboard also validates template paths when an API definition or webhook is saved, rejecting absolute paths and paths outside the template directory. If you reference templates by absolute paths that are inside `template_path`, you can turn off this Dashboard check with the new Dashboard configuration option `allow_unsafe_template_path` (default `false`). The Gateway check always applies.
+ 
+This is a breaking change. See [Breaking Changes](#breaking-changes).
+</Accordion>
 
 </AccordionGroup>
 
