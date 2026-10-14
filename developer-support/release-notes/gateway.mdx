@@ -42,18 +42,35 @@ This release also includes two breaking changes that improve security by default
 For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-v5.16.0) below.
 
 #### Breaking Changes
+<a id="breaking-changes-5.16.0"></a>
 
 **Authorization headers are now masked in detailed traffic logs**
  
-When detailed recording is enabled, the value of the `Authorization` header, and of any custom authentication header configured on the API, is now replaced with `***` in the recorded request before the traffic log leaves the Gateway. This prevents access tokens from being exposed to anyone with access to the Log Browser or your analytics data store.
+When detailed recording is enabled, the value of the `Authorization` header and any custom authentication header configured on the API is now replaced with `***` in the recorded request before the traffic log leaves the Gateway. This prevents access tokens from being exposed to anyone with access to the Log Browser or your analytics data store.
  
-If you rely on seeing the raw token in detailed traffic logs, you can restore the previous behavior by setting the new Gateway configuration option `analytics_config.allow_unsafe_detailed_logs` to `true` (default `false`). See the [changelog](#Changelog-v5.16.0) for details.
+If you rely on seeing the raw token in detailed traffic logs, you can restore the previous behavior by setting the new Gateway configuration option `analytics_config.allow_unsafe_detailed_logs` to `true` (default `false`). See the [changelog](#Changelog-v5.13.4) for details.
  
-**File-based templates are now restricted to the configured template directory**
+**File-based templates are restricted to `template_path`**
  
-For improved security, file-based templates used by the request and response body transform middleware and by webhooks must now be located inside the Gateway's configured `template_path` directory. Templates referenced from outside this directory will no longer load: a body transform request returns `400 Bad Request`, and the webhook is not sent.
+Tyk Gateway now only loads body transform and webhook templates from inside the directory set by its `template_path` option (default: `templates`). Paths that resolve outside this directory, including through `../` or symbolic links, are rejected. Absolute paths that resolve inside `template_path` still work.
+
+You’re affected if any of your body transform or webhook templates are stored outside `template_path`.
  
-Before upgrading, check that every file-based body transform and webhook template you use is stored inside your `template_path` directory. Templates that are already in that directory continue to work unchanged.
+What happens when a template is rejected:
+
+- **Body transforms**: requests to the affected endpoint fail with `400 Bad Request` and `{"error": "Template execution failed"}`.
+- **Webhooks**: the Gateway logs a warning and sends the webhook using the default template.
+
+**What to do:** move the templates into `template_path`, or set `template_path` to the directory that contains them.
+
+If you can’t do this straight away, you can restore the previous behaviour with these options (both default `false`):
+
+| Option | Effect when enabled |
+|---|---|
+| `allow_unsafe_body_transform_template_paths` | Loads body transform templates from any path |
+| `allow_unsafe_webhook_template_paths` | Loads webhook templates from any path |
+
+These options allow an API definition to read any file the Gateway process can access. We recommend enabling them only temporarily, while you migrate.
 
 #### Deprecations
 
@@ -203,7 +220,7 @@ No secrets are sent, no configuration is required, and registration behavior is 
 
 <Accordion title='Authorization headers are now masked in detailed traffic logs'>
 {/* TT-431 */}
-When detailed recording is enabled, Tyk Gateway now replaces the value of the `Authorization` header, and of any custom authentication header configured on the API, with `***` in the recorded request before the traffic log is written. Request processing is unaffected — only the recorded copy is masked. This applies to all authentication methods and to both Tyk OAS and Tyk Classic APIs, preventing access tokens from being exposed to anyone with access to the Log Browser or your analytics data store.
+When detailed recording is enabled, Tyk Gateway now replaces the value of the `Authorization` header, and of any custom authentication header configured on the API, with `***` in the recorded request before the traffic log is written. Request processing is unaffected; only the recorded copy is masked. This applies to all authentication methods and to both Tyk OAS and Tyk Classic APIs, preventing access tokens from being exposed to anyone with access to the Log Browser or your analytics data store.
  
 This is a breaking change. To restore the previous behavior, set the new configuration option `analytics_config.allow_unsafe_detailed_logs` to `true` (default `false`).
 </Accordion>
@@ -225,7 +242,7 @@ We've resolved an issue in Dashboard-managed, hybrid and MDCB deployments where 
  
 <Accordion title='Fixed Enforced Timeout being overridden by the default upstream timeout'>
 {/* TT-17873 */}
-We've resolved a regression where the Enforced Timeout middleware could be overridden by `proxy_default_timeout`, so requests to an endpoint with a longer enforced timeout were cut off at the default. Timeouts are now applied per request, so the most specific configured timeout (endpoint, then API, then Gateway default) is always respected. Streaming responses (SSE, gRPC and GraphQL) are no longer cancelled prematurely.
+We've resolved a regression where the Enforced Timeout middleware could be overridden by `proxy_default_timeout`, so requests to an endpoint with a longer enforced timeout were cut off at the default. Timeouts are now applied per request, so the most specific configured timeout (endpoint, then API, then Gateway default) is always respected. Streaming responses (SSE, gRPC and GraphQL) are no longer canceled prematurely.
 </Accordion>
  
 <Accordion title='Fixed URL rewrite targets being altered by Strip Listen Path'>
@@ -238,9 +255,9 @@ We've resolved an issue where, on APIs using both Strip Listen Path and URL Rewr
 We've resolved a regression where traffic logs for GraphQL and Universal Data Graph (UDG) APIs were always generated with full request and response bodies, ignoring the detailed recording setting. This produced large analytics records and unnecessary storage growth. GraphQL and UDG APIs now respect the detailed recording setting like any other API, and GraphQL analytics continue to be collected as before.
 </Accordion>
  
-<Accordion title='Fixed inconsistent paths recorded in analytics for cached responses'>
+<Accordion title='Fixed inconsistent paths recorded in traffic logs for cached responses'>
 {/* TT-14684 */}
-We've resolved an issue where the path recorded in analytics differed depending on whether the response was served from the cache or from the upstream: cached responses included the listen path, while upstream responses did not. The recorded path is now consistent in all cases, including responses from virtual endpoints, for both Tyk OAS and Tyk Classic APIs.
+Fixed an issue where, for APIs with strip_listen_path enabled, requests served from the cache or by a virtual endpoint were recorded in traffic logs with the listen path still included in the request path. Requests sent to the upstream were recorded without it, so the same endpoint appeared as two different paths in Tyk Dashboard analytics. These requests are now recorded with the same path as requests sent to the upstream. This applies to both Tyk OAS and Tyk Classic APIs.
 </Accordion>
  
 <Accordion title='Fixed enum arguments missing from UDG REST data source requests'>
@@ -257,11 +274,10 @@ We've resolved an issue in Universal Data Graph where GraphQL enum arguments use
  
 <Accordion title='Hardened handling of file-based templates'>
 {/* TT-6554, TT-6555 */}
-We've improved the security of file-based templates used by the request and response body transform middleware and by webhooks. Tyk Gateway now only loads these templates from inside its configured `template_path` directory, and rejects templates located anywhere else.
+We’ve improved the security of file-based templates used by the request and response body transform middleware and by webhooks. Tyk Dashboard now rejects absolute template paths and paths containing ../ when an API definition or webhook is saved. Tyk Gateway now only loads these templates from inside its template_path directory. See the [Tyk Gateway 5.13.4 release notes](/developer-support/release-notes/gateway#breaking-changes-5.13.4) for details.
  
-Tyk Dashboard also validates template paths when an API definition or webhook is saved, rejecting absolute paths and paths outside the template directory. If you reference templates by absolute paths that are inside `template_path`, you can turn off this Dashboard check with the new Dashboard configuration option `allow_unsafe_template_path` (default `false`). The Gateway check always applies.
  
-This is a breaking change; see [Breaking Changes](#breaking-changes).
+This may affect existing API definitions and webhooks. See [Breaking Changes](#breaking-changes-5.13.4) for details.
 </Accordion>
 
 <Accordion title='Resolved CVEs'>
