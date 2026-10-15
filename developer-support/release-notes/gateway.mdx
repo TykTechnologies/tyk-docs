@@ -814,6 +814,22 @@ This patch implements several changes and fixes to improve the stability and cor
 
 For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-v5.13.4) below.
 
+#### Release Highlights
+
+This patch implements several changes and fixes to improve the stability and correct the behavior of the Gateway, and adds support for loading multiple plugin bundles per API. It also addresses several CVEs in dependent libraries.
+
+In this release, we've closed gaps that could expose access tokens or let API configuration reach files outside their intended location, and fixed a long-standing routing issue that could send requests to the wrong upstream path. To protect your deployment and make routing predictable, the Gateway now uses the corrected behavior by default:
+
+- Detailed traffic logs mask the `Authorization` header and any custom authentication header, so access tokens no longer appear in your analytics data.
+- Body transform and webhook templates are only loaded from inside the `template_path` directory.
+- When an API uses both Strip Listen Path and URL Rewrite, the rewritten URL is now proxied exactly as configured, without the listen path being stripped from it.
+
+If your deployment already relies on the previous behavior, new configuration options let you keep it. They are disabled by default, and we recommend using them only temporarily while you update your configuration.
+
+Before upgrading, read the [Breaking Changes](#breaking-changes-5.13.4) section to check whether you're affected and what to do.
+
+For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-v5.13.4) below.
+
 #### Breaking Changes
 <a id="breaking-changes-5.13.4"></a>
 
@@ -844,6 +860,17 @@ If you can’t do this straight away, you can restore the previous behaviour wit
 | `allow_unsafe_webhook_template_paths` | Loads webhook templates from any path |
 
 These options allow an API definition to read any file the Gateway process can access. We recommend enabling them only temporarily, while you migrate.
+
+**Strip Listen Path no longer modifies URL Rewrite targets**
+
+Previously, on APIs with both Strip Listen Path and URL Rewrite enabled, the Gateway stripped the listen path again after the rewrite. If the rewritten path started with the same string as the listen path, that part was removed, and the request was sent to a different upstream path than the one configured in the rewrite rule.
+
+The Gateway now sends requests to the rewritten URL exactly as configured. APIs that don't use URL Rewrite, or whose rewrite rules don't match a request, still have the listen path stripped as before.
+
+You're affected if an API uses both Strip Listen Path and URL Rewrite, and a rewrite target starts with the API's listen path. For example, with the listen path `/anything/` and a rewrite to `http://httpbin.org/anything/bla/$1`, a request to `/anything/xml` was previously sent to `http://httpbin.org/bla/anything/xml`. It is now sent to `http://httpbin.org/anything/bla/anything/xml`.
+
+**What to do:** check the URL Rewrite rules on APIs that have Strip Listen Path enabled. If a rule's target only worked because the listen path was being removed from it, update the target so it is the exact upstream URL you want.
+
 
 
 #### Dependencies 
@@ -930,10 +957,14 @@ We've resolved an issue in Dashboard-managed, hybrid and MDCB deployments where 
 {/* TT-17873 */}
 We've resolved a regression where the Enforced Timeout middleware could be overridden by `proxy_default_timeout`, so requests to an endpoint with a longer enforced timeout were cut off at the default. Timeouts are now applied per request, so the most specific configured timeout (endpoint, then API, then Gateway default) is always respected. Streaming responses (SSE, gRPC and GraphQL) are no longer canceled prematurely.
 </Accordion>
- 
-<Accordion title='Fixed URL rewrite targets being altered by Strip Listen Path'>
+
+<Accordion title='Fixed URL Rewrite targets being altered by Strip Listen Path'>
 {/* TT-1860 */}
-We've resolved an issue where, on APIs using both Strip Listen Path and URL Rewrite, the listen path was stripped from the rewritten URL if the rewritten path happened to start with the same string. The Gateway now leaves rewritten URLs untouched, so requests reach the exact rewrite target. APIs without URL Rewrite are unaffected.
+We've resolved an issue where, on APIs using both Strip Listen Path and URL Rewrite, the listen path was stripped from the rewritten URL if the rewritten path started with the same string. As a result, requests could be sent to a different upstream path than the one set in the rewrite rule.
+
+The Gateway now sends requests to the rewritten URL exactly as configured. APIs without URL Rewrite still have the listen path stripped as before.
+
+This is a breaking change for APIs whose rewrite targets relied on the old stripping behavior. To restore it, set the new Gateway configuration option `apply_strip_listen_path_to_url_rewrite` to `true` (default `false`). See [Breaking Changes](#breaking-changes-5.13.4) for how to check whether your rewrite rules are affected.
 </Accordion>
  
 <Accordion title='Fixed GraphQL and UDG APIs always generating detailed traffic logs'>
