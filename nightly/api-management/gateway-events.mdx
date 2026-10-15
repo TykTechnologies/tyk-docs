@@ -102,47 +102,367 @@ The built-in events that Tyk Gateway will generate are:
 - `CertificateExpiringSoon`: a certificate has been used within the expiry threshold and should be updated
 - `CertificateExpired`: an expired certificate has been used in a request
 
+### OAuth 2.0 events
+
+- `OAuth2ScopeCheckFailed`: a request has a valid OAuth 2.0 access token, but the token does not have the [scopes](/nightly/api-management/authentication/oauth2-authentication#scope-enforcement) that the endpoint requires
+- `OAuth2ExchangeSucceeded`: Tyk Gateway has [exchanged](/nightly/api-management/authentication/token-exchange) an inbound token for an upstream token. This event also fires when the upstream token comes from the cache.
+- `OAuth2ExchangeFailed`: a token exchange has failed. The identity provider rejected the exchange or did not respond, or no provider matched the inbound token.
+
 ## Event Metadata
 
-When an event is fired, and an *event handler* is registered for that specific API and event combination, Tyk Gateway provides the handler with a rich set of [metadata](/nightly/api-management/gateway-events#event-metadata). The external system (webhook) or custom (JavaScript) code can then use this metadata to decide what action to take.
+Tyk Gateway sends metadata about an event to each *event handler* that you register for that API and event. The external system (webhook) or custom (JavaScript) code can then use this metadata to decide what action to take.
 
-Most events provide common metadata as follows:
+The field names on this page are the names that a webhook template uses. For example, a template reads the request path as `{{.Meta.Path}}`. Custom event handlers receive the same metadata as a JSON object. If the JSON key is different from the field name, the field description shows the JSON key.
 
-- `message` (string): a human-readable message from Tyk Gateway that provides details about the event
-- `path` (string): the path of the API endpoint request that led to the event being fired
-- `origin` (string): origin data for the source of the request (if this exists)
-- `key` (string): the key that was used in the request
-- `originating_request` (string): a Base64-encoded [raw inbound request](#raw-request-data)
+### Common Metadata
+
+Most events provide these fields:
+
+<ResponseField name="Message" type="string">
+  A human-readable message from Tyk Gateway that provides details about the event.
+</ResponseField>
+
+<ResponseField name="OriginatingRequest" type="string">
+  A Base64-encoded [raw inbound request](#raw-request-data).
+</ResponseField>
+
+`OriginatingRequest` is empty for circuit breaker, uptime, token lifecycle, quota monitor and certificate expiry events. It can also be empty for organization quota and rate limit events.
 
 ### Specific Event Metadata
 
-Some events provide alternative metadata specific to that event. The following sections detail the event-specific metadata provided for such events.
+Most events also provide fields that are specific to the event. Expand the metadata of an event to see these fields. The list shows `Message` only when the message has a fixed value or a special meaning for that event.
 
-<ul>
+<ResponseField name="RatelimitExceeded, RateLimitSmoothingUp, RateLimitSmoothingDown, QuotaExceeded, AuthFailure, KeyExpired" type="event">
+  <Expandable title="metadata">
+    <ResponseField name="Path" type="string">
+      The path of the API endpoint request that led to the event being fired.
+    </ResponseField>
 
-<li>
-<Expandable title='CertificateExpiringSoon'>
-- `message` (string): a human readable message from Tyk Gateway that adds detail about the event
-- `cert_id` (string): the certificate ID
-- `cert_name` (string): the name of the certificate
-- `expires_at` (string, RFC3339): the certificate expiry date
-- `days_remaining` (integer): the remaining days until the certificate expires
-- `api_id`(string): the ID of the API that triggered the event
-</Expandable>
-</li>
+    <ResponseField name="Origin" type="string">
+      The IP address of the client that sent the request.
+    </ResponseField>
 
-<li>
-<Expandable title='CertificateExpired'>
-- `message` (string): a human readable message from Tyk Gateway that adds detail about the event
-- `cert_id` (string): the certificate ID
-- `cert_name` (string): the name of the certificate
-- `expired_at` (string, RFC3339): the date when the certificate expired
-- `days_since_expiry` (integer): the number of days since the certificate expired
-- `api_id`(string): the ID of the API that triggered the event
-</Expandable>
-</li>
+    <ResponseField name="Key" type="string">
+      The key that was used in the request.
 
-</ul>
+      `Key` has a different value in these cases:
+
+      - For an API-level rate limit, `Key` is the internal rate limit key of the API.
+      - If the key metadata sets `rate_limit_pattern`, rate limit and quota events use the custom key that this pattern creates.
+      - If a Go plugin fires `AuthFailure`, `Key` is `n/a`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="OrgQuotaExceeded, OrgRateLimitExceeded" type="event">
+  <Expandable title="metadata">
+    <ResponseField name="Path" type="string">
+      The path of the API endpoint request that led to the event being fired.
+    </ResponseField>
+
+    <ResponseField name="Origin" type="string">
+      The IP address of the client that sent the request.
+    </ResponseField>
+
+    <ResponseField name="Key" type="string">
+      The ID of the organization that exceeded its limit.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="VersionFailure" type="event">
+  <Expandable title="metadata">
+    <ResponseField name="Path" type="string">
+      The path of the API endpoint request that led to the event being fired.
+    </ResponseField>
+
+    <ResponseField name="Origin" type="string">
+      The IP address of the client that sent the request.
+    </ResponseField>
+
+    <ResponseField name="Reason" type="string">
+      The reason why Tyk Gateway rejected the request, for example `This API version does not seem to exist`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="UpstreamOAuthError" type="event">
+  <Expandable title="metadata">
+    <ResponseField name="Message" type="string">
+      The error that occurred when Tyk Gateway tried to get a token from the upstream OAuth provider.
+    </ResponseField>
+
+    <ResponseField name="APIID" type="string">
+      The ID of the API that triggered the event.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="BreakerTriggered, BreakerTripped, BreakerReset" type="event">
+  <Expandable title="metadata">
+    <ResponseField name="Message" type="string">
+      `Breaker Tripped` or `Breaker Reset`.
+    </ResponseField>
+
+    <ResponseField name="Path" type="string">
+      The path of the endpoint that has the circuit breaker.
+    </ResponseField>
+
+    <ResponseField name="APIID" type="string">
+      The ID of the API that triggered the event.
+    </ResponseField>
+
+    <ResponseField name="CircuitEvent" type="integer">
+      The new state of the circuit breaker, where `0` means tripped and `1` means reset.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="HostDown, HostUp" type="event">
+  <Expandable title="metadata">
+    <ResponseField name="Message" type="string">
+      `Uptime test failed` or `Uptime test succeeded`.
+    </ResponseField>
+
+    <ResponseField name="HostInfo" type="object">
+      The result of the uptime test.
+
+      <Expandable title="properties">
+        <ResponseField name="CheckURL" type="string">
+          The URL that the uptime test checked.
+        </ResponseField>
+
+        <ResponseField name="Method" type="string">
+          The HTTP method of the uptime test.
+        </ResponseField>
+
+        <ResponseField name="Protocol" type="string">
+          The protocol of the uptime test.
+        </ResponseField>
+
+        <ResponseField name="Timeout" type="duration">
+          The timeout of the uptime test, for example `10s` in a webhook template or `10000000000` (nanoseconds) in the JSON object.
+        </ResponseField>
+
+        <ResponseField name="Headers" type="object">
+          The headers that the uptime test sent.
+        </ResponseField>
+
+        <ResponseField name="Body" type="string">
+          The body that the uptime test sent.
+        </ResponseField>
+
+        <ResponseField name="Commands" type="array">
+          The commands of a TCP uptime test.
+        </ResponseField>
+
+        <ResponseField name="EnableProxyProtocol" type="boolean">
+          `true` if the uptime test uses the PROXY protocol.
+        </ResponseField>
+
+        <ResponseField name="ResponseCode" type="integer">
+          The HTTP status code that the host returned.
+        </ResponseField>
+
+        <ResponseField name="Latency" type="number">
+          The response time of the host, in milliseconds.
+        </ResponseField>
+
+        <ResponseField name="IsTCPError" type="boolean">
+          `true` if the uptime test failed with a TCP error.
+        </ResponseField>
+
+        <ResponseField name="MetaData" type="object">
+          Extra details about the host, with the keys `api_id`, `host_name` and `target_url`.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="TokenCreated, TokenUpdated, TokenDeleted" type="event">
+  <Expandable title="metadata">
+    <ResponseField name="Org" type="string">
+      The ID of the organization that owns the key.
+    </ResponseField>
+
+    <ResponseField name="Key" type="string">
+      The key that the operation created, updated or deleted.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="TriggerExceeded" type="event">
+  The [quota consumption monitor](#monitoring-quota-consumption) fires this event. Only the monitor webhook receives it.
+
+  <Expandable title="metadata">
+    <ResponseField name="Message" type="string">
+      `Quota trigger reached`.
+    </ResponseField>
+
+    <ResponseField name="OrgID" type="string">
+      The ID of the organization.
+    </ResponseField>
+
+    <ResponseField name="Key" type="string">
+      The key that reached the threshold, or empty if an organization threshold fired the event.
+    </ResponseField>
+
+    <ResponseField name="TriggerLimit" type="integer">
+      The threshold that the key or organization reached.
+    </ResponseField>
+
+    <ResponseField name="UsagePercentage" type="integer">
+      The percentage of the quota that the key or organization has used.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="CertificateExpiringSoon" type="event">
+  <Expandable title="metadata">
+    <ResponseField name="CertID" type="string">
+      The certificate ID. The JSON key is `cert_id`.
+    </ResponseField>
+
+    <ResponseField name="CertName" type="string">
+      The name of the certificate. The JSON key is `cert_name`.
+    </ResponseField>
+
+    <ResponseField name="ExpiresAt" type="time">
+      The certificate expiry date. The JSON key is `expires_at`.
+    </ResponseField>
+
+    <ResponseField name="DaysRemaining" type="integer">
+      The remaining days until the certificate expires. The JSON key is `days_remaining`.
+    </ResponseField>
+
+    <ResponseField name="APIID" type="string">
+      The ID of the API that triggered the event. The JSON key is `api_id`.
+    </ResponseField>
+
+    <ResponseField name="CertRole" type="string">
+      `client` for a client certificate or `upstream` for an upstream certificate. The JSON key is `cert_role`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="CertificateExpired" type="event">
+  <Expandable title="metadata">
+    <ResponseField name="CertID" type="string">
+      The certificate ID. The JSON key is `cert_id`.
+    </ResponseField>
+
+    <ResponseField name="CertName" type="string">
+      The name of the certificate. The JSON key is `cert_name`.
+    </ResponseField>
+
+    <ResponseField name="ExpiredAt" type="time">
+      The date when the certificate expired. The JSON key is `expired_at`.
+    </ResponseField>
+
+    <ResponseField name="DaysSinceExpiry" type="integer">
+      The number of days since the certificate expired. The JSON key is `days_since_expiry`.
+    </ResponseField>
+
+    <ResponseField name="APIID" type="string">
+      The ID of the API that triggered the event. The JSON key is `api_id`.
+    </ResponseField>
+
+    <ResponseField name="CertRole" type="string">
+      `client` for a client certificate or `upstream` for an upstream certificate. The JSON key is `cert_role`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="OAuth2ScopeCheckFailed" type="event">
+  This event does not provide the common metadata. It provides only these fields.
+
+  <Expandable title="metadata">
+    <ResponseField name="oauth2_api_id" type="string">
+      The ID of the API that triggered the event.
+    </ResponseField>
+
+    <ResponseField name="path" type="string">
+      The path of the API endpoint request that led to the event being fired.
+    </ResponseField>
+
+    <ResponseField name="method" type="string">
+      The HTTP method of the request.
+    </ResponseField>
+
+    <ResponseField name="required_scopes" type="string[]">
+      The scopes that Tyk Gateway returned in the `WWW-Authenticate` challenge.
+    </ResponseField>
+
+    <ResponseField name="required_alternatives" type="string[][]">
+      All the scope combinations that the endpoint accepts.
+    </ResponseField>
+
+    <ResponseField name="granted_scopes" type="string[]">
+      The scopes in the access token.
+    </ResponseField>
+
+    <ResponseField name="oauth2_subject_jti" type="string">
+      The `jti` claim of the access token.
+    </ResponseField>
+
+    <ResponseField name="oauth2_subject_azp" type="string">
+      The `azp` claim of the access token.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="OAuth2ExchangeSucceeded, OAuth2ExchangeFailed" type="event">
+  These events do not provide the common metadata. They provide only these fields. For more details, see [token exchange audit events](/nightly/api-management/authentication/token-exchange#audit-events).
+
+  <Expandable title="metadata">
+    <ResponseField name="oauth2_api_id" type="string">
+      The ID of the API that triggered the event.
+    </ResponseField>
+
+    <ResponseField name="oauth2_provider" type="string">
+      The token exchange provider that Tyk Gateway used, or empty for the `no_matching_provider` outcome.
+    </ResponseField>
+
+    <ResponseField name="oauth2_exchange_outcome" type="string">
+      `ok`, `idp_error` or `no_matching_provider`.
+    </ResponseField>
+
+    <ResponseField name="oauth2_exchange_cache_hit" type="boolean">
+      `true` if the exchanged token came from the cache.
+    </ResponseField>
+
+    <ResponseField name="trace_id" type="string">
+      The trace ID of the request, if present.
+    </ResponseField>
+
+    <ResponseField name="oauth2_subject_azp" type="string">
+      The `azp` claim of the inbound token, if present.
+    </ResponseField>
+
+    <ResponseField name="oauth2_exchanged_azp" type="string">
+      The `azp` claim of the exchanged token, if present.
+    </ResponseField>
+
+    <ResponseField name="oauth2_audience" type="string">
+      The audience of the token exchange, if set.
+    </ResponseField>
+
+    <ResponseField name="oauth2_scopes_requested" type="string[]">
+      The scopes that Tyk Gateway requested, if set.
+    </ResponseField>
+
+    <ResponseField name="oauth2_idp_error" type="string">
+      The error code from the identity provider, for the `idp_error` outcome only.
+    </ResponseField>
+
+    <ResponseField name="oauth2_idp_error_description" type="string">
+      The error description from the identity provider, for the `idp_error` outcome only.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+The `ExpiresAt` and `ExpiredAt` fields are Go time values. The JSON object shows them in RFC3339 format. The default webhook template uses the `as_rfc3339` function to get this format. A custom webhook template cannot use this function. Use the Go `Format` method instead, for example `{{.Meta.ExpiresAt.Format "2006-01-02T15:04:05Z07:00"}}`.
 
 ### Using the metadata
 
@@ -767,16 +1087,19 @@ This contains the [event metadata](/nightly/api-management/gateway-events#event-
 
 ```json
 {
-  "EventType": "Event Type Code",
-  "EventMetaData": {
+  "Type": "Event Type Code",
+  "Meta": {
     "Message": "My Event Description",
+    "OriginatingRequest": "Base64-encoded request",
     "Path": "/{{api_id}}/{{path}}",
-    "Origin": "1.1.1.1:PORT",
+    "Origin": "1.1.1.1",
     "Key": "{{Auth Key}}"
   },
   "TimeStamp": "2024-01-01 23:59:59.111157073 +0000 UTC"
 }
 ```
+
+The fields in `Meta` depend on the event type. For the fields of each event, see [Specific Event Metadata](/nightly/api-management/gateway-events#specific-event-metadata).
 
 #### The `context` Variable
 
@@ -793,7 +1116,7 @@ It is populated with the API ID and Org ID of the request that your custom funct
 
 ```js
 // Use the TykGetKeyData function to retrieve a session from the session store, use the context variable to give the APIID for the key.
-var thisSession = JSON.parse(TykGetKeyData(event.EventMetaData.Key, context.APIID))
+var thisSession = JSON.parse(TykGetKeyData(event.Meta.Key, context.APIID))
 log("Expires: " + thisSession.expires)
 ```
 
