@@ -12,7 +12,7 @@ Put new files in one of these namespaces where possible. No CI check enforces th
 | `platform-management/` | Dashboard, users, RBAC, governance, categories, templates |
 | `portal/` | Developer Portal (Enterprise) |
 | `ai-management/` | MCP Gateway, AI Studio |
-| `deployment/` | Installation, configuration, production operations (not created yet) |
+| `deployment/` | Installation, configuration, production operations for the Deploy & Operate tab (not created yet) |
 | `tyk-cloud/` | Tyk Cloud |
 | `developer-support/` | Release notes, release policy, contributing, deprecation |
 

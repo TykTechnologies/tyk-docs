@@ -6,11 +6,11 @@ Use these steps as a guide when you place new content. Work through them in orde
 
 **Step 2 — Classify the type.** Apply the compass in [3.1 Core Four](03-content-types.md#31-core-four). Record the answer; it becomes `type:` frontmatter. If the draft contains two types, consider splitting it into two pages.
 
-**Step 3 — Identify the tab, then the group.** First ask *what is the reader operating on?* — their APIs, Tyk itself, their API consumers, or AI traffic. Troubleshooting content goes in the tab of the feature it troubleshoots. Then, within the tab, place by journey stage.
+**Step 3 — Identify the tab, then the group.** First ask *what is the reader operating on?* — their APIs, the Tyk deployment, the Tyk control plane, their API consumers, or AI traffic. Troubleshooting content goes in the tab of the feature it troubleshoots. Then, within the tab, place by journey stage.
 
 Tie-breakers, in order:
 
-1. Configuring a Tyk component is *Platform Management*. Configuring behaviour that an API exhibits is *API Management* — even when the setting lives in the Dashboard.
+1. Installing, scaling, upgrading, or configuring a Tyk component for production is *Deploy & Operate*. Managing the platform through the Dashboard (users, SSO, governance, analytics) is *Platform Management*. Configuring behaviour that an API exhibits is *API Management* — even when the setting lives in the Dashboard.
 2. If two groups within a tab fit, choose the **earlier** stage in the lifecycle and cross-link from the later one.
 3. If the content is meaningful only to someone already deep in another group, it belongs to that group.
 4. If it is a concept applying across products, it stays in one place with badges (see [4.5 Products as Badges, Not Places](04-navigation.md#45-products-as-badges-not-places)). Do not duplicate it per product.

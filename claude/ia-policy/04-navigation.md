@@ -2,21 +2,22 @@
 
 ## 4.1 Top-level Tabs
 
-**The axis is: what is the reader operating on?** Their APIs, or Tyk itself. Journey ordering applies *within* a tab, not across tabs.
+**The axis is: what is the reader operating on?** Their APIs (the data plane), the Tyk deployment (install and day-2 operations), or the Tyk control plane (the Dashboard). Journey ordering applies *within* a tab, not across tabs.
 
 | Tab | Operating on | Contents |
 | :---- | :---- | :---- |
-| **Home** | Docs Intro |  |
-| **Overview** | Orientation | Site landing, platform overview, components, `apim`, plan your integration, policy |
-| **API Management** | Your APIs | Design & create, secure, control traffic, route, transform, observe, maintain, plus its Reference group |
-| **Platform Management** | Tyk itself | Deploy & install (OSS, Self Managed, Helm), production configuration, MDCB, Pump, Dashboard administration, users, RBAC, TIB/SSO, Governance, plus its Reference group |
-| **API Publishing** | Your API consumers | Developer Portal: products, plans, catalogues, consumer management, portal administration |
+| **Home** | Docs intro | Docs home page |
+| **Overview** | Orientation | Platform overview, Tyk components, deployment options (`apim`), plan your API integration, release policy, community and support (including FAQ), docs contribution |
+| **Deploy & Operate** | The Tyk deployment | Install (Self-Managed, Open Source, air-gapped), Helm charts, architecture and scaling (MDCB, API sharding, Pump), configure for production, automate (Operator, Sync), upgrade and troubleshoot, release notes, plus its Reference group (component configuration and Tyk API references) |
+| **API Management** | Your APIs (data plane) | Getting started, design & create, secure, control traffic, route, transform, observe, maintain, guides |
+| **Platform Management** | The Tyk control plane (Dashboard) | Dashboard overview, govern APIs, Dashboard analytics, user management, TIB/SSO, guides |
+| **API Publishing** | Your API consumers | Developer Portal: installation, API products and plans, consuming APIs, user management, portal administration, troubleshooting, legacy Classic Portal, plus its Reference group |
 | **AI Management** | AI and MCP traffic | MCP Gateway, AI Studio |
-| **Cloud** | Cloud | Cloud |
+| **Cloud** | Tyk Cloud | Getting started, management, configuration, developer support |
 
 ## 4.2 The New-tab Test
 
-The seven tabs above are the baseline. Before you propose a new top-level tab, check that it meets **all five** conditions:
+The eight tabs above are the baseline. Before you propose a new top-level tab, check that it meets **all five** conditions:
 
 1. A distinct primary persona who does not otherwise use the platform  
 2. Its own object model and vocabulary that does not map to existing tab nouns  
@@ -39,7 +40,7 @@ Everything else is labelled by task domain, not genre.
 | :---- | :---- |
 | Group nesting below a tab | Max 3 levels |
 | Children per group | Min 2, target 3–7 |
-| Tabs | Max 7 |
+| Tabs | Max 8 |
 | Sibling types within a group | Homogeneous — do not mix deployment models with components |
 
 
