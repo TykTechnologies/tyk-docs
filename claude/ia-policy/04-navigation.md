@@ -42,12 +42,5 @@ Everything else is labelled by task domain, not genre.
 | Tabs | Max 7 |
 | Sibling types within a group | Homogeneous — do not mix deployment models with components |
 
-## 4.5 Products as Badges, Not Places
-
-Future direction: pages declare `products:` in frontmatter. This field is not in use yet. When it is, it can drive:
-
-- A visible badge on the page  
-- Mintlify `tag` for tier labelling (`OSS`, `Enterprise`, `Cloud`)  
-- Faceted filtering where supported
 
 Previous: [3. Content Types](03-content-types.md) · Next: [5. Placement Decision Procedure](05-placement-procedure.md)
