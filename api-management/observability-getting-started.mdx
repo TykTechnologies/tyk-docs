@@ -1,8 +1,8 @@
 ---
 title: "Get Started with Tyk Observability"
-description: "Add logs, distributed traces, and metrics to a Tyk Gateway deployment using Docker Compose with an OpenTelemetry Collector, Prometheus, Loki, Tempo, and Grafana."
+description: "Add logs, distributed traces, and metrics to a Tyk deployment using Docker Compose with an OpenTelemetry Collector, Prometheus, Loki, Tempo, and Grafana."
 sidebarTitle: "Getting Started"
-keywords: ["opentelemetry", "OTLP", "logs", "metrics", "traces", "observability", "getting started", "docker compose", "grafana", "prometheus", "loki", "tempo"]
+keywords: ["opentelemetry", "OTLP", "logs", "metrics", "traces", "observability", "getting started", "docker compose", "grafana", "prometheus", "loki", "tempo", "tyk dashboard", "tyk mdcb", "tyk developer portal", "control plane"]
 ---
 
 ## Introduction
@@ -13,17 +13,19 @@ By the end of this guide you will have:
 
 - Structured JSON access logs from Tyk Gateway shipping to [Loki](https://grafana.com/oss/loki/)
 - Distributed traces exporting to [Tempo](https://grafana.com/oss/tempo/)
-- Gateway metrics (request rate, latency, error rate) flowing to [Prometheus](https://grafana.com/oss/prometheus/)
+- Metrics (request rate, latency, error rate) flowing to [Prometheus](https://grafana.com/oss/prometheus/)
 - A Grafana instance wired up to all three backends
 
 ## Availability
 
-| Signal | Minimum Gateway version |
-|--------|------------------------|
+| Signal | Minimum Tyk Gateway Version |
+|--------|-----------------------------|
 | Structured JSON logs (`log_format: json`) | 5.6.0 |
 | Access logs (`access_logs.enabled`) | 5.8.0 |
 | Distributed traces (OTLP) | 5.3.0 |
 | OTLP metrics | 5.13.0 |
+
+OTLP metrics for Tyk Dashboard, Tyk MDCB, and Tyk Developer Portal have their own minimum versions: v5.16.0, v2.14.0, and v1.20.0 respectively.
 
 ## Prerequisites
 
@@ -33,19 +35,25 @@ By the end of this guide you will have:
 
 ## Architecture
 
-All three signals flow from Tyk Gateway to a single OpenTelemetry Collector endpoint. The Collector fans them out to the appropriate backend. Grafana queries all three.
+All three signals flow from Tyk Gateway to a single OpenTelemetry Collector endpoint. The Collector fans them out to the appropriate backend. Grafana queries all three. The control plane components can also send their metrics to the same Collector. See [Add Tyk Dashboard, Tyk MDCB, and Tyk Developer Portal](#add-tyk-dashboard-tyk-mdcb-and-tyk-developer-portal).
 
 ```mermaid
 flowchart LR
     TGW[Tyk Gateway]
+    DB[Tyk Dashboard]
+    MDCB[Tyk MDCB]
+    PORTAL[Tyk Developer Portal]
     COL[OTel Collector]
     PRO[Prometheus]
     LOK[Loki]
     TMP[Tempo]
     GRA[Grafana]
 
-    TGW -->|"OTLP gRPC :4317\n(traces + metrics)"| COL
-    TGW -->|"container logs\n(filelog receiver)"| COL
+    TGW -->|"OTLP gRPC :4317<br/>(traces + metrics)"| COL
+    TGW -->|"container logs<br/>(filelog receiver)"| COL
+    DB -.->|"OTLP (metrics)"| COL
+    MDCB -.->|"OTLP (metrics)"| COL
+    PORTAL -.->|"OTLP (metrics)"| COL
     COL -->|metrics| PRO
     COL -->|logs| LOK
     COL -->|traces| TMP
@@ -211,7 +219,7 @@ Then add the `otel-collector` service to your `docker-compose.yml`:
 services:
   otel-collector:
     image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.133.0
-    user: "0"   # Required — without this, permission denied reading /var/lib/docker/containers
+    user: "0"   # Required: without this, permission denied reading /var/lib/docker/containers
     volumes:
       - ./otelcol-config.yml:/etc/otelcol-contrib/config.yaml
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
@@ -225,7 +233,7 @@ services:
 
 The volume mounts give the Collector read access to Docker container logs for the `filelog` receiver.
 
-### Step 3: Add the Grafana stack
+### Step 3: Add the Grafana Stack
 
 Add Prometheus, Loki, Tempo, and Grafana to your `docker-compose.yml`:
 
@@ -314,7 +322,7 @@ storage:
       path: /tmp/tempo/blocks
 ```
 
-#### Provision Grafana datasources
+#### Provision Grafana Data Sources
 
 Create `grafana/provisioning/datasources/tyk.yaml`:
 
@@ -335,15 +343,19 @@ datasources:
     url: http://tempo:3200
 ```
 
-### Step 4: Start and verify
+{/* SCREENSHOT NEEDED: Grafana data sources.
+What to show: the Grafana Connections > Data sources page listing Prometheus (default), Loki and Tempo, each with the green "Data source is working" test result.
+*/}
 
-Restart your deployment to apply the configuration changes to your Gateway and bring up the new services:
+### Step 4: Start and Verify
+
+Restart your deployment to apply the configuration changes to Tyk Gateway and bring up the new services:
 
 ```bash
 docker compose up -d
 ```
 
-Send test requests through Tyk Gateway, then open Grafana at **http://localhost:3001** and verify each signal.
+Send test requests through the gateway, then open Grafana at **http://localhost:3001** and verify each signal.
 
 <Note>
 If you are following this guide using the Tyk Self-Managed getting started setup, an **httpbingo** API is pre-configured. Generate test traffic with:
@@ -356,9 +368,9 @@ for i in $(seq 1 10); do curl -s -o /dev/null -w "HTTP %{http_code}\n" \
 
 **Metrics**: in Explore, select the Prometheus datasource and run:
 ```promql
-{__name__="tyk.http.requests_total"}
+{__name__="tyk_api_requests_total"}
 ```
-You should see request counts rise as traffic flows through the Gateway.
+You should see request counts rise as traffic flows through the gateway.
 
 ![Metrics in Grafana](/img/observability/grafana-metrics.png)
 
@@ -366,7 +378,7 @@ You should see request counts rise as traffic flows through the Gateway.
 ```logql
 {service_name="tyk-gateway"} | json
 ```
-You should see structured access log entries with fields like `api_id`, `path`, `status`, `latency_total`, and `trace_id`.
+You should see structured access log entries with fields such as `api_id`, `path`, `status`, `latency_total`, and `trace_id`.
 
 ![Logs in Grafana](/img/observability/grafana-logs.png)
 
@@ -375,11 +387,245 @@ You should see structured access log entries with fields like `api_id`, `path`, 
 ![Traces in Grafana](/img/observability/grafana-traces.png)
 
 <Tip>
-If traces are not appearing, verify that `TYK_GW_OPENTELEMETRY_TRACES_ENABLED=true` is set and that the Gateway can reach `otel-collector:4317`. Check the OTel Collector logs with `docker compose logs otel-collector` for any connection errors.
+If traces are not appearing, verify that `TYK_GW_OPENTELEMETRY_TRACES_ENABLED=true` is set and that Tyk Gateway can reach `otel-collector:4317`. Check the OTel Collector logs with `docker compose logs otel-collector` for any connection errors.
 </Tip>
 
-## Next steps
+## Add Tyk Dashboard, Tyk MDCB, and Tyk Developer Portal
 
-- **Explore default metrics**: see all Gateway metrics available out of the box in [Default Metrics](/api-management/logs-metrics)
+Tyk Dashboard, Tyk MDCB, and Tyk Developer Portal export metrics with the same `opentelemetry.metrics` configuration pattern as Tyk Gateway. For Tyk Developer Portal, the block is `OpenTelemetry.Metrics`. This section adds all three components to the same Docker Compose deployment and points them at the same OTel Collector. The metrics from all four components then go to the Prometheus instance from [Step 3](#step-3-add-the-grafana-stack).
+
+<Note>
+The Tyk Developer Portal configuration file uses PascalCase keys for all settings, not only for OpenTelemetry. Tyk Dashboard and Tyk MDCB use lowercase keys. Each component follows its own native pattern.
+</Note>
+
+### Configure Tyk Dashboard
+
+Add the following environment variables to your `tyk-dashboard` service:
+
+```yaml
+services:
+  tyk-dashboard:
+    environment:
+      - TYK_DB_OPENTELEMETRY_METRICS_ENABLED=true
+      - TYK_DB_OPENTELEMETRY_METRICS_ENDPOINT=otel-collector:4317
+      - TYK_DB_OPENTELEMETRY_METRICS_EXPORTINTERVAL=15
+```
+
+If you prefer `tyk_analytics.conf`, the equivalent configuration is:
+
+```json expandable
+{
+  "control_plane_id": "",
+  "opentelemetry": {
+    "metrics": {
+      "enabled": true,
+      "endpoint": "otel-collector:4317",
+      "export_interval": 15,
+      "deployment_environment": "dev",
+      "gateway_metrics": true,
+      "license_metrics": true,
+      "http_metrics": true,
+      "certificate_metrics": true,
+      "dependency_metrics": true,
+      "notification_metrics": true,
+      "objects_metrics": {
+        "enabled": true,
+        "collection_interval": 300,
+        "governance": true
+      },
+      "health_metrics": true,
+      "runtime_metrics": true,
+      "meta_metrics": true
+    }
+  }
+}
+```
+
+The `objects_metrics` group also exports governance metrics. Governance metrics need a license that includes governance. To turn them off, set `governance` to `false`.
+
+Leave `control_plane_id` blank to generate it automatically and share it with Tyk MDCB through Redis. If you run more than one control plane, set it explicitly.
+
+### Configure Tyk MDCB
+
+Add the following environment variables to your `tyk-sink` service:
+
+```yaml
+services:
+  tyk-sink:
+    environment:
+      - TYK_MDCB_OPENTELEMETRY_METRICS_ENABLED=true
+      - TYK_MDCB_OPENTELEMETRY_METRICS_ENDPOINT=otel-collector:4317
+      - TYK_MDCB_OPENTELEMETRY_METRICS_EXPORTINTERVAL=15
+```
+
+If you prefer `tyk_sink.conf`, the equivalent configuration is:
+
+```json expandable
+{
+  "control_plane_id": "",
+  "opentelemetry": {
+    "metrics": {
+      "enabled": true,
+      "endpoint": "otel-collector:4317",
+      "export_interval": 15,
+      "deployment_environment": "dev",
+      "dataplanes_metrics": true,
+      "rpc_metrics": true,
+      "sync_metrics": true,
+      "analytics_metrics": true,
+      "dependency_metrics": true,
+      "health_metrics": true,
+      "expiry_metrics": true,
+      "runtime_metrics": true,
+      "meta_metrics": true
+    }
+  }
+}
+```
+
+### Configure Tyk Developer Portal
+
+Add the following environment variables to your `tyk-portal` service:
+
+```yaml
+services:
+  tyk-portal:
+    environment:
+      - PORTAL_OPENTELEMETRY_METRICS_ENABLED=true
+      - PORTAL_OPENTELEMETRY_METRICS_ENDPOINT=otel-collector:4317
+      - PORTAL_OPENTELEMETRY_METRICS_EXPORTINTERVAL=15
+```
+
+The `TYK_PORTAL_*` equivalents of these variables also work.
+
+If you prefer `portal.conf`, the equivalent configuration is:
+
+```json
+{
+  "OpenTelemetry": {
+    "Metrics": {
+      "Enabled": true,
+      "Endpoint": "otel-collector:4317",
+      "ExportInterval": 15,
+      "DeploymentEnvironment": "dev",
+      "ProviderMetrics": true,
+      "HealthMetrics": true
+    }
+  }
+}
+```
+
+Tyk Developer Portal does not share Redis with the control plane, so it has no `control_plane_id`. To tag the environment that the portal belongs to, set `DeploymentEnvironment`. It is exported as `deployment.environment`.
+
+### Verify the Control Plane Metrics
+
+In Grafana Explore, select the Prometheus data source and run:
+
+```promql
+{__name__=~"tyk.dashboard.*|tyk.mdcb.*|tyk.portal.*|process.uptime"}
+```
+
+After each component completes at least one export cycle, you should see series for Tyk Dashboard, Tyk MDCB, and Tyk Developer Portal.
+
+{/* SCREENSHOT NEEDED: Control plane series in Grafana Explore.
+What to show: Grafana Explore with the Prometheus data source, the query above in the editor, and series listed for `tyk.dashboard.*`, `tyk.mdcb.*`, `tyk.portal.*` and `process.uptime`. Show the `control_plane_id` label on the Tyk Dashboard and Tyk MDCB series and `deployment_environment` on the Tyk Developer Portal series.
+*/}
+
+## Use the Example Grafana Dashboards and Alert Rules
+
+Tyk provides example Grafana dashboards and alert rules for the OpenTelemetry metrics that Tyk components export. Use them to get started quickly, without building panels or rules from scratch.
+
+### Example Dashboards
+
+The dashboards start with the big picture and let you go into detail where you need it.
+
+**Tyk Environments Overview** shows all your environments in one place. For each environment, you can see each control plane and the health, version, and connectivity of every component in it.
+
+From the overview, go into more detail with a dashboard for each component:
+
+- Tyk Dashboard
+- Tyk MDCB
+- Tyk Developer Portal
+
+Tyk Gateway has its own dashboards:
+
+- Tyk Gateway - Fleet Health
+- Tyk Gateway - API Portfolio Overview
+- Tyk Gateway - API Troubleshooting
+- Tyk Gateway - Native OTLP Metrics
+- Tyk Gateway - MCP Metrics
+
+<img src="/img/observability/grafana-control-plane-overview.png" alt="Tyk Environments Overview dashboard in Grafana showing an environment with its control plane, dependency checks, gateway version drift, and license expiry" />
+
+### Example Alert Rules
+
+The examples also include alert rules for the control plane and its components:
+
+- **Control plane:** a component stops reporting metrics, a component restarts, or memory use is above 90% of the memory limit (when a limit is set)
+- **Tyk Dashboard:** a dependency is unhealthy, the API error rate or latency is high, a gateway stops sending heartbeats, or fewer gateways are connected than 15 minutes ago
+
+{/* TO CONFIRM: add a bullet for the Tyk MDCB and Tyk Developer Portal alert rules, using the list from the rule file. */}
+
+Each alert has a `severity` label (`critical`, `warning`, or `info`) and a `tyk_component` label. The thresholds are starting points. Adjust them for your deployment.
+
+### Get the Examples
+
+The examples are in the public Tyk Install repository. Start with the README in the OpenTelemetry folder, not the README in the root of the repository.
+
+{/* TO ADD: link to the OpenTelemetry folder in the TykTechnologies/tyk-install repository. */}
+
+The README explains how to add OpenTelemetry to a new Tyk installation and to an existing one.
+
+Each dashboard is a single JSON file. To use one, copy the JSON and [import it into Grafana](https://grafana.com/docs/grafana/latest/dashboards/build-dashboards/import-dashboards/) as a dashboard. To find the dashboards after you import them, filter by the `tyk` tag.
+
+The alert rules are Prometheus-format YAML files. To use them, import them into Grafana-managed alert rules:
+
+<Steps>
+  <Step title="Open the Alert Rules">
+    In Grafana, go to **Alerting > Alert rules**.
+  </Step>
+  <Step title="Start the Import">
+    In the data source-managed alert rules section, select **Import to Grafana-managed rules**.
+  </Step>
+  <Step title="Upload the Rule File">
+    Select **Prometheus YAML file** as the import source and upload the rule file.
+  </Step>
+  <Step title="Import the Rules">
+    Select the data source that the rules query, then select **Import**.
+  </Step>
+</Steps>
+
+For all options and limitations, see [Import data source-managed rules to Grafana-managed rules](https://grafana.com/docs/grafana/latest/alerting/alerting-rules/alerting-migration/) in the Grafana documentation.
+
+{/* SCREENSHOT NEEDED: Grafana Alerting > Alert rules page showing the imported Tyk rules. */}
+
+<Note>
+These examples are built for Grafana. Because Tyk exports metrics with OpenTelemetry, you can use any observability backend. If you use a different backend, use the examples as a reference for which metrics to chart.
+</Note>
+
+<Note>
+The examples read the metrics set up in this guide. Metrics from Tyk Dashboard, Tyk MDCB, and Tyk Developer Portal require v5.16.0, v2.14.0, and v1.20.0 or later, respectively.
+</Note>
+
+## Explore Your Metrics with AI Using MCP
+
+Tyk exports its metrics with OpenTelemetry, so you choose the observability backend. You can also choose how to use AI with it. If your observability vendor provides an MCP (Model Context Protocol) server, connect it to an MCP-compatible AI client. You can then ask questions about your Tyk platform and gateway traffic in plain language, with the LLM of your choice. For example:
+
+- Which gateways are connected to each control plane?
+- Are all gateways running the same version?
+- Did latency or the error rate change after the last deployment?
+- Which alert rules are firing?
+
+The examples in this guide use Grafana, so you can use the open source [Grafana MCP server](https://github.com/grafana/mcp-grafana). It can run Prometheus queries, search dashboards, and list alert rules. To set it up, add it to your AI client and configure it with your Grafana URL and a Grafana service account token. For installation steps and the full list of supported tools, see the Grafana MCP server repository.
+
+<Note>
+The assistant can only do what the credentials you give it allow. Give it only the permissions it needs. AI answers depend on the model you use, so check important findings against your dashboards.
+</Note>
+
+## Next Steps
+
+- **Explore default metrics**: see all Tyk Gateway metrics available out of the box in [Default Metrics](/api-management/metrics/default-metrics)
 - **Add custom metrics**: attach request headers, JWT claims, and response codes as metric dimensions using [Custom Metrics](/api-management/metrics/custom-metrics)
 - **Kubernetes deployment**: for log collection in Kubernetes using the OTel Collector DaemonSet, see [Collecting Gateway Logs with OTel on Kubernetes](/api-management/collecting-gateway-logs-otel-kubernetes)
+- **Explore control plane metrics**: see the full Tyk Dashboard, Tyk MDCB, and Tyk Developer Portal reference in [Default Metrics](/api-management/metrics/default-metrics)
+- **Understand control plane correlation**: learn how `control_plane_id` lets Tyk Dashboard and Tyk MDCB metrics correlate in [Control Plane Metrics Concepts](/api-management/metrics/control-plane-metrics-concepts#control-plane-identity)
