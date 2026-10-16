@@ -13,7 +13,11 @@ For the metric tables, see [Default Metrics Reference](/api-management/metrics/d
 
 Each component groups its metrics into families, such as dependency health, fleet state, and expiry. Each family has its own on/off flag under `opentelemetry.metrics`. For the flags and their defaults, see [Metrics Configuration](/api-management/logs-metrics#control-plane-fields).
 
-## Request Metrics
+## Tyk Gateway Metrics
+
+These concepts apply to the metrics that only Tyk Gateway exports.
+
+### Request Metrics
 
 Tyk Gateway records three latency histograms for each request:
 
@@ -23,11 +27,61 @@ Tyk Gateway records three latency histograms for each request:
 
 This three-way breakdown helps you tell gateway processing overhead apart from upstream service slowness. When end-to-end latency rises, check which of the other two histograms rose with it.
 
-## Configuration State Metrics
+### Configuration State Metrics
 
 Configuration state metrics reflect the operational state of the configuration that Tyk Gateway has loaded. Use them to detect silent configuration failures. For example, alert when the number of loaded APIs drops unexpectedly.
 
-## Go Runtime Metrics
+### Exemplars
+
+Exemplars are sample observations attached to histogram metric data points that carry the active trace context (specifically the `trace_id` and `span_id` of the request that produced the measurement). They create a direct, clickable link from an aggregated metric to the specific trace that caused an anomaly.
+
+#### How They Work in Tyk
+
+When OpenTelemetry tracing is enabled and a histogram metric (such as `http.server.request.duration`) is recorded during an active sampled request, the OTel Go SDK automatically attaches the current trace and span IDs to the observation. Exemplars are only attached for sampled requests.
+
+#### Infrastructure Requirements
+
+Exemplar storage and rendering must be enabled in your observability stack; nothing additional is needed on the Tyk side.
+
+For example, in the following standard OTel pipeline:
+
+```mermaid
+flowchart LR
+    GW["Tyk Gateway<br/>(active sampled span)"]
+    COL[OTel Collector]
+    PRO["Prometheus<br/>(exemplar storage)"]
+    GRA["Grafana<br/>(exemplars toggle)"]
+    TR["Trace in<br/>Tempo or Jaeger"]
+
+    GW -->|"OTLP/gRPC<br/>histogram + exemplar"| COL
+    COL -->|"histogram + exemplar"| PRO
+    PRO -->|"histogram + exemplar"| GRA
+    GRA -.->|"click exemplar marker"| TR
+```
+
+| Component | Requirement |
+|-----------|-------------|
+| OTel Collector | Any version supporting OTLP metrics with exemplar passthrough |
+| Prometheus | v2.26+. Start with `--enable-feature=exemplar-storage` |
+| Grafana | v7.4+. Enable "Exemplars" toggle on the Prometheus data source |
+
+#### Querying Exemplars in Prometheus
+
+Exemplars are accessible via the Prometheus exemplar API:
+
+```
+GET /api/v1/query_exemplars?query=http_server_request_duration_seconds&start=<start>&end=<end>
+```
+
+#### Grafana Workflow
+
+When exemplar rendering is enabled, Grafana displays scatter plot markers on histogram panels. Clicking a marker navigates directly to the linked trace in your configured tracing backend (Jaeger, Grafana Tempo, etc.), with no manual trace ID lookup required.
+
+## Shared Across Components
+
+These concepts apply to Tyk Gateway and the control plane components.
+
+### Go Runtime Metrics
 
 Every Tyk component written in Go exports Go runtime metrics automatically: Tyk Gateway, Tyk Dashboard, and Tyk MDCB. These metrics reflect the health of the Go runtime inside that process:
 
@@ -49,7 +103,7 @@ Keep these points in mind when you read them:
 - Heap memory that approaches the configured limit means that garbage collection will soon work harder to stay under it. This trades CPU for memory headroom.
 - A sudden step change right after a deployment tells you more than the absolute value. Compare values before and after a release, not against a fixed number.
 
-## Resource Attributes in Prometheus
+### Resource Attributes in Prometheus
 
 Every Tyk component attaches resource attributes to its metrics, such as `tyk.gw.id` on Tyk Gateway and `control_plane_id` on Tyk Dashboard and Tyk MDCB. For the full list, see [Resource Attributes](/api-management/metrics/default-metrics#resource-attributes).
 
@@ -92,7 +146,11 @@ sum by (tyk_gw_id) (
 
 Without this setting, resource attributes are available via the `target_info` metric and can be joined in PromQL.
 
-## Control Plane Identity
+## Control Plane Metrics
+
+These concepts apply to Tyk Dashboard, Tyk MDCB, and Tyk Developer Portal.
+
+### Control Plane Identity
 
 As with Tyk Gateway metrics, every metric that Tyk Dashboard and Tyk MDCB export carries resource attributes that are set once at process startup:
 
@@ -113,7 +171,7 @@ Tyk Developer Portal is the exception. It does not share Redis with Tyk Dashboar
 
 If you export through an OTel Collector to Prometheus, enable `resource_to_telemetry_conversion` or add a transform processor, as for [Tyk Gateway resource attributes](#resource-attributes-in-prometheus). `control_plane_id` is then available as a label, not only in `target_info`.
 
-## Connectivity and Fleet Health
+### Connectivity and Fleet Health
 
 A gateway reaches the control plane in one of two ways:
 
@@ -131,7 +189,7 @@ Do not alert only on a connected or disconnected flag for a gateway that must be
 
 The node version and address detail on the Tyk Dashboard node registry metrics depend on the connecting gateway sending node metadata headers. Gateways on older builds still appear as connected, but with fewer labels. Expect this during a rolling upgrade. It is not a sign of a problem.
 
-## Dependency and Pool Metrics
+### Dependency and Pool Metrics
 
 Dependency metrics carry two labels that are deliberately kept apart:
 
@@ -150,7 +208,7 @@ The self health signal is simpler and binary. It tells you whether a dependency 
 
 The Tyk Developer Portal health metric, `tyk.portal.health`, uses the same component and store shape. `component` is the stable role (`database` or `storage`), and `store` is the engine behind it. The portal has no pool pressure metrics and no gateway connectivity equivalent. Its provider sync metrics cover whether it can reach Tyk Dashboard.
 
-## Provider Sync Health
+### Provider Sync Health
 
 Tyk Developer Portal syncs its catalog with Tyk Dashboard in the background, every 10 minutes by default (`PORTAL_REFRESHINTERVAL`). When the sync stalls or fails, the first sign is often a developer who reports stale content or credentials that never arrive. The provider sync metrics make a stall visible before anyone reports it.
 
@@ -172,7 +230,7 @@ The failure counter splits by `error_type`, because each type points to a differ
 
 Sync duration carries a `result` label, so failed syncs do not distort the latency of successful ones. A duration that slowly increases over several days is an early warning of a stall. Large deployments of Tyk Dashboard can legitimately take minutes. All of these series are per `provider_id`, which is the internal provider ID of the portal, not the provider name.
 
-## Expiry and Build Info
+### Expiry and Build Info
 
 Certificate and license expiry metrics export the raw expiry time as a Unix timestamp. They do not export a pre-computed "days until expiry" value. Compute the remaining time at query time, so that it is always current. The same convention applies to every other timestamp metric in Tyk MDCB and Tyk Dashboard, such as the last heartbeat and the last successful sync.
 
@@ -187,52 +245,6 @@ Exporter health answers a narrower question than dependency health. It tells you
 - A collector that is down
 
 If exporter health drops, treat every other metric from that instance as unreliable. Do not conclude that the dependencies have failed, because you may simply have stopped receiving fresh data.
-
-## Exemplars
-
-Exemplars are sample observations attached to histogram metric data points that carry the active trace context (specifically the `trace_id` and `span_id` of the request that produced the measurement). They create a direct, clickable link from an aggregated metric to the specific trace that caused an anomaly.
-
-### How They Work in Tyk
-
-When OpenTelemetry tracing is enabled and a histogram metric (such as `http.server.request.duration`) is recorded during an active sampled request, the OTel Go SDK automatically attaches the current trace and span IDs to the observation. Exemplars are only attached for sampled requests.
-
-### Infrastructure Requirements
-
-Exemplar storage and rendering must be enabled in your observability stack; nothing additional is needed on the Tyk side.
-
-For example, in the following standard OTel pipeline:
-
-```mermaid
-flowchart LR
-    GW["Tyk Gateway<br/>(active sampled span)"]
-    COL[OTel Collector]
-    PRO["Prometheus<br/>(exemplar storage)"]
-    GRA["Grafana<br/>(exemplars toggle)"]
-    TR["Trace in<br/>Tempo or Jaeger"]
-
-    GW -->|"OTLP/gRPC<br/>histogram + exemplar"| COL
-    COL -->|"histogram + exemplar"| PRO
-    PRO -->|"histogram + exemplar"| GRA
-    GRA -.->|"click exemplar marker"| TR
-```
-
-| Component | Requirement |
-|-----------|-------------|
-| OTel Collector | Any version supporting OTLP metrics with exemplar passthrough |
-| Prometheus | v2.26+. Start with `--enable-feature=exemplar-storage` |
-| Grafana | v7.4+. Enable "Exemplars" toggle on the Prometheus data source |
-
-### Querying Exemplars in Prometheus
-
-Exemplars are accessible via the Prometheus exemplar API:
-
-```
-GET /api/v1/query_exemplars?query=http_server_request_duration_seconds&start=<start>&end=<end>
-```
-
-### Grafana Workflow
-
-When exemplar rendering is enabled, Grafana displays scatter plot markers on histogram panels. Clicking a marker navigates directly to the linked trace in your configured tracing backend (Jaeger, Grafana Tempo, etc.), with no manual trace ID lookup required.
 
 ## How Platform Teams Use These Metrics
 
