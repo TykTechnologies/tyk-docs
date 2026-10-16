@@ -14,7 +14,7 @@ sidebarTitle: "Default Metrics"
 | Tyk MDCB | Available since v2.14.0 | Enterprise |
 | Tyk Developer Portal | Available since v1.20.0 | Enterprise |
 
-This page lists the metrics. For what they mean and how to use them, see [Control Plane Metrics Concepts](/api-management/metrics/control-plane-metrics-concepts).
+This page lists the metrics. For what they mean and how to use them, see [Metrics Concepts](/api-management/metrics/metrics-concepts).
 
 ## Tyk Gateway Metrics
 
@@ -38,7 +38,7 @@ These four instruments cover the standard RED signals for every API proxied by t
 | `tyk.upstream.request.duration` | Histogram | seconds | Time spent waiting for the upstream service to respond. |
 | `tyk.api.requests.total` | Counter | requests | Total number of requests processed. |
 
-The three-way latency breakdown is particularly useful for distinguishing gateway processing overhead from upstream service slowness.
+For how to use the three latency histograms together, see [Request Metrics](/api-management/metrics/metrics-concepts#request-metrics). The histograms can also carry exemplars that link a data point to a trace. See [Exemplars](/api-management/metrics/metrics-concepts#exemplars).
 
 #### Default Dimensions
 
@@ -62,7 +62,7 @@ You can add more dimensions to any instrument using [custom metrics](/api-manage
 
 ### Go Runtime Metrics
 
-Tyk Gateway, Tyk Dashboard, and Tyk MDCB export the same set of Go runtime metrics. For what these mean, how to read them, and how to disable them, see [Go Runtime Metrics](/api-management/metrics/control-plane-metrics-concepts#go-runtime-metrics) in the concepts page.
+Tyk Gateway, Tyk Dashboard, and Tyk MDCB export the same set of Go runtime metrics. For what these mean, how to read them, and how to disable them, see [Go Runtime Metrics](/api-management/metrics/metrics-concepts#go-runtime-metrics) in the concepts page.
 
 | Metric Name | Type | Unit | Description |
 |-------------|------|------|-------------|
@@ -77,7 +77,7 @@ Tyk Gateway, Tyk Dashboard, and Tyk MDCB export the same set of Go runtime metri
 
 ### Configuration State Metrics
 
-These metrics reflect the operational state of the gateway's loaded configuration. They are useful for detecting silent configuration failures, for example, alerting when the number of loaded APIs drops unexpectedly.
+These metrics reflect the operational state of the gateway's loaded configuration. For how to use them, see [Configuration State Metrics](/api-management/metrics/metrics-concepts#configuration-state-metrics).
 
 | Metric Name | Type | Unit | Description |
 |-------------|------|------|-------------|
@@ -138,94 +138,9 @@ Every metric exported from a gateway instance carries resource attributes, metad
 | Host | `host.name`, `host.arch`, `host.ip` |
 | Process | `process.pid` |
 
-#### Using Resource Attributes in Prometheus
+To use resource attributes as labels in Prometheus, see [Resource Attributes in Prometheus](/api-management/metrics/metrics-concepts#resource-attributes-in-prometheus).
 
-When using an OTel Collector to export to Prometheus, enable `resource_to_telemetry_conversion` to expose resource attributes as metric labels:
-
-```yaml
-exporters:
-  prometheus:
-    endpoint: "0.0.0.0:8889"
-    resource_to_telemetry_conversion:
-      enabled: true
-```
-
-Alternatively, add a transform processor to metrics pipeline for OTLP exporters:
-
-```yaml
-processors:
-  transform/tyk_gw_resource_attrs:
-    error_mode: ignore
-    metric_statements:
-      - context: datapoint
-        statements:
-          - set(attributes["tyk_gw_group_id"], resource.attributes["tyk.gw.group.id"]) where resource.attributes["tyk.gw.group.id"] != nil
-          - set(attributes["tyk_gw_id"], resource.attributes["tyk.gw.id"]) where resource.attributes["tyk.gw.id"] != nil
-          - set(attributes["tyk_gw_tags"], resource.attributes["tyk.gw.tags"]) where resource.attributes["tyk.gw.tags"] != nil
-          - set(attributes["tyk_gw_dataplane"], resource.attributes["tyk.gw.dataplane"]) where resource.attributes["tyk.gw.dataplane"] != nil
-```
-
-This allows PromQL queries such as:
-
-```promql
-# All metrics from a specific gateway node
-{tyk_gw_id="gw-prod-eu-west-1-a"}
-
-# Compare request rates across gateways in an edge group
-sum by (tyk_gw_id) (
-  rate(tyk_api_requests_total{tyk_gw_group_id="edge-eu-west"}[5m])
-)
-```
-
-Without this setting, resource attributes are available via the `target_info` metric and can be joined in PromQL.
-
-Tyk Dashboard and Tyk MDCB add one more resource attribute: `control_plane_id`. Tyk Developer Portal does not share Redis with them, so it has no `control_plane_id`. It carries `deployment.environment` instead. For what these attributes are for and how they are resolved, see [Control Plane Identity](/api-management/metrics/control-plane-metrics-concepts#control-plane-identity).
-
-### Exemplars
-
-Exemplars are sample observations attached to histogram metric data points that carry the active trace context (specifically the `trace_id` and `span_id` of the request that produced the measurement). They create a direct, clickable link from an aggregated metric to the specific trace that caused an anomaly.
-
-#### How They Work in Tyk
-
-When OpenTelemetry tracing is enabled and a histogram metric (such as `http.server.request.duration`) is recorded during an active sampled request, the OTel Go SDK automatically attaches the current trace and span IDs to the observation. Exemplars are only attached for sampled requests.
-
-#### Infrastructure Requirements
-
-Exemplar storage and rendering must be enabled in your observability stack; nothing additional is needed on the Tyk side.
-
-For example, in the following standard OTel pipeline:
-
-```mermaid
-flowchart LR
-    GW["Tyk Gateway<br/>(active sampled span)"]
-    COL[OTel Collector]
-    PRO["Prometheus<br/>(exemplar storage)"]
-    GRA["Grafana<br/>(exemplars toggle)"]
-    TR["Trace in<br/>Tempo or Jaeger"]
-
-    GW -->|"OTLP/gRPC<br/>histogram + exemplar"| COL
-    COL -->|"histogram + exemplar"| PRO
-    PRO -->|"histogram + exemplar"| GRA
-    GRA -.->|"click exemplar marker"| TR
-```
-
-| Component | Requirement |
-|-----------|-------------|
-| OTel Collector | Any version supporting OTLP metrics with exemplar passthrough |
-| Prometheus | v2.26+. Start with `--enable-feature=exemplar-storage` |
-| Grafana | v7.4+. Enable "Exemplars" toggle on the Prometheus data source |
-
-#### Querying Exemplars in Prometheus
-
-Exemplars are accessible via the Prometheus exemplar API:
-
-```
-GET /api/v1/query_exemplars?query=http_server_request_duration_seconds&start=<start>&end=<end>
-```
-
-#### Grafana Workflow
-
-When exemplar rendering is enabled, Grafana displays scatter plot markers on histogram panels. Clicking a marker navigates directly to the linked trace in your configured tracing backend (Jaeger, Grafana Tempo, etc.), with no manual trace ID lookup required.
+Tyk Dashboard and Tyk MDCB add one more resource attribute: `control_plane_id`. Tyk Developer Portal does not share Redis with them, so it has no `control_plane_id`. It carries `deployment.environment` instead. For what these attributes are for and how they are resolved, see [Control Plane Identity](/api-management/metrics/metrics-concepts#control-plane-identity).
 
 ## Tyk MDCB Metrics
 
@@ -233,7 +148,7 @@ Tyk MDCB exports metrics about gateway connectivity, RPC traffic, configuration 
 
 <img src="/img/observability/grafana-mdcb-metrics.png" alt="Tyk MDCB example dashboard in Grafana showing dependency health, connection pool saturation, connections in use, idle and pool size, and RPC requests by result and latency" />
 
-This section is a plain reference. For what these metrics mean and how to use them, follow the concepts link at the end of each group.
+For what these metrics mean and how to use them, see [Metrics Concepts](/api-management/metrics/metrics-concepts). Where a group has its own concepts section, a link follows its table.
 
 ### Uptime
 
@@ -252,7 +167,7 @@ This section is a plain reference. For what these metrics mean and how to use th
 | `tyk.mdcb.gateway.reconnects` | Counter | - | Reconnection attempts from a gateway that was already registered, by gateway, hostname, organization, and group. |
 | `tyk.mdcb.gateway.last_heartbeat_timestamp` | Gauge | unix timestamp (seconds) | Time of the last heartbeat received from a gateway, by gateway, hostname, and group. |
 
-See [Connectivity and Fleet Health](/api-management/metrics/control-plane-metrics-concepts#connectivity-and-fleet-health).
+See [Connectivity and Fleet Health](/api-management/metrics/metrics-concepts#connectivity-and-fleet-health).
 
 ### RPC
 
@@ -288,7 +203,7 @@ See [Connectivity and Fleet Health](/api-management/metrics/control-plane-metric
 | `tyk.mdcb.connection_pool.max` | Gauge | - | Configured maximum size of a dependency pool, by component and store. Not reported when the pool is unbounded. |
 | `tyk.mdcb.connection_pool.rejected` | Counter | - | Connections refused because a pool was at its limit, by component (currently `rpc_server` only). |
 
-See [Dependency and Pool Metrics](/api-management/metrics/control-plane-metrics-concepts#dependency-and-pool-metrics).
+See [Dependency and Pool Metrics](/api-management/metrics/metrics-concepts#dependency-and-pool-metrics).
 
 ### Self Health
 
@@ -303,11 +218,11 @@ See [Dependency and Pool Metrics](/api-management/metrics/control-plane-metrics-
 | `tyk.mdcb.cert.expiry_timestamp` | Gauge | unix timestamp (seconds) | Expiry time of a certificate, by certificate type (`rpc_tls`, `http_tls`). Not reported when TLS is off or the certificate cannot be parsed. |
 | `tyk.mdcb.license.expiry_timestamp` | Gauge | unix timestamp (seconds) | Expiry time of the Tyk MDCB license. Not reported when the license has no expiry. |
 
-See [Expiry and Build Info](/api-management/metrics/control-plane-metrics-concepts#expiry-and-build-info).
+See [Expiry and Build Info](/api-management/metrics/metrics-concepts#expiry-and-build-info).
 
 ### Go Runtime
 
-Same metric set as the Tyk Gateway [Go Runtime Metrics](#go-runtime-metrics). See [Go Runtime Metrics](/api-management/metrics/control-plane-metrics-concepts#go-runtime-metrics) in the concepts page.
+Same metric set as the Tyk Gateway [Go Runtime Metrics](#go-runtime-metrics). See [Go Runtime Metrics](/api-management/metrics/metrics-concepts#go-runtime-metrics) in the concepts page.
 
 ### Build Info and Exporter Health
 
@@ -316,7 +231,7 @@ Same metric set as the Tyk Gateway [Go Runtime Metrics](#go-runtime-metrics). Se
 | `tyk.mdcb.build.info` | Gauge | - | Always 1. Carries the Tyk MDCB version and Go version as labels. |
 | `tyk.mdcb.telemetry.exporter.healthy` | Gauge | 1 | Whether the metrics exporter itself is healthy (1) or not (0), by provider. A fully failed exporter cannot report 0, so also alert when the series is absent. |
 
-See [Expiry and Build Info](/api-management/metrics/control-plane-metrics-concepts#expiry-and-build-info).
+See [Expiry and Build Info](/api-management/metrics/metrics-concepts#expiry-and-build-info).
 
 ## Tyk Dashboard Metrics
 
@@ -324,7 +239,7 @@ Tyk Dashboard exports metrics about the gateway node registry, its license, its 
 
 <img src="/img/observability/grafana-dashboard-metrics.png" alt="Tyk Dashboard example dashboard in Grafana showing datastore and Redis connection status, connected gateways, late heartbeats, license seats used, license expiry, and connection pool saturation" />
 
-This section is a plain reference. For what these metrics mean and how to use them, follow the concepts link at the end of each group.
+For what these metrics mean and how to use them, see [Metrics Concepts](/api-management/metrics/metrics-concepts). Where a group has its own concepts section, a link follows its table.
 
 ### Uptime
 
@@ -341,7 +256,7 @@ This section is a plain reference. For what these metrics mean and how to use th
 | `tyk.dashboard.gateways.loaded_apis` | Gauge | - | Number of APIs loaded on a registered gateway, by the same labels as the heartbeat. Only reported for gateways that send their counts. |
 | `tyk.dashboard.gateways.loaded_policies` | Gauge | - | Number of policies loaded on a registered gateway, by the same labels as the heartbeat. Only reported for gateways that send their counts. |
 
-Full label detail (node version, tags, address, process ID) depends on the connecting gateway sending node metadata headers. Older gateways report a limited label set until you upgrade them. See [Connectivity and Fleet Health](/api-management/metrics/control-plane-metrics-concepts#connectivity-and-fleet-health).
+Full label detail (node version, tags, address, process ID) depends on the connecting gateway sending node metadata headers. Older gateways report a limited label set until you upgrade them. See [Connectivity and Fleet Health](/api-management/metrics/metrics-concepts#connectivity-and-fleet-health).
 
 ### Management API
 
@@ -358,7 +273,7 @@ Full label detail (node version, tags, address, process ID) depends on the conne
 | `tyk.dashboard.license.gateways_used` | Gauge | count | Number of gateway connections currently in use against the license. Not reported until the first successful read. |
 | `tyk.dashboard.license.expiry_timestamp` | Gauge | unix timestamp (seconds) | Expiry time of the Tyk Dashboard license. 0 means the license could not be verified. |
 
-See [Expiry and Build Info](/api-management/metrics/control-plane-metrics-concepts#expiry-and-build-info).
+See [Expiry and Build Info](/api-management/metrics/metrics-concepts#expiry-and-build-info).
 
 ### Change Propagation
 
@@ -379,7 +294,7 @@ See [Expiry and Build Info](/api-management/metrics/control-plane-metrics-concep
 | `tyk.dashboard.datastore.pool.max` | Gauge | - | Configured maximum size of a datastore pool, by component, store, and pool. Not reported when `max_open_connections` is unset. |
 | `tyk.dashboard.datastore.pool.wait_duration` | Counter | s | Cumulative time that requests have waited for a datastore connection, by component, store, and pool. |
 
-See [Dependency and Pool Metrics](/api-management/metrics/control-plane-metrics-concepts#dependency-and-pool-metrics).
+See [Dependency and Pool Metrics](/api-management/metrics/metrics-concepts#dependency-and-pool-metrics).
 
 ### Self Health
 
@@ -389,7 +304,7 @@ See [Dependency and Pool Metrics](/api-management/metrics/control-plane-metrics-
 
 ### Go Runtime
 
-Same metric set as Tyk MDCB and the Tyk Gateway [Go Runtime Metrics](#go-runtime-metrics). See [Go Runtime Metrics](/api-management/metrics/control-plane-metrics-concepts#go-runtime-metrics) in the concepts page.
+Same metric set as Tyk MDCB and the Tyk Gateway [Go Runtime Metrics](#go-runtime-metrics). See [Go Runtime Metrics](/api-management/metrics/metrics-concepts#go-runtime-metrics) in the concepts page.
 
 ### Build Info and Exporter Health
 
@@ -426,7 +341,7 @@ Tyk Developer Portal exports metrics about provider sync with Tyk Dashboard and 
 
 <img src="/img/observability/grafana-portal-provider-sync.png" alt="Tyk Developer Portal example dashboard in Grafana showing provider sync status, Tyk Dashboard reachability, time since last successful sync, failed syncs by cause, syncs per hour, and sync duration" />
 
-This section is a plain reference. For what these metrics mean and how to use them, follow the concepts link at the end of each group.
+For what these metrics mean and how to use them, see [Metrics Concepts](/api-management/metrics/metrics-concepts). Where a group has its own concepts section, a link follows its table.
 
 ### Uptime
 
@@ -443,7 +358,7 @@ This section is a plain reference. For what these metrics mean and how to use th
 | `tyk.portal.provider.sync.duration` | Histogram | s | Duration of each provider sync attempt, by provider and result (`success` or `failure`). |
 | `tyk.portal.provider.reachable` | Gauge | - | Whether the portal reached its Tyk Dashboard provider on the last sync attempt: 1 reachable, 0 not. Stays at 1 on an internal (`db`) failure, because the provider did answer. |
 
-See [Provider Sync Health](/api-management/metrics/control-plane-metrics-concepts#provider-sync-health).
+See [Provider Sync Health](/api-management/metrics/metrics-concepts#provider-sync-health).
 
 ### Self Health
 
@@ -451,4 +366,4 @@ See [Provider Sync Health](/api-management/metrics/control-plane-metrics-concept
 |-------------|------|------|-------------|
 | `tyk.portal.health` | Gauge | - | Whether a portal dependency is healthy (1) or not (0), by component (`database`, `storage`) and store, which is the engine behind it (`sqlite3`, `mysql`, `postgres` for database; `fs`, `db`, `s3` for storage). |
 
-See [Dependency and Pool Metrics](/api-management/metrics/control-plane-metrics-concepts#dependency-and-pool-metrics).
+See [Dependency and Pool Metrics](/api-management/metrics/metrics-concepts#dependency-and-pool-metrics).

@@ -1,17 +1,31 @@
 ---
-title: "Control Plane Metrics Concepts"
+title: "Metrics Concepts"
 description: "What the Tyk Gateway, Tyk Dashboard, Tyk MDCB, and Tyk Developer Portal metrics mean and how they fit together, with guidance on how platform teams use them."
-keywords: "OpenTelemetry, Metrics, Control Plane, control_plane_id, Tyk Dashboard, Tyk MDCB, Tyk Developer Portal, Go Runtime, Connection Pools, Provider Sync, Certificate Expiry"
+keywords: "OpenTelemetry, Metrics, Tyk Gateway, Exemplars, Resource Attributes, RED Metrics, Control Plane, control_plane_id, Tyk Dashboard, Tyk MDCB, Tyk Developer Portal, Go Runtime, Connection Pools, Provider Sync, Certificate Expiry"
 sidebarTitle: "Metrics Concepts"
 ---
 
-This page explains what the Tyk Gateway, Tyk Dashboard, Tyk MDCB, and Tyk Developer Portal metrics mean and how they fit together. It covers metric families, Go runtime health, control plane identity, connectivity, dependency pressure, provider sync, and expiry.
+This page explains what the Tyk Gateway, Tyk Dashboard, Tyk MDCB, and Tyk Developer Portal metrics mean and how they fit together. It covers metric families, request and configuration metrics, Go runtime health, resource attributes, control plane identity, connectivity, dependency pressure, provider sync, expiry, and exemplars.
 
 For the metric tables, see [Default Metrics Reference](/api-management/metrics/default-metrics).
 
 ## Metric Groups and Families
 
 Each component groups its metrics into families, such as dependency health, fleet state, and expiry. Each family has its own on/off flag under `opentelemetry.metrics`. For the flags and their defaults, see [Metrics Configuration](/api-management/logs-metrics#control-plane-fields).
+
+## Request Metrics
+
+Tyk Gateway records three latency histograms for each request:
+
+- `http.server.request.duration` measures end-to-end latency, from the client to the gateway, to the upstream, and back.
+- `tyk.gateway.request.duration` measures the time spent inside the gateway only, such as middleware processing and routing.
+- `tyk.upstream.request.duration` measures the time spent waiting for the upstream service to respond.
+
+This three-way breakdown helps you tell gateway processing overhead apart from upstream service slowness. When end-to-end latency rises, check which of the other two histograms rose with it.
+
+## Configuration State Metrics
+
+Configuration state metrics reflect the operational state of the configuration that Tyk Gateway has loaded. Use them to detect silent configuration failures. For example, alert when the number of loaded APIs drops unexpectedly.
 
 ## Go Runtime Metrics
 
@@ -35,6 +49,49 @@ Keep these points in mind when you read them:
 - Heap memory that approaches the configured limit means that garbage collection will soon work harder to stay under it. This trades CPU for memory headroom.
 - A sudden step change right after a deployment tells you more than the absolute value. Compare values before and after a release, not against a fixed number.
 
+## Resource Attributes in Prometheus
+
+Every Tyk component attaches resource attributes to its metrics, such as `tyk.gw.id` on Tyk Gateway and `control_plane_id` on Tyk Dashboard and Tyk MDCB. For the full list, see [Resource Attributes](/api-management/metrics/default-metrics#resource-attributes).
+
+When using an OTel Collector to export to Prometheus, enable `resource_to_telemetry_conversion` to expose resource attributes as metric labels:
+
+```yaml
+exporters:
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    resource_to_telemetry_conversion:
+      enabled: true
+```
+
+Alternatively, add a transform processor to metrics pipeline for OTLP exporters:
+
+```yaml
+processors:
+  transform/tyk_gw_resource_attrs:
+    error_mode: ignore
+    metric_statements:
+      - context: datapoint
+        statements:
+          - set(attributes["tyk_gw_group_id"], resource.attributes["tyk.gw.group.id"]) where resource.attributes["tyk.gw.group.id"] != nil
+          - set(attributes["tyk_gw_id"], resource.attributes["tyk.gw.id"]) where resource.attributes["tyk.gw.id"] != nil
+          - set(attributes["tyk_gw_tags"], resource.attributes["tyk.gw.tags"]) where resource.attributes["tyk.gw.tags"] != nil
+          - set(attributes["tyk_gw_dataplane"], resource.attributes["tyk.gw.dataplane"]) where resource.attributes["tyk.gw.dataplane"] != nil
+```
+
+This allows PromQL queries such as:
+
+```promql
+# All metrics from a specific gateway node
+{tyk_gw_id="gw-prod-eu-west-1-a"}
+
+# Compare request rates across gateways in an edge group
+sum by (tyk_gw_id) (
+  rate(tyk_api_requests_total{tyk_gw_group_id="edge-eu-west"}[5m])
+)
+```
+
+Without this setting, resource attributes are available via the `target_info` metric and can be joined in PromQL.
+
 ## Control Plane Identity
 
 As with Tyk Gateway metrics, every metric that Tyk Dashboard and Tyk MDCB export carries resource attributes that are set once at process startup:
@@ -54,7 +111,7 @@ A pair that does not share Redis, and has no explicit `control_plane_id`, does n
 
 Tyk Developer Portal is the exception. It does not share Redis with Tyk Dashboard and Tyk MDCB, so it never gets a `control_plane_id`, generated or explicit. To correlate its metrics with the rest of the control plane, use `deployment.environment`. Set it to the same value on all three components for a deployment.
 
-If you export through an OTel Collector to Prometheus, enable `resource_to_telemetry_conversion` or add a transform processor, as for [Tyk Gateway resource attributes](/api-management/metrics/default-metrics#using-resource-attributes-in-prometheus). `control_plane_id` is then available as a label, not only in `target_info`.
+If you export through an OTel Collector to Prometheus, enable `resource_to_telemetry_conversion` or add a transform processor, as for [Tyk Gateway resource attributes](#resource-attributes-in-prometheus). `control_plane_id` is then available as a label, not only in `target_info`.
 
 ## Connectivity and Fleet Health
 
@@ -130,6 +187,52 @@ Exporter health answers a narrower question than dependency health. It tells you
 - A collector that is down
 
 If exporter health drops, treat every other metric from that instance as unreliable. Do not conclude that the dependencies have failed, because you may simply have stopped receiving fresh data.
+
+## Exemplars
+
+Exemplars are sample observations attached to histogram metric data points that carry the active trace context (specifically the `trace_id` and `span_id` of the request that produced the measurement). They create a direct, clickable link from an aggregated metric to the specific trace that caused an anomaly.
+
+### How They Work in Tyk
+
+When OpenTelemetry tracing is enabled and a histogram metric (such as `http.server.request.duration`) is recorded during an active sampled request, the OTel Go SDK automatically attaches the current trace and span IDs to the observation. Exemplars are only attached for sampled requests.
+
+### Infrastructure Requirements
+
+Exemplar storage and rendering must be enabled in your observability stack; nothing additional is needed on the Tyk side.
+
+For example, in the following standard OTel pipeline:
+
+```mermaid
+flowchart LR
+    GW["Tyk Gateway<br/>(active sampled span)"]
+    COL[OTel Collector]
+    PRO["Prometheus<br/>(exemplar storage)"]
+    GRA["Grafana<br/>(exemplars toggle)"]
+    TR["Trace in<br/>Tempo or Jaeger"]
+
+    GW -->|"OTLP/gRPC<br/>histogram + exemplar"| COL
+    COL -->|"histogram + exemplar"| PRO
+    PRO -->|"histogram + exemplar"| GRA
+    GRA -.->|"click exemplar marker"| TR
+```
+
+| Component | Requirement |
+|-----------|-------------|
+| OTel Collector | Any version supporting OTLP metrics with exemplar passthrough |
+| Prometheus | v2.26+. Start with `--enable-feature=exemplar-storage` |
+| Grafana | v7.4+. Enable "Exemplars" toggle on the Prometheus data source |
+
+### Querying Exemplars in Prometheus
+
+Exemplars are accessible via the Prometheus exemplar API:
+
+```
+GET /api/v1/query_exemplars?query=http_server_request_duration_seconds&start=<start>&end=<end>
+```
+
+### Grafana Workflow
+
+When exemplar rendering is enabled, Grafana displays scatter plot markers on histogram panels. Clicking a marker navigates directly to the linked trace in your configured tracing backend (Jaeger, Grafana Tempo, etc.), with no manual trace ID lookup required.
 
 ## How Platform Teams Use These Metrics
 
