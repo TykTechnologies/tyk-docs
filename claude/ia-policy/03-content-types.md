@@ -1,6 +1,6 @@
 # 3. Content Types
 
-Tyk uses the four Diátaxis types plus five extensions. Every page declares exactly one in `type:` frontmatter (see [7. Frontmatter Schema](07-frontmatter-schema.md)).
+Tyk uses the four Diátaxis types plus five extensions. New pages should declare exactly one in `type:` frontmatter (see [7. Frontmatter Schema](07-frontmatter-schema.md)).
 
 ## 3.1 Core Four
 
@@ -34,13 +34,13 @@ If a draft resists classification, it is almost always two pages. Split it.
 | `glossary` | Terms and definitions | One per docset, not per product |
 | `migration` | Moving from X to Y, one-way, time-bounded | Has an expiry review date |
 
-No other values are permitted. Adding a type requires an IA decision record (see the placement procedure's escalation step in [5. Placement Decision Procedure](05-placement-procedure.md)).
+Prefer these values. To add a type, raise it for an IA decision (see the placement procedure's escalation step in [5. Placement Decision Procedure](05-placement-procedure.md)).
 
 ## 3.3 The Landing Page Rule
 
 In Mintlify, the first page in a group is that group's landing page. Pages such as `api-management/observability` and `api-management/rate-limit` have historically served as both explanation and front door, which are different jobs.
 
-**Rule** — Every group with three or more children has a `type: landing` first page containing, in order:
+**Rule** — A group with three or more children should have a `type: landing` first page. The landing page contains, in order:
 
 1. One or two sentences: what this area is and the problem it solves
 2. Who this area is for
@@ -58,7 +58,7 @@ Adopted from GitLab, which has the most battle-tested public version of this:
 - Troubleshooting reference entries use a fixed shape: *symptom or error message* → *why this happens* → *workaround* (temporary) or *resolution* (permanent)
 - Error-message titles include at least a partial message, under 70 characters
 
-**FAQ pages are being retired.** Existing FAQ content is reclassified as `troubleshooting`, `concept`, or `reference` on next touch. No new FAQ pages. `frequently-asked-questions/*` is a frozen namespace (see [6.2 Frozen Namespaces](06-paths-and-naming.md#62-frozen-namespaces)).
+**FAQ pages are being retired.** When you edit FAQ content, consider moving it to `troubleshooting`, `concept`, or `reference`. Do not add new FAQ pages. `frequently-asked-questions/*` is a frozen namespace (see [6.2 Frozen Namespaces](06-paths-and-naming.md#62-frozen-namespaces)).
 
 ## 3.5 The Layer Model
 
@@ -80,14 +80,14 @@ Two axes, deliberately inverted:
 
 ### Rules
 
-**L1 — Canonical facts live at the lowest layer that can own them.** A parameter name, default value, type, or limit is stated once, in reference. A how-to that hardcodes `default: 60s` is a defect, not a convenience: it will silently go stale on the next minor release. Higher layers name the setting and link to it.
+**L1 — Canonical facts live at the lowest layer that can own them.** A parameter name, default value, type, or limit is stated once, in reference. Avoid hardcoding values such as `default: 60s` in a how-to. The value can become incorrect after the next minor release. Higher layers name the setting and link to it.
 
 **L2 — Link down freely, link up sparingly.** Concepts and how-tos link into reference wherever a fact is needed. Reference links upward only from a `Related` block at the end — never mid-table. A reference page's job is to be scanned, not to send the reader elsewhere.
 
-**L3 — No orphan layers.** Reference with no concept above it is undiscoverable. A concept with no reference below it is unfalsifiable. A how-to with no concept behind it teaches cargo-cult configuration. Each is a gap worth an issue.
+**L3 — No orphan layers.** Reference with no concept above it is undiscoverable. A concept with no reference below it is unfalsifiable. A how-to with no concept behind it teaches cargo-cult configuration. Each is a gap to track as an improvement.
 
-**L4 — Change propagates upward.** A change to an L0 page flags every page that links to it for review in the same PR. A change to an L2 page propagates nowhere. This makes blast radius visible and is the strongest argument for keeping facts at L0.
+**L4 — Change propagates upward.** When you change an L0 page, check the pages that link to it. Update them in the same PR where possible. A change to an L2 page propagates nowhere. This makes blast radius visible and is the strongest argument for keeping facts at L0.
 
-**L5 — Generate L0 wherever the source allows.** Hand-written reference is a liability with a half-life. Tyk already generates the API reference from OpenAPI in `docs.json`; the same should apply to Gateway and Dashboard configuration, Pump and MDCB environment variables, and Operator CRDs. Anything hand-maintained at L0 needs a named owner (Andy) and the shortest review interval.
+**L5 — Generate L0 wherever the source allows.** Hand-written reference is a liability with a half-life. Tyk already generates the API reference from OpenAPI in `docs.json`; the same should apply to Gateway and Dashboard configuration, Pump and MDCB environment variables, and Operator CRDs. Hand-maintained L0 content should have a named owner and the shortest review interval.
 
 Previous: [2. Principles](02-principles.md) · Next: [4. Navigation](04-navigation.md)

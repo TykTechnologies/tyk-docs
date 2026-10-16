@@ -1,20 +1,20 @@
 # 5. The Placement Decision Procedure
 
-Run this in order. Stop at the first step that resolves.
+Use these steps as a guide when you place new content. Work through them in order. If a step does not fit the content, use your judgement and continue.
 
 **Step 1 — Is this product documentation?** No → *Support & releases* (contributing, release policy, support) and stop. Yes → continue.
 
-**Step 2 — Classify the type.** Apply the compass in [3.1 Core Four](03-content-types.md#31-core-four). Record the answer; it becomes `type:` frontmatter. If the draft contains two types, split it into two pages now. Do not proceed with a mixed page.
+**Step 2 — Classify the type.** Apply the compass in [3.1 Core Four](03-content-types.md#31-core-four). Record the answer; it becomes `type:` frontmatter. If the draft contains two types, consider splitting it into two pages.
 
-**Step 3 — Identify the tab, then the group.** First ask *what is the reader operating on?* — their APIs, Tyk itself, their API consumers, AI traffic, or getting unstuck. Then, within the tab, place by journey stage.
+**Step 3 — Identify the tab, then the group.** First ask *what is the reader operating on?* — their APIs, Tyk itself, their API consumers, or AI traffic. Troubleshooting content goes in the tab of the feature it troubleshoots. Then, within the tab, place by journey stage.
 
 Tie-breakers, in order:
 
-1. Configuring a Tyk component is *Platform Operations*. Configuring behaviour that an API exhibits is *API Management* — even when the setting lives in the Dashboard.
+1. Configuring a Tyk component is *Platform Management*. Configuring behaviour that an API exhibits is *API Management* — even when the setting lives in the Dashboard.
 2. If two groups within a tab fit, choose the **earlier** stage in the lifecycle and cross-link from the later one.
 3. If the content is meaningful only to someone already deep in another group, it belongs to that group.
-4. If it is a concept applying across products, it stays in one place with badges (see [4.5 Products as Badges, Not Places](04-navigation.md#45-products-as-badges-not-places)). It is never duplicated per product.
-5. If unresolved, raise in `#docs` for a review decision and record it.
+4. If it is a concept applying across products, it stays in one place with badges (see [4.5 Products as Badges, Not Places](04-navigation.md#45-products-as-badges-not-places)). Do not duplicate it per product.
+5. If unresolved, raise it in `#team-ext-documentation` for a review decision and record it.
 
 **Step 4 — New page, or a section on an existing page?**
 
