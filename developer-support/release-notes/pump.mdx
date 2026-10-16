@@ -23,9 +23,15 @@ Only the most recent Tyk Pump release is supported. We recommend staying current
 
 #### Release Highlights
 
-This release fixes database deadlocks that could cause aggregated analytics to be lost when running several SQL Pump instances against PostgreSQL. It also adds connection pool controls for PostgreSQL, so idle connections can be released instead of being held indefinitely, and an option to include analytics record tags in the Syslog pump output.
+This release adds controls for the PostgreSQL connection pools that Tyk Pump uses, and an option to include analytics record tags in the Syslog Pump output.
 
-This release also addresses several CVEs in dependent libraries.
+**PostgreSQL Connection Pool Controls**
+
+Four new options let you limit the size and lifetime of each PostgreSQL connection pool, so Tyk Pump can release idle connections instead of holding them indefinitely. This helps in blue/green deployments, where an idle Pump can otherwise hold connections that the active Pump needs.
+
+**Tags in Syslog Pump Output**
+
+The new `include_tags` option adds the `tags` field of each analytics record to the Syslog Pump output. The option is disabled by default.
 
 For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-v1.18.0).
 
@@ -53,9 +59,9 @@ There are no deprecations in this release.
 
 #### Upgrade instructions
 
-For users currently on v1.16.0, we strongly recommend promptly upgrading to the latest release.
+For users currently on v1.17.0, we strongly recommend promptly upgrading to the latest release.
 
-Go to the [Upgrading Tyk](#upgrading-tyk) section for detailed upgrade Instructions.
+Go to the [Upgrading Tyk](#upgrading-tyk) section for detailed upgrade instructions.
 
 #### Downloads
 - [Docker Image v1.18.0](https://hub.docker.com/r/tykio/tyk-pump-docker-pub/tags?page=&page_size=&ordering=&name=v1.18.0)
@@ -75,20 +81,23 @@ Go to the [Upgrading Tyk](#upgrading-tyk) section for detailed upgrade Instructi
 <Accordion title='Added PostgreSQL connection pool controls'>
 {/* TT-17916 */}
 Tyk Pump now lets you control its PostgreSQL connection pools, so idle connections can be released instead of being held indefinitely. This is particularly useful for blue/green deployments, where an idle Pump could otherwise hold connections needed by the active one.
-Four new options, matching those already available in Tyk Dashboard and MDCB, are available for PostgreSQL [TO CONFIRM exact location and key format in the Pump configuration]:
- 
-- `max_open_connections`: maximum number of open connections per pool.
-- `max_idle_connections`: maximum number of idle connections per pool.
-- `connection_max_lifetime`: maximum time a connection can be reused, as a duration (for example, `10s`).
-- `connection_max_idle_time`: maximum time a connection can stay idle before it is closed, as a duration.
-Pump keeps a separate connection pool for each configured SQL pump (and for the uptime pump), and the limits apply to each pool. When these options are not set, connection handling is unchanged.
+
+Four new options, matching those already available in Tyk Dashboard and MDCB, are available in the `postgres` section of each SQL Pump's `meta` configuration (for example, `pumps.sql.meta.postgres.max_open_connections`) and of `uptime_pump_config`:
+
+- `max_open_connections`: maximum number of open connections per pool. The default `0` means unlimited.
+- `max_idle_connections`: maximum number of idle connections per pool. The default `0` keeps the Go default of 2.
+- `connection_max_lifetime`: maximum time a connection can be reused, as a duration (for example, `30m`). By default, connections are reused indefinitely.
+- `connection_max_idle_time`: maximum time a connection can stay idle before it is closed, as a duration (for example, `5m`). By default, idle connections are not closed.
+
+Pump keeps a separate connection pool for each configured SQL Pump and for the Uptime Pump. The limits apply to each pool. When these options are not set, connection handling is unchanged. If a value is negative or is not a valid duration, the affected pump fails to initialize and Pump logs an error.
 </Accordion>
- 
-<Accordion title='Added the option to include tags in Syslog pump output'>
+
+<Accordion title='Added the option to include tags in Syslog Pump output'>
 {/* TT-17479 */}
-The Syslog pump can now include the `tags` field of each analytics record, in the same way as the Elasticsearch, Kafka, Kinesis and other pumps. Enable it with the new `include_tags` option in the Syslog pump's `meta` configuration, or with the `TYK_PMP_PUMPS_SYSLOG_META_INCLUDETAGS` environment variable.
+The Syslog Pump can now include the `tags` field of each analytics record, in the same way as the Elasticsearch, Kafka, Kinesis and other pumps. Enable it with the new `include_tags` option in the Syslog Pump's `meta` configuration, or with the `TYK_PMP_PUMPS_SYSLOG_META_INCLUDETAGS` environment variable.
+
 The option is disabled by default, so existing Syslog output is unchanged unless you turn it on. Tags are escaped so each record stays on a single line.
- 
+
 Records with many tags can exceed the size limit of the default UDP transport, which can cause some syslog servers to truncate them. Pump logs a warning when `include_tags` is enabled with UDP. If you use many tags, we recommend the `tcp` transport.
 </Accordion>
 
@@ -98,10 +107,11 @@ Records with many tags can exceed the size limit of the default UDP transport, w
 
 <AccordionGroup>
 
-<Accordion title='Fixed database deadlocks causing lost analytics with multiple SQL Pump instances'>
+<Accordion title='Fixed lost aggregated analytics from PostgreSQL deadlocks with multiple Pump instances'>
 {/* TT-9424 */}
-We've resolved an issue where running two or more Pump instances that write analytics to PostgreSQL could cause database deadlocks on the aggregated analytics tables. Each deadlock caused that cycle's aggregated analytics to be lost, with a `deadlock detected (SQLSTATE 40P01)` error in the logs.
-Pump instances now write aggregated analytics in a consistent order, so they no longer deadlock and can keep writing in parallel. The fix applies to the SQL aggregate, GraphQL aggregate, MCP aggregate and uptime pumps, including date-sharded tables. If you reduced Pump to a single instance, or adjusted `batch_size` or `purge_delay`, to work around this issue, you can now revert those changes.
+Running two or more Pump instances that write analytics to PostgreSQL could cause database deadlocks on the aggregated analytics tables. Each deadlock caused that cycle's aggregated analytics to be lost, with a `deadlock detected (SQLSTATE 40P01)` error in the logs.
+
+Pump instances now write aggregated analytics in a consistent order, so they no longer deadlock and can keep writing in parallel. The fix applies to the SQL Aggregate, GraphQL SQL Aggregate, MCP SQL Aggregate and Uptime Pumps, including date-sharded tables. If you reduced Pump to a single instance, or adjusted `batch_size` or `purge_delay`, to work around this issue, you can now revert those changes.
 </Accordion>
 
 </AccordionGroup>
