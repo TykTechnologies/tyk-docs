@@ -69,12 +69,12 @@ Two axes, deliberately inverted:
 - **Build order (what depends on what):** Reference → Concept → How-to
 - **Read order (where readers arrive):** How-to / Tutorial → Concept → Reference
 
-| Layer | Type | Grounded in | Owns | Review interval |
-| :---- | :---- | :---- | :---- | :---- |
-| **L0** | `reference` | The product itself — config structs, OAS specs, CRD schemas | Every parameter name, default, type, constraint, endpoint, error code | 90 days, or on spec change |
-| **L1** | `concept` | L0 | Why the thing exists, how the pieces relate, trade-offs and limits | 180 days |
-| **L2** | `how-to` | L1 and L0 | A goal-directed path through the machinery | 90 days |
-| **—** | `tutorial` | L0 only | A guaranteed first success | 90 days |
+| Layer | Type | Grounded in | Owns |
+| :---- | :---- | :---- | :---- |
+| **L0** | `reference` | The product itself — config structs, OAS specs, CRD schemas | Every parameter name, default, type, constraint, endpoint, error code |
+| **L1** | `concept` | L0 | Why the thing exists, how the pieces relate, trade-offs and limits |
+| **L2** | `how-to` | L1 and L0 | A goal-directed path through the machinery |
+| **—** | `tutorial` | L0 only | A guaranteed first success |
 
 **Tutorials sit beside the stack, not on top of it.** A tutorial must be followable with no prior reading. It depends on reference for accuracy, but it must never *require* the reader to have absorbed a concept first — the moment it does, it has become a how-to. This is the one place where our layer model and orthodox Diátaxis could be read as disagreeing, and Diátaxis is right: tutorials deliberately withhold explanation.
 
@@ -88,6 +88,6 @@ Two axes, deliberately inverted:
 
 **L4 — Change propagates upward.** When you change an L0 page, check the pages that link to it. Update them in the same PR where possible. A change to an L2 page propagates nowhere. This makes blast radius visible and is the strongest argument for keeping facts at L0.
 
-**L5 — Generate L0 wherever the source allows.** Hand-written reference is a liability with a half-life. Tyk already generates the API reference from OpenAPI in `docs.json`; the same should apply to Gateway and Dashboard configuration, Pump and MDCB environment variables, and Operator CRDs. Hand-maintained L0 content should have a named owner and the shortest review interval.
+**L5 — Generate L0 wherever the source allows.** Hand-written reference is a liability with a half-life. Tyk already generates the API reference from OpenAPI in `docs.json`; the same should apply to Gateway and Dashboard configuration, Pump and MDCB environment variables, and Operator CRDs. Hand-maintained L0 content should have a named owner.
 
 Previous: [2. Principles](02-principles.md) · Next: [4. Navigation](04-navigation.md)
