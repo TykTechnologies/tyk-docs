@@ -14,6 +14,147 @@ Only the most recent Tyk Operator release is supported. We recommend staying cur
 
 ---
 
+## 1.6 Release Notes
+
+### 1.6.0 Release Notes
+
+#### Release Date xx October 2026
+
+#### Release Highlights
+
+This release introduces initial support for the Kubernetes Gateway API, and adds support for the Conditional Granular Access Control and DNS discovery features introduced in Tyk 5.16.0.
+
+**Kubernetes Gateway API support**
+
+Platform teams can manage Tyk with the standard `GatewayClass`, `Gateway` and `HTTPRoute` resources instead of, or alongside, Tyk-specific custom resources. Tyk Operator turns each `HTTPRoute` into Tyk OAS APIs on your existing Tyk Data Plane, with support for hostname routing, path matching, header and URL rewrite filters, redirects and TLS.
+
+Teams can add the full power of Tyk to a route by attaching a `TykOasApiDefinition` to it, for authentication, request validation, rate limiting, plugins and more, while the route keeps control of routing. `SecurityPolicy` resources can grant access to an `HTTPRoute` directly, so you never need to handle the underlying Tyk API IDs.
+
+Gateway API support is opt-in and disabled by default.
+
+**Conditional Granular Access Control and DNS discovery**
+
+`SecurityPolicy` and `TykSession` resources can declare access conditions, supporting the Conditional Granular Access Control introduced in Tyk Gateway and Tyk Dashboard 5.16.0. Tyk Classic `ApiDefinition` resources support the new DNS discovery configuration for load balancing gRPC upstreams.
+
+For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-v1.6.0) below.
+
+#### Breaking Changes
+This release has no breaking changes.
+
+#### Dependencies
+##### 3rd Party Dependencies & Tools
+
+| Third Party Dependency                                     | Tested Versions        | Compatible Versions    | Comments | 
+| :--------------------------------------------------------- | :--------------------- | :--------------------- | :------- | 
+| [Kubernetes](https://kubernetes.io)                        | 1.30.x to 1.36.x       | 1.28.x to 1.36.x       |          | 
+
+Given the time difference between your upgrade and the release of this version, we recommend customers verify the ongoing support of third-party dependencies they install, as their status may have changed since the release.
+
+#### Deprecations
+There are no deprecations in this release.
+
+#### Upgrade instructions
+
+Go to the [Upgrading Tyk Operator](/tyk-stack/tyk-operator/installing-tyk-operator) section for detailed upgrade instructions.
+
+
+#### Downloads
+- [Docker image v1.6.0](https://hub.docker.com/r/tykio/tyk-operator/tags?page=&page_size=&ordering=&name=v1.6.0)
+  - ```bash
+    docker pull tykio/tyk-operator:v1.6.0
+    ```
+- Helm chart
+  - [Tyk Charts 5.5.0](/developer-support/release-notes/helm-chart#5-5-release-notes)
+
+#### Changelog
+<a id="Changelog-v1.6.0" data-scroll-offset></a>
+
+##### Added
+
+<AccordionGroup>
+
+<Accordion title='Added initial support for the Kubernetes Gateway API'>
+{/* TT-16556, TT-18168, TT-18169, TT-18170, TT-18172, TT-18174, TT-18175, TT-18177, TT-18178, TT-18309, TT-18392, TT-18529 */}
+Tyk Operator can act as a Kubernetes Gateway API controller, so you can manage Tyk using the standard `GatewayClass`, `Gateway` and `HTTPRoute` resources. This first release covers HTTP routing.
+
+**How it works**
+
+- **GatewayClass:** Tyk Operator claims `GatewayClass` resources that name its controller, and uses an `OperatorContext` referenced from the class to connect to your Tyk Dashboard.
+- **Gateway:** a `Gateway` describes an existing Tyk Data Plane. Tyk Operator does not deploy Gateways for you. New `OperatorContext` fields describe the Data Plane: `dataPlane.serviceRef` (the Kubernetes Service in front of your Tyk Gateways), `dataPlane.tags` (segment tags added to every API created from a route), and `addresses` and `listeners` for when the Service doesn't expose them. Listener ports and TLS certificates are validated, including cross-namespace certificate references through `ReferenceGrant`.
+- **HTTPRoute:** each `HTTPRoute` is turned into Tyk OAS APIs, one for each distinct path, hostname and parent `Gateway`, so routes with several methods or matches on the same path are served correctly. When a route is deleted, the APIs created from it are removed too.
+
+**Supported routing features**
+
+- Hostname routing, including wildcard hostnames such as `*.example.com`.
+- Request and response header modification, URL rewrites (`ReplacePrefixMatch` and `ReplaceFullPath`) and fixed redirects.
+- Backend `Service` references, including cross-namespace references through `ReferenceGrant`. Routes whose backend can't be resolved return `HTTP 500 Internal Server Error`, as the Gateway API specification requires.
+
+Features that aren't supported yet are rejected rather than silently ignored: the route reports `Accepted=False` with the `UnsupportedValue` reason and names the field, and all problems are reported in a single pass. Routes that would conflict on the Data Plane, for example two `Gateway` resources sharing one Data Plane, are also refused with a clear condition.
+
+**Adding Tyk configuration to a route**
+
+A `TykOasApiDefinition` can be attached to an `HTTPRoute` (or a `Gateway`) using the new `spec.targetRefs` field. The attached Tyk OAS API definition is used as the base for the APIs created from the route, so teams can add anything Tyk OAS supports, such as authentication, request validation, rate limits, caching and plugins, while the route keeps control of routing. When both set the same setting, the route takes precedence and the status names each field it overrode. `tykOAS.configmapRef` is optional when `targetRefs` is set.
+
+**Access control for routes**
+
+`SecurityPolicy` resources can grant access to an `HTTPRoute` directly, using `kind: HTTPRoute` in `access_rights_array`. Tyk Operator resolves the route to every API created from it, so the Policy covers all of its paths and hostnames without you handling Tyk API IDs.
+
+**Enabling Gateway API support**
+
+Gateway API support is disabled by default. To enable it, install the Kubernetes Gateway API CRDs in your cluster, then set `enableGatewayAPI: true` in the Tyk Operator Helm chart values. This passes the `--enable-gateway-api` flag to Tyk Operator.
+</Accordion>
+
+<Accordion title='Added support for Conditional Granular Access Control'>
+{/* TT-18301 */}
+Tyk Operator now supports the access conditions introduced with Conditional Granular Access Control in Tyk Gateway and Tyk Dashboard 5.16.0. Path-based permissions (`allowed_urls`) in `SecurityPolicy` and `TykSession` resources can include a `conditions` block, which is sent to the Dashboard intact and enforced by the Gateway. Previously, Kubernetes removed this field when the manifest was applied.
+
+As part of this change, path and method restrictions declared on `TykSession` resources are now applied as declared. Policies and Sessions without conditions behave as before.
+</Accordion>
+
+<Accordion title='Added support for DNS discovery in Tyk Classic API definitions'>
+{/* TT-18446 */}
+The `ApiDefinition` resource now supports the DNS discovery configuration introduced in Tyk Gateway 5.16.0 for load balancing gRPC upstreams, under `proxy.dns_discovery`. Previously, Kubernetes removed this field when the manifest was applied.
+
+The validating webhook rejects invalid configurations when you apply them: DNS discovery requires `proxy.enable_load_balancing` to be enabled, and cannot be used together with service discovery. For Tyk OAS APIs, DNS discovery is configured in the Tyk OAS API definition as usual (`x-tyk-api-gateway.upstream.dnsDiscovery`), with no change needed in Tyk Operator.
+</Accordion>
+
+</AccordionGroup>
+
+
+##### Fixed
+
+<AccordionGroup>
+
+<Accordion title='Fixed resources stuck in Terminating when deleted in an unexpected order'>
+{/* TT-17720 */}
+We've resolved an issue where `SecurityPolicy`, `TykOasApiDefinition` and related resources could stay in `Terminating` indefinitely, requiring manual cleanup on the cluster. This could happen when a Policy was deleted after the API it protected was already gone, when a Policy that was never created in Tyk was deleted, or when an API was still linked to a Policy that no longer existed.
+
+These deletions now complete normally. Tyk Operator still prevents deleting an API while a Policy that actually exists protects it. The fix applies to Tyk OAS, Tyk Streams and MCP Proxy resources.
+</Accordion>
+
+</AccordionGroup>
+
+##### Security Fixes
+
+<AccordionGroup>
+
+<Accordion title='Resolved CVEs'>
+Addressed CVEs reported in dependent libraries, providing increased protection against security vulnerabilities, including, but not limited to:
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-56855" target="_blank">CVE-2026-56855</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78662" target="_blank">CVE-2026-78662</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-84445" target="_blank">CVE-2026-84445</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-56866" target="_blank">CVE-2026-56866</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78659" target="_blank">CVE-2026-78659</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78660" target="_blank">CVE-2026-78660</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78667" target="_blank">CVE-2026-78667</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78669" target="_blank">CVE-2026-78669</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-94439" target="_blank">CVE-2026-94439</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-94440" target="_blank">CVE-2026-94440</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-97031" target="_blank">CVE-2026-97031</a>
+</Accordion>
+
+</AccordionGroup>
+
 ## 1.5 Release Notes
 
 ### 1.5.0 Release Notes
