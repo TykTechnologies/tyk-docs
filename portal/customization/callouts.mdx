@@ -8,11 +8,11 @@ Callouts let you connect custom Pages in your Developer Portal to external servi
 
 You configure the service URL, request method and authentication in the Admin Portal, then assign the Callout to a Page. In the Page's template, you provide the form or JavaScript that sends the request and handles the response.
 
-Your Page's code sends Callout requests through the user's browser. Tyk Developer Portal checks the user's session, calls the configured service and returns the result. Service credentials stay on the Portal server rather than being included in the browser code. The external service is the Callout's *target*.
+Your Page's code sends Callout requests through the user's browser. Tyk Developer Portal checks the user's session, calls the configured service and returns the result. Service credentials stay on the Portal server. The browser never receives them. The external service is the Callout's *target*.
 
-## How Callouts work
+## How Callouts Work
 
-### Configure the integration
+### Configure the Integration
 
 You configure three parts that work together:
 
@@ -22,12 +22,12 @@ You configure three parts that work together:
 
 Selecting a Callout does not create the user interface or request-handling code. The [Submit a form with a Callout](/portal/how-to-guides/submit-form-with-callout) guide walks you through building a support form as one example.
 
-### Request journey
+### Request Journey
 
 Your Page's form or JavaScript sends a `POST` request to the Callout endpoint using the Portal user's session. The Callout's **Method** setting controls the separate request that Portal sends to the target: `POST`, `PUT` or `PATCH`.
 
 <Info>
-Callouts do not currently support `GET` requests to target services. If your integration requires `GET`, [share your use case with us](https://tyk.io/contact/). This helps us understand customer needs and assess whether and when to add GET support to our roadmap.
+Callouts do not support `GET` requests to target services.
 </Info>
 
 {/* Diagram purpose: distinguish the browser request from the outbound request.
@@ -52,11 +52,11 @@ sequenceDiagram
 
 Tyk Developer Portal puts the request data inside a JSON object called an *envelope*. Its `payload` field contains the request data. If **Include user identity** is selected, an `actor` field also contains the authenticated user's Portal identifier and email address. See the [request format](#request-format) for examples.
 
-A target can accept this envelope directly. If it expects a different format, use an intermediate API to transform the request, for example on Tyk Gateway. Tyk Gateway is optional, not a required part of a Callout integration.
+A target can accept this envelope directly. If it expects a different format, use an intermediate API to transform the request, for example on Tyk Gateway. You don't need Tyk Gateway to use Callouts.
 
 Portal returns the result to the browser, where your Page's code decides how to display or use it. Unlike [webhooks](/portal/customization/webhooks), Callouts do not subscribe to Portal events or deliver requests asynchronously. They do not queue retries or prevent repeated requests from creating duplicate records.
 
-### Portal user access
+### Portal User Access
 
 Callout requests require an active, authenticated Portal user. A Page can be publicly visible, but anonymous visitors cannot invoke its Callout.
 
@@ -64,7 +64,7 @@ Cross-site request forgery (CSRF) protection must also remain enabled. It checks
 
 Any active, authenticated Portal user can invoke an enabled Callout if they know its endpoint URL. Hiding a form or other Page controls does not restrict access to the endpoint. Enforce any additional authorization at the target service.
 
-## Check destination requirements
+## Check Destination Requirements
 
 By default, destinations must use HTTPS and public IPv4 addresses on ports 80 or 443. HTTP is disabled by default, but you can enable it in the [Portal configuration](/product-stack/tyk-enterprise-developer-portal/deploy/configuration#tyk_portal_callouts_allowhttp).
 
@@ -87,7 +87,9 @@ For internal destinations, custom ports, host restrictions or capacity limits, s
 
 For new Callouts, **Enabled** and **Include user identity** are not selected by default. The default timeout is 5 seconds; valid values are 1 through 10 seconds. This timeout covers OAuth token acquisition, if needed, and the target request, including its response body.
 
-### Target authentication
+You can also manage Callouts with the [Portal Management API](/product-stack/tyk-enterprise-developer-portal/api-documentation/tyk-edp-api) at `/portal-api/callouts`. The API never returns saved credentials.
+
+### Target Authentication
 
 Choose how Tyk Developer Portal authenticates with the target. This is separate from how your Portal users sign in.
 
@@ -101,13 +103,21 @@ For OAuth, the token endpoint must support the client credentials grant and clie
 
 Callout credentials are separate from the access credentials issued to API Consumers through API Products and Plans. Do not put target credentials in the Page template, browser JavaScript or URL. Headers managed by Tyk Developer Portal, including `Content-Type`, `Host` and `X-Callout-Request-ID`, cannot be used as the static authentication header.
 
-### Include user identity
+### Credential Storage
+
+Tyk Developer Portal stores the **Header value** and **Client secret** in its database in a recoverable form. It doesn't encrypt them separately. Anyone who can read the Portal database can read these credentials. Restrict access to the database, and give each Callout credential only the access that the integration needs.
+
+When you delete a Callout, its database record stays, including its credentials. To remove the credentials from the database, select **None** for **Authentication** and save the Callout before you delete it.
+
+Keep database query logging disabled. [`PORTAL_DATABASE_ENABLELOGS`](/product-stack/tyk-enterprise-developer-portal/deploy/configuration#portal_database_enablelogs) is `false` by default. The query log doesn't hide Callout credentials.
+
+### Include User Identity
 
 Select **Include user identity** only if the target needs the authenticated user's Portal identifier (CID) and email address. This adds both values to the envelope's `actor` object; deselecting it omits the entire object. Tyk Developer Portal supplies these values from the authenticated user, not from the request payload.
 
 This setting controls identity sent to the target. It does not remove the user CID from the Portal's execution logs. A separate request ID lets you [trace the request](#trace-a-request) with either setting.
 
-### TLS certificates
+### TLS Certificates
 
 For HTTPS connections, Tyk Developer Portal checks the target's TLS certificate to verify the server's identity.
 
@@ -119,7 +129,7 @@ This option requires the target URL or the OAuth token URL for the selected auth
 Disabling certificate verification can expose credentials and request data to an intercepted connection. Use a certificate that Tyk Developer Portal trusts instead wherever possible.
 </Warning>
 
-## Test the connection
+## Test the Connection
 
 **Test connection** checks whether the Portal server can reach the target using the current settings in the Callout editor. It sends an `OPTIONS` request using the selected authentication method, destination policy and TLS setting, but sends no request payload and does not save the settings.
 
@@ -129,15 +139,20 @@ For OAuth, the probe obtains a token for the current settings. Changing a destin
 
 If the test fails, use the message to identify what to check. Where known, the message names the failed service: the target or the OAuth token endpoint.
 
-| Reported problem | What to check |
+A successful test shows **Connected to target.**
+
+| Message | What to check |
 | :--- | :--- |
-| Certificate verification failed | Check the certificate's validity, hostname and trust chain for the service named in the message. |
-| Could not connect | Check the URL, DNS resolution and network access from the Portal server to the service named in the message. |
-| Token endpoint rejected authentication | Check the client ID, client secret and the token service's client-authentication requirements. |
-| Token request failed | Check the token service and any HTTP status shown. This does not necessarily mean the credentials are wrong. |
-| Request timed out | Check response times for the target and, if used, the token service. The timeout covers both requests. |
-| Target does not accept OPTIONS | The target returned `405` or `501` to the test. Test a normal Callout request; the configured method may still work. |
-| Redirect blocked | Configure the destination URL directly. Callouts do not follow redirects. |
+| `Could not test connection. Review the settings and try again.` | A setting isn't valid. Check the URL scheme, host, port and IP address against the [Callouts settings](/product-stack/tyk-enterprise-developer-portal/deploy/configuration#callouts-settings), the timeout, and whether you need to re-enter a credential. |
+| `The connection is blocked by Callout network settings.` | The hostname resolves to an address or port that the Callouts settings block, such as a private address. |
+| `Could not verify the TLS certificate for the target.` (or `for the token endpoint.`) | Check the certificate's validity, hostname and trust chain. |
+| `Could not connect to the target.` (or `to the token endpoint.`) | Check the URL, DNS resolution and network access from the Portal server. |
+| `The token endpoint rejected authentication. Check the authentication settings.` | Check the client ID, client secret and whether the token service accepts HTTP Basic client authentication. |
+| `The token request failed (HTTP NNN).` | Check the token service. This doesn't necessarily mean the credentials are wrong. |
+| `The token request timed out.` or `The connection test timed out.` | Check response times for the token service and the target. The timeout covers both requests. |
+| `The target does not accept OPTIONS. The configured request method may still work.` | The target returned `405` or `501`. Test a normal Callout request. |
+| `The target returned HTTP NNN to the OPTIONS connection test. The configured request method may still work.` | The target rejected the test request. Test a normal Callout request. |
+| `The target redirected the request. Redirects are not allowed.` (or `The token endpoint redirected…`) | Configure the final destination URL directly. |
 
 Unrecognized failures receive a generic message. For more detail, use the response's `X-Callout-Request-ID` header to [find the attempt in the application logs](#trace-a-request).
 
@@ -145,11 +160,11 @@ Unrecognized failures receive a generic message. For more detail, use the respon
 
 Open a Page under **Customise > Pages**, select its **Callout**, and save it.
 
-For a usable, enabled Callout, this selection gives the Page template an endpoint URL through the `.calloutAction` value. The form or JavaScript uses that URL to send data to Tyk Developer Portal, not directly to the target.
+When a Page has an enabled Callout selected, the Page template gets an endpoint URL through the `.calloutAction` value. Tyk Developer Portal doesn't check the destination of the Callout when it renders the Page. If the destination is no longer allowed, for example after a change to the Callouts settings, requests return `503`. The form or JavaScript uses that URL to send data to Tyk Developer Portal, not directly to the target.
 
 Selecting a Callout does not add a form or a sample Page to your theme. Follow the [Submit a form with a Callout](/portal/how-to-guides/submit-form-with-callout) guide for a working template and JavaScript example.
 
-## Edit or delete a Callout
+## Edit or Delete a Callout
 
 Saved **Header value** and **Client secret** fields show a standard six-symbol mask, not the secret or its length. Leave the field unchanged to retain the saved value. Enter a new value to replace it.
 
@@ -165,7 +180,7 @@ The **Pages** count in the Callouts list shows how many Pages use each Callout. 
 Deleting a Callout does not revoke its credentials at the target service or OAuth provider. Revoke or rotate those credentials when retiring the integration.
 </Note>
 
-## Request format
+## Request Format
 
 The browser sends a `POST` request to the URL in `.calloutAction`, which resolves to `/callouts/{calloutCID}`. Here, `calloutCID` is the selected Callout's identifier. This endpoint authenticates the user through their Portal session, separately from the Portal Management API under `/portal-api`.
 
@@ -197,7 +212,7 @@ If the target needs the signed-in user's identity, select **Include user identit
 
 `actor.id` is the authenticated user's Portal identifier (CID), not the numeric database ID. Deselecting **Include user identity** omits `actor`, rather than sending empty identity values. The request payload does not override the server-supplied identity.
 
-## Handle the response
+## Handle the Response
 
 Tyk Developer Portal wraps the target's response so the browser can distinguish the target's result from a failure in Portal itself. For example, if the target returns HTTP `201` with a JSON body containing a request reference, the browser receives HTTP `200` with this envelope:
 
@@ -240,14 +255,14 @@ For example, a timeout returns HTTP `504` with this JSON body:
 | 413 | Request body exceeds the configured limit |
 | 415 | Unsupported request content type |
 | 502 | Outbound request failed, or the target response is invalid or too large |
-| 503 | Callout unavailable, destination policy rejection, or concurrency limit reached |
+| 503 | Callout unavailable, CSRF protection disabled, destination policy rejection, or concurrency limit reached |
 | 504 | Outbound operation timed out |
 
 Always check both the HTTP status and the response envelope. Authentication or middleware failures may return a different response format, so do not assume every response is JSON.
 
 Do not automatically retry a request after a timeout or network failure. The target can complete the operation even if the response is lost. Use the request ID to investigate. Before adding retries, make sure the target can recognize a repeated request and avoid performing the operation twice.
 
-## Trace a request
+## Trace a Request
 
 Use the request ID to follow a request from the browser through Tyk Developer Portal to the target service. Each system must record or display that ID for you to connect its observations to the same request.
 
@@ -270,7 +285,7 @@ Use these fields to interpret the records. Failure details appear only when appl
 | `actor_cid` | Identifies the Portal user who made the request or ran the connection test. |
 | `target_host` | The target hostname. Connection tests include it after the settings pass validation. |
 | `duration` | Time taken to complete execution or the connection test. |
-| `result` | Execution outcome, such as `success`, `target_error`, `failed` or `timeout`. Connection tests use `success` or `failed`. |
+| `result` | Execution outcome, such as `success`, `target_error`, `failed`, `timeout` or `policy_blocked`. Connection tests use `success` or `failed`. |
 | `failure_reason` | The type of failure, such as `tls_failed`, `connection_failed` or `auth_rejected`. |
 | `phase` | The step that failed: `oauth_token` for obtaining a token, or `target` for contacting the target. Connection tests also use `settings` when preparing or validating settings fails. |
 | `upstream_status` | The HTTP status returned by the target or token service for the failure. |
@@ -284,13 +299,13 @@ A missing execution record is not proof that the browser never sent a Callout re
 
 Some rejections before execution return a request ID without an execution log. CSRF rejection returns neither a Callout request ID nor an execution log. Check the HTTP status and response body as well as any request ID.
 
-For connection tests, session, permission or CSRF checks can reject an attempt before the test starts. These attempts do not produce a `Callout connection test completed` event.
+For connection tests, an expired Admin Portal session or a missing permission can reject an attempt before the test starts. These attempts don't produce a `Callout connection test completed` event.
 
 ## Troubleshooting
 
 | Symptom | What to check |
 | :--- | :--- |
-| Callouts is absent from the Admin Portal | Check that the account is an API Owner and ask your operator to review [Callouts settings](/product-stack/tyk-enterprise-developer-portal/deploy/configuration#callouts-settings). |
+| Callouts is absent from the Admin Portal | Check that the account is an API Owner and review [Callouts settings](/product-stack/tyk-enterprise-developer-portal/deploy/configuration#callouts-settings). |
 | The template has no Callout URL | Check the Page's selection and the Callout's **Enabled** setting. |
 | Connection test reports an unsupported method | Check whether the target supports `OPTIONS`. Test the configured Callout request separately. |
 | Save or connection test requests a credential | Re-enter the credential after changing connection settings. A mask is not a reusable credential value. |
