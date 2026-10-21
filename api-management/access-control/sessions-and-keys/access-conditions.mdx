@@ -1,0 +1,389 @@
+---
+title: "Access Conditions"
+description: "Restrict path-based permissions on keys and Policies by query parameters, headers, path segments, Session metadata, request context or request body content."
+keywords: "Access Conditions, Granular Access, Path-Based Permissions, Allowed URLs, Query Parameters, Conditional Access"
+sidebarTitle: "Access Conditions"
+---
+
+## Introduction
+
+| Availability  | Version     |
+| :------------ | :---------- |
+| Tyk Gateway   | From 5.16.0 |
+| Tyk Dashboard | From 5.16.0 |
+
+[Granular endpoint access](/api-management/access-control/sessions-and-keys/access-rights#granular-endpoint-access) restricts a client to specific paths and HTTP methods. Sometimes the path and method are not enough to decide whether to allow a request.
+
+For example, a single endpoint `GET /connections` can return different data for different query parameters:
+
+- `GET /connections` returns the connections of the authenticated user.
+- `GET /connections?customer_id=123` returns the connections of a different customer.
+
+Any client can call the first form. Only administrative clients should be able to call the second form. Without conditions, you must create a separate path for each form and use URL rewrites to route them to the same upstream endpoint.
+
+Access conditions let you attach extra checks to a path-based permission. Tyk Gateway grants access only when the request matches the path, the method and the conditions. A condition can check:
+
+- query parameters
+- request headers
+- segments of the request path
+- the Session metadata
+- values in the request context
+- the request body, either as a whole or by named JSON field
+
+## How Access Conditions Work
+
+You add conditions to an entry in the `allowed_urls` list of an [access definition](/api-management/access-control/sessions-and-keys/access-rights). You can configure them on a key or on a [Policy](/api-management/policies).
+
+Tyk Gateway checks conditions after it authenticates the request. The check works in the same way for every authentication method.
+
+For each request, Tyk Gateway examines the `allowed_urls` entries for the API:
+
+1. It looks for an entry that matches the request path and method.
+2. If that entry has conditions, it evaluates them against the request.
+3. If all the conditions are met, it allows the request.
+4. If a condition is not met, it continues to the next matching entry.
+
+If no entry allows the request, Tyk Gateway rejects it with `403 Forbidden` and the message `Access to this resource has been disallowed`.
+
+Each entry is an alternative. If two entries have the same path and method but different conditions, Tyk Gateway allows a request that meets the conditions of either entry. To require several checks together, put them in the conditions of one entry.
+
+{/* TODO: Diagram - Decision flow for one request through allowed_urls with conditions.
+Purpose: show that entries are alternatives (OR) and conditions inside an entry are all required (AND).
+Structure: left-to-right flowchart. Start "Authenticated request" -> "Next allowed_urls entry" -> diamond "Path and method match?" (no -> back to "Next entry") -> diamond "All conditions met?" (yes -> "Allow request", no -> back to "Next entry"). "No more entries" -> "403 Forbidden".
+Key elements: label the loop back as "try next entry"; highlight "All conditions met?" as the new step.
+Design notes: keep the existing granular access steps in a neutral color and the condition step in the accent color. */}
+
+### Condition Groups
+
+Each entry in the `conditions` list is a condition group. A group contains one or more match rules and declares how to combine them:
+
+- **All of** (`"on": "all"`): every rule in the group must be met.
+- **Any of** (`"on": "any"`): at least one rule in the group must be met.
+
+If an entry has more than one group, the request must meet every group.
+
+This lets you build rules such as "the request must have an `X-Tenant` header, and it must have either a `customer_id` or an `account_id` query parameter".
+
+### Match Rules
+
+Each match rule checks one value in the request and has one of these requirements:
+
+| Requirement | Meaning |
+| :--- | :--- |
+| Must be present | The value exists in the request. |
+| Must match | The value exists and matches a regular expression. |
+| Must not match | The value does not match a regular expression. A missing value meets this requirement. |
+| Must be absent | The value does not exist in the request. |
+
+Patterns are Go regular expressions. Tyk Gateway searches the value for the pattern, so `[0-9]+` matches `abc123`. To match the whole value, add anchors, such as `^[0-9]+$`.
+
+## Configure Access Conditions in Tyk Dashboard
+
+You can configure conditions on the **Path-based permissions** section of an API, for a Policy or for a key with access rights set directly on it.
+
+1. Open the Policy or key, and go to the API that you want to restrict.
+2. Turn on **Path-based permissions**.
+3. Click **Add path** to create a rule, or click the edit icon on an existing rule.
+4. Enter the **Path** as a regular expression, or select an endpoint of the API.
+5. Select the **Allowed methods**.
+6. Click **Add conditions**.
+7. In the **Condition group**, click **Add clause** and set the source, name, requirement and pattern.
+8. If the group has more than one clause, select **All of** or **Any of**.
+9. To add a group that the request must also meet, click **Add group**.
+10. Read the summary below the groups. It describes, in plain language, which requests the rule allows.
+11. Click **Add rule** or **Save rule**.
+12. Save the Policy or key.
+
+<img src="/img/api-management/access-control/granular_access_conditions.png" alt="Configuring granular access to GET /connections endpoint where query parameter customer_id must be absent." />
+
+Tyk Dashboard checks the rule before you can save it. For example, it reports a clause with no name, a pattern that is not a valid regular expression, or an empty group. Tyk Dashboard checks the conditions again when you save the Policy or key, and shows an error if it rejects them.
+
+The **Path-based permissions** table shows the conditions of each rule. You can have more than one rule for the same path and method if their conditions differ. Each rule appears as a separate row.
+
+If a key uses Policies, the key screen shows the conditions from those Policies, but you can't change them there. Change them in the Policy.
+
+## Configure Access Conditions in the API
+
+To configure conditions with the Tyk Dashboard API or Tyk Gateway API, add a `conditions` list to an `allowed_urls` entry of the key or Policy.
+
+```json
+{
+  "access_rights": {
+    "{API-ID}": {
+      "api_id": "{API-ID}",
+      "api_name": "Connections API",
+      "versions": ["Default"],
+      "allowed_urls": [
+        {
+          "url": "/connections",
+          "methods": ["GET"],
+          "conditions": [
+            {
+              "on": "all",
+              "options": {
+                "query_val_matches": {
+                  "customer_id": { "reverse": true }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
+```
+
+This entry allows `GET /connections` only when the request has no `customer_id` query parameter.
+
+### Condition Fields
+
+Each item in `conditions` has these fields:
+
+| Field | Description |
+| :--- | :--- |
+| `on` | How to combine the rules in `options`. Use `all` to require every rule, or `any` to require at least one rule. If empty, Tyk uses `all`. |
+| `options` | The match rules, grouped by the part of the request that they check. A condition must contain at least one rule. |
+
+`options` can contain these fields:
+
+| Field | Checks |
+| :--- | :--- |
+| `query_val_matches` | Query parameters, by parameter name. |
+| `header_matches` | Request headers, by header name. |
+| `path_part_matches` | Segments of the request path. Each rule needs a label, but Tyk doesn't use it to select a segment. |
+| `session_meta_matches` | The [Session metadata](/api-management/access-control/sessions-and-keys/session-metadata), by metadata key. |
+| `request_context_matches` | Values in the request context, by name. These include [request context variables](/api-management/traffic-transformation/request-context-variables) and values that plugins add. |
+| `body_field_matches` | Named fields in a JSON request body, by path. |
+| `payload_matches` | The whole request body as text. |
+
+Each field can contain more than one rule, except `payload_matches`, which contains one rule. A condition can also combine rules from several fields. The `on` setting decides how Tyk combines all the rules in the condition.
+
+For the format of each field, see the [examples](#examples).
+
+A match rule has these fields:
+
+| Field | Description |
+| :--- | :--- |
+| `match_rx` | The regular expression to test the value against. If empty, the rule only checks whether the value exists. |
+| `reverse` | If `true`, the rule inverts the result. The value must not match `match_rx`, and a missing value meets the rule. Defaults to `false`. |
+| `path` | Only for `body_field_matches`. The location of the field in the JSON body, in [GJSON path syntax](https://github.com/tidwall/gjson/blob/master/SYNTAX.md), such as `customer.id`. |
+
+Use these combinations to set each requirement:
+
+| Requirement | `match_rx` | `reverse` |
+| :--- | :--- | :--- |
+| Must be present | `""` | `false` |
+| Must match | your pattern | `false` |
+| Must not match | your pattern | `true` |
+| Must be absent | `""` | `true` |
+
+`path_part_matches` and `payload_matches` support only **must match** and **must not match**.
+
+### Examples
+
+#### Require Query Parameters to Be Absent
+
+Allow the request only when it has none of the `customer_id`, `account_id` and `agreement_id` query parameters. Each rule is keyed by the parameter name:
+
+```json
+"conditions": [
+  {
+    "on": "all",
+    "options": {
+      "query_val_matches": {
+        "customer_id": { "reverse": true },
+        "account_id": { "reverse": true },
+        "agreement_id": { "reverse": true }
+      }
+    }
+  }
+]
+```
+
+A request with an unrelated parameter, such as `?page=2`, still meets this condition.
+
+#### Require a Query Parameter Value
+
+Allow the request only when `customer_id` is present and contains only digits:
+
+```json
+"conditions": [
+  {
+    "on": "all",
+    "options": {
+      "query_val_matches": {
+        "customer_id": { "match_rx": "^[0-9]+$" }
+      }
+    }
+  }
+]
+```
+
+#### Combine Any Of and All Of
+
+Allow the request when it has a numeric `customer_id` or a numeric `account_id`, and its `X-Tenant` header is `acme`. The two condition groups must both be met:
+
+```json
+"conditions": [
+  {
+    "on": "any",
+    "options": {
+      "query_val_matches": {
+        "customer_id": { "match_rx": "^[0-9]+$" },
+        "account_id": { "match_rx": "^[0-9]+$" }
+      }
+    }
+  },
+  {
+    "on": "all",
+    "options": {
+      "header_matches": {
+        "X-Tenant": { "match_rx": "^acme$" }
+      }
+    }
+  }
+]
+```
+
+#### Combine Several Sources in One Group
+
+One condition group can contain rules from several fields. Allow the request when the `X-Tenant` header is `acme`, the Session metadata has `tier` set to `gold`, and the request has no `debug` query parameter:
+
+```json
+"conditions": [
+  {
+    "on": "all",
+    "options": {
+      "header_matches": {
+        "X-Tenant": { "match_rx": "^acme$" }
+      },
+      "session_meta_matches": {
+        "tier": { "match_rx": "^gold$" }
+      },
+      "query_val_matches": {
+        "debug": { "reverse": true }
+      }
+    }
+  }
+]
+```
+
+If you change `on` to `any`, the request needs to meet only one of these three rules.
+
+#### Check the Request Context
+
+Allow the request only from clients in the `10.0.0.0/8` network. This uses the `remote_addr` [request context variable](/api-management/traffic-transformation/request-context-variables), so you must enable context variables for the API:
+
+```json
+"conditions": [
+  {
+    "on": "all",
+    "options": {
+      "request_context_matches": {
+        "remote_addr": { "match_rx": "^10\\." }
+      }
+    }
+  }
+]
+```
+
+Context variables such as `request_data` or `headers` hold lists, so use the single-value forms instead, such as `request_data_customer_id` or `headers_X_Tenant`.
+
+#### Check Fields in a JSON Body
+
+Allow the request only when the body has a numeric `customer.id`, and every `sku` in the `items` array starts with `PRD-`:
+
+```json
+"conditions": [
+  {
+    "on": "all",
+    "options": {
+      "body_field_matches": [
+        { "path": "customer.id", "match_rx": "^[0-9]+$" },
+        { "path": "items.#.sku", "match_rx": "^PRD-" }
+      ]
+    }
+  }
+]
+```
+
+`body_field_matches` is a list, so each rule includes its `path`, and you can add more than one rule for the same path.
+
+The path `items.#.sku` selects the `sku` of each item in the array. Tyk ignores items that don't have a `sku`, so this rule doesn't check that every item has one.
+
+#### Check a Path Segment
+
+Allow the request only when no segment of the path is `internal`:
+
+```json
+"conditions": [
+  {
+    "on": "all",
+    "options": {
+      "path_part_matches": {
+        "no-internal": { "match_rx": "^internal$", "reverse": true }
+      }
+    }
+  }
+]
+```
+
+The key, `no-internal`, is only a label. Tyk tests the pattern against every segment of the path.
+
+## Matching Behavior
+
+Tyk Gateway applies these rules when it evaluates a condition:
+
+| Source | Behavior |
+| :--- | :--- |
+| Query parameters | Tyk decodes values before it matches them, so `%31%32%33` matches as `123`. Parameter names are case-sensitive. The order of parameters doesn't matter. |
+| Headers | Header names are not case-sensitive. |
+| Path segments | Tyk splits the full request path, including the listen path, at each `/`. A **must match** rule is met if any segment matches. A **must not match** rule is met if no segment matches. |
+| Session metadata | Only string values are checked. Tyk treats a value of another type, such as a number or an object, as missing. |
+| Request context | Only text values are checked. Tyk treats a value of another type, such as a list or an object, as missing. |
+| Body fields | Tyk parses the body as JSON, whatever its `Content-Type`. If the field is an array, every element must match. Field names are case-sensitive. |
+| Whole body | Tyk matches the pattern against the raw body. |
+
+If a query parameter or header appears more than once in a request, every value must meet the rule. A client can't add extra values to get past a rule.
+
+If an entry has a body field rule, Tyk Gateway rejects a request whose body is not valid JSON. It also rejects a body that contains the same key twice, even with different letter case, such as `role` and `Role`.
+
+When Tyk Gateway reads the request body to evaluate a condition, it passes the complete body to the upstream service. Tyk Gateway checks body rules last, and only if the other rules have not decided the result already.
+
+## Combining Policies
+
+When you apply more than one Policy to a key, Tyk Gateway [merges their access rights](/api-management/access-control/policies/applying-policies#how-multiple-policies-are-merged). Each entry keeps its conditions:
+
+- If two entries have the same path and the same conditions, Tyk combines their methods into one entry.
+- If two entries have the same path and different conditions, Tyk keeps both entries. Tyk Gateway allows a request that meets either entry.
+
+An entry without conditions allows every request to its path and methods. So if a Policy has an unconditional entry for a path and method, conditions on the same path and method in other Policies have no effect.
+
+If one Policy grants access to an API without path-based permissions, and another Policy has path-based permissions for the same API, the merged access rights contain only the path-based permissions. The Session can then access only those endpoints, under their conditions. To give a client unrestricted access alongside conditional access, add unconditional entries for the other endpoints to one of the Policies.
+
+## Validation and Errors
+
+Tyk Dashboard and Tyk Gateway check conditions when you create or update a key or Policy. They reject a condition with `400 Bad Request` if:
+
+- `on` is not `all`, `any` or empty
+- the condition contains no match rules
+- `match_rx` is not a valid regular expression
+- a body field rule has an empty `path`
+
+The error message identifies the API, the entry and the condition, for example:
+
+```text
+access_rights["{API-ID}"].allowed_urls[1] ("/connections").conditions[0]: access condition has no options set
+```
+
+If an invalid condition reaches Tyk Gateway by another route, Tyk Gateway denies access. For example, if a pattern doesn't compile, Tyk Gateway logs the error `Could not compile access condition pattern, denying access` and rejects the request with `403 Forbidden`.
+
+To see why Tyk Gateway rejected a request, set the log level to `debug`. Tyk Gateway then logs `Granular access condition not satisfied` with the path and the index of the condition that failed.
+
+## Limitations
+
+- Access conditions apply only to APIs that use authentication. Tyk Gateway doesn't evaluate access rights for keyless APIs.
+- Conditions add restrictions to an `allowed_urls` entry. If `allowed_urls` is empty, the client can access every endpoint, and Tyk Gateway doesn't evaluate conditions.
+- Tyk Gateway versions earlier than 5.16.0 ignore conditions and allow every request that matches the path and method.
+- [Custom authentication plugins](/api-management/plugins/plugin-types#authentication-plugins) written in Go or JavaScript can set conditions on the Sessions they create, using the same fields as the API. For gRPC plugins, see [access conditions in the gRPC data structures](/api-management/plugins/rich-plugins#accessspec).
