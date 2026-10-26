@@ -5,6 +5,41 @@
 // toc-fix-v2.js
 (function () {
     let observer;
+    let activeObserver;
+
+    // Scroll the TOC panel (not the page) so the deepest visible active item is in view.
+    // Mintlify highlights the active heading but doesn't scroll the TOC to it, e.g. when a page opens on a #hash.
+    function scrollActiveIntoView(toc) {
+        const viewport = toc.closest('[data-component-part="scroll-area-viewport"]');
+        if (!viewport) return;
+
+        const active = Array.from(toc.querySelectorAll('.toc-item[data-active]'))
+            .map(li => li.querySelector(':scope > a'))
+            .filter(a => a && a.offsetParent !== null);
+        const target = active[active.length - 1];
+        if (!target) return;
+
+        const vp = viewport.getBoundingClientRect();
+        const rect = target.getBoundingClientRect();
+        if (rect.top >= vp.top && rect.bottom <= vp.bottom) return;
+
+        viewport.scrollTo({ top: viewport.scrollTop + rect.top - vp.top - vp.height / 3, behavior: 'smooth' });
+    }
+
+    function watchActive(toc) {
+        if (activeObserver) activeObserver.disconnect();
+        let pending = false;
+        activeObserver = new MutationObserver(() => {
+            if (pending) return;
+            pending = true;
+            requestAnimationFrame(() => {
+                pending = false;
+                scrollActiveIntoView(toc);
+            });
+        });
+        activeObserver.observe(toc, { subtree: true, attributes: true, attributeFilter: ['data-active'] });
+        scrollActiveIntoView(toc);
+    }
 
     function run() {
         const toc = document.getElementById('table-of-contents-content');
@@ -92,6 +127,8 @@
                 }
             });
         });
+
+        watchActive(toc);
 
         // Reconnect the observer after DOM modifications are complete
         if (observer) {
