@@ -294,13 +294,28 @@ Custom analytics plugins (Go plugins that modify analytics records before they l
 For more details see [Analytics Plugins](/api-management/plugins/plugin-types#loading-from-a-bundle).
 </Accordion>
 
+<Accordion title='Added support for multiple plugin bundles on a single API'>
+{/* TT-16948 */}
+You can now attach more than one plugin bundle to an API by providing a comma-separated list of bundle filenames in `middleware.global.pluginConfig.bundle.path` (Tyk OAS Vendor Extension) or `custom_middleware_bundle` (Tyk Classic), for example `auth-bundle.zip,logging-bundle.zip`. Tyk Gateway downloads each bundle and combines their plugins in the order listed.
+
+This lets you combine centrally managed bundles, such as a shared authentication plugin, with a team's own plugins on the same API, without rebuilding a combined bundle whenever either one changes.
+
+All bundles in the list must use the same plugin driver, and only one can provide a custom authentication plugin. A single bundle filename continues to work as before.
+
+For more details see [Composing Multiple Bundles](/api-management/plugins/overview#composing-multiple-bundles).
+</Accordion>
+
 <Accordion title='Enhancements to custom JavaScript plugins'>
 {/* TT-16948, TT-17761 */}
 A new Goja-based JavaScript plugin engine is available by selecting the `javascript` driver, significantly improving performance.
 
 JavaScript plugins can also now be attached to [post-auth and response hooks](/api-management/plugins/overview#plugin-hook-types) increasing the viability of JS as the plugin language of choice.
 
-The existing `otto` driver remains available, so existing API definitions will be unaffected by these changes.
+With the `javascript` driver, you can now provide plugin code [inline](/api-management/plugins/overview#inline-code-javascript-only) in the API definition, using the new `code` field, as an alternative to a `path` to a file. The code must be base64-encoded.
+
+The `javascript` driver also adds [atomic storage functions](/api-management/plugins/javascript#atomic-storage-bindings) (`TykStorageGet`, `TykStorageSet`, `TykStorageSetNX`, `TykStorageDel`, `TykStorageTTL` and `TykStorageIncr`) that let plugins share data, such as counters or locks, across requests and Gateways. Keys are kept separate from the Gateway's data.
+
+The existing `otto` driver remains available, so existing API definitions will be unaffected by these changes. Inline code and the storage functions are not supported with `otto`.
 
 For more details see [JavaScript Plugins](/api-management/plugins/javascript#choosing-a-javascript-engine).
 </Accordion>
@@ -788,6 +803,185 @@ We have addressed CVEs reported in dependent libraries, providing increased prot
 
 
 ## 5.13 Release Notes 
+
+### 5.13.4 Release Notes 
+
+#### Release Date 16 October 2026
+
+#### Release Highlights
+
+This patch implements several changes and fixes to improve the stability and correct the behavior of the Gateway, and adds support for loading multiple plugin bundles per API. It also addresses several CVEs in dependent libraries.
+
+**Default behavior changes**
+
+In this release, we’ve updated how the Gateway handles several configuration values. The Gateway now uses the corrected behavior by default:
+
+- Detailed traffic logs redact the Authorization header and any custom authentication header so that tokens no longer appear in analytics data.
+- Body transform and webhook templates are only loaded from inside the template_path directory.
+- When an API uses both Strip Listen Path and URL Rewrite, the rewritten URL is now proxied exactly as configured, without the listen path being stripped from it.
+
+If your deployment already relies on the previous behavior, new configuration options let you keep it. They are disabled by default, and we recommend using them only temporarily while you update your configuration.
+
+Before upgrading, read the [Breaking Changes](#breaking-changes-5.13.4) section to check whether you're affected and what to do.
+
+For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-v5.13.4) below.
+
+#### Breaking Changes
+<a id="breaking-changes-5.13.4"></a>
+
+**Sensitive headers obfuscated in detailed logs**
+
+When `enable_detailed_recording` is active, the Gateway now obfuscates the Authorization header and any custom authentication header defined in the API configuration before writing analytics records to Redis. Token values are redacted in the stored raw request. This prevents authentication credentials from being visible in the Log Browser or downstream analytics stores.
+
+This is a breaking change. To restore the previous behavior, set the new configuration option `analytics_config.allow_unsafe_detailed_logs` to `true` (default `false`).
+
+ 
+**Body transform template path validation**
+
+When request or response body transforms use file mode (`template_mode: file`), the template file path is now constrained to the Gateway’s configured `template_path` directory. Absolute paths and directory traversal sequences that resolve outside this directory are rejected. Affected transforms will return a `400` error with `"Template execution failed"`.
+This applies to both Tyk Classic and Tyk OAS API definitions. To temporarily restore the previous behavior, set `allow_unsafe_body_transform_template_paths: true` in your Gateway or Dashboard configuration.
+
+The `template_path` field on webhook definitions (`/api/hooks`) controls which template file is used to format the webhook body. This field is now validated on both Gateway and Dashboard to reject absolute paths and directory traversal sequences. Requests using invalid paths will receive a `400 Bad Request` error. To restore the previous behavior, set `allow_unsafe_webhook_template_paths: true` in your Gateway or Dashboard configuration.
+
+
+**Strip Listen Path no longer modifies URL Rewrite targets**
+
+Previously, on APIs with both Strip Listen Path and URL Rewrite enabled, the Gateway stripped the listen path again after the rewrite. If the rewritten path started with the same string as the listen path, that part was removed, and the request was sent to a different upstream path than the one configured in the rewrite rule.
+
+The Gateway now sends requests to the rewritten URL exactly as configured. APIs that don't use URL Rewrite, or whose rewrite rules don't match a request, still have the listen path stripped as before.
+
+You're affected if an API uses both Strip Listen Path and URL Rewrite, and a rewrite target starts with the API's listen path. For example, with the listen path `/anything/` and a rewrite to `http://httpbin.org/anything/bla/$1`, a request to `/anything/xml` was previously sent to `http://httpbin.org/bla/anything/xml`. It is now sent to `http://httpbin.org/anything/bla/anything/xml`.
+
+**What to do:** check the URL Rewrite rules on APIs that have Strip Listen Path enabled. If a rule's target only worked because the listen path was being removed from it, update the target so it is the exact upstream URL you want.
+
+
+
+#### Dependencies 
+<a id="dependencies-5.13.4"></a>
+
+##### Compatibility Matrix For Tyk Components
+
+| Gateway Version | Recommended Releases | Backwards Compatibility |
+| :------ | :---------------- | :---------------- |
+| 5.13.4  | MDCB v2.14.0      | MDCB v2.14.0      |
+|         | Operator v1.6.0   | Operator v0.17    |
+|         | Sync v2.3.0       | Sync v2.3.0       |
+|         | Helm Chart v5.5.0 | Helm all versions |
+|         | Pump v1.18.0      | Pump all versions |
+
+##### 3rd Party Dependencies & Tools
+
+| Third Party Dependency                   | Tested Versions     | Compatible Versions | Comments | 
+| :--------------------------------------- | :------------------ | :------------------ | :------- | 
+| [Golang](https://go.dev/dl/)             | 1.26                |  1.26               | [Go plugins](/api-management/plugins/golang) must be built using Go 1.26 | 
+| [Redis](https://redis.io/download/)      | 6.2.x, 7.x, 7.4.x, 8.x (up to 8.4)   | 6.2.x, 7.x, 7.4.x, 8.x (up to 8.4)   | | 
+| [Valkey](https://valkey.io/download/)    | 7.2.x, 8.0.x, 8.1.x | 7.2.x, 8.0.x, 8.1.x | | 
+| [OpenAPI Specification](https://spec.openapis.org/oas/v3.1.2.html) | 3.1.x, 3.0.x | 3.1.x, 3.0.x | Supported by [Tyk OAS](/api-management/gateway-config-tyk-oas)|
+
+Given the potential time difference between your upgrade and the release of this version, we recommend users verify the ongoing support of third-party dependencies they install, as their status may have changed since the release.
+
+#### Deprecations
+
+There are no deprecations in this release.
+
+#### Upgrade instructions
+<a id="upgrade-5.13.4"></a>
+
+If you are upgrading to 5.13.4, please follow the detailed [upgrade instructions](#upgrading-tyk).
+
+#### Downloads
+
+- [Docker Image to pull](https://hub.docker.com/r/tykio/tyk-gateway/tags?page=&page_size=&ordering=&name=v5.13.4)
+  - ```bash
+    docker pull tykio/tyk-gateway:v5.13.4
+    ```
+- Helm charts
+  - [tyk-charts](/developer-support/release-notes/helm-chart)
+
+- [Source code tarball of Tyk Gateway v5.13.4](https://github.com/TykTechnologies/tyk/releases/tag/v5.13.4)
+
+#### Changelog
+<a id="Changelog-v5.13.4" data-scroll-offset></a>
+
+##### Added
+
+<AccordionGroup>
+
+<Accordion title='Added support for loading multiple plugin bundles per API'>
+{/* TT-17786 */}
+You can now attach more than one plugin bundle to an API by providing a comma-separated list of bundle filenames, for example `auth-bundle.zip,logging-bundle.zip`, wherever you would otherwise give a single bundle filename. Tyk Gateway downloads each bundle and combines their plugins in the order listed.
+ 
+This lets you combine centrally managed bundles, such as a shared authentication plugin, with a team's own plugins on the same API, without rebuilding a combined bundle whenever either one changes.
+
+In this release, multiple bundles are supported for gRPC and Go plugins. All bundles in the list must use the same plugin driver, and only one can provide a custom authentication plugin. A single bundle filename continues to work as before.
+
+For more details see [Composing Multiple Bundles](/api-management/plugins/overview#composing-multiple-bundles).
+</Accordion>
+
+</AccordionGroup>
+
+##### Fixed
+
+<AccordionGroup>
+
+<Accordion title='Fixed Gateway reloads getting stuck after a failed sync with the Dashboard'>
+{/* TT-17765 */}
+We've resolved an issue in Dashboard-managed, hybrid and MDCB deployments where a network or nonce error during a Gateway reload could cause all subsequent reloads to queue indefinitely. APIs not yet loaded, often MCP Proxies, returned `404 Not Found` until the Gateway was restarted, and MCP clients saw a misleading `session not found` error. Reloads now recover from these errors and complete as expected, without a restart.
+</Accordion>
+ 
+<Accordion title='Fixed Enforced Timeout being overridden by the default upstream timeout'>
+{/* TT-17873 */}
+We've resolved a regression where the Enforced Timeout middleware could be overridden by `proxy_default_timeout`, so requests to an endpoint with a longer enforced timeout were cut off at the default. Timeouts are now applied per request, so the most specific configured timeout (endpoint, then API, then Gateway default) is always respected. Streaming responses (SSE, gRPC and GraphQL) are no longer canceled prematurely.
+</Accordion>
+
+<Accordion title='Fixed URL Rewrite targets being altered by Strip Listen Path'>
+{/* TT-1860 */}
+We've resolved an issue where, on APIs using both Strip Listen Path and URL Rewrite, the listen path was stripped from the rewritten URL if the rewritten path started with the same string. As a result, requests could be sent to a different upstream path than the one set in the rewrite rule.
+
+The Gateway now sends requests to the rewritten URL exactly as configured. APIs without URL Rewrite still have the listen path stripped as before.
+
+This is a breaking change for APIs whose rewrite targets relied on the old stripping behavior. To restore it, set the new Gateway configuration option `apply_strip_listen_path_to_url_rewrite` to `true` (default `false`). See [Breaking Changes](#breaking-changes-5.13.4) for how to check whether your rewrite rules are affected.
+</Accordion>
+ 
+<Accordion title='Fixed GraphQL and UDG APIs always generating detailed traffic logs'>
+{/* TT-14404 */}
+We've resolved a regression where traffic logs for GraphQL and Universal Data Graph (UDG) APIs were always generated with full request and response bodies, ignoring the detailed recording setting. This produced large analytics records and unnecessary storage growth. GraphQL and UDG APIs now respect the detailed recording setting like any other API, and GraphQL analytics continue to be collected as before.
+</Accordion>
+ 
+<Accordion title='Fixed inconsistent paths recorded in traffic logs for cached responses'>
+{/* TT-14684 */}
+Fixed an issue where, for APIs with strip_listen_path enabled, requests served from the cache or by a virtual endpoint were recorded in traffic logs with the listen path still included in the request path. Requests sent to the upstream were recorded without it, so the same endpoint appeared as two different paths in Tyk Dashboard analytics. These requests are now recorded with the same path as requests sent to the upstream. This applies to both Tyk OAS and Tyk Classic APIs.
+</Accordion>
+ 
+<Accordion title='Fixed enum arguments missing from UDG REST data source requests'>
+{/* TT-14951 */}
+We've resolved an issue in Universal Data Graph where GraphQL enum arguments used as query parameters in a REST data source URL were silently left out of the upstream request. Enum arguments are now included correctly.
+</Accordion>
+
+</AccordionGroup>
+
+##### Security Fixes
+
+<AccordionGroup>
+ 
+<Accordion title='Resolved CVEs'>
+We have addressed CVEs reported in dependent libraries, providing increased protection against security vulnerabilities, including, but not limited to:
+ 
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-72897" target="_blank">CVE-2026-72897</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-84782" target="_blank">CVE-2026-84782</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-84784" target="_blank">CVE-2026-84784</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-56866" target="_blank">CVE-2026-56866</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78659" target="_blank">CVE-2026-78659</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78660" target="_blank">CVE-2026-78660</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78667" target="_blank">CVE-2026-78667</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78669" target="_blank">CVE-2026-78669</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-94439" target="_blank">CVE-2026-94439</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-94440" target="_blank">CVE-2026-94440</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-97031" target="_blank">CVE-2026-97031</a>
+ 
+</Accordion>
+
+</AccordionGroup>
 
 ### 5.13.3 Release Notes 
 
