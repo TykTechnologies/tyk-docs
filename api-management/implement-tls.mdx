@@ -295,23 +295,9 @@ This section covers scenarios where the Tyk Gateway is initiating a TLS connecti
 
 ### Integrating with Dashboard
 
-If TLS is in use for the Dashboard's [Control API](/api-management/implement-tls#using-tls-with-tyk-dashboard), i.e., the Dashboard is the TLS server, then the Gateway will need to verify the server certificate presented by the Dashboard (unless configured to [skip verification](/api-management/implement-tls#skipping-server-certificate-verification) of the server certificate).
+If Tyk Dashboard serves its Control API over TLS, Tyk Gateway verifies the server certificate of the Dashboard. It uses the CA certificates in the system CA store of the Gateway host. You can't configure a different set of CA certificates for this connection.
 
-The following must be configured in the Gateway (via `tyk.conf` or the equivalent environment variable):
-
-```json
-{
-  "security": {
-    "certificates": {
-      "dashboard_api": ["/path/to/ca-cert.pem"]
-    }
-  }
-}
-```
-
-| Parameter | Description |
-| --------- | ----------- |
-| `certificates.dashboard_api` | An array of path references to CA certificates (PEM format) |
+To skip this verification, for example for a self-signed certificate in development, see [Skipping Server Certificate Verification](#skipping-server-certificate-verification).
 
 ### Connecting Securely to Upstream Services
 
@@ -472,6 +458,8 @@ When set to `true` this:
 - Disables verification of the server's certificate chain
 - Skips hostname validation against the certificate's Subject Alternative Names (SANs)
 - Accepts any certificate presented by the server, regardless of its validity or trust status
+
+Tyk Gateway only skips this verification if it also serves its own traffic over TLS, with `http_server_options.use_ssl` set to `true`.
 
 <Note>
   It is important to note that this skips TLS security and so is not recommended for production environments. This setting does not affect Tyk's behaviour when interacting with your upstream API servers - there is a separate configuration for that, as explained [here](/api-management/implement-tls#connecting-securely-to-upstream-services).
@@ -653,6 +641,10 @@ For more details on using Tyk Dashboard with PostgreSQL, see the [Database Manag
 
 In a distributed deployment, MDCB is the server and the Data Plane Gateways are the clients. If you want to secure this connection using TLS you must configure both components.
 
+<Note>
+  MDCB doesn't support mutual TLS with Data Plane Gateways. MDCB doesn't ask for a client certificate, and Data Plane Gateways don't present one.
+</Note>
+
 ### Configuring MDCB
 
 MDCB has two separate servers that can be configured individually in the `tyk-sink.conf` file or environment variables:
@@ -662,10 +654,12 @@ MDCB has two separate servers that can be configured individually in the `tyk-si
 
 Each server has a similar configuration to Dashboard, with settings described in the [reference documentation](/tyk-multi-data-centre/mdcb-configuration-options).
 
-Note that you must set `security.private_certificate_encoding_secret` in the MDCB configuration file to the same value as specified in your Control Plane Gateway and Dashboard configuration files, to ensure that MDCB can [decode private keys](/api-management/certificates#encryption-of-the-private-key) that have been added to the Tyk Certificate Store.
+Each server accepts its certificates in `ssl_certificates`, in `server_options` or `http_server_options`. This is a list of Tyk Certificate Store IDs, file paths, or a mix of both. MDCB looks up each Certificate Store ID in the Redis from its `storage` section. If MDCB can't find an ID there, it reads the value as a file path. Add the certificates to the Certificate Store before you start MDCB.
+
+If `ssl_certificates` is empty, MDCB uses the certificate and key files in `certificate.cert_file` and `certificate.key_file`, in the same section.
 
 <Note>
-  MDCB does not have access to the Tyk Certificate Store when configuring its own interfaces, so certificates and keys must be available on the filesystem and referenced by path.
+  You must set `security.private_certificate_encoding_secret` in the MDCB configuration file to the same value as specified in your Control Plane Gateway and Dashboard configuration files, to ensure that MDCB can [decode private keys](/api-management/certificates#encryption-of-the-private-key) that have been added to the Tyk Certificate Store.
 </Note>
 
 ### Configuring Data Plane Gateways
@@ -677,14 +671,6 @@ The following must be configured in the Data Plane Gateways (via `tyk.conf` or e
   "slave_options": {
     "use_ssl": true,
     "ssl_insecure_skip_verify": false
-  },
-  "security": {
-    "certificates": {
-      "mdcb_api": [
-        "cert-id-from-store",
-        "/path/to/client-cert.pem"
-      ]
-    }
   }
 }
 ```
@@ -693,12 +679,16 @@ The following must be configured in the Data Plane Gateways (via `tyk.conf` or e
 |-----------|-------------|
 | `slave_options.use_ssl` | Instructs the Gateway to use TLS in the connection to MDCB |
 | `slave_options.ssl_insecure_skip_verify` | Skips the verification of the server certificate presented by MDCB; not recommended for production environments |
+<<<<<<< HEAD
 | `security.certificates.mdcb_api` | A list of client certificate-key pairs; this can contain paths to PEM files or certificate IDs allocated by the Tyk Certificate Store |
 
 The MDCB's server certificate will be verified against the CA certificates in the Gateway host's standard root CA store. This is not separately configurable.
 
 During the mTLS handshake, the server (MDCB) will advertise the Certificate Authorities it will use to verify the client certificate. The client (Data Plane Gateway) will present the first valid certificate in the `certificates.mdcb_api` list that matches one of these CAs. Multiple certificates allow rotation scenarios with overlapping validity periods.
+=======
+>>>>>>> d13acaced ([TT-18710] Removed erroneous references to mTLS between GW and Dash/MDCB (#3576))
 
+Data Plane Gateways verify the server certificate of MDCB against the CA certificates in the system CA store of the Gateway host. You can't configure a different set of CA certificates for this connection.
 
 ## Frequently Asked Questions
 
