@@ -26,12 +26,7 @@
             }
             li.dataset.depth = String(depthNum);
             li.style.display = 'list-item'; // Ensure all items are visible initially
-
-            const a = li.querySelector('a');
-            if (a) {
-                const indentStep = 1; // rem per depth level
-                a.style.marginLeft = `${depthNum * indentStep}rem`;
-            }
+            // Indentation is handled by Mintlify's TOC styles (padding per data-depth)
         });
 
         // Add toggle buttons and functionality
@@ -56,14 +51,10 @@
                 </svg>
               `;
 
-            const anchor = li.querySelector('a');
+            // Keep the anchor as a direct child of the li so Mintlify's `li > a` styles still apply
+            const anchor = li.querySelector(':scope > a');
             if (anchor) {
-                const wrapper = document.createElement('div');
-                wrapper.className = 'toc-row';
-                // Insert wrapper before the anchor, then move anchor and toggle into it
-                anchor.parentNode.insertBefore(wrapper, anchor);
-                wrapper.appendChild(anchor);
-                wrapper.appendChild(toggle);
+                anchor.after(toggle);
             } else {
                 li.appendChild(toggle);
             }
