@@ -15,7 +15,7 @@ graph TD
     H -->|aggregated: false| TL[Traffic Logs]
     AG --> MDCB[Tyk MDCB]
     TL --> MDCB
-    MDCB -->|Aggregated analytics: always| E[Control Plane Persistent Database]
+    MDCB -->|Aggregated analytics, forward_analytics_to_pump: false| E[Control Plane Persistent Database]
     MDCB -->|Traffic logs, forward_analytics_to_pump: false| W[Tyk MDCB's Built-In Writer]
     W --> E
     MDCB -->|Traffic logs, forward_analytics_to_pump: true| Q[Control Plane Redis]
@@ -124,7 +124,7 @@ The following settings only take effect when `aggregated: true`; they have no ef
 
 Tyk MDCB receives either [traffic logs or aggregated analytics](#traffic-logs-or-aggregated-analytics) from each Hybrid Pump, and writes it into the Control Plane's persistent database that Tyk Dashboard reads from.
 
-Aggregated analytics (generated if the Hybrid Pump is configured with `aggregated: true`) are always written directly to the persistent database, for Tyk Dashboard's [Traffic Analytics graphs](/api-management/dashboard-analytics#traffic-analytics).
+Aggregated analytics (generated if the Hybrid Pump is configured with `aggregated: true`) are written directly to the persistent database, for Tyk Dashboard's [Traffic Analytics graphs](/api-management/dashboard-analytics#traffic-analytics). This only happens when `forward_analytics_to_pump` and `dont_store_aggregate` are both `false`. Otherwise, Tyk MDCB discards them.
 
 Traffic logs (`aggregated: false`) can be handled in one of two ways, controlled by Tyk MDCB's [`forward_analytics_to_pump`](/tyk-multi-data-centre/mdcb-configuration-options#forward_analytics_to_pump) setting:
 
@@ -136,7 +136,7 @@ Traffic logs (`aggregated: false`) can be handled in one of two ways, controlled
 If you need to [export the data](/api-management/logs/external-data-sinks) from the Control Plane to a third-party sink such as Splunk or Datadog, you must first store it in the Control Plane Redis by setting `forward_analytics_to_pump: true`.
 
 <Note>
-**`forward_analytics_to_pump` has no effect on aggregated analytics.** Tyk MDCB always writes aggregated analytics straight to the persistent database, whichever way it's set. This means analytics aggregated in the data plane by the Hybrid Pump reliably populate Tyk Dashboard's Traffic Analytics graphs, but cannot be routed onward to a third-party sink through the Control Plane Pump.
+**Tyk MDCB discards aggregated analytics when `forward_analytics_to_pump` is `true`**. It doesn't write them to the persistent database, nor does it pass them to the Control Plane Redis. If the Hybrid Pump is configured with `aggregated: true`, set `forward_analytics_to_pump: false`, or the Traffic Analytics graphs stay empty.
 </Note>
 
 ### Tyk MDCB's Built-In Writer
@@ -172,7 +172,7 @@ The `analytics` object's connection fields exactly mirror [Common Mongo Meta](/a
 | `forward_analytics_to_pump` | `false` | See [How Tyk MDCB Handles The Data](#how-tyk-mdcb-handles-the-data) above. |
 | `analytics.type` | `mongo` | Storage backend: `mongo` or `postgres`. |
 | `dont_store_selective` | `false` | If `true`, skips writing per-Organisation storage, which otherwise mirrors the [Per-Organisation Mongo Pump](/api-management/dashboard-analytics/control-plane-pumps#per-organisation-mongo-pump). |
-| `dont_store_aggregate` | `false` | If `true`, skips computing aggregated analytics; only traffic logs are stored, for the Log Browser. |
+| `dont_store_aggregate` | `false` | If `true`, stores no aggregated analytics. It doesn't compute them from traffic logs, and it discards any aggregated analytics sent by a Hybrid Pump configured with `aggregated: true`. |
 | `track_all_paths` | `false` | Aggregate all endpoints, not just [tracked ones](/api-management/dashboard-analytics#controlling-which-endpoints-are-tracked). |
 | `store_analytics_per_minute` | `false` | Aggregate per minute rather than per hour. |
 | `ignore_tag_prefix_list` | (none) | Prefixes of [custom aggregation tags](/api-management/dashboard-analytics#custom-aggregation-tags) to exclude from aggregation. |
@@ -181,8 +181,7 @@ Limitations:
 
 - **No filtering:** there's no equivalent to a Tyk Pump's `filters` setting (`org_ids`, `api_ids`, `response_codes`, and their `skip_*` counterparts). Every request that reaches Tyk MDCB is stored; you can't exclude specific APIs, Organisations, or response codes.
 - **No MySQL support:** `analytics.type` only recognizes `mongo` and `postgres`; any other value, including `mysql`, is accepted but silently falls back to `mongo` rather than failing.
-- **No GraphQL awareness:** GraphQL requests pass through as ordinary traffic logs and general aggregated analytics only; see [GraphQL Traffic](#graphql-traffic) below for what's missing.
-- **No automatic MCP aggregation:** MCP traffic logs are stored, but not aggregated automatically the way REST traffic is; see [MCP Proxy Traffic](#mcp-proxy-traffic) below for how to populate Activity by MCP.
+- **GraphQL analytics on SQL only:** with MongoDB, GraphQL requests are stored as ordinary traffic logs and aggregated analytics only. See [GraphQL Traffic](#graphql-traffic) below.
 
 If you need MySQL, filtering, or a third-party sink, use a Control Plane Pump instead: set `forward_analytics_to_pump: true` and configure the Control Plane Pump as any other [Control Plane Pump](/api-management/dashboard-analytics/control-plane-pumps).
 
@@ -192,28 +191,34 @@ This table covers REST traffic; see [GraphQL Traffic](#graphql-traffic) and [MCP
 
 | Goal | Hybrid Pump `aggregated` | Tyk MDCB `forward_analytics_to_pump` |
 | :-- | :-- | :-- |
-| Traffic Analytics graphs only, minimize WAN traffic | `true` | Either value; has no effect |
+| Traffic Analytics graphs only, minimize WAN traffic | `true` | `false` |
 | Traffic Analytics graphs and Log Browser | `false` | `false` |
 | Traffic Analytics graphs, Log Browser, and third-party sinks | `false` | `true`, with a Control Plane Pump configured to write to both the Control Plane persistent database and your third-party sink |
 | Third-party sink only, minimal Tyk Dashboard dependency | Run a separate [OpenTelemetry](/api-management/traces) integration on the Gateway instead | n/a |
 
 ## GraphQL Traffic
 
-The mechanics above are for REST traffic. There is no dedicated path through the Hybrid Pump or Tyk MDCB for GraphQL.
+Tyk Gateway records GraphQL-specific details with each GraphQL request. When the Hybrid Pump's `aggregated` is `false`, it passes these details to Tyk MDCB unchanged.
 
-The Hybrid Pump has no GraphQL-specific handling, so GraphQL requests pass through as ordinary, undifferentiated traffic logs: they're included in Log Browser and in the general aggregated analytics like any other request, but they never populate the GraphQL-specific [Activity by Graph](/api-management/dashboard-analytics#activity-by-graph) screen. That screen depends on the `sql-graph-aggregate` pump, which only exists for combined deployments; there's no distributed-deployment equivalent.
+With SQL and `forward_analytics_to_pump: false`, Tyk MDCB's built-in writer stores GraphQL traffic logs and aggregated analytics in dedicated GraphQL tables. It does this the same way as the `sql-graph` and `sql-graph-aggregate` pumps in a combined deployment, and it populates the [Activity by Graph](/api-management/dashboard-analytics#activity-by-graph) screen.
+
+GraphQL traffic doesn't populate **Activity by Graph** when:
+
+- Tyk MDCB uses MongoDB. GraphQL requests are stored as ordinary traffic logs and aggregated analytics only.
+- The Hybrid Pump is configured with `aggregated: true`. The Hybrid Pump doesn't create GraphQL aggregated analytics.
+
+In both cases, GraphQL requests are still included in the general aggregated analytics, and in Log Browser when `aggregated` is `false`.
 
 ## MCP Proxy Traffic
 
-The mechanics above are for REST traffic. MCP proxy traffic has its own dedicated path through the Hybrid Pump and Tyk MDCB. But unlike REST, storing MCP traffic logs doesn't also generate aggregated MCP analytics automatically, and Tyk Dashboard's Log Browser never reads MCP data at all, in any topology.
+MCP proxy traffic differs from REST traffic in two ways. Tyk Dashboard's Log Browser never reads MCP traffic logs, in any topology. And the Hybrid Pump only aggregates MCP traffic when configured to do so.
 
-When `forward_analytics_to_pump` is `false`, Tyk MDCB stores MCP traffic logs in the Control Plane's persistent database for your own downstream querying only, the same as the [Mongo MCP Pump](/api-management/dashboard-analytics/control-plane-pumps#mongo-mcp-pump) in a combined deployment. It doesn't compute and store MCP aggregated analytics.
+When the Hybrid Pump's `aggregated` is `false`, it sends MCP traffic logs to Tyk MDCB along with other traffic logs. With `forward_analytics_to_pump: false`, Tyk MDCB's built-in writer stores them in the Control Plane's persistent database for your own downstream querying. It also computes MCP aggregated analytics from them, for [Activity by MCP](/ai-management/mcp-gateway/mcp-analytics).
 
-To populate [Activity by MCP](/ai-management/mcp-gateway/mcp-analytics), you can either:
+With `forward_analytics_to_pump: true`, add an MCP aggregate pump type (`mongo-mcp-aggregate` or `sql-mcp-aggregate`) to the Control Plane Pump to populate Activity by MCP.
 
-- Set `enable_mcp_aggregation: true` and `aggregated: true` on the Hybrid Pump. This aggregates MCP traffic logs on the data plane before sending: you gain Activity by MCP, but lose the individual MCP traffic logs. This is the same trade-off as REST API traffic has with `aggregated: true`.
-- Keep the Hybrid Pump sending MCP traffic logs individually, set `forward_analytics_to_pump: true`, and configure a Control Plane Pump with an MCP aggregate pump type (`mongo-mcp-aggregate` or `sql-mcp-aggregate`) to compute Activity by MCP's data from that forwarded data.
+When `aggregated` is `true`, set `enable_mcp_aggregation: true` on the Hybrid Pump to populate **Activity by MCP**. The Hybrid Pump then aggregates MCP traffic on the data plane before sending it, and the individual MCP traffic logs are lost. REST traffic has the same trade-off.
 
 <Note>
-If `aggregated: true` on the Hybrid Pump but `enable_mcp_aggregation` is left `false` (the default), MCP analytics are dropped entirely rather than aggregated. Unlike REST traffic, which still gets aggregated in this mode, MCP traffic gets nothing at all: no aggregated data, and no traffic logs either, since `aggregated: true` already means individual traffic logs of any kind aren't sent.
+If `aggregated` is `true` on the Hybrid Pump and `enable_mcp_aggregation` is `false` (the default), the Hybrid Pump discards MCP analytics. It sends no MCP aggregated analytics and no MCP traffic logs, because `aggregated: true` stops all traffic logs. REST traffic is still aggregated in this mode.
 </Note>
