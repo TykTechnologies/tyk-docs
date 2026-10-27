@@ -452,6 +452,99 @@ The Dashboard triggers a gateway reload automatically.
 
 ---
 
+### Partially update an MCP proxy
+
+From Tyk Dashboard 5.16.0, you can change specific fields of an MCP proxy definition without sending the whole definition. Tyk Dashboard applies your changes to the stored definition and leaves every other field as it is.
+
+| Property | Value |
+|---|---|
+| Method | `PATCH` |
+| URL | `/api/mcps/{apiId}` |
+| Auth | `Authorization: {dashboard-api-key}` |
+| Content-Type | `application/merge-patch+json` |
+| Request body | A [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7396) containing only the fields to change |
+| Optional header | `If-Match: {ETag}` |
+
+Structure the patch to match the MCP proxy definition returned by [Get an MCP proxy](#get-an-mcp-proxy-1):
+
+- To add or change a field, include it with its new value.
+- To remove a field, set it to `null`.
+- Arrays are replaced in full, so include every element you want to keep.
+
+**Example request**
+
+This patch changes only the upstream URL:
+
+```bash
+curl -X PATCH ${DASH_URL}/api/mcps/{apiID} \
+  -H "Authorization: ${DASH_KEY}" \
+  -H "Content-Type: application/merge-patch+json" \
+  -d '{
+    "x-tyk-api-gateway": {
+      "upstream": { "url": "https://weather-mcp-v2.example.com" }
+    }
+  }'
+```
+
+**Response**: `200 OK`
+
+```json
+{
+  "Status": "OK",
+  "Message": "Api updated",
+  "Meta": null
+}
+```
+
+If the patch makes no change, the message is `Api unchanged`. The Dashboard triggers a gateway reload automatically after a change.
+
+**Avoiding conflicting updates**
+
+The response to [Get an MCP proxy](#get-an-mcp-proxy-1) includes an `ETag` header, which changes every time the definition is saved. To make sure your patch doesn't overwrite changes made since you read the MCP proxy, send that value in the `If-Match` header. If the definition has changed, Tyk Dashboard returns `412 Precondition Failed` and saves nothing. Read the MCP proxy again and reapply your change.
+
+For example, read the MCP proxy and note the `ETag` response header:
+
+```bash
+curl -i ${DASH_URL}/api/mcps/{apiID} \
+  -H "Authorization: ${DASH_KEY}"
+```
+
+```
+HTTP/1.1 200 OK
+Content-Type: application/json
+ETag: "1792395213000"
+...
+```
+
+Then send that value, including the double quotes, in `If-Match`. An `ETag` value is always a quoted string, as defined in [RFC 9110, section 8.8.3](https://www.rfc-editor.org/rfc/rfc9110#section-8.8.3):
+
+```bash
+curl -X PATCH ${DASH_URL}/api/mcps/{apiID} \
+  -H "Authorization: ${DASH_KEY}" \
+  -H "Content-Type: application/merge-patch+json" \
+  -H 'If-Match: "1792395213000"' \
+  -d '{
+    "x-tyk-api-gateway": {
+      "upstream": { "url": "https://weather-mcp-v2.example.com" }
+    }
+  }'
+```
+
+Without `If-Match`, Tyk Dashboard applies your patch to the latest stored version of the definition.
+
+**Error responses**
+
+| Status | Condition |
+|---|---|
+| `400 Bad Request` | The body is not valid JSON or not a JSON object, the ID belongs to an API that is not an MCP proxy, or the patched definition fails validation. |
+| `404 Not Found` | No MCP proxy exists with the given ID. |
+| `409 Conflict` | The definition kept changing while Tyk Dashboard applied a patch sent without `If-Match`. Retry the request. |
+| `412 Precondition Failed` | The definition has changed since the `ETag` in `If-Match` was read. |
+| `413 Content Too Large` | The patch is larger than 10 MiB. |
+| `415 Unsupported Media Type` | The `Content-Type` is not `application/merge-patch+json`. |
+
+---
+
 ### Delete an MCP proxy
 
 Removes an MCP proxy and triggers a gateway reload.
