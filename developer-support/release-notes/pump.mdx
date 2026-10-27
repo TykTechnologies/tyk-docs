@@ -15,6 +15,152 @@ Only the most recent Tyk Pump release is supported. We recommend staying current
 
 ---
 
+## 1.18 Release Notes
+
+### 1.18.0 Release Notes
+
+#### Release Date 27 October 2026
+
+#### Release Highlights
+
+This release adds controls for the PostgreSQL connection pools that Tyk Pump uses, and an option to include analytics record tags in the Syslog Pump output.
+
+**PostgreSQL Connection Pool Controls**
+
+Four new options let you limit the size and lifetime of each PostgreSQL connection pool, so Tyk Pump can release idle connections instead of holding them indefinitely. This helps in blue/green deployments, where an idle Pump can otherwise hold connections that the active Pump needs.
+
+**Tags in Syslog Pump Output**
+
+The new `include_tags` option adds the `tags` field of each analytics record to the Syslog Pump output. The option is disabled by default.
+
+For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-v1.18.0).
+
+#### Breaking Changes
+
+This release has no breaking changes.
+
+#### Dependencies
+
+##### 3rd Party Dependencies & Tools
+
+
+| Third Party Dependency                                    | Tested Versions            | Compatible Versions        |
+| :-------------------------------------------------------- | :------------------------- | :------------------------- | 
+| [MongoDB](https://www.mongodb.com/try/download/community) | 7.0.x, 8.0.x, 9.0.x        | 7.0.x, 8.0.x, 9.0.x        |
+| [PostgreSQL](https://www.postgresql.org/download/)        | 15.x, 16.x, 17.x, 18.x     | 15.x, 16.x, 17.x, 18.x     | 
+| [Redis](https://redis.io/download/)                       | 7.x, 8.x (up to 8.4)       | 7.x, 8.x (up to 8.4)       | 
+| [Valkey](https://valkey.io/download/)                     | 7.2.x, 8.0.x, 8.1.x, 9.1.x | 7.2.x, 8.0.x, 8.1.x, 9.1.x |                            
+
+Given the time difference between your upgrade and the release of this version, we recommend that customers verify the ongoing support of third-party dependencies they install, as their status may have changed since the release.
+
+#### Deprecations
+
+There are no deprecations in this release.
+
+#### Upgrade instructions
+
+For users currently on v1.17.0, we strongly recommend promptly upgrading to the latest release.
+
+Go to the [Upgrading Tyk](#upgrading-tyk) section for detailed upgrade instructions.
+
+#### Downloads
+- [Docker Image v1.18.0](https://hub.docker.com/r/tykio/tyk-pump-docker-pub/tags?page=&page_size=&ordering=&name=v1.18.0)
+  - ```bash
+    docker pull tykio/tyk-pump-docker-pub:v1.18.0
+    ```
+- Source code tarball for OSS - [GH Tyk Pump Repo](https://github.com/TykTechnologies/tyk-pump/releases/tag/v1.18.0)
+
+#### Changelog
+<a id="Changelog-v1.18.0" data-scroll-offset></a>
+
+
+##### Added
+
+<AccordionGroup>
+
+<Accordion title='Added PostgreSQL connection pool controls'>
+{/* TT-17916 */}
+Tyk Pump now exposes configuration options to manage its pools of PostgreSQL database connections.
+
+The following options are available in the `postgres` section of each SQL Pump's `meta` configuration (for example, `pumps.sql.meta.postgres.max_open_connections`) and of `uptime_pump_config`:
+
+- `max_open_connections`:  sets the maximum number of open connections in the pool (default: unlimited)
+- `max_idle_connections`: sets the maximum number of idle connections kept in the pool (default: 2)
+- `connection_max_lifetime`: sets how long a connection can be reused before being closed (default: unlimited)
+- `connection_max_idle_time`: sets how long a connection can sit idle before being closed (default: unlimited)
+
+If a value is negative or is not a valid duration, the affected pump type fails to initialize and Pump logs an error.
+
+<Note>
+Tyk MDCB maintains a separate connection pool for each configured SQL Pump and another for the Uptime Pump. The limits apply to each pool. 
+</Note>
+
+For more details see [SQL Connection Pool Management](https://tyk.io/docs/tyk-configuration-reference/sql#connection-pool-management).
+</Accordion>
+
+<Accordion title='Added the option to include tags in Syslog Pump output'>
+{/* TT-17479 */}
+The Syslog Pump can now include the `tags` field of each analytics record, in the same way as the Elasticsearch, Kafka, Kinesis and other pumps. Enable it with the new `include_tags` option in the Syslog Pump's `meta` configuration, or with the `TYK_PMP_PUMPS_SYSLOG_META_INCLUDETAGS` environment variable.
+
+The option is disabled by default, so existing Syslog output is unchanged unless you turn it on. Tags are escaped so each record stays on a single line.
+
+Records with many tags can exceed the size limit of the default UDP transport, which can cause some syslog servers to truncate them. Pump logs a warning when `include_tags` is enabled with UDP. If you use many tags, we recommend the `tcp` transport.
+</Accordion>
+
+<Accordion title='Added MCP protocol version fields to MCP analytics'>
+{/* TT-18010 */}
+Tyk Pump now stores the MCP protocol version information that [Tyk Gateway 5.16.0](/developer-support/release-notes/gateway#5-16-0-release-notes) records for each MCP request, so you can track adoption of the MCP 2026-07-28 protocol across your MCP traffic.
+
+Three new fields are added to MCP analytics records:
+
+- `effective_protocol_version`: the protocol version Tyk used to handle the request.
+- `declared_protocol_version`: the protocol version the client declared.
+- `protocol_version_source`: how the effective version was determined (`header_body`, `header`, `body`, `session` or `legacy_fallback`).
+
+The fields are written by the MCP MongoDB and MCP SQL pumps, and by the Elasticsearch pump when an MCP index is configured. With SQL, the new columns are added to the MCP table automatically. Records from older Gateways leave these fields empty.
+</Accordion>
+
+</AccordionGroup>
+
+##### Fixed
+
+<AccordionGroup>
+
+<Accordion title='Fixed lost aggregated analytics from PostgreSQL deadlocks with multiple Pump instances'>
+{/* TT-9424 */}
+Running two or more Pump instances that write analytics to PostgreSQL could cause database deadlocks on the aggregated analytics tables. Each deadlock caused that cycle's aggregated analytics to be lost, with a `deadlock detected (SQLSTATE 40P01)` error in the logs.
+
+Pump instances now write aggregated analytics in a consistent order, so they no longer deadlock and can keep writing in parallel. The fix applies to the SQL Aggregate, GraphQL SQL Aggregate, MCP SQL Aggregate and Uptime Pumps, including date-sharded tables. If you reduced Pump to a single instance, or adjusted `batch_size` or `purge_delay`, to work around this issue, you can now revert those changes.
+</Accordion>
+
+</AccordionGroup>
+
+##### Security Fixes
+
+<AccordionGroup>
+
+<Accordion title='Resolved CVEs'>
+We have addressed CVEs reported in dependent libraries, providing increased protection against security vulnerabilities, including, but not limited to:
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-56855" target="_blank">CVE-2026-56855</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78662" target="_blank">CVE-2026-78662</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-84445" target="_blank">CVE-2026-84445</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-56866" target="_blank">CVE-2026-56866</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78659" target="_blank">CVE-2026-78659</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78660" target="_blank">CVE-2026-78660</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78667" target="_blank">CVE-2026-78667</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78669" target="_blank">CVE-2026-78669</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-94439" target="_blank">CVE-2026-94439</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-94440" target="_blank">CVE-2026-94440</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-97031" target="_blank">CVE-2026-97031</a>
+- <a href="https://security-tracker.debian.org/tracker/DSA-6572-1" target="_blank">DSA-6572-1</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-111943" target="_blank">CVE-2026-111943</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-63209" target="_blank">CVE-2026-63209</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-111497" target="_blank">CVE-2026-111497</a>
+
+</Accordion>
+
+</AccordionGroup>
+
 ## 1.17 Release Notes
 
 ### 1.17.0 Release Notes
