@@ -15,19 +15,6 @@ Fragments let a platform team own shared configuration, such as security and tra
 
 API Fragments are available from Tyk Dashboard 5.16.0, for Tyk OAS APIs and Tyk Streams APIs.
 
-### API Fragments and API Templates
-
-Tyk Dashboard stores Fragments as Assets, together with [API Templates](/platform-management/api-templates). The two work in different ways:
-
-| | API Template | API Fragment |
-| :--- | :--- | :--- |
-| Purpose | A starting point for a new API | Configuration that many APIs share |
-| When it applies | Once, when you create the API | Every time Tyk sends the API to Tyk Gateway |
-| Relationship to the API | Tyk copies the Template into the API. Later changes to the Template don't affect the API. | The API keeps a reference. Changes to the Fragment apply to the API. |
-| Size | Any part of an API definition | One value in an API definition, such as a configuration object |
-
-You can use them together. A Template can contain Fragment references. An API that you create from that Template keeps the references, so it receives later changes to those Fragments. See [Fragments in API Templates](#fragments-in-api-templates).
-
 ## How API Fragments Work
 
 ### Fragment References
@@ -70,6 +57,29 @@ These rules apply to references:
 - The reference must be the only key in its object. If you add other keys next to `$ref`, Tyk Dashboard rejects the API definition.
 - A Fragment can't contain references to other Fragments.
 - The referenced Fragment must exist in the same Organisation.
+
+### When to Use Fragments
+
+A Fragment replaces one value in an API definition, usually a configuration object. These are typical candidates:
+
+| Shared Configuration | Location in the Tyk OAS API Definition |
+| :--- | :--- |
+| A standard JWT validation setup | An entry in `x-tyk-api-gateway.server.authentication.securitySchemes` |
+| Upstream mutual TLS | `x-tyk-api-gateway.upstream.mutualTLS` |
+| Upstream TLS settings | `x-tyk-api-gateway.upstream.tlsTransport` |
+| A rate limit that protects an upstream service | `x-tyk-api-gateway.upstream.rateLimit` |
+| CORS settings for browser clients | `x-tyk-api-gateway.middleware.global.cors` |
+| Traffic logging | `x-tyk-api-gateway.middleware.global.trafficLogs` |
+| Custom plugin bundle and driver settings | `x-tyk-api-gateway.middleware.global.pluginConfig` |
+| IP access control | `x-tyk-api-gateway.server.ipAccessControl` |
+
+A Fragment can also hold part of the OpenAPI description, for example a security scheme that many APIs share.
+
+Don't use a Fragment for:
+
+- configuration that is specific to one API, such as its listen path or upstream URL
+- configuration that you expect API teams to change for their API. Put it in a Template instead.
+- settings that Tyk Developer Portal writes to the API, if the Developer Portal publishes the API. See the [limitations of API Fragments](#limitations).
 
 ### When Tyk Resolves References
 
@@ -144,71 +154,17 @@ If Tyk Dashboard rejects a change, the Fragment page shows the reasons under **I
 
 ## Use API Fragments with the Tyk Dashboard API
 
-Fragments are Assets with the `kind` set to `fragment`. You manage them with the `/api/assets` endpoints of the [Tyk Dashboard API](/tyk-dashboard-api).
+Fragments are Assets with the `kind` set to `fragment`. You create, update and delete them with the `/api/assets` endpoints of the [Tyk Dashboard API](/tyk-dashboard-api). {/* TODO: Link to the Assets endpoints in the Tyk Dashboard API reference when the 5.16.0 swagger is published. */}
 
-### Register a Fragment
+After you register a Fragment, add a reference to it in an API definition, as shown in [Fragment References](#fragment-references). Then update the API through the Tyk Dashboard API.
 
-To register a Fragment, send the Asset in the body of a `POST` request to the `/api/assets` endpoint of Tyk Dashboard:
+Note these behaviors of the Assets endpoints:
 
-```bash
-curl -X POST "https://{DASHBOARD_URL}/api/assets" \
-  -H "Authorization: {DASHBOARD_API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "id": "cors-allow-list",
-    "name": "cors-allow-list",
-    "kind": "fragment",
-    "description": "CORS settings for browser clients",
-    "tags": ["security"],
-    "data": {
-      "enabled": true,
-      "allowedOrigins": ["https://app.example.com"],
-      "allowedMethods": ["GET", "POST"]
-    }
-  }'
-```
+- `PUT /api/assets/{id}` replaces the complete Asset. If you omit `tags`, Tyk Dashboard removes the existing tags.
+- If no Asset exists with this `id`, `PUT /api/assets/{id}` creates it.
+- To filter Fragments by tag with `GET /api/assets?kind=fragment`, you must also send `paginated=true`.
 
-| Field | Description |
-| :--- | :--- |
-| `id` | The Fragment ID, used in references. It can't contain spaces. If you omit it, Tyk Dashboard generates one. You can't change it later. |
-| `name` | A name for the Fragment. |
-| `kind` | Must be `fragment`. |
-| `description` | Optional. What the Fragment holds and where to use it. |
-| `tags` | Optional. A list of tags to group and filter Fragments. |
-| `data` | The value of the Fragment. Any JSON value except `null`. |
-
-To update a Fragment, send the complete Asset to `PUT /api/assets/{id}`. If no Asset exists with this `id`, it will be created by the `PUT` operation. If you omit `tags` from a `PUT`, Tyk Dashboard removes the existing tags.
-
-
-
-### Endpoints
-
-| Method and Path | Description |
-| :--- | :--- |
-| `GET /api/assets?kind=fragment` | List Fragments. You can filter them by tag, search them by name, and get the results in pages. Note that filtering requires the `?paginated=true` parameter. |
-| `GET /api/assets/tags?kind=fragment` | List the tags used on Fragments, with the number of Fragments for each tag. |
-| `GET /api/assets/{id}/apis` | List the APIs that reference the Fragment. |
-| `GET /api/apis/oas/{apiId}` | Get a Tyk OAS API definition. The response contains the Fragment references and the header `x-tyk-fragmented: true`. Add `resolved=true` to get the definition with the references resolved. |
-| `GET /api/apis/streams/{apiId}` | Get a Tyk Streams API definition. The response contains the Fragment references and the header `x-tyk-fragmented: true`. Add `resolved=true` to get the definition with the references resolved. |
-| `GET /api/apis/oas/{apiId}/fragments` | Get the Fragments that a Tyk OAS API references, with the location of each reference in the API definition. |
-| `GET /api/apis/streams/{apiId}/fragments` | Get the Fragments that a Tyk Streams API references, with the location of each reference in the API definition. |
-| `GET /api/apis/oas/{apiId}/export` | Export a Tyk OAS API definition. The export contains the Fragment references. Add `resolved=true` to export the definition with the references resolved. |
-
-For the parameters and responses of each endpoint, see the [Tyk Dashboard API](/tyk-dashboard-api) reference.
-
-### Errors
-
-| Status | When |
-| :--- | :--- |
-| `400` | You change a Fragment, and the new value would make an API invalid. The response lists the APIs that would break. |
-| `400` | An API definition has other keys next to a Fragment reference, or references a Fragment that doesn't exist. |
-| `409` | You create a Fragment with an ID that already exists. |
-| `409` | You delete a Fragment, or change its `kind`, while an API or API Template references it. The response lists the references. |
-| `422` | A Fragment has no `data`, has an ID that contains spaces, or contains a reference to another Fragment. |
-
-## Use API Fragments with Tyk Sync
-
-[Tyk Sync](/api-management/automations/sync#working-with-api-templates-and-api-fragments) 2.3.0 and later can dump, publish and sync Fragments together with your APIs. It stores each Fragment as an Asset file and publishes Fragments before the APIs that reference them.
+To manage Fragments as code, use [Tyk Sync](/api-management/automations/sync#working-with-api-templates-and-api-fragments) 2.3.0 or later.
 
 ## Control Access to Fragments
 
