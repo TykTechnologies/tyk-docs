@@ -124,18 +124,27 @@ For MySQL and MariaDB, `tls=true` encrypts the connection and verifies the serve
 
 ## Connection Pool Management
 
-Each component maintains one or more [pools of connections](/api-management/persistent-database#connection-pool-management) to the database:
+Each component keeps one or more [pools of connections](/api-management/persistent-database#connection-pool-management) to the database. You can limit the size of each pool and how long its connections stay open. The table shows how many pools each component opens, and the default value of each setting:
 
 | Component | Number of Pools | Max Open Connections | Max Idle Connections | Max Connection Lifetime | Max Connection Idle Time |
 |---|---|---|---|---|---|
-| Tyk Dashboard | 8 | Unlimited (configurable) | 2 (configurable) | Unlimited (configurable) | Unlimited (configurable) |
+| Tyk Dashboard | 8 | Unlimited | 2 | Unlimited | Unlimited |
 | Tyk MDCB | 1 to 7, depending on configuration | Unlimited | 2 | Unlimited | Unlimited |
-| Tyk Pump | Varies, one per configured pump type | Unlimited | 2 | Unlimited | Unlimited |
-| Tyk Developer Portal | 1 | Unlimited (configurable) | 2 (configurable) | 30 minutes (configurable) | Unlimited |
+| Tyk Pump | One per configured SQL pump | Unlimited | 2 | Unlimited | Unlimited |
+| Tyk Developer Portal | 1 | Unlimited | 2 | 30 minutes | Unlimited (not configurable) |
+
+You can change these settings in:
+
+- Tyk Dashboard 5.15.0 and later
+- Tyk MDCB 2.14.0 and later
+- Tyk Pump 1.18.0 and later
+- Tyk Developer Portal, except the idle time
+
+The sections below show how to configure each component.
 
 **Sizing Guidance**
 
-For Tyk Dashboard and Tyk Developer Portal, the two components with configurable pools, size `max_open_connections` against your database's own maximum connection limit: divide that limit by the number of instances you're running, and by however many pools each instance opens (one for Tyk Developer Portal, eight for Tyk Dashboard), to find a safe per-pool ceiling that keeps every instance's connections within the database's own limit.
+Size `max_open_connections` against the maximum number of connections that your database allows. Divide that maximum by the number of instances of each component that share the database, and by the number of pools that each instance opens (see the table). The result is a safe per-pool limit that keeps every instance within the database limit.
 
 ### Tyk Dashboard
 
@@ -166,6 +175,88 @@ Tyk Dashboard's pools are configured per category, under `storage.<category>.pos
 <Note>
 These settings apply **per connection pool**, and Tyk Dashboard maintains [eight of them](/api-management/persistent-database#connection-pool-management) - one read and one write pool for each of its four categories of data. Setting `max_open_connections` to `10` for `main` permits up to 20 open connections for that category alone (10 for reads, 10 for writes), not 10 across the whole Dashboard.
 </Note>
+
+### Tyk MDCB
+
+Tyk MDCB's pools are configured in the `analytics.postgres` block of `tyk_sink.conf` (or the equivalent environment variables):
+
+```json expandable
+{
+  "analytics": {
+    "type": "postgres",
+    "connection_string": "user=root password=admin dbname=tyk-demo-db host=tyk-db port=5432",
+    "postgres": {
+      "max_open_connections": 10,
+      "max_idle_connections": 2,
+      "connection_max_lifetime": "30m",
+      "connection_max_idle_time": "5m"
+    }
+  }
+}
+```
+
+The fields have the same meaning as for [Tyk Dashboard](#tyk-dashboard). The environment variables are:
+
+- `TYK_MDCB_ANALYTICSCONFIG_POSTGRES_MAXOPENCONNECTIONS`
+- `TYK_MDCB_ANALYTICSCONFIG_POSTGRES_MAXIDLECONNECTIONS`
+- `TYK_MDCB_ANALYTICSCONFIG_POSTGRES_CONNECTIONMAXLIFETIME`
+- `TYK_MDCB_ANALYTICSCONFIG_POSTGRES_CONNECTIONMAXIDLETIME`
+
+Tyk MDCB applies the same settings to each of its pools. The number of pools depends on how Tyk MDCB handles analytics:
+
+| Pools | Purpose | Opened When |
+|---|---|---|
+| 1 | [Main Storage](/api-management/persistent-database#main-storage) | Always |
+| 3 | [Traffic Logs](/api-management/persistent-database#traffic-logs): standard, GraphQL and MCP | `forward_analytics_to_pump` is `false` |
+| 3 | [Aggregate Analytics](/api-management/persistent-database#aggregate-analytics): standard, GraphQL and MCP | `forward_analytics_to_pump` and `dont_store_aggregate` are both `false` |
+
+<Note>
+These settings apply **per connection pool**. With the default configuration, Tyk MDCB opens seven pools, so it can open up to seven times `max_open_connections` connections. When you set `max_open_connections`, Tyk MDCB logs the number of pools and the total number of connections at startup.
+</Note>
+
+Tyk MDCB doesn't start if `max_open_connections` or `max_idle_connections` is negative, or if `connection_max_lifetime` or `connection_max_idle_time` is not a valid, non-negative duration.
+
+### Tyk Pump
+
+Tyk Pump's pools are configured per pump. Set them in the `meta.postgres` block of each SQL pump in `pump.conf`, and in `uptime_pump_config.postgres` for the uptime pump (or the equivalent environment variables):
+
+```json expandable
+{
+  "pumps": {
+    "sql": {
+      "type": "sql",
+      "meta": {
+        "type": "postgres",
+        "connection_string": "user=root password=admin dbname=tyk-demo-db host=tyk-db port=5432",
+        "postgres": {
+          "max_open_connections": 10,
+          "max_idle_connections": 2,
+          "connection_max_lifetime": "30m",
+          "connection_max_idle_time": "5m"
+        }
+      }
+    }
+  }
+}
+```
+
+The fields have the same meaning as for [Tyk Dashboard](#tyk-dashboard). They apply only when the `type` in `meta` is `postgres`.
+
+The environment variables follow the same pattern as the other settings of each pump. For example:
+
+| Pump | Example Environment Variable |
+|---|---|
+| `sql` | `TYK_PMP_PUMPS_SQL_META_POSTGRES_MAXOPENCONNECTIONS` |
+| `sql_aggregate` | `TYK_PMP_PUMPS_SQLAGGREGATE_META_POSTGRES_MAXOPENCONNECTIONS` |
+| Uptime pump | `TYK_PMP_UPTIMEPUMPCONFIG_POSTGRES_MAXOPENCONNECTIONS` |
+
+Tyk Pump opens one pool for each SQL pump that you configure, including the uptime pump, and limits each pool with the settings of its pump.
+
+<Note>
+These settings apply **per connection pool**. For example, if you configure both the `sql` and `sql_aggregate` pumps with `max_open_connections` set to `10`, Tyk Pump can open up to 20 connections.
+</Note>
+
+If `max_open_connections` or `max_idle_connections` is negative, or if `connection_max_lifetime` or `connection_max_idle_time` is not a valid, non-negative duration, Tyk Pump doesn't start that pump, and logs the error. Its other pumps still start. If `max_idle_connections` is greater than `max_open_connections`, Tyk Pump logs a warning and uses `max_open_connections` as the limit.
 
 ### Tyk Developer Portal
 

@@ -202,10 +202,11 @@ paths:
         "200":
           content:
             text/plain:
+              example:
+                status: ok
               schema:
                 properties:
                   status:
-                    example: ok
                     type: string
                 type: object
           description: OK
@@ -1623,6 +1624,8 @@ paths:
               schema:
                 type: string
               style: simple
+            ETag:
+              $ref: '#/components/headers/ETag'
         "400":
           content:
             application/json:
@@ -1771,6 +1774,96 @@ paths:
                 $ref: '#/components/schemas/ApiResponse'
           description: Internal server error.
       summary: Update API Definition
+      tags:
+      - APIs
+    patch:
+      x-mint:
+        metadata:
+          canonical: "https://tyk.io/docs/api-reference/apis/patch-an-api-definition-with-a-merge-patch"
+          noindex: true
+          robots: "noindex, follow"
+      description: |-
+        Apply an RFC 7396 JSON Merge Patch to the unresolved definition a GET returns.
+        `null` removes a key and arrays are replaced whole. The result is validated and
+        saved as a PUT would be. Send `If-Match` to make the update conditional; without
+        it, a patch that races another write is retried up to five times.
+      operationId: patchApi
+      parameters:
+      - description: ID of the API. Can either be internal or public API ID.
+        example: b84fe1a04e5648927971c0557971565c
+        in: path
+        name: apiId
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            example:
+              api_definition:
+                proxy:
+                  target_url: https://httpbin.org/anything
+            schema:
+              type: object
+      responses:
+        "200":
+          content:
+            application/json:
+              example:
+                Message: Api updated
+                Meta: null
+                Status: OK
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: The patch was applied, or changed nothing ("Api unchanged").
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+        "400":
+          content:
+            application/json:
+              example:
+                Message: Merge patch must be a JSON object
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: The patch is not a JSON object, the API is of another type, or the result is invalid.
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: Forbidden, or the listen path is already used, as on PUT.
+        "404":
+          content:
+            application/json:
+              example:
+                Message: api definition does not exist
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: API not found.
+        "409":
+          content:
+            application/json:
+              example:
+                Message: 'The API definition kept changing during the update: retry'
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: The definition kept changing while the patch was retried.
+        "412":
+          $ref: '#/components/responses/MergePatchPreconditionFailed'
+        "413":
+          $ref: '#/components/responses/MergePatchTooLarge'
+        "415":
+          $ref: '#/components/responses/MergePatchUnsupportedMediaType'
+      summary: Patch an API Definition with a merge patch
       tags:
       - APIs
   /api/apis/{apiId}/keys/search:
@@ -2508,6 +2601,14 @@ paths:
           schema:
             type: string
             enum: ["application/vnd.tyk.streams.oas"]
+        - description: When set to true, every "fragment://" reference in the returned definition is replaced in place by the body of the fragment it names. The response is otherwise unchanged, and the x-tyk-fragmented header is unaffected by it, still reporting whether the stored definition is fragmented rather than whether this response carries references. Any value other than "true" or "false" is rejected with a 400.
+          example: true
+          in: query
+          name: resolved
+          required: false
+          schema:
+            type: boolean
+            default: false
       responses:
         "200":
           content:
@@ -2521,6 +2622,17 @@ paths:
                   - $ref: '#/components/schemas/TykVendorExtension'
                   - $ref: '#/components/schemas/XTykStreaming'
           description: Fetched API.
+          headers:
+            x-tyk-fragmented:
+              description: Present and set to "true" when the returned definition still
+                contains unresolved "fragment://" references. Omitted entirely otherwise.
+                Fetch /api/apis/streams/{apiId}/fragments to find out where those
+                references sit and what they stand for.
+              schema:
+                enum:
+                - "true"
+                type: string
+              style: simple
         "400":
           content:
             application/json:
@@ -2530,7 +2642,7 @@ paths:
                 Status: Error
               schema:
                 $ref: '#/components/schemas/ApiResponse'
-          description: Bad request or API not found.
+          description: Bad request, an invalid `resolved` value, or API not found.
         "401":
           content:
             application/json:
@@ -2769,6 +2881,112 @@ paths:
       tags:
         - Streams APIs
 
+  /api/apis/streams/{apiId}/fragments:
+    get:
+      x-mint:
+        metadata:
+          canonical: "https://tyk.io/docs/api-reference/streams-apis/get-streams-api-s-fragments"
+          noindex: true
+          robots: "noindex, follow"
+      description: Get every fragment referenced by the specified Streams API, keyed by
+        the JSONPath of the reference node in the API definition. The API definition
+        returned by GET /api/apis/streams/{apiId} keeps its "fragment://" references
+        unresolved, so this is how a client finds out what each of them stands for.
+        A key addresses the reference node itself rather than the "$ref" member
+        inside it, so the surrounding block is reachable by trimming the path. A
+        fragment referenced from two places appears under two keys.
+      operationId: getStreamsApiFragments
+      parameters:
+      - description: ID of the API.
+        example: 4c1c0d8fc885401053ddac4e39ef676b
+        in: path
+        name: apiId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              example:
+                "$.info.description":
+                  id: api-description
+                  kind: fragment
+                  name: Shared API description
+                  data: This API is maintained by the platform team.
+                  last_updated: "2026-09-11T08:48:36.183Z"
+                  org_id: 5e9d9544a1dcd60001d0ed20
+                "$['x-tyk-api-gateway'].upstream.rateLimit":
+                  id: standard-rate-limit
+                  kind: fragment
+                  name: Standard rate limit
+                  data:
+                    enabled: true
+                    per: 60s
+                    rate: 100
+                  last_updated: "2026-09-11T08:48:36.183Z"
+                  org_id: 5e9d9544a1dcd60001d0ed20
+              schema:
+                additionalProperties:
+                  $ref: '#/components/schemas/Asset'
+                description: Fragment assets keyed by the JSONPath of the reference
+                  node. Empty when the API references no fragments. A fragment body
+                  may be any JSON value, so "data" is not always an object.
+                type: object
+          description: Fragments fetched.
+        "400":
+          content:
+            application/json:
+              example:
+                Message: Can't fetch OAS API for a Tyk Classic API.
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: The requested API is not a Tyk OAS API.
+        "401":
+          content:
+            application/json:
+              example:
+                Message: Not authorised
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: Unauthorized
+        "403":
+          content:
+            application/json:
+              example:
+                Message: 'access denied: You do not have permission to access  /api/apis/streams/{apiId}/fragments'
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              example:
+                Message: API not found
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: API not found.
+        "500":
+          content:
+            application/json:
+              example:
+                Message: Could not retrieve API fragments
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: Internal server error.
+      summary: Get Streams API's Fragments.
+      tags:
+      - Streams APIs
   /api/apis/oas:
     post:
       x-mint:
@@ -3036,6 +3254,14 @@ paths:
         required: true
         schema:
           type: string
+      - description: When set to true, every "fragment://" reference in the returned definition is replaced in place by the body of the fragment it names. The response is otherwise unchanged, and the x-tyk-fragmented header is unaffected by it, still reporting whether the stored definition is fragmented rather than whether this response carries references. Any value other than "true" or "false" is rejected with a 400.
+        example: true
+        in: query
+        name: resolved
+        required: false
+        schema:
+          type: boolean
+          default: false
       responses:
         "200":
           content:
@@ -3062,6 +3288,18 @@ paths:
               schema:
                 type: string
               style: simple
+            x-tyk-fragmented:
+              description: Present and set to "true" when the returned definition still
+                contains unresolved "fragment://" references. Omitted entirely otherwise.
+                Fetch /api/apis/oas/{apiId}/fragments to find out where those references
+                sit and what they stand for.
+              schema:
+                enum:
+                - "true"
+                type: string
+              style: simple
+            ETag:
+              $ref: '#/components/headers/ETag'
         "400":
           content:
             application/json:
@@ -3071,7 +3309,7 @@ paths:
                 Status: Error
               schema:
                 $ref: '#/components/schemas/ApiResponse'
-          description: Bad request or API not found.
+          description: Bad request, an invalid `resolved` value, or API not found.
         "401":
           content:
             application/json:
@@ -3111,11 +3349,25 @@ paths:
           canonical: "https://tyk.io/docs/api-reference/oas-apis/patch-a-single-oas-api-by-id"
           noindex: true
           robots: "noindex, follow"
-      description: Update a Tyk OAS API. You can use this endpoint to update the OAS
-        part of your Tyk OAS API definition. This endpoint allows you to configure
-        the Tyk OAS extension based on the query parameters provided (similar to import).
+      description: |-
+        Update a Tyk OAS API.
+
+        With `application/json`, `application/x-yaml` or `multipart/form-data`, replace the
+        OpenAPI description and configure `x-tyk-api-gateway` from the query parameters,
+        as on import. A body containing `x-tyk-api-gateway` is rejected.
+
+        With `application/merge-patch+json`, apply an RFC 7396 JSON Merge Patch to the
+        unresolved definition a GET returns. `null` removes a key and arrays are replaced
+        whole. The result is validated and saved as a PUT would be. Send `If-Match` to make
+        the update conditional; without it, a patch that races another write is retried up
+        to five times.
+
+        Fragment references are patched whole: swap one with `{"$ref": "fragment://<id>"}`,
+        detach it with `{"$ref": null, ...}` or remove it with `null`. Patching inside one
+        returns 409.
       operationId: patchApiOAS
       parameters:
+      - $ref: '#/components/parameters/IfMatch'
       - description: ID of the API you want to patch.
         example: 4c1c0d8fc885401053ddac4e39ef676b
         in: path
@@ -3132,6 +3384,13 @@ paths:
       - $ref: '#/components/parameters/Authentication'
       requestBody:
         content:
+          application/merge-patch+json:
+            example:
+              x-tyk-api-gateway:
+                upstream:
+                  url: https://httpbin.org/anything
+            schema:
+              type: object
           application/json:
             examples:
               PatchByUrl:
@@ -3170,6 +3429,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiResponse'
           description: Patched API.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
         "400":
           content:
             application/json:
@@ -3210,6 +3472,29 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiResponse'
           description: API not found.
+        "409":
+          content:
+            application/json:
+              examples:
+                fragmentReference:
+                  summary: The patch edits keys inside a fragment reference
+                  value:
+                    Message: '$[''x-tyk-api-gateway''].upstream.rateLimit is the fragment reference "shared-rl" and cannot be patched below: replace it with {"$ref": "fragment://<id>"}, detach it with {"$ref": null, ...}, or remove it with null'
+                    Meta: null
+                    Status: Error
+                concurrentWrites:
+                  summary: The definition kept changing while a patch without If-Match was retried
+                  value:
+                    Message: 'The API definition kept changing during the update: retry'
+                    Meta: null
+                    Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: The patch edits inside a fragment reference, or the definition kept changing.
+        "412":
+          $ref: '#/components/responses/MergePatchPreconditionFailed'
+        "413":
+          $ref: '#/components/responses/MergePatchTooLarge'
       summary: Patch a single OAS API by ID.
       tags:
       - OAS APIs
@@ -3901,6 +4186,112 @@ paths:
       summary: Export OAS API.
       tags:
       - OAS APIs
+  /api/apis/oas/{apiId}/fragments:
+    get:
+      x-mint:
+        metadata:
+          canonical: "https://tyk.io/docs/api-reference/oas-apis/get-oas-api-s-fragments"
+          noindex: true
+          robots: "noindex, follow"
+      description: Get every fragment referenced by the specified OAS API, keyed by
+        the JSONPath of the reference node in the API definition. The API definition
+        returned by GET /api/apis/oas/{apiId} keeps its "fragment://" references
+        unresolved, so this is how a client finds out what each of them stands for.
+        A key addresses the reference node itself rather than the "$ref" member
+        inside it, so the surrounding block is reachable by trimming the path. A
+        fragment referenced from two places appears under two keys.
+      operationId: getOASApiFragments
+      parameters:
+      - description: ID of the API.
+        example: 4c1c0d8fc885401053ddac4e39ef676b
+        in: path
+        name: apiId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              example:
+                "$.info.description":
+                  id: api-description
+                  kind: fragment
+                  name: Shared API description
+                  data: This API is maintained by the platform team.
+                  last_updated: "2026-09-11T08:48:36.183Z"
+                  org_id: 5e9d9544a1dcd60001d0ed20
+                "$['x-tyk-api-gateway'].upstream.rateLimit":
+                  id: standard-rate-limit
+                  kind: fragment
+                  name: Standard rate limit
+                  data:
+                    enabled: true
+                    per: 60s
+                    rate: 100
+                  last_updated: "2026-09-11T08:48:36.183Z"
+                  org_id: 5e9d9544a1dcd60001d0ed20
+              schema:
+                additionalProperties:
+                  $ref: '#/components/schemas/Asset'
+                description: Fragment assets keyed by the JSONPath of the reference
+                  node. Empty when the API references no fragments. A fragment body
+                  may be any JSON value, so "data" is not always an object.
+                type: object
+          description: Fragments fetched.
+        "400":
+          content:
+            application/json:
+              example:
+                Message: Can't fetch OAS API for a Tyk Classic API.
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: The requested API is not a Tyk OAS API.
+        "401":
+          content:
+            application/json:
+              example:
+                Message: Not authorised
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: Unauthorized
+        "403":
+          content:
+            application/json:
+              example:
+                Message: 'access denied: You do not have permission to access  /api/apis/oas/{apiId}/fragments'
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              example:
+                Message: API not found
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: API not found.
+        "500":
+          content:
+            application/json:
+              example:
+                Message: Could not retrieve API fragments
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: Internal server error.
+      summary: Get OAS API's Fragments.
+      tags:
+      - OAS APIs
   /api/apis/oas/{apiId}/versions:
     get:
       x-mint:
@@ -4497,6 +4888,9 @@ paths:
                 - $ref: '#/components/schemas/OAS3Document'
                 - $ref: '#/components/schemas/TykVendorExtension'
           description: The MCP Proxy definition.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
         "400": { description: Not an MCP Proxy definition, content: { application/json: { schema: { $ref: '#/components/schemas/ApiResponse' } } } }
         "404": { description: MCP Proxy definition not found, content: { application/json: { schema: { $ref: '#/components/schemas/ApiResponse' } } } }
       summary: Get an MCP Proxy definition.
@@ -4554,6 +4948,88 @@ paths:
         "400": { description: Validation failed,                  content: { application/json: { schema: { $ref: '#/components/schemas/ApiResponse' } } } }
         "404": { description: MCP Proxy definition not found,     content: { application/json: { schema: { $ref: '#/components/schemas/ApiResponse' } } } }
       summary: Update an MCP Proxy definition.
+      tags:
+      - MCP Proxies
+    patch:
+      x-mint:
+        metadata:
+          canonical: "https://tyk.io/docs/api-reference/mcp-proxies/patch-an-mcp-proxy-definition-with-a-merge-patch"
+          noindex: true
+          robots: "noindex, follow"
+      description: |-
+        Apply an RFC 7396 JSON Merge Patch to the unresolved definition a GET returns.
+        `null` removes a key and arrays are replaced whole. The result is validated and
+        saved as a PUT would be. Send `If-Match` to make the update conditional; without
+        it, a patch that races another write is retried up to five times.
+      operationId: patchMCPAPI
+      parameters:
+      - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            example:
+              info:
+                description: Patched description
+            schema:
+              type: object
+      responses:
+        "200":
+          content:
+            application/json:
+              example:
+                Message: Api updated
+                Meta: null
+                Status: OK
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: The patch was applied, or changed nothing ("Api unchanged").
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+        "400":
+          content:
+            application/json:
+              example:
+                Message: Merge patch must be a JSON object
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: The patch is not a JSON object, the API is of another type, or the result is invalid.
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: Forbidden, or the listen path is already used, as on PUT.
+        "404":
+          content:
+            application/json:
+              example:
+                Message: api definition does not exist
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: API not found.
+        "409":
+          content:
+            application/json:
+              example:
+                Message: 'The API definition kept changing during the update: retry'
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: The definition kept changing while the patch was retried.
+        "412":
+          $ref: '#/components/responses/MergePatchPreconditionFailed'
+        "413":
+          $ref: '#/components/responses/MergePatchTooLarge'
+        "415":
+          $ref: '#/components/responses/MergePatchUnsupportedMediaType'
+      summary: Patch an MCP Proxy definition with a merge patch
       tags:
       - MCP Proxies
     delete:
@@ -5170,70 +5646,171 @@ paths:
           canonical: "https://tyk.io/docs/api-reference/assets/retrieve-list-of-assets"
           noindex: true
           robots: "noindex, follow"
-      description: Retrieves all types of assets with optional kind filter.
+      description: Retrieves all types of assets with optional kind filter. Send
+        `paginated=true` to search, sort and page the results; the response is
+        then an object holding the page of assets and the number of pages.
       operationId: listAssets
       parameters:
       - description: Filter assets by kind (optional).
-        example: oas-template
+        example: fragment
         in: query
         name: kind
         required: false
         schema:
-          default: oas-template
           enum:
           - oas-template
+          - fragment
           type: string
+      - description: Set to `true` to return the paginated `{assets, pages}` object.
+          When missing or `false`, a bare array of every matching asset is returned
+          and `q`, `p` and `sort` are ignored.
+        example: true
+        in: query
+        name: paginated
+        required: false
+        schema:
+          default: false
+          type: boolean
+      - description: Only applies with `paginated=true`. Case-insensitive substring
+          match on the asset name. The value is matched literally, except that on
+          SQL storage `%` and `_` act as wildcards and `\` escapes the next character.
+        example: rate limit
+        in: query
+        name: q
+        required: false
+        schema:
+          type: string
+      - description: Only applies with `paginated=true`. Page number, starting at
+          1. Send `-1` to return every matching asset on one page.
+        example: 1
+        in: query
+        name: p
+        required: false
+        schema:
+          default: 1
+          type: integer
+      - description: Only applies with `paginated=true`. Field to sort by, prefixed
+          with `-` for descending order, as on `GET /api/apis`. Name sorts are
+          case-insensitive. Unknown values fall back to the default, newest created
+          first.
+        example: name
+        in: query
+        name: sort
+        required: false
+        schema:
+          default: -created_at
+          enum:
+          - name
+          - -name
+          - updated_at
+          - -updated_at
+          - created_at
+          - -created_at
+          type: string
+      - description: Filter fragments by tag (optional). Accepts a comma separated
+          list, or the parameter repeated, and returns the fragments carrying any
+          one of the tags. Matching is case-insensitive and a leading "#" is
+          ignored, so "#Security" matches "security". Omitted, no tag filter is
+          applied.
+        example:
+        - security
+        - payments
+        explode: false
+        in: query
+        name: tags
+        required: false
+        schema:
+          items:
+            type: string
+          type: array
+        style: form
       responses:
         "200":
           content:
             application/json:
-              example:
-              - _id: "363634636164353135373135656333663739386262636433"
-                data:
-                  info:
-                    title: Our Sample OAS
-                    version: 1.0.0
-                  openapi: 3.0.3
-                  paths:
-                    /anything:
-                      post:
-                        operationId: anythingpost
-                        responses:
-                          "200":
-                            description: Post created
-                  x-tyk-api-gateway:
-                    middleware:
-                      global:
-                        cache:
-                          cacheAllSafeRequests: true
-                          enabled: true
-                          timeout: 5
-                      operations:
-                        anythingpost:
-                          requestSizeLimit:
-                            enabled: true
-                            value: 100
-                description: My first template
-                id: my-unique-template-id
-                kind: oas-template
-                last_updated: "2024-05-21T17:18:57.294797+03:00"
-                name: my-template
-                org_id: 5e9d9544a1dcd60001d0ed20
+              examples:
+                paginated:
+                  summary: Returned when paginated=true.
+                  value:
+                    assets:
+                    - _id: "6634cad515715ec3f798bbcd"
+                      data:
+                        enabled: true
+                        per: 60
+                        rate: 100
+                      description: Shared rate limit
+                      id: rate-limit-100
+                      kind: fragment
+                      last_updated: "2024-05-21T17:18:57.294797+03:00"
+                      name: Rate limit 100
+                      org_id: 5e9d9544a1dcd60001d0ed20
+                    pages: 1
+                not_paginated:
+                  summary: Returned when paginated is missing or false.
+                  value:
+                  - _id: "363634636164353135373135656333663739386262636433"
+                    data:
+                      info:
+                        title: Our Sample OAS
+                        version: 1.0.0
+                      openapi: 3.0.3
+                      paths:
+                        /anything:
+                          post:
+                            operationId: anythingpost
+                            responses:
+                              "200":
+                                description: Post created
+                      x-tyk-api-gateway:
+                        middleware:
+                          global:
+                            cache:
+                              cacheAllSafeRequests: true
+                              enabled: true
+                              timeout: 5
+                          operations:
+                            anythingpost:
+                              requestSizeLimit:
+                                enabled: true
+                                value: 100
+                    description: My first template
+                    id: my-unique-template-id
+                    kind: oas-template
+                    last_updated: "2024-05-21T17:18:57.294797+03:00"
+                    name: my-template
+                    org_id: 5e9d9544a1dcd60001d0ed20
               schema:
-                items:
-                  $ref: '#/components/schemas/Asset'
-                type: array
-          description: templates fetched.
+                oneOf:
+                - items:
+                    $ref: '#/components/schemas/Asset'
+                  type: array
+                - $ref: '#/components/schemas/PaginatedAssets'
+          description: Assets fetched.
         "400":
           content:
             application/json:
-              example:
-                Message: 'unsupported asset kind: ''oas-temp'''
-                Meta: null
-                Status: Error
+              examples:
+                invalid_kind:
+                  summary: Returned when kind is not a supported asset kind.
+                  value:
+                    Message: 'unsupported asset kind: ''oas-temp'''
+                    Meta: null
+                    Status: Error
+                invalid_paginated:
+                  summary: Returned when paginated is not true or false.
+                  value:
+                    Message: invalid paginated parameter
+                    Meta: null
+                    Status: Error
+                invalid_page:
+                  summary: Returned when paginated=true and p is not an integer.
+                  value:
+                    Message: invalid page parameter
+                    Meta: null
+                    Status: Error
               schema:
                 $ref: '#/components/schemas/ApiResponse'
-          description: sending a type that is not supported in the kind query parameter.
+          description: Unsupported kind, or an invalid paginated or p query parameter.
         "401":
           content:
             application/json:
@@ -5390,6 +5967,83 @@ paths:
                 $ref: '#/components/schemas/ApiResponse'
           description: Internal server error.
       summary: Create an asset
+      tags:
+      - Assets
+  /api/assets/tags:
+    get:
+      x-mint:
+        metadata:
+          canonical: "https://tyk.io/docs/api-reference/assets/retrieve-every-tag-in-use"
+          noindex: true
+          robots: "noindex, follow"
+      description: Retrieves every tag in use in the organisation with the number
+        of assets carrying it. Only fragments carry tags.
+      operationId: listAssetTags
+      parameters:
+      - description: Restrict the counts to one kind of asset (optional).
+        example: fragment
+        in: query
+        name: kind
+        required: false
+        schema:
+          enum:
+          - oas-template
+          - fragment
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              example:
+                tags:
+                - count: 12
+                  name: payments
+                - count: 4
+                  name: security
+              schema:
+                $ref: '#/components/schemas/AllTagsResponse'
+          description: Tags fetched.
+        "400":
+          content:
+            application/json:
+              example:
+                Message: 'unsupported asset kind: ''oas-temp'''
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: sending a type that is not supported in the kind query parameter.
+        "401":
+          content:
+            application/json:
+              example:
+                Message: Not authorised
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: Unauthorized
+        "403":
+          content:
+            application/json:
+              example:
+                Message: 'access denied: You do not have permission to access  /api/assets/tags'
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: Forbidden
+        "500":
+          content:
+            application/json:
+              example:
+                Message: error listing asset tags.
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: Internal server error.
+      summary: Retrieve every tag in use.
       tags:
       - Assets
   /api/assets/{assetID}:
@@ -5724,6 +6378,116 @@ paths:
                 $ref: '#/components/schemas/ApiResponse'
           description: Internal server error.
       summary: Update an asset by ID.
+      tags:
+      - Assets
+  /api/assets/{assetID}/apis:
+    get:
+      x-mint:
+        metadata:
+          canonical: "https://tyk.io/docs/api-reference/assets/list-the-apis-that-reference-a-fragment"
+          noindex: true
+          robots: "noindex, follow"
+      description: List the APIs that reference a fragment asset. The answer comes
+        from the fragment references every API save records, so it is exactly the set
+        of APIs the fragment delete and update checks protect. Both active and draft
+        (inactive) APIs are included. Results are limited to the caller's
+        organisation but are not filtered by API ownership, so an API the caller
+        cannot open still appears, described only by its identifiers and name. The
+        list is ordered by API name, case-insensitively, then by api_id. A fragment
+        that nothing references returns an empty list; a lookup that could not be
+        completed returns an error, never an empty list.
+      operationId: listAssetReferencingApis
+      parameters:
+      - description: ID of the fragment asset - this value can be the database ID
+          of the asset or the custom ID provided during creation/update.
+        examples:
+          customID:
+            summary: Custom fragment ID.
+            value: standard-rate-limit
+          dbID:
+            summary: A unique database identifier assigned by Tyk.
+            value: 664cad515715ec3f798bbcd3
+        in: path
+        name: assetID
+        required: true
+        schema:
+          type: string
+      - description: Page to return, starting at 1. Use -1 to return every referencing
+          API in a single response.
+        example: 1
+        in: query
+        name: p
+        required: false
+        schema:
+          type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              example:
+                apis:
+                - api_id: 4c1c0d8fc885401053ddac4e39ef676b
+                  id: 66e2f5b8a1dcd60001d0ed31
+                  name: Orders API
+                - api_id: 9b2e6a6bd1c24f2a5b8f0e3c7d4a1f20
+                  id: 66e2f5c9a1dcd60001d0ed32
+                  name: Payments API
+                pages: 1
+                total_count: 2
+              schema:
+                $ref: '#/components/schemas/AssetReferencingAPIs'
+          description: APIs referencing the fragment.
+        "400":
+          content:
+            application/json:
+              example:
+                Message: 'asset is not a fragment: ''my-unique-template-id'''
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: The asset is not a fragment, or the page parameter is invalid.
+        "401":
+          content:
+            application/json:
+              example:
+                Message: Not authorised
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: Unauthorized
+        "403":
+          content:
+            application/json:
+              example:
+                Message: 'access denied: You do not have permission to access  /api/assets/{assetID}/apis'
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              example:
+                Message: 'asset not found: ''standard-rate-limit'''
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: Asset with ID does not exist.
+        "500":
+          content:
+            application/json:
+              example:
+                Message: 'error listing APIs referencing fragment: ''standard-rate-limit'''
+                Meta: null
+                Status: Error
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+          description: The referencing APIs could not be looked up.
+      summary: List the APIs that reference a fragment.
       tags:
       - Assets
   /api/certs:
@@ -12497,7 +13261,26 @@ components:
                         stream_path: "/sse"
                         ws_path: "/ws"
                   pattern: fan_out
+  headers:
+    ETag:
+      description: Version of the API definition, shared by its classic and OAS representations. Send it in `If-Match` on a PATCH.
+      schema:
+        type: string
+      example: '"4"'
+    Accept-Patch:
+      description: The patch format this route accepts.
+      schema:
+        type: string
+      example: application/merge-patch+json
   parameters:
+    IfMatch:
+      description: The `ETag` from a GET. If the definition has changed since, the PATCH returns 412. `*` matches any version.
+      example: '"4"'
+      in: header
+      name: If-Match
+      required: false
+      schema:
+        type: string
     AccessType:
       description: Filter for internal or external API versions.
       example: internal
@@ -12595,6 +13378,40 @@ components:
       schema:
         format: date
         type: string
+  responses:
+    MergePatchPreconditionFailed:
+      content:
+        application/json:
+          example:
+            Message: 'The API definition has changed since it was read: read it again and retry'
+            Meta: null
+            Status: Error
+          schema:
+            $ref: '#/components/schemas/ApiResponse'
+      description: The definition changed since the `If-Match` ETag was read.
+    MergePatchTooLarge:
+      content:
+        application/json:
+          example:
+            Message: Merge patch is too large
+            Meta: null
+            Status: Error
+          schema:
+            $ref: '#/components/schemas/ApiResponse'
+      description: The patch is larger than 10 MiB.
+    MergePatchUnsupportedMediaType:
+      content:
+        application/json:
+          example:
+            Message: 'Unsupported Content-Type: use application/merge-patch+json'
+            Meta: null
+            Status: Error
+          schema:
+            $ref: '#/components/schemas/ApiResponse'
+      description: The request is not a merge patch.
+      headers:
+        Accept-Patch:
+          $ref: '#/components/headers/Accept-Patch'
   schemas:
     OAS3Info:
       type: object
@@ -13173,8 +13990,88 @@ components:
             type: string
           type: array
       type: object
+    AccessCondition:
+      description: An additional constraint that a request has to satisfy before the
+        enclosing AccessSpec grants access.
+      properties:
+        "on":
+          description: 'How the options combine: "all" requires every configured option
+            to match, "any" requires just one of them.'
+          example: all
+          type: string
+        options:
+          $ref: '#/components/schemas/AccessConditionOptions'
+      type: object
+    AccessConditionOptions:
+      description: The matches an access condition evaluates. A match with an empty
+        match_rx and reverse set to true requires the name to be absent.
+      properties:
+        body_field_matches:
+          description: Matches on fields of a JSON request body. Each names its field
+            by path in gjson syntax, e.g. "customer.id", and one path can carry
+            several rules. A body that is not valid JSON, or that repeats a key,
+            fails the match.
+          example:
+          - match_rx: ^[0-9]+$
+            path: customer.id
+          items:
+            $ref: '#/components/schemas/BodyFieldMatch'
+          nullable: true
+          type: array
+        header_matches:
+          additionalProperties:
+            $ref: '#/components/schemas/StringRegexMap'
+          nullable: true
+          type: object
+        path_part_matches:
+          additionalProperties:
+            $ref: '#/components/schemas/StringRegexMap'
+          nullable: true
+          type: object
+        payload_matches:
+          $ref: '#/components/schemas/StringRegexMap'
+        query_val_matches:
+          additionalProperties:
+            $ref: '#/components/schemas/StringRegexMap'
+          nullable: true
+          type: object
+        request_context_matches:
+          additionalProperties:
+            $ref: '#/components/schemas/StringRegexMap'
+          nullable: true
+          type: object
+        session_meta_matches:
+          additionalProperties:
+            $ref: '#/components/schemas/StringRegexMap'
+          nullable: true
+          type: object
+      type: object
+      x-go-package: github.com/TykTechnologies/tyk/user
+    BodyFieldMatch:
+      description: A rule applied to one field of a JSON request body.
+      properties:
+        match_rx:
+          description: The regular expression the field's values are matched against.
+            Empty places no constraint on the value.
+          type: string
+        path:
+          description: The field's path in gjson syntax, e.g. "customer.id".
+          type: string
+        reverse:
+          description: Inverts the rule. With an empty match_rx, the field must be
+            absent.
+          type: boolean
+      type: object
+      x-go-package: github.com/TykTechnologies/tyk/user
     AccessSpec:
       properties:
+        conditions:
+          description: Further restricts the matched URL. When set, every condition
+            has to be satisfied by the request for access to be granted.
+          items:
+            $ref: '#/components/schemas/AccessCondition'
+          nullable: true
+          type: array
         methods:
           example:
           - GET
@@ -13205,6 +14102,14 @@ components:
         categories:
           items:
             $ref: '#/components/schemas/CategoryCount'
+          nullable: true
+          type: array
+      type: object
+    AllTagsResponse:
+      properties:
+        tags:
+          items:
+            $ref: '#/components/schemas/TagCount'
           nullable: true
           type: array
       type: object
@@ -13395,9 +14300,10 @@ components:
           type: string
         kind:
           default: oas-template
-          description: the asset type, which is set to oas-template
+          description: the asset type
           enum:
           - oas-template
+          - fragment
           example: oas-template
           type: string
         last_updated:
@@ -13411,6 +14317,49 @@ components:
           type: string
         org_id:
           type: string
+        tags:
+          description: Labels used to find and filter fragments. Fragments only;
+            sent on any other kind of asset, the request is rejected with 422.
+            Before a tag is stored, surrounding whitespace and a leading "#" are
+            removed, it is lowercased, and empty and duplicate tags are dropped,
+            so "#Security" is stored as "security". The result may contain only
+            ASCII letters, digits, "-" and "_", and be at most 64 characters;
+            any other tag rejects the request with 422.
+          example:
+          - security
+          - payments
+          items:
+            type: string
+          type: array
+      type: object
+    AssetReferencingAPIs:
+      properties:
+        apis:
+          description: The referencing APIs on the requested page.
+          items:
+            properties:
+              api_id:
+                description: The API's api_id.
+                example: 4c1c0d8fc885401053ddac4e39ef676b
+                type: string
+              id:
+                description: The API's database ID.
+                example: 66e2f5b8a1dcd60001d0ed31
+                type: string
+              name:
+                description: The API's name.
+                example: Orders API
+                type: string
+            type: object
+          type: array
+        pages:
+          description: Number of pages, or -1 when every API was requested with p=-1.
+          example: 1
+          type: integer
+        total_count:
+          description: Number of APIs referencing the fragment across all pages.
+          example: 2
+          type: integer
       type: object
     AuditLog:
       properties:
@@ -13718,6 +14667,16 @@ components:
           type: integer
         name:
           example: tag1
+          type: string
+      type: object
+    TagCount:
+      properties:
+        count:
+          description: number of assets carrying the tag
+          example: 12
+          type: integer
+        name:
+          example: payments
           type: string
       type: object
     CertificateBasics:
@@ -14914,7 +15873,9 @@ components:
                 requestSizeLimit:
                   enabled: true
                   value: 100
-      type: object
+      description: A raw JSON value. An oas-template asset holds an OAS document;
+        a fragment asset may hold any JSON value except null - an object, an array,
+        a string, a number or a boolean.
     JWTValidation:
       properties:
         enabled:
@@ -15460,6 +16421,17 @@ components:
         $ref: '#/components/schemas/Operation'
       type: object
     ParameterRef:
+      type: object
+    PaginatedAssets:
+      properties:
+        assets:
+          items:
+            $ref: '#/components/schemas/Asset'
+          type: array
+        pages:
+          description: Number of pages for the filtered result, or -1 when p=-1.
+          example: 2
+          type: integer
       type: object
     Parameters:
       items:

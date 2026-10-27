@@ -1,0 +1,185 @@
+---
+title: "API Fragments"
+description: "Learn how to share configuration across many Tyk OAS APIs with API Fragments in Tyk Dashboard. Change a Fragment once to update every API that uses it."
+keywords: "API Fragments, Shared Configuration, Tyk OAS, Reusable Configuration, Fragment Reference, API Governance"
+sidebarTitle: "API Fragments"
+canonical: "https://tyk.io/docs/platform-management/api-fragments"
+noindex: true
+robots: "noindex, follow"
+---
+
+## Introduction
+
+Many APIs need the same configuration. For example, all the APIs of a team can use the same CORS settings, upstream TLS settings or rate limit. If you copy that configuration into each API definition, a change means editing every API, and the copies drift apart over time.
+
+An API Fragment is a named piece of configuration that Tyk Dashboard stores once and shares with many APIs. Each API definition contains a reference to the Fragment in place of the configuration. When you change the Fragment, every API that references it gets the change.
+
+Fragments let a platform team own shared configuration, such as security and traffic settings, while API teams own the rest of each API definition.
+
+API Fragments are available from Tyk Dashboard 5.16.0, for Tyk OAS APIs and Tyk Streams APIs.
+
+## How API Fragments Work
+
+### Fragment References
+
+A Fragment holds a JSON value, usually an object. To use the Fragment, replace a value in the API definition with a reference to it:
+
+```json
+{ "$ref": "fragment://<fragment-id>" }
+```
+
+For example, this Fragment, with the ID `cors-allow-list`, holds CORS settings:
+
+```json
+{
+  "enabled": true,
+  "allowedOrigins": ["https://app.example.com"],
+  "allowedMethods": ["GET", "POST"]
+}
+```
+
+An API uses it by referencing it in place of its CORS settings:
+
+```json
+{
+  "x-tyk-api-gateway": {
+    "middleware": {
+      "global": {
+        "cors": { "$ref": "fragment://cors-allow-list" }
+      }
+    }
+  }
+}
+```
+
+When Tyk resolves the reference, it replaces the whole `{"$ref": ...}` object with the Fragment value.
+
+These rules apply to references:
+
+- You can put a reference anywhere in the API definition, in the OpenAPI description or in the `x-tyk-api-gateway` extension.
+- The reference must be the only key in its object. If you add other keys next to `$ref`, Tyk Dashboard rejects the API definition.
+- A Fragment can't contain references to other Fragments.
+- The referenced Fragment must exist in the same Organisation.
+
+### When to Use Fragments
+
+A Fragment replaces one value in an API definition, usually a configuration object. These are typical candidates:
+
+| Shared Configuration | Location in the Tyk OAS API Definition |
+| :--- | :--- |
+| A standard JWT validation setup | An entry in `x-tyk-api-gateway.server.authentication.securitySchemes` |
+| Upstream mutual TLS | `x-tyk-api-gateway.upstream.mutualTLS` |
+| Upstream TLS settings | `x-tyk-api-gateway.upstream.tlsTransport` |
+| A rate limit that protects an upstream service | `x-tyk-api-gateway.upstream.rateLimit` |
+| CORS settings for browser clients | `x-tyk-api-gateway.middleware.global.cors` |
+| Traffic logging | `x-tyk-api-gateway.middleware.global.trafficLogs` |
+| Custom plugin bundle and driver settings | `x-tyk-api-gateway.middleware.global.pluginConfig` |
+| IP access control | `x-tyk-api-gateway.server.ipAccessControl` |
+
+A Fragment can also hold part of the OpenAPI description, for example a security scheme that many APIs share.
+
+Don't use a Fragment for:
+
+- configuration that is specific to one API, such as its listen path or upstream URL
+- configuration that you expect API teams to change for their API. Put it in a Template instead.
+- settings that Tyk Developer Portal writes to the API, if the Developer Portal publishes the API. See the [limitations of API Fragments](#limitations).
+
+### When Tyk Resolves References
+
+Tyk Dashboard stores each API definition with its Fragment references. It resolves the references at these times:
+
+- **When you save an API.** Tyk Dashboard resolves the references and validates the complete API definition. If the result isn't a valid API definition, it rejects the save.
+- **When Tyk Gateway loads its APIs.** Tyk Dashboard resolves the references before it sends API definitions to Tyk Gateway. In a [distributed deployment](/nightly/api-management/mdcb), MDCB resolves them before it sends API definitions to the Data Plane Gateways.
+
+Tyk Gateway always receives complete API definitions. It never sees Fragment references.
+
+Sometimes Tyk Dashboard can't resolve an API, for example because the API definition isn't valid with the current Fragment. Tyk Dashboard then logs a warning and doesn't send that API to Tyk Gateway. The other APIs load as usual.
+
+### Changing a Fragment
+
+Before Tyk Dashboard saves a change to a Fragment, it validates every API and API Template that references the Fragment, using the new value. If any of them would no longer be valid, Tyk Dashboard rejects the change and lists the APIs that would break.
+
+When the change is valid, Tyk Dashboard updates every API that references the Fragment. It then notifies Tyk Gateway to reload its APIs, the same as when you save an API. If you change only the tags of a Fragment, Tyk Dashboard doesn't update the APIs.
+
+### Deleting a Fragment
+
+You can't delete a Fragment while an API or an API Template references it. Remove the references first.
+
+### Fragments in API Templates
+
+An [API Template](/nightly/platform-management/api-templates) can contain Fragment references. When you create an API from the Template, Tyk Dashboard copies the references into the new API. The API then uses the Fragments in the same way as an API that you created without the Template.
+
+Tyk Dashboard validates a Template with its Fragments resolved when you save the Template, and when you change a Fragment that the Template references.
+
+## Use API Fragments in Tyk Dashboard
+
+Fragments are in the **Assets** section of the Tyk Dashboard menu, under **Fragments**. To see this section, you need the `api_assets` [permission](/nightly/platform-management/user-permissions).
+
+### Create a Fragment
+
+1. Go to **Assets > Fragments** and click **Add fragment**.
+2. In **Configuration**, enter the value of the Fragment. You can type or paste it, upload a JSON or YAML file, or start from one of the examples on the right, and click **Load Into Editor**. Tyk Dashboard stores JSON and YAML as JSON. To store a plain text value, switch the editor to **Text**.
+
+   <img src="/img/dashboard/api-assets/api-fragments/create-fragment-configuration.png" alt="Setting the configuration of a new API Fragment." />
+
+3. Click **Continue**.
+4. In **Details**, enter a **Name**. Use lowercase letters and no spaces. The name is also the Fragment ID, and you can't change it later.
+5. Optionally, enter a **Description** and add tags.
+
+   <img src="/img/dashboard/api-assets/api-fragments/create-fragment-details.png" alt="Setting the metadata details for a new API Fragment." />
+
+6. Click **Save Fragment**.
+
+### Use a Fragment in an API
+
+1. Go to **Assets > Fragments** and open the Fragment.
+2. In **Use this fragment in an API**, click **Copy Reference**. This will copy the reference to your clipboard as `"$ref": "fragment://id"`.
+3. Open the API, and go to its API definition.
+4. Paste the reference where the configuration should go, replacing any configuration that is already there. If you are pasting into a JSON format API definition you must add curly braces around the reference, for example `{ "$ref": "fragment://id" }`.
+5. Save the API.
+
+In the API Designer, a setting that comes from a Fragment shows the **Shared configuration** badge. It also shows **Set by** and the name of the Fragment. You can't change these settings in the API. To change them, edit the Fragment, or replace the reference with configuration in the API definition.
+
+<img src="/img/dashboard/api-assets/api-fragments/api-using-fragment.png" alt="API Designer showing an API using a Fragment with the Fragment details drawer open." />
+
+Click the **Shared configuration** badge to see the Fragment reference and configuration, or select **Open Fragment Page** to edit the Fragment.
+
+### Find the APIs That Use a Fragment
+
+Open the Fragment. The **APIs using this fragment** panel lists every API that references it, including draft and inactive APIs.
+
+### Edit or Delete a Fragment
+
+1. Go to **Assets > Fragments**.
+2. Open the actions menu for the Fragment, then select **Edit fragment** or **Delete fragment**.
+
+If Tyk Dashboard rejects a change, the Fragment page shows the reasons under **Issues from your last save attempt**.
+
+## Use API Fragments with the Tyk Dashboard API
+
+Fragments are Assets with the `kind` set to `fragment`. You create, update and delete them with the `/api/assets` endpoints of the [Tyk Dashboard API](/nightly/tyk-dashboard-api). {/* TODO: Link to the Assets endpoints in the Tyk Dashboard API reference when the 5.16.0 swagger is published. */}
+
+After you register a Fragment, add a reference to it in an API definition, as shown in [Fragment References](#fragment-references). Then update the API through the Tyk Dashboard API.
+
+Note these behaviors of the Assets endpoints:
+
+- `PUT /api/assets/{id}` replaces the complete Asset. If you omit `tags`, Tyk Dashboard removes the existing tags.
+- If no Asset exists with this `id`, `PUT /api/assets/{id}` creates it.
+- To filter Fragments by tag with `GET /api/assets?kind=fragment`, you must also send `paginated=true`.
+
+To manage Fragments as code, use [Tyk Sync](/nightly/api-management/automations/sync#working-with-api-templates-and-api-fragments) 2.3.0 or later.
+
+## Control Access to Fragments
+
+To create, change or delete Fragments, a user needs write access to the `api_assets` permission. To see the Fragments that an API references, a user needs read access to the `apis` permission.
+
+<Warning>
+A change to a Fragment changes every API that references it. A user who can edit Fragments can therefore change the configuration of these APIs, even if the user has only read access to APIs. Give write access to `api_assets` only to users that you trust to change every API that uses Fragments.
+</Warning>
+
+## Limitations
+
+- Fragments are available for Tyk OAS APIs and Tyk Streams APIs. Tyk Classic APIs can't use Fragments.
+- Only Tyk Dashboard and MDCB resolve Fragment references. Tyk Gateway doesn't resolve them. So you can't use Fragments in API definitions that you load into Tyk Gateway directly, for example from a file or through the Tyk Gateway API.
+- Tyk Operator doesn't support Fragments.
+- Tyk Developer Portal writes the client certificates of an API that uses mutual TLS. It also writes the JWT scope-to-Policy mappings of an API that uses JWT, unless you use the [Identity Provider Registry](/nightly/api-management/client-idp-registry). If a Fragment sets any of these, Tyk Developer Portal can't add the API to an API Product.
