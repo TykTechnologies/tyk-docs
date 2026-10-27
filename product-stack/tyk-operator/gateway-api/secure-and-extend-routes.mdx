@@ -30,7 +30,7 @@ You can attach a definition to:
 - an `HTTPRoute`, to apply it to the APIs of that route
 - a `Gateway`, to apply it to the APIs of every route on that `Gateway` that has no definition attached directly
 
-A definition attached to a route takes precedence over one attached to its `Gateway`. If several definitions target the same route or `Gateway`, the one with the oldest `creationTimestamp` applies. If they have the same timestamp, Tyk Operator uses the first by namespace and name.
+A definition attached to a route replaces the one attached to its `Gateway`. Tyk Operator doesn't merge them. If several definitions target the same route or `Gateway`, the one with the oldest `creationTimestamp` applies. If they have the same timestamp, Tyk Operator uses the first in alphabetical order of namespace and name.
 
 ### Example
 
@@ -95,6 +95,8 @@ After you apply both, every API that Tyk Operator creates from the `orders` rout
 | Same namespace | The `TykOasApiDefinition` must be in the namespace of the route or `Gateway` that it targets. |
 | One target | `targetRefs` can contain one entry, with `group: gateway.networking.k8s.io` and `kind: HTTPRoute` or `Gateway`. |
 | ConfigMap required | The definition must come from a ConfigMap (`tykOAS.configmapRef`). |
+| Tyk Vendor Extension required | The definition must contain an `x-tyk-api-gateway` object. |
+| Not an Ingress template | A `TykOasApiDefinition` with `targetRefs` can't also be an [Ingress template](/product-stack/tyk-operator/tyk-ingress-controller). |
 | No versioning | You can't set `versioning` on an attached definition. |
 | Fixed mode | You can change the target, but you can't add or remove `targetRefs` after you create the resource. To change between an attached definition and a standalone API, delete the resource and create it again. |
 
@@ -116,13 +118,13 @@ The route sets these settings, so the attached definition can't set them. If it 
 - `x-tyk-api-gateway.info.state.internal`
 - `allow` and `internal` in `x-tyk-api-gateway.middleware.operations`
 
-Tyk Operator checks these when you create or update the `TykOasApiDefinition`, and again when it combines the definition with a route.
+If webhooks are enabled, Tyk Operator checks these when you create or update the `TykOasApiDefinition`. It checks them again whenever it combines the definition with a route, and reports the result in the status of the route and the `TykOasApiDefinition`.
 
 ### Conflicts with the Route
 
 Some attached settings can't work with some routes. Tyk Operator reports the route with the reason `AttachmentConflict` if:
 
-- the definition enables CORS, and the route matches the `OPTIONS` method
+- the definition contains CORS settings, even if CORS is disabled, and the route matches the `OPTIONS` method
 - the definition sets `transformRequestMethod`, and the route matches by method
 - the definition sets `paths`, and the route has more than one path, so it becomes more than one API
 
@@ -130,25 +132,7 @@ If a route filter and the attached definition set the same middleware setting, T
 
 ### Attachment Status
 
-Tyk Operator reports the result on the `TykOasApiDefinition`, in the `Accepted` condition:
-
-| Reason | Meaning |
-| :--- | :--- |
-| `Attached` | The definition applies to the target. |
-| `NotAttached` | The target doesn't exist. |
-| `BaseDocumentUnresolved` | The ConfigMap doesn't exist yet. |
-| `DocumentInvalid` | The ConfigMap or key is missing, the content isn't JSON or YAML, or the definition sets a setting that comes from the route. |
-| `AttachmentConflict` | Another definition that targets the same route or `Gateway` takes precedence, so this one has no effect. |
-| `UnsupportedTarget` | `targetRefs` refers to a kind that isn't supported. |
-| `GatewayAPIUnavailable` | Kubernetes Gateway API support isn't enabled in Tyk Operator. |
-
-The route also reports problems with its attached definition:
-
-| Reason | Meaning |
-| :--- | :--- |
-| `AttachmentConflict` | The definition conflicts with the route. See [Conflicts with the Route](#conflicts-with-the-route). |
-| `BaseDocumentUnresolved` | Tyk Operator can't read the ConfigMap. It keeps using the last definition that it read. |
-| `BaseDocumentInvalid` | The attached definition isn't valid. |
+Tyk Operator reports the result of an attachment in the `Accepted` condition of the `TykOasApiDefinition`, and reports problems with the attached definition in the status of the route. For the reasons and their meanings, see [TykOasApiDefinition Conditions](/product-stack/tyk-operator/gateway-api/reference#tykoasapidefinition-conditions) and [HTTPRoute Conditions](/product-stack/tyk-operator/gateway-api/reference#httproute-conditions).
 
 ## Give Clients Access with a Policy
 
@@ -174,9 +158,9 @@ spec:
   throttle_retry_limit: -1
 ```
 
-An `HTTPRoute` entry covers every API that Tyk Operator creates from the route. Tyk Operator finds the API IDs for you. It updates the Policy when the route gains or loses APIs, for example when you add a hostname or a path. Don't set `api_id` or `versions` on an `HTTPRoute` entry.
+An `HTTPRoute` entry covers every API that Tyk Operator creates from the route. Tyk Operator finds the API IDs for you, and copies the other settings of the entry, such as `versions`, `limit` and `allowed_urls`, to each API. It updates the Policy when the route gains or loses APIs, for example when you add a hostname or a path. Don't set `api_id` on an `HTTPRoute` entry.
 
-The Policy includes only the APIs that Tyk Operator creates in the same Tyk Dashboard and Organisation as the Policy.
+The Policy includes only the APIs that Tyk Operator creates in the same Tyk Dashboard and Organisation as the Policy. Tyk Operator can't apply the Policy until the route has created its APIs, or if none of them are in that Tyk Dashboard. It reports the problem as an `HTTPRouteAccessRejected` event on the Policy.
 
 You must enable Kubernetes Gateway API support in Tyk Operator. Otherwise, Tyk Operator rejects the Policy with the message `access rights of kind HTTPRoute require the operator to run with --enable-gateway-api`.
 

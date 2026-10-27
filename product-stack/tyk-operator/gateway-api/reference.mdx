@@ -1,8 +1,8 @@
 ---
-title: "Kubernetes Gateway API Routing Reference"
-description: "How Tyk Operator translates Kubernetes Gateway API resources into Tyk OAS APIs: API identity, listeners, matches, backends, filters, unsupported features and status conditions."
+title: "Kubernetes Gateway API Reference"
+description: "How Tyk Operator translates Kubernetes Gateway API resources into Tyk OAS APIs: API identity, listeners, matches, backends, filters, lifecycle, status conditions and troubleshooting."
 keywords: "Tyk Operator, Kubernetes Gateway API, HTTPRoute, Gateway, GatewayClass, Filters, Status Conditions, Troubleshooting"
-sidebarTitle: "Routing Reference"
+sidebarTitle: "Reference"
 ---
 
 ## Introduction
@@ -29,17 +29,18 @@ Rules that match the same path become one API, with one operation for each HTTP 
 
 ### API Configuration
 
-Each API gets this configuration:
+Each API gets this configuration. The settings are in the Tyk Vendor Extension (`x-tyk-api-gateway`), except where the table says otherwise.
 
 | Tyk OAS API Setting | Value |
 | :--- | :--- |
+| `info.title` (OpenAPI description) | The ID of the API |
 | `info.id` | The ID of the API |
-| `info.name` and `info.title` | The ID of the API, so the API appears in Tyk Dashboard under that name |
+| `info.name` | The ID of the API, so the API appears in Tyk Dashboard under that name |
 | `info.state.active` | `true` |
-| `server.listenPath` | The path value of the match, with `strip` set to `true`. Tyk Gateway removes the path before it sends the request to the upstream service. |
+| `server.listenPath` | The path value of the match, with `strip` set to `true`. Tyk Operator adds the path back to the upstream URL, so the upstream service receives the full request path. |
 | `server.customDomain` | The effective hostname. A wildcard such as `*.example.com` becomes `{h:.+}.example.com`. |
 | `server.gatewayTags` | The `dataPlane.tags` of the OperatorContext of the `Gateway` |
-| `upstream.url` | `http://<service>.<namespace>.svc.cluster.local:<port>`, from the backend reference |
+| `upstream.url` | `http://<service>.<namespace>.svc.cluster.local:<port>`, from the backend reference, followed by the path value of the match. A `URLRewrite` filter changes the path. See [Filters](#filters). |
 | `upstream.loadBalancing` | The backend references and their weights, if the rule has more than one |
 | `upstream.preserveHostHeader` | `true` |
 | `server.authentication` | Not set. The API has no authentication. |
@@ -118,7 +119,7 @@ If Tyk Operator can't resolve a backend reference, it still creates the API, wit
 | :--- | :--- |
 | `RequestHeaderModifier` | `set` and `remove` are supported. `add` is not supported, because Tyk Gateway holds one value for each header name. Use `set` to replace the value. |
 | `ResponseHeaderModifier` | `set` and `remove` are supported. `add` is not supported. |
-| `URLRewrite` with `path.type: ReplacePrefixMatch` | Supported. Tyk Operator adds the replacement to the upstream URL. |
+| `URLRewrite` with `path.type: ReplacePrefixMatch` | Supported. Tyk Operator puts the replacement in the upstream URL in place of the matched path. To remove the matched path, set `replacePrefixMatch` to `/`. |
 | `URLRewrite` with `path.type: ReplaceFullPath` | Supported. Tyk Gateway rewrites the path and keeps the query string. The replacement can't contain `$` followed by a digit. |
 | `URLRewrite` with `hostname` | Not supported |
 | `RequestRedirect` | Supported if the redirect is the same for every request: `hostname` is set, `path.type` is `ReplaceFullPath`, and the scheme and port are set or are the same on every listener that admits the route. Tyk Gateway responds with the redirect, by default `302 Found`, without authentication. |
@@ -146,6 +147,24 @@ How Tyk Operator reports a rejection depends on how much of the route it can sti
 
 The message names the field and the reason, for example `spec.rules[1].retry: ...`.
 
+## Lifecycle
+
+### Gateways Without a Data Plane Context
+
+If a `Gateway` has no `infrastructure.parametersRef`, Tyk Operator still creates APIs for its routes, but the APIs have no Gateway tags. Every Tyk Gateway that isn't [segmented](/api-management/api-sharding) loads them. The `Gateway` reports `Programmed` as `False` with the reason `UnsupportedAddress`.
+
+<Warning>
+Always set `infrastructure.parametersRef` on a `Gateway`, and set `dataPlane.tags` in its OperatorContext. Otherwise, the APIs of its routes can load on Tyk Gateways that you didn't intend to serve them.
+</Warning>
+
+### Deleting Routes
+
+Tyk Operator adds a finalizer to each `HTTPRoute`. When you delete a route, Tyk Operator deletes its APIs from Tyk Dashboard, then removes the finalizer.
+
+If Tyk Operator can't delete the APIs, for example because Tyk Dashboard is unreachable, it keeps the finalizer and tries again. The route stays in the `Terminating` state until the APIs are deleted. Tyk Operator reports the problem as an event on the route.
+
+If you disable Kubernetes Gateway API support in Tyk Operator while `HTTPRoute` resources exist, Tyk Operator can't delete them. Delete your routes before you disable it.
+
 ## Status and Troubleshooting
 
 Tyk Operator reports the result of each resource in its `status.conditions`. To see them, run:
@@ -167,8 +186,10 @@ You can't delete a `GatewayClass` while `Gateway` resources use it.
 
 | Condition | Status | Reason | Meaning |
 | :--- | :--- | :--- | :--- |
-| `Accepted` | `False` | `ListenersNotValid` | One or more listeners are not valid. Check the listener conditions. |
-| `Programmed` | `False` | `UnsupportedAddress` | The `Gateway` has no `infrastructure.parametersRef`, or the Service in `dataPlane.serviceRef` doesn't exist. |
+| `Accepted` | `True` | `ListenersNotValid` | Some listeners are not valid. Tyk Operator uses the valid listeners. Check the listener conditions. |
+| `Accepted` | `False` | `ListenersNotValid` | No listeners are valid. Check the listener conditions. |
+| `Accepted` and `Programmed` | `False` | `Invalid` | Tyk Operator can't read the OperatorContext of the `GatewayClass`, or the OperatorContext in `infrastructure.parametersRef`. |
+| `Programmed` | `False` | `UnsupportedAddress` | The `Gateway` has no `infrastructure.parametersRef`, its OperatorContext has no `dataPlane.serviceRef`, or the Service doesn't exist. |
 | `Programmed` | `False` | `AddressNotAssigned` | The `LoadBalancer` Service has no ingress address yet. |
 
 Tyk Operator reports the conditions of each listener in `status.listeners`:
@@ -180,6 +201,7 @@ Tyk Operator reports the conditions of each listener in `status.listeners`:
 | `ProtocolConflict`, `HostnameConflict` | The listener conflicts with another listener on the same port. |
 | `InvalidCertificateRef` | A certificate reference doesn't refer to a valid `kubernetes.io/tls` Secret. |
 | `RefNotPermitted` | A certificate reference refers to another namespace, and no `ReferenceGrant` allows it. |
+| `InvalidRouteKinds` | The listener allows a route kind other than `HTTPRoute`. |
 
 ### HTTPRoute Conditions
 
@@ -188,16 +210,33 @@ Tyk Operator reports the conditions for each parent `Gateway` in `status.parents
 | Condition | Status | Reason | Meaning |
 | :--- | :--- | :--- | :--- |
 | `Accepted` | `True` | `Accepted` | Tyk Operator has created the APIs for this parent. |
-| `Accepted` | `False` | `NoMatchingParent` | No listener matches the parent reference. |
+| `Accepted` | `False` | `NoMatchingParent` | Tyk Operator can't use the parent `Gateway`. The `Gateway` doesn't exist, belongs to another controller, or its `GatewayClass` or OperatorContext can't be read. Or no listener matches the parent reference. |
 | `Accepted` | `False` | `NotAllowedByListeners` | The `allowedRoutes` of the listeners don't admit the route. |
 | `Accepted` | `False` | `NoMatchingListenerHostname` | The hostnames of the route don't match the hostname of any listener. |
 | `Accepted` | `False` | `UnsupportedValue` | The route uses a feature that Tyk Operator doesn't support. See [Unsupported Features](#unsupported-features). |
 | `Accepted` | `False` | `EnvironmentUnresolved` | Tyk Operator can't read the Tyk Dashboard connection of the `GatewayClass`. Check its OperatorContext and Secret. |
 | `Accepted` | `False` | `TranslationFailed` | Tyk Operator couldn't create or update the APIs in Tyk Dashboard. The message gives the error. |
+| `Accepted` | `False` | `AttachmentConflict` | The attached Tyk OAS API definition conflicts with the route. See [Conflicts with the Route](/product-stack/tyk-operator/gateway-api/secure-and-extend-routes#conflicts-with-the-route). |
+| `Accepted` | `False` | `BaseDocumentUnresolved` | Tyk Operator can't read the ConfigMap of the attached definition. It keeps using the last definition that it read. |
+| `Accepted` | `False` | `BaseDocumentInvalid` | The attached definition isn't valid. |
 | `Accepted` | `False` | `DataPlaneShared` | Another parent `Gateway` already serves this route on the same hostname and data plane. |
 | `PartiallyInvalid` | `True` | `UnsupportedValue` | Tyk Operator serves part of the route. The message lists the rules that it dropped. |
 | `ResolvedRefs` | `False` | `InvalidKind` | A backend reference is not a Kubernetes Service with a port. |
 | `ResolvedRefs` | `False` | `RefNotPermitted` | A backend reference refers to another namespace, and no `ReferenceGrant` allows it. |
 | `ResolvedRefs` | `False` | `BackendNotFound` | The Service doesn't exist. |
 
-Tyk Operator also reports some problems as Kubernetes events on the route, such as `CertUploadFailed` and `DeletionFailed`. To see them, run `kubectl describe httproute <name> -n <namespace>`.
+Tyk Operator also reports some problems as Kubernetes events on the route, such as `CertUploadFailed`, `DeletionFailed` and `CleanupBlocked`. To see them, run `kubectl describe httproute <name> -n <namespace>`.
+
+### TykOasApiDefinition Conditions
+
+Tyk Operator reports the result of an attached definition in the `Accepted` condition of the `TykOasApiDefinition`:
+
+| Status | Reason | Meaning |
+| :--- | :--- | :--- |
+| `True` | `Attached` | The definition applies to its target. |
+| `False` | `NotAttached` | The target doesn't exist. |
+| `False` | `BaseDocumentUnresolved` | The ConfigMap doesn't exist. |
+| `False` | `DocumentInvalid` | `tykOAS.configmapRef` or its key is missing, the definition has no `x-tyk-api-gateway` object, or it sets a setting that comes from the route. |
+| `False` | `AttachmentConflict` | Another definition that targets the same route or `Gateway` takes precedence, so this one has no effect. |
+| `False` | `UnsupportedTarget` | `targetRefs` refers to a kind that isn't supported. |
+| `Unknown` | `GatewayAPIUnavailable` | Kubernetes Gateway API support isn't enabled in Tyk Operator. |
