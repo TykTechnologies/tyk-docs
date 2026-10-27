@@ -1,7 +1,8 @@
 ---
-title: "Service Discovery"
-description: "How to configure service discovery in Tyk"
-sidebarTitle: "Service Discovery"
+title: "Upstream Discovery"
+description: "Use service discovery or DNS discovery to supply Tyk Gateway's load balancing target list at runtime"
+keywords: "upstream discovery, service discovery, DNS discovery, load balancing, Consul, etcd, Eureka, Kubernetes, gRPC, h2c"
+sidebarTitle: "Upstream Discovery"
 canonical: "https://tyk.io/docs/planning-for-production/ensure-high-availability/service-discovery"
 noindex: true
 robots: "noindex, follow"
@@ -9,208 +10,159 @@ robots: "noindex, follow"
 
 ## Introduction
 
-Service Discovery is a very useful feature for when you have a dynamically changing upstream service set.
+Tyk Gateway can discover upstream addresses at runtime, instead of using a fixed target list. When you add, remove or replace upstream instances, Tyk Gateway sends traffic to the new set of addresses. You don't need to change or reload the API.
 
-For example, you have ten Docker containers that are running the same service, and you are load balancing between them, if one or more fail, a new service will spawn but probably on a different IP address.
+Tyk Gateway offers two ways to discover upstream addresses:
 
-Now the Gateway would need to either be manually reconfigured, or, more appropriately, detect the failure and reconfigure itself.
+| | Service discovery | DNS discovery |
+| :-- | :-- | :-- |
+| Availability | All supported versions | From Tyk 5.16.0 |
+| Source of addresses | A service registry, such as Consul, etcd or Eureka | DNS records for the upstream hostname |
+| Supported upstreams | Any scheme | Cleartext HTTP/2 (`h2c://`) only |
+| Load balancing | Optional | Required |
+| Typical use | Services registered in a service registry | gRPC services behind a Kubernetes headless Service |
 
-This is what the service discovery module does.
+An API can use only one of these methods at a time.
 
-We recommend using the SD module in conjunction with the circuit breaker features, as this makes detection and discovery of failures at the gateway level much more dynamic and responsive.
-
-## Service Discovery: Dashboard
-
-The Service Discovery settings are located in the Core tab from the API Designer.
-
-<img src="/img/2.10/service_discovery_settings.png" alt="Service discovery" />
-
-**Configuring Service Discovery via the Dashboard**
-
-Select **Enable service discovery** to enable the discovery module.
-
-Once enabled, you will have all the options to configure your Service Discovery endpoints:
-
-<img src="/img/2.10/service_discovery_settings2.png" alt="Service discovery configuration" />
-
-The settings are as follows:
-
-*   **Service discovery options**: New Functionality
-
-*   **Query endpoint**: The endpoint to call, this would probably be your Consul, etcd or Eureka K/V store.
-
-*   **Target path**: Use this setting to set a target path to append to the discovered endpoint, since many SD services only provide host and port data, it is important to be able to target a specific resource on that host, setting this value will enable that.
-
-*   **Data path**: The namespace of the data path, so for example if your service responds with:
-
-```
-{ 
-  "action": "get", 
-  "node": { 
-    "key": "/services/single", 
-    "value": "http://httpbin.org:6000", 
-    "modifiedIndex": 6, 
-    "createdIndex": 6 
-  } 
-}
-```
-    
-    Then your namespace would be `node.value`.
-
-*   **Are the values nested?**: Sometimes the data you are retrieving is nested in another JSON object, e.g. this is how etcd responds with a JSON object as a value key:
-
-```
-{
-  "action": "get",
-  "node": {
-    "key": "/services/single",
-    "value": "{"hostname": "http://httpbin.org", "port": "80"}",
-    "modifiedIndex": 6,
-    "createdIndex": 6
-  }
-}
-```
-    
-In this case, the data actually lives within this string-encoded JSON object, so in this case, you set the value to `checked`, and use a combination of the **data path** and **parent data path** (below).
-
-*   **Parent data path**: This is the namespace of the where to find the nested value, in the above example, it would be `node.value`. You would then change the **data path** setting to be `hostname`, since this is where the hostname data resides in the JSON string. Tyk automatically assumes that the data_path in this case is in a string-encoded JSON object and will try to deserialise it.
-    
-Tyk will decode the JSON string and then apply the **data path** namespace to that object in order to find the value.
-
-*   **Port data path**: In the above nested example, we can see that there is a separate `port` value for the service in the nested JSON. In this case you can set the **port data path** value and Tyk will treat **data path** as the hostname and zip them together (this assumes that the hostname element does not end in a slash or resource identifier such as `/widgets/`).
-    
-In the above example, the **port data path** would be `port`.
-
-*  **Is port information separate from the hostname?**: New Functionality
-
-*   **Does the endpoint provide a target list?**: If you are using load balancing, set this value to true and Tyk will treat the data path as a list and inject it into the target list of your API Definition.
-
-*   **Cache timeout**: Tyk caches target data from a discovery service, in order to make this dynamic you can set a cache value when the data expires and new data is loaded. Setting it too low will cause Tyk to call the SD service too often, setting it too high could mean that failures are not recovered from quickly enough.
+If you use a service mesh, the mesh can do service discovery instead; see [Service Mesh Discovery](#service-mesh-discovery).
 
 
-## Service Discovery Config: API Definition
+## Registry-Based Service Discovery
 
-Service discovery is configured on a per-API basis, and is set up in the API Object under the `proxy` section of your API Definition:
+With registry-based service discovery, Tyk Gateway queries a third-party service registry, such as Consul, etcd or Eureka, to find the upstream addresses for an API. It reads the addresses from the JSON response of the registry. You can use them as a single upstream URL or as the load balancing target list.
+
+We recommend using registry-based service discovery together with [circuit breakers](/nightly/planning-for-production/ensure-high-availability/circuit-breakers). A circuit breaker quickly detects an upstream that has failed, and service discovery then supplies the replacement addresses.
+
+### How Service Discovery Works
+
+Tyk Gateway calls the query endpoint of the registry and extracts each upstream address from the response. It caches the result and queries the registry again when the cache expires or if a request to the upstream times out.
+
+If the query fails, Tyk Gateway sends requests to the upstream URL configured in the API definition. If the registry returns an empty list, Tyk Gateway keeps using the last list that it received.
+
+### Configure in Tyk Dashboard
+
+In the API designer, open the **Upstream** section of your API and enable **Service discovery**.
+
+Select a preset for your registry to fill in the response settings automatically, or select **Custom**. Then enter the **Service query endpoint**. Use **Advanced settings** to change how Tyk Gateway reads the response from the registry.
+
+<img src="/img/api-management/upstream-discovery/service-discovery-settings.png" alt="Service discovery settings in the Upstream section of the Tyk OAS API designer, with Advanced settings expanded" />
+
+### Configure in the API Definition
+
+Configure service discovery in the `upstream.serviceDiscovery` section of the Tyk Vendor Extension:
 
 ```yaml
-enable_load_balancing: true,
-service_discovery: {
-  use_discovery_service: true,
-  query_endpoint: "http://127.0.0.1:4001/v2/keys/services/multiobj",
-  use_nested_query: true,
-  parent_data_path: "node.value",
-  data_path: "array.hostname",
-  port_data_path: "array.port",
-  use_target_list: true,
-  cache_timeout: 10,
-  target_path: "/append-this-api-path/"
-},
+x-tyk-api-gateway:
+  upstream:
+    url: "http://fallback.example.com"
+    loadBalancing:
+      enabled: true
+    serviceDiscovery:
+      enabled: true
+      queryEndpoint: "http://consul.example.com:8500/v1/catalog/service/users"
+      endpointReturnsList: true
+      useTargetList: true
+      dataPath: "Address"
+      portDataPath: "ServicePort"
+      cache:
+        enabled: true
+        timeout: 30
 ```
 
-Settings are as follows:
+| Field | Description |
+| :-- | :-- |
+| `enabled` | Set to `true` to enable service discovery. |
+| `queryEndpoint` | The URL that Tyk Gateway calls to get the upstream addresses from the registry. |
+| `dataPath` | The path to the hostname in the response, for example `node.value`. |
+| `portDataPath` | The path to the port, if the registry returns it separately from the hostname. Tyk Gateway adds the port to the hostname. The hostname must not end with a slash or a path. |
+| `useNestedQuery` | Set to `true` if the registry returns the address data as a string that contains JSON. Tyk Gateway decodes the string at `parentDataPath`, then applies `dataPath` and `portDataPath` to the result. |
+| `parentDataPath` | With `useNestedQuery`, the path to the string that contains JSON. Without `useNestedQuery`, and with `useTargetList`, the path to the array of upstream instances in the response. |
+| `endpointReturnsList` | Set to `true` if the response is a JSON array instead of an object. |
+| `useTargetList` | Set to `true` to use every address in the response as the load balancing target list. If `false`, Tyk Gateway uses only one address. Enable [load balancing](/nightly/planning-for-production/ensure-high-availability/load-balancing#load-balancing) when you set this to `true`. |
+| `targetPath` | A path to add to each discovered address, for example `/api/v1`. Use this if the registry returns only a hostname and port. |
+| `cache.enabled` | Set to `true` to use a configurable cache timeout. |
+| `cache.timeout` | How long, in seconds, Tyk Gateway caches the addresses before it queries the registry again. |
 
-*   `service_discovery.use_discovery_service`: Set this to `true` to enable the discovery module.
-*   `service_discovery.query_endpoint`: The endpoint to call, this would probably be your Consul, etcd or Eureka K/V store.
-*   `service_discovery.data_path`: The namespace of the data path so, for example, if your service responds with:
+<Note>
+If `cache.enabled` is `false`, or `cache.timeout` is `0`, Tyk Gateway caches the addresses for the default time in its configuration. Set this with [`service_discovery.default_cache_timeout`](/nightly/tyk-oss-gateway/configuration#service_discovery-default_cache_timeout). The default is 120 seconds.
+</Note>
 
-```
-{
-  "action": "get",
-  "node": {
-    "key": "/services/single",
-    "value": "http://httpbin.org:6000",
-    "modifiedIndex": 6,
-    "createdIndex": 6
-  }
-}
-```
-    
-Then your namespace would be `node.value`.
+If using Tyk Classic, configure the equivalent settings in `proxy.service_discovery`. See the [Tyk Classic API definition reference](/nightly/api-management/gateway-config-tyk-classic#param-proxy-service-discovery) for full details of the field names.
 
-*   `service_discovery.use_nested_query`: Sometimes the data you are retrieving is nested in another JSON object, e.g. this is how etcd responds with a JSON object as a value key:
+### Examples
 
-```
-{
-  "action": "get",
-  "node": {
-    "key": "/services/single",
-    "value": "{"hostname": "http://httpbin.org", "port": "80"}",
-    "modifiedIndex": 6,
-    "createdIndex": 6
-  }
-}
-```
-In this case, the data actually lives within this string-encoded JSON object, so in this case, you set the `use_nested_query` to `true`, and use a combination of the `data_path` and `parent_data_path` (below)
+These examples show the `serviceDiscovery` settings for some common registries. Add `enabled: true` and your `queryEndpoint` to each example.
 
-*   `service_discovery.parent_data_path`: This is the namespace of the where to find the nested value, in the above example, it would be `node.value`. You would then change the `data_path` setting to be `hostname`, since this is where the host name data resides in the JSON string. Tyk automatically assumes that the `data_path` in this case is in a string-encoded JSON object and will try to deserialise it.
-    
-Tyk will decode the JSON string and then apply the `data_path` namespace to that object in order to find the value.
+<Tabs>
+<Tab title="Consul">
 
-*   `service_discovery.port_data_path`: In the above nested example, we can see that there is a separate `port` value for the service in the nested JSON. In this case you can set the `port_data_path` value and Tyk will treat `data_path` as the hostname and zip them together (this assumes that the hostname element does not end in a slash or resource identifier such as `/widgets/`).
-    
-In the above example, the `port_data_path` would be `port`.
-
-*   `service_discovery.use_target_list`: If you are using load balancing, set this value to `true` and Tyk will treat the data path as a list and inject it into the target list of your API Definition.
-
-*   `service_discovery.cache_timeout`: Tyk caches target data from a discovery service, in order to make this dynamic you can set a cache value when the data expires and new data is loaded. Setting it too low will cause Tyk to call the SD service too often, setting it too high could mean that failures are not recovered from quickly enough.
-
-*   `service_discovery.target_path`: Use this setting to set a target path to append to the discovered endpoint, since many SD services only provide host and port data, it is important to be able to target a specific resource on that host, setting this value will enable that.
-
-## Service Discovery Examples
-
-**Mesosphere Example**
-
-For integrating service discovery with Mesosphere, you can use the following configuration parameters:
+The Consul catalog API returns an array of service instances:
 
 ```yaml
-  isNested = false
-  isTargetList = true
-  endpointReturnsList = false
-  portSeperate = true
-  dataPath = "host"
-  parentPath = "tasks"
-  portPath = "ports"
+serviceDiscovery:
+  endpointReturnsList: true
+  useTargetList: true
+  dataPath: "Address"
+  portDataPath: "ServicePort"
 ```
 
-**Eureka Example**
+</Tab>
+<Tab title="etcd">
 
-For integrating service discovery with Eureka, you can use the following configuration parameters (this assumes that the endpoint will return JSON and not XML, this is achieved by creating an API Definition that injects the header that requests the data type and using this API Definition as the endpoint):
+For a key that holds a single URL:
 
 ```yaml
-  isNested = false
-  isTargetList = true
-  endpointReturnsList = false
-  portSeperate = true
-  dataPath = "hostName"
-  parentPath = "application.instance"
-  portPath = "port.$"
+serviceDiscovery:
+  dataPath: "node.value"
 ```
 
-**Etcd Example**
-
-For integrating with etcd, you can use the following configurations:
+For a key that holds a JSON string with separate hostname and port values, such as `{"hostname": "http://httpbin.org", "port": "80"}`:
 
 ```yaml
-  isNested = false
-  isTargetList = false
-  endpointReturnsList = false
-  portSeperate = false
-  dataPath = "node.value"
-  parentPath = ""
-  portPath = ""
+serviceDiscovery:
+  useNestedQuery: true
+  parentDataPath: "node.value"
+  dataPath: "hostname"
+  portDataPath: "port"
 ```
 
-**Zookeeper Example**
+</Tab>
+<Tab title="Eureka">
 
-For this, you need to spin up a REST server that communicates with the Zookeeper instance.
-Here is one open source project, ZooREST, that does just that: https://github.com/Difrex/zoorest
+The query endpoint must return JSON. Eureka returns XML by default, so create a Tyk API that adds an `Accept: application/json` header to the request, and use that API as the query endpoint.
 
-With Zookeeper and ZooREST running, test the query endpoint. Don't forget the `+json`:
-```curl
-$ curl http://zoorest:8889/v1/get/zk_tyk+json
+```yaml
+serviceDiscovery:
+  useTargetList: true
+  parentDataPath: "application.instance"
+  dataPath: "hostName"
+  portDataPath: "port.$"
+```
+
+</Tab>
+<Tab title="Mesosphere">
+
+```yaml
+serviceDiscovery:
+  useTargetList: true
+  parentDataPath: "tasks"
+  dataPath: "host"
+  portDataPath: "ports"
+```
+
+</Tab>
+<Tab title="ZooKeeper">
+
+ZooKeeper doesn't have a REST API. Use a REST server for ZooKeeper, such as [ZooREST](https://github.com/Difrex/zoorest), as the query endpoint. Add `+json` to the key in the query endpoint to get a JSON response:
+
+```bash
+curl http://zoorest:8889/v1/get/zk_tyk+json
+```
+
+```json
 {
   "data": {
-      "path": "httpbin.org"
+    "path": "httpbin.org"
   },
   "error": "",
   "path": "/zk_tyk",
@@ -219,70 +171,163 @@ $ curl http://zoorest:8889/v1/get/zk_tyk+json
 }
 ```
 
-Then, you can use the following Tyk SD configurations:
 ```yaml
-  isNested = false
-  isTargetList = false
-  endpointReturnsList = false
-  portSeperate = false
-  dataPath = "data.path"
-  parentPath = ""
-  portPath = ""
+serviceDiscovery:
+  dataPath: "data.path"
 ```
 
-**Consul Example**
+</Tab>
+</Tabs>
 
-For integrating service discovery with Consul, you can use the following configuration parameters:
-
-```yaml
-  isNested = false
-  isTargetList = true
-  endpointReturnsList = true
-  portSeperate = true
-  dataPath = "Address"
-  parentPath = ""
-  portPath = "ServicePort"
-```
-
-**Linkerd Example**
-
+## DNS Discovery
 
 <Note>
-This configuration is a Tyk Community Contribution.
+Available from Tyk 5.16.0
 </Note>
 
+Tyk Gateway can resolve an upstream hostname through DNS and load balance across every address it returns.
 
-To integrate Tyk with Linkerd perform the following:
+### When to Use DNS Discovery
+
+gRPC uses HTTP/2, which carries many requests over one long-lived connection. If the upstream is a Kubernetes Service, Tyk Gateway opens this connection to one pod and sends every request over it. The other pods receive no traffic, and new pods from autoscaling stay idle.
+
+DNS discovery solves this. Tyk Gateway resolves the upstream hostname at a regular interval and uses every address as a load balancing target. It picks up added and removed pods at the next lookup, so you don't need to reload the API.
+
+DNS discovery works with any cleartext HTTP/2 (`h2c://`) upstream, such as a gRPC service.
+
+### Requirements
+
+To use DNS discovery:
+
+- Use the `h2c://` scheme and a hostname in the upstream URL.
+- Enable [load balancing](/nightly/planning-for-production/ensure-high-availability/load-balancing#load-balancing).
+- Disable [registry-based service discovery](#registry-based-service-discovery).
+- Make sure that the hostname resolves to the address of each upstream instance.
+
+Tyk Dashboard and the Tyk Gateway API reject an API definition that enables DNS discovery without load balancing, or together with registry-based service discovery.
+
+DNS discovery doesn't support TLS upstreams (`https://`), IP addresses or `localhost`. It supplies the target list, and the load balancer distributes requests across it.
+
+In Kubernetes, use a [headless Service](https://kubernetes.io/docs/concepts/services-networking/service/#headless-services) (`clusterIP: None`). A standard Service resolves to a single cluster IP, so every request still reaches the same pod.
+
+### Configuration
+
+Configure DNS discovery in the `upstream.dnsDiscovery` section of the Tyk Vendor Extension:
+
+```yaml
+x-tyk-api-gateway:
+  upstream:
+    url: "h2c://my-grpc-svc.my-namespace.svc.cluster.local:9002"
+    loadBalancing:
+      enabled: true
+    dnsDiscovery:
+      enabled: true
+      refreshInterval: 10s
+      staleTTL: 60s
+      connectionDraining:
+        enabled: true
+        timeout: 30s
+```
+
+You don't need to configure load balancing targets. DNS discovery provides them.
+
+| Field | Default | Description |
+| :-- | :-- | :-- |
+| `enabled` | `false` | Uses the addresses of the upstream hostname as the load balancing target list. |
+| `refreshInterval` | `30s` | How often to resolve the hostname. A new upstream instance receives traffic at most this long after it appears in DNS. Minimum `5s`. |
+| `staleTTL` | No limit | How long to keep using the last known addresses while DNS lookups fail. After this time, requests fail with `503` until a lookup succeeds. If empty or `0`, the last known addresses stay in use until the resolver answers. Must not be negative. |
+| `connectionDraining.enabled` | `false` | Closes connections to an address that DNS no longer returns, after `timeout`. If `false`, these connections close when they become idle. |
+| `connectionDraining.timeout` | `30s` (when draining is enabled) | How long connections to a removed address stay open when draining is enabled. If empty or `0`, Tyk Gateway uses `30s`. Set this to the shutdown grace period of the upstream, such as the pod's `terminationGracePeriodSeconds`. Must not be negative. |
+
+Durations use a human-readable format, such as `30s` or `2m`.
+
+If using Tyk Classic, configure the equivalent settings in `proxy.dns_discovery`. See the [Tyk Classic API definition reference](/nightly/api-management/gateway-config-tyk-classic#param-proxy-dns-discovery) for full details of the field names.
+
+<Note>
+The Tyk Dashboard API designer doesn't have fields for DNS discovery. To configure it, select **Actions > View API definition** and edit the API definition directly.
+</Note>
+
+### How DNS Discovery Works
+
+**Request Distribution:** at each lookup, Tyk Gateway builds the target list from the addresses that DNS returns. The load balancer then rotates requests across these addresses. APIs that use the same hostname share one lookup.
+
+**Host Header:** Tyk Gateway connects to each discovered address. It sends the hostname from the upstream URL as the Host (HTTP/2 `:authority`) of each request. The upstream receives the service name in every request.
+
+**No Addresses Available:** until the first lookup succeeds, requests fail with `503 Service Unavailable` and the message `all hosts are down`. The same happens when DNS returns no addresses twice in a row, for example when a Kubernetes Service has no ready pods. Tyk Gateway ignores a single empty answer, so a short gap doesn't stop traffic. It never falls back to the upstream URL.
+
+**DNS Resolver Unavailable:** if DNS lookups fail, Tyk Gateway keeps using the last known addresses. When `staleTTL` expires, requests fail with `503` until a lookup succeeds. Each API uses the `staleTTL` value in its API definition, even when APIs share a hostname.
+
+**Removed Addresses:** when DNS no longer returns an address, Tyk Gateway sends no new requests to it after the next lookup. Open connections to the address, such as long-lived gRPC streams, stay open until they become idle. If you enable connection draining, they close when the drain timeout expires.
+
+### Troubleshooting
+
+Tyk Gateway logs every DNS discovery event with the prefix `[DNS DISCOVERY]`. Search the Tyk Gateway log for this prefix to see what happens to an API.
+
+**Check That DNS Discovery Is Active**
+
+When Tyk Gateway loads an API that uses DNS discovery, it logs this message at `info` level:
+
+```
+[PROXY] [DNS DISCOVERY] Sourcing the target list from DNS
+```
+
+The log line also shows the `host`, `refresh_interval`, `stale_ttl` and `drain_timeout` that Tyk Gateway uses.
+
+**Common Problems**
+
+| Symptom | Log message | Cause and solution |
+| :-- | :-- | :-- |
+| All requests go to one pod | None | The Kubernetes Service isn't headless, so DNS returns one cluster IP. Set `clusterIP: None` on the Service. |
+| DNS discovery isn't used, and requests go to the upstream URL | `DNS discovery only supports h2c upstreams`, `DNS discovery does not support TLS upstreams` or `DNS discovery needs a resolvable hostname` | The upstream URL doesn't use the `h2c://` scheme with a hostname. Change the upstream URL. |
+| DNS discovery isn't used, and requests go to the upstream URL | `dns_discovery requires enable_load_balancing` | Load balancing is off. Enable load balancing in the API definition. |
+| DNS discovery isn't used, and requests use service discovery | `dns_discovery and service_discovery both supply the target list` | Both methods are on. Turn off the method that you don't need. |
+| Requests fail with `503` and `all hosts are down` | `Upstream hostname did not resolve at load` or `No addresses resolved yet` | Tyk Gateway hasn't completed a DNS lookup since it loaded the API. Make sure that Tyk Gateway can reach the DNS resolver. |
+| Requests fail with `503` and `all hosts are down` | None | DNS returns no addresses for the hostname. For example, the hostname doesn't exist, or the Service has no ready pods. Check the hostname and the pods. |
+| Requests fail with `503` and `all hosts are down` | `Lookups failing past stale_ttl` | Tyk Gateway can't reach the DNS resolver, and `staleTTL` has expired. Check the DNS resolver. To keep the last known addresses for longer, increase `staleTTL`. |
+| New pods take time to receive traffic | None | Tyk Gateway finds new pods at the next lookup. To find them sooner, decrease `refreshInterval`, to a minimum of `5s`. |
+| Long-lived streams stay on a pod after Kubernetes removes it | None | Connection draining is off, so the streams stay open until they become idle. Enable `connectionDraining`. |
+
+## Service Mesh Discovery
+
+If you use a service mesh, the mesh can do service discovery instead of Tyk Gateway. Tyk Gateway sends requests to the mesh, and the mesh routes each request to the correct service instance. You don't need to enable service discovery or DNS discovery in the API definition.
+
+### Linkerd
+
+<Note>
+This example is a Tyk community contribution. It uses the router configuration of Linkerd 1.x. Linkerd 2.x doesn't use this configuration.
+</Note>
+
+In this setup, Tyk Gateway sends every request to the Linkerd HTTP router. Linkerd selects the service for each request from a request header.
 
 **Configure Linkerd**
 
-To integrate with Linkerd, you need to add the following configuration to your `linkerd.yaml` file, located in the `config/` directory:
+By default, Linkerd selects the service from the `Host` header. Tyk Gateway sets the `Host` header to the upstream host, so Linkerd must use a different header. Add this configuration to the `linkerd.yaml` file in the `config/` directory of Linkerd:
 
 ```yaml
-  routers:
-  - protocol: http
-    identifier:
-      kind: io.l5d.header.token
-      header: Custom-Header
+routers:
+- protocol: http
+  identifier:
+    kind: io.l5d.header.token
+    header: Custom-Header
 ```
 
-Then, in your Tyk Dashboard:
+**Configure the API**
 
-1. Select your API from the **System Management > APIs** section and click **Edit**.
+Set the upstream URL to the address of the Linkerd HTTP router. Then add `Custom-Header` to every request, with the Linkerd `app-id` of the service as its value:
 
-2. From the **Core Settings** tab, set the **Target URL** to the Linkerd HTTP server `host:port` address.
+```yaml
+x-tyk-api-gateway:
+  upstream:
+    url: "http://linkerd.example.com:4140"
+  middleware:
+    global:
+      transformRequestHeaders:
+        enabled: true
+        add:
+          - name: Custom-Header
+            value: my-service-app-id
+```
 
-3. From the **Endpoint Designer** tab click **Global Version Settings** and enter `Custom-Header` in the **Add this header**: field and the value of the Linkerd `app-id` in the **Header value** field.
+In Tyk Dashboard, set the upstream URL in the **Upstream** section of the API designer. Then add the header with an [API-level request header transform](/nightly/api-management/traffic-transformation/request-headers#api-level-transform).
 
-4. Click **Update** to save your changes.
-
-This is needed since Tyk appends a "Host" header when proxying the request and the "Host" header is also the default header expected by Linkerd.
-
-**For further Linkerd information, see:**
-
-[Linkerd - HTTP proxy documentation](https://linkerd.io/2-edge/reference/proxy-configuration/) (Alternatives Section)
-
-[Linkered - Header Token Identifier documentation](https://linkerd.io/config/0.9.1/linkerd/index.html#header-token-identifier)
-
-[The original Community Contribution](https://community.tyk.io/t/using-tyk-gateway-with-linkerd/1568)
-
+For more information, see the [Linkerd 1.x header token identifier](https://linkerd.io/config/0.9.1/linkerd/index.html#header-token-identifier) documentation and the [original community contribution](https://community.tyk.io/t/using-tyk-gateway-with-linkerd/1568).

@@ -515,22 +515,56 @@ List of allowed API versions, e.g.  `"versions": [ "Default" ]`.
 ### AccessSpec
 <a id="access-spec"></a>
 
-Defines an API's URL (endpoint) and associated list of allowed methods
+Defines an API's URL (endpoint), its associated list of allowed methods, and optional access conditions.
 
 ```protobuf
 message AccessSpec {
   string url = 1;
   repeated string methods = 2;
+  repeated AccessCondition conditions = 3;
+}
+
+message AccessCondition {
+  string on = 1;
+  RoutingTriggerOptions options = 2;
+}
+
+message RoutingTriggerOptions {
+  map<string, StringRegexMap> header_matches = 1;
+  map<string, StringRegexMap> query_val_matches = 2;
+  map<string, StringRegexMap> path_part_matches = 3;
+  map<string, StringRegexMap> session_meta_matches = 4;
+  map<string, StringRegexMap> request_context_matches = 5;
+  StringRegexMap payload_matches = 6;
+  repeated BodyFieldMatch body_field_matches = 7;
+}
+
+message StringRegexMap {
+  string match_rx = 1;
+  bool reverse = 2;
+}
+
+message BodyFieldMatch {
+  string path = 1;
+  string match_rx = 2;
+  bool reverse = 3;
 }
 ```
 
-#### Field Descriptions 
+#### Field Descriptions
 
 `url`
 A URL (endpoint) belonging to the API associated with the request session.
 
 `methods`
 List of allowed methods for the URL (endpoint), e.g. `"methods": [ "GET". "POST", "PUT", "PATCH" ]`.
+
+`conditions`
+List of checks that the request must also meet before Tyk Gateway grants access to the URL (endpoint). Available from Tyk Gateway 5.16.0. See [Access Conditions](/nightly/api-management/access-control/sessions-and-keys/access-conditions) for the fields and how Tyk Gateway evaluates them.
+
+<Note>
+To read or set `conditions` in a gRPC plugin, [generate your bindings](#generate-bindings) from the `.proto` files of Tyk Gateway 5.16.0 or later. Python plugins can't read or set conditions yet.
+</Note>
 
 ---
 
@@ -1095,13 +1129,9 @@ At the time of writing the following features are currently unsupported and unav
 
 #### gRPC Developer Resources
 
-The [Protocol Buffers](https://github.com/TykTechnologies/tyk/tree/master/coprocess/proto ) and [bindings](https://github.com/TykTechnologies/tyk/tree/master/coprocess/bindings) provided by Tyk should be used in order for successful ommunication between Tyk Gateway and your gRPC plugin server. Documentation for the protobuf messages is available in the [Rich Plugins Data Structures](/nightly/api-management/plugins/rich-plugins#rich-plugins-data-structures) page.
+Tyk Gateway and your gRPC server communicate using the [Tyk Protocol Buffer definitions](https://github.com/TykTechnologies/tyk/tree/master/coprocess/proto). Generate the bindings for your gRPC server from these files, as described in [Generate Bindings](#generate-bindings). The [Rich Plugins Data Structures](/nightly/api-management/plugins/rich-plugins#rich-plugins-data-structures) section describes each message.
 
-You can generate supporting HTML documentation using the *docs* task in the [Taskfile](https://github.com/TykTechnologies/tyk/blob/master/coprocess/proto/Taskfile.yml) file of the [Tyk repository](https://github.com/TykTechnologies/tyk). This documentation explains the protobuf messages and services that allow gRPC plugins to handle a request made to the Gateway. Please refer to the README file within the proto folder of the tyk repository for further details.
-
-You may re-use the bindings that were generated for our samples or generate the bindings youself for Go, Python and Ruby, as implemented by the *generate* task in the [Taskfile](https://github.com/TykTechnologies/tyk/blob/master/coprocess/proto/Taskfile.yml) file of the [Tyk repository](https://github.com/TykTechnologies/tyk).
-
-If you wish to generate bindings for another target language you may generate the bindings yourself. The [Protocol Buffers](https://developers.google.com/protocol-buffers/) and [gRPC documentation](http://www.grpc.io/docs) provide specific requirements and instructions for each language.
+The [Protocol Buffers](https://protobuf.dev/) and [gRPC](https://grpc.io/docs/) documentation explain the requirements for each language.
 
 #### Load Balancing Between gRPC Servers
 
@@ -1154,7 +1184,23 @@ The protocol buffer compiler, `protoc`, should be installed to generate the serv
 
 ##### Generate Bindings
 
-Generate the bindings (service and data structures) for your target language using the `protoc` compiler. Tutorials are available at [protobuf.dev](https://protobuf.dev/getting-started/) for your target language.
+Generate the bindings (service and data structures) for your target language from the Tyk Protocol Buffer files, using the `protoc` compiler.
+
+1. Get the `.proto` files from the `coprocess/proto` folder of the Tyk Gateway repository. Use the release that matches your Tyk Gateway version, for example:
+
+    ```bash
+    git clone --depth 1 --branch v5.16.0 https://github.com/TykTechnologies/tyk.git
+    ```
+
+2. Run `protoc` with the plugins for your target language. For example, to generate Go bindings:
+
+    ```bash
+    protoc -I tyk/coprocess/proto --go_out=. --go-grpc_out=. tyk/coprocess/proto/*.proto
+    ```
+
+    For the options and plugins that other languages need, see the [Protocol Buffers tutorials](https://protobuf.dev/getting-started/) and the [gRPC language guides](https://grpc.io/docs/languages/).
+
+**Generate the bindings again when you upgrade Tyk Gateway.** New versions can add fields to the messages, and bindings generated from older files don't contain them. Your server can't read these fields. If it builds a new message instead of returning the one it received, it also drops them.
 
 ##### Implement service
 
@@ -1171,11 +1217,11 @@ The *Dispatcher* service contains two RPC methods, *Dispatch* and *DispatchEvent
 
 Your *Dispatch* RPC should handle the request made by Tyk Gateway, implementing custom middleware for the intended plugin hooks. Each plugin hook allows Tyk Gateway to communicate with your gRPC server to execute custom middleware at various stages of the API request lifecycle, such as Pre, PostAuth, Post, Response etc. The Tyk Protocol Buffers define the [HookType](https://github.com/TykTechnologies/tyk/blob/master/coprocess/proto/coprocess_common.proto) enumeration to inspect the type of the intended gRPC plugin associated with the request. This is accessible as an attribute on the *Object* message, e.g. *object_message_instance.hook_type*.
 
-##### Developer resources
+##### Developer Resources
 
-Consult the [Tyk protocol buffers](https://github.com/TykTechnologies/tyk/tree/master/coprocess/proto) for the definition of the service and data structures that enable integration of Tyk gateway with your gRPC server. Tyk provides pre-generated [bindings](https://github.com/TykTechnologies/tyk/tree/master/coprocess/bindings) for C++, Java, Python and Ruby.
+Consult the [Tyk protocol buffers](https://github.com/TykTechnologies/tyk/tree/master/coprocess/proto) for the definition of the service and data structures that enable integration of Tyk Gateway with your gRPC server.
 
-Example tutorials are available that explain how to generate the protobuf bindings and implement a server for [Java](/nightly/api-management/plugins/rich-plugins#create-a-request-transformation-plugin-with-java), [.NET](/nightly/api-management/plugins/rich-plugins#create-custom-auth-plugin-with-dotnet) and [NodeJS](/nightly/api-management/plugins/rich-plugins#create-custom-auth-plugin-with-dotnet).
+Example tutorials are available that explain how to generate the protobuf bindings and implement a server for [Java](/nightly/api-management/plugins/rich-plugins#create-a-request-transformation-plugin-with-java), [.NET](/nightly/api-management/plugins/rich-plugins#create-custom-auth-plugin-with-dotnet) and [NodeJS](/nightly/api-management/plugins/rich-plugins#create-custom-authentication-plugin-with-nodejs).
 
 Tyk Github repositories are also available with examples for [Ruby](https://github.com/TykTechnologies/tyk-plugin-demo-ruby) and [C#/.NET](https://github.com/TykTechnologies/tyk-plugin-demo-dotnet)
  

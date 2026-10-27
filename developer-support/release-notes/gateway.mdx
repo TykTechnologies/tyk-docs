@@ -1109,9 +1109,10 @@ This patch implements several changes and fixes to improve the stability and cor
 
 In this release, we’ve updated how the Gateway handles several configuration values. The Gateway now uses the corrected behavior by default:
 
-- Detailed traffic logs redact the Authorization header and any custom authentication header so that tokens no longer appear in analytics data.
+- Detailed traffic logs redact the API's authentication header (`Authorization` by default), so tokens sent in that header no longer appear in analytics data.
 - Body transform and webhook templates are only loaded from inside the template_path directory.
 - When an API uses both Strip Listen Path and URL Rewrite, the rewritten URL is now proxied exactly as configured, without the listen path being stripped from it.
+- Custom API IDs in API definitions created or updated through the Gateway API may only contain letters, numbers, `.`, `_`, `-`, and `~`.
 
 If your deployment already relies on the previous behavior, new configuration options let you keep it. They are disabled by default, and we recommend using them only temporarily while you update your configuration.
 
@@ -1124,17 +1125,24 @@ For a comprehensive list of changes, please refer to the detailed [changelog](#C
 
 **Sensitive headers obfuscated in detailed logs**
 
-When `enable_detailed_recording` is active, the Gateway now obfuscates the Authorization header and any custom authentication header defined in the API configuration before writing analytics records to Redis. Token values are redacted in the stored raw request. This prevents authentication credentials from being visible in the Log Browser or downstream analytics stores.
+When detailed recording is enabled, Tyk Gateway now replaces the value of the API's authentication header with `***` in the raw request before writing the traffic log to Redis. This is the header set in the API's client authentication configuration, `Authorization` by default. Tokens in that header are no longer visible in the Log Browser or in downstream analytics stores. Credentials sent in any other way, such as in a query parameter, a cookie or the request body, are still recorded.
 
 This is a breaking change. To restore the previous behavior, set the new configuration option `analytics_config.allow_unsafe_detailed_logs` to `true` (default `false`).
 
- 
+
 **Body transform template path validation**
 
 When request or response body transforms use file mode (`template_mode: file`), the template file path is now constrained to the Gateway’s configured `template_path` directory. Absolute paths and directory traversal sequences that resolve outside this directory are rejected. Affected transforms will return a `400` error with `"Template execution failed"`.
 This applies to both Tyk Classic and Tyk OAS API definitions. To temporarily restore the previous behavior, set `allow_unsafe_body_transform_template_paths: true` in your Gateway or Dashboard configuration.
 
 The `template_path` field on webhook definitions (`/api/hooks`) controls which template file is used to format the webhook body. This field is now validated on both Gateway and Dashboard to reject absolute paths and directory traversal sequences. Requests using invalid paths will receive a `400 Bad Request` error. To restore the previous behavior, set `allow_unsafe_webhook_template_paths: true` in your Gateway or Dashboard configuration.
+
+
+**Custom API IDs are now restricted to safe characters**
+
+Creating or updating an API through the Tyk Gateway API with a custom API ID is now rejected with `400 Bad Request` unless the ID uses only letters, numbers, `.`, `_`, `-` and `~`, and contains at least one letter or digit. This applies to Tyk Classic APIs, Tyk OAS APIs and MCP proxies. API definitions that Tyk Gateway loads from files or from Tyk Dashboard are not checked, so existing APIs continue to run.
+
+To keep the previous behavior, set the new configuration option `allow_unsafe_api_ids` to `true` (default `false`). Tyk Gateway logs a warning at startup when this option is enabled.
 
 
 **Strip Listen Path no longer modifies URL Rewrite targets**
@@ -1225,6 +1233,13 @@ We've resolved an issue in Dashboard-managed, hybrid and MDCB deployments where 
 <Accordion title='Fixed Enforced Timeout being overridden by the default upstream timeout'>
 {/* TT-17873 */}
 We've resolved a regression where the Enforced Timeout middleware could be overridden by `proxy_default_timeout`, so requests to an endpoint with a longer enforced timeout were cut off at the default. Timeouts are now applied per request, so the most specific configured timeout (endpoint, then API, then Gateway default) is always respected. Streaming responses (SSE, gRPC and GraphQL) are no longer canceled prematurely.
+</Accordion>
+
+<Accordion title='Fixed custom API IDs containing special characters'>
+{/* TT-16298 */}
+We've resolved an issue where the Gateway API accepted custom API IDs containing special characters (such as `#`, `?`, `/` or spaces), creating APIs that could then not be retrieved, updated, or deleted. Creating or updating an API with a custom ID is now rejected with `400 Bad Request` unless the ID uses only letters, numbers, `.`, `_`, `-` and `~`, and contains at least one letter or digit. Auto-generated IDs are unaffected.
+
+To keep the previous, permissive behavior, set the new configuration option `allow_unsafe_api_ids` to `true` (default `false`). See [Breaking Changes](#breaking-changes-5.13.4) for details.
 </Accordion>
 
 <Accordion title='Fixed URL Rewrite targets being altered by Strip Listen Path'>
