@@ -1,0 +1,156 @@
+---
+title: "MCP Gateway Access Logs"
+sidebarTitle: "Access Logs"
+description: "MCP-specific fields available in Tyk Gateway structured access logs, including JSON-RPC method, primitive type, primitive name, and error code."
+keywords: "mcp, access logs, observability, logging, mcp_method, mcp_primitive_name, json-rpc, api to mcp"
+canonical: "https://tyk.io/docs/ai-management/mcp-gateway/mcp-access-logs"
+noindex: true
+robots: "noindex, follow"
+---
+
+When Tyk Gateway processes an MCP request, it adds four MCP-specific fields to the structured access log record for that request. These fields let you filter, aggregate, and analyze MCP traffic in your log management tooling using the same access log pipeline you use for REST APIs.
+
+For an overview of all MCP observability signals, see [MCP observability](/5.15/ai-management/mcp-gateway/mcp-observability).
+
+## Prerequisites
+
+Access logging must be enabled in your Tyk Gateway configuration. Set `access_logs.enabled` to `true` in `tyk.conf`. See [Enabling Access Logs](/5.15/api-management/logs/access-logs#enabling-access-logs).
+
+## MCP fields
+
+The following fields are added to access log records for MCP requests. Each field is only included when it has a non-empty value; fields are omitted from the record entirely when not applicable.
+
+| Field | Type | Description |
+|---|---|---|
+| `api_type` | string | API protocol type. Always `mcp` for MCP requests. |
+| `mcp_method` | string | JSON-RPC method invoked, for example `tools/call` or `resources/read`. Present on all MCP requests. |
+| `mcp_primitive_type` | string | MCP primitive category: `tool`, `resource`, or `prompt`. Present only when a primitive was matched. |
+| `mcp_primitive_name` | string | Name of the specific tool, resource, or prompt invoked, for example `get_current_weather`. Present only when a primitive was matched. |
+| `mcp_error_code` | integer | Gateway-mapped JSON-RPC error code. Present only when the request failed at the gateway layer. Omitted when there is no error. |
+
+The `mcp_error_code` field reflects errors that occur within the gateway: authentication failures, rate limit rejections, and upstream errors. It never carries error codes from within the upstream MCP server's JSON-RPC response body. A gateway error always has a `4xx` or `5xx` HTTP status, never `200`.
+
+Tyk maps the HTTP status of a gateway error to a JSON-RPC error code:
+
+| Error code | HTTP status | Meaning |
+|---|---|---|
+| `-32700` | `400` | Parse error: the request body is not valid JSON |
+| `-32600` | `400`, `405` | Invalid request |
+| `-32601` | `404` | Method not found |
+| `-32602` | `400` | Invalid params: Tyk could not read the primitive name from `params` |
+| `-32603` | `500` and other `5xx` | Internal error |
+| `-32000` | Other `4xx` | Other client error |
+| `-32001` | `401` | Authentication required |
+| `-32002` | `403` | Access denied |
+| `-32003` | `429` | Rate limit exceeded |
+| `-32004` | `502`, `503`, `504` | Upstream error |
+
+The codes `-32005` and `-32006` are reserved. Tyk does not currently return them.
+
+## Access logs when the proxy fronts a Tyk-managed REST API
+
+When an MCP proxy is [generated directly from a Tyk-managed REST API](/5.15/ai-management/mcps/api-to-mcp) rather than fronting a remote MCP server, a single `tools/call` request produces two separate access log entries when access logs are enabled on the Gateway.
+
+The first entry is for the MCP proxy request itself, and carries the MCP fields described above. The second is for Tyk's internal call into the paired source REST API, dispatched through the gateway's standard request handling. That second entry has no MCP fields at all: its `api_type` reflects the source API's own type (`oas` for a Tyk OAS API), and it is otherwise indistinguishable from a request made directly against that API.
+
+```json expandable
+{
+  "api_id": "orders-mcp",
+  "api_name": "Orders MCP Proxy",
+  "api_type": "mcp",
+  "client_ip": "10.0.0.42",
+  "latency_total": 187,
+  "method": "POST",
+  "mcp_method": "tools/call",
+  "mcp_primitive_name": "get_order_status",
+  "mcp_primitive_type": "tool",
+  "path": "/mcp",
+  "prefix": "access-log",
+  "status": 200,
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
+}
+```
+
+```json expandable
+{
+  "api_id": "orders-rest",
+  "api_name": "Orders REST API",
+  "api_type": "oas",
+  "client_ip": "10.0.0.42",
+  "latency_total": 142,
+  "method": "GET",
+  "path": "/orders/{id}/status",
+  "prefix": "access-log",
+  "status": 200,
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
+}
+```
+
+If [OpenTelemetry tracing](/5.15/api-management/traces) is enabled alongside access logging, both entries carry the same `trace_id`: Tyk dispatches the internal call to the source API within the same trace as the originating MCP request, so the two entries are spans of one trace rather than unrelated hits. Without tracing enabled, there is no shared identifier between the two entries, so correlate them by timestamp. The proxy's own `latency_total` includes the time spent on the source API call, so it is always the larger of the two figures.
+
+<Note>
+This dual-record pattern isn't unique to access logs. The Dashboard's [MCP analytics](/5.15/ai-management/mcp-gateway/mcp-analytics) charts, and the Tyk Pump analytics pipeline underneath them, follow the same rule: only the MCP proxy's own record is recorded as MCP traffic, so the source API's analytics include this internal traffic indistinguishably alongside any direct hits it receives. See [Tyk Pump](/5.15/api-management/tyk-pump) for how analytics records are processed and stored.
+</Note>
+
+## Configuring which fields to include
+
+By default, each record includes all available fields. To log only some fields, use an access log template. See [Access Log Templates](/5.15/api-management/logs/access-logs#access-log-templates). Add `api_type` and the four `mcp_` fields to the template to keep the MCP detail.
+
+## Example log records
+
+A successful `tools/call` request produces a record similar to the following:
+
+```json
+{
+  "api_id": "my-weather-mcp",
+  "api_name": "Weather MCP Proxy",
+  "api_type": "mcp",
+  "client_ip": "10.0.0.42",
+  "latency_total": 312,
+  "method": "POST",
+  "mcp_method": "tools/call",
+  "mcp_primitive_name": "get_current_weather",
+  "mcp_primitive_type": "tool",
+  "path": "/mcp",
+  "prefix": "access-log",
+  "status": 200
+}
+```
+
+A request that fails at the gateway due to a missing or invalid key produces a record with `mcp_error_code` set. Tyk reads the JSON-RPC body before it checks the key, so the record also has the primitive fields:
+
+```json
+{
+  "api_id": "my-weather-mcp",
+  "api_type": "mcp",
+  "client_ip": "10.0.0.42",
+  "latency_total": 4,
+  "method": "POST",
+  "mcp_error_code": -32001,
+  "mcp_method": "tools/call",
+  "mcp_primitive_name": "get_current_weather",
+  "mcp_primitive_type": "tool",
+  "path": "/mcp",
+  "prefix": "access-log",
+  "status": 401
+}
+```
+
+An `initialize` lifecycle call produces a record with no `mcp_primitive_type`. Its `mcp_primitive_name` is the method name:
+
+```json
+{
+  "api_id": "my-weather-mcp",
+  "api_type": "mcp",
+  "client_ip": "10.0.0.42",
+  "latency_total": 18,
+  "method": "POST",
+  "mcp_method": "initialize",
+  "mcp_primitive_name": "initialize",
+  "path": "/mcp",
+  "prefix": "access-log",
+  "status": 200
+}
+```
+
+

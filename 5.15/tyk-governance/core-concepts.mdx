@@ -1,0 +1,118 @@
+---
+title: "Core Concepts"
+description: "Key concepts of Tyk Governance, including supported service types, severity and compliance, how evaluation runs, and role-based access."
+keywords: "Tyk Governance, API Governance, Governance Concepts"
+sidebarTitle: "Core Concepts"
+canonical: "https://tyk.io/docs/tyk-governance/core-concepts"
+noindex: true
+robots: "noindex, follow"
+---
+
+At its core, Tyk Governance is built around three primitives: **Rulesets** (the standards), **Severity** (the importance of each rule), and **Visibility** (how teams see and track compliance). Together, these primitives let governance owners define a clear, enforceable set of expectations for the services in their organization, and give owners a continuous view of where each service stands.
+
+This page covers the conceptual model. For the workflows built on it, see [Rulesets](/5.15/tyk-governance/rulesets) for authoring standards and [Service Compliance](/5.15/tyk-governance/service-compliance) for acting on results.
+
+## Supported Service Types
+
+Tyk Governance currently supports:
+
+- OpenAPI Specification (OAS) APIs, including Tyk OAS extensions.
+
+> **Note:** Additional service types may be supported in future releases.
+
+## Glossary
+
+- **Service**: The umbrella term for a resource that governance can evaluate. Today it means Tyk OAS APIs. As governance coverage expands, other resource types such as MCPs will also be Services.
+- **API Category**: A tag applied to services in Tyk Dashboard, used to organize the service portfolio and to scope governance rulesets to specific subsets of services. See [Scoping Rulesets to Services](/5.15/tyk-governance/scoping-rulesets).
+- **Compliance**: The degree to which a service adheres to the rulesets applied to it. A service is non-compliant when at least one rule is failing at Error severity; otherwise it is compliant.
+- **Deployment Warning**: A per-ruleset toggle that controls whether saving a non-compliant service produces a soft warning. Off by default, and it never hard-blocks. See [The Deployment Warning](/5.15/tyk-governance/remediate-issues#the-deployment-warning).
+- **Issue**: A specific instance of a rule failure detected against a service. Each issue carries a severity of Error, Warn, Info, or Hint.
+- **Remediation**: The structured process of addressing and resolving service governance issues using the per-rule guidance authored alongside the rule. See [Remediate Issues](/5.15/tyk-governance/remediate-issues).
+- **Rule**: A specific check that evaluates one aspect of a service definition.
+- **Ruleset**: A collection of governance rules that can be applied to services by linking the ruleset to one or more API Categories.
+- **Ruleset Template**: A pre-built ruleset that provides a starting point for common governance domains. See [Ruleset Templates](/5.15/tyk-governance/ruleset-templates).
+- **Severity**: A per-rule attribute indicating the impact of a rule failure on compliance status. Error makes a service non-compliant. Warn and Info are advisory and do not change compliance status.
+- **Spectral**: A widely adopted open-source linting format for service specifications. Tyk Governance rulesets are compatible with the Spectral format, allowing existing rulesets to be reused without rewriting.
+- **Vacuum**: The high-performance, Go-based linting engine used by Tyk Governance to execute rulesets. It is compatible with the Spectral ruleset format and optimized for fast evaluation of large OpenAPI specifications.
+
+## Severity and Compliance
+
+Each rule in a ruleset carries a severity that determines the impact of a rule failure on the service's compliance status. Tyk Governance uses three severity levels:
+
+| Severity | Meaning | Effect on Compliance |
+|---|---|---|
+| Error | A critical issue that must be fixed | At least 1 error makes the service non-compliant |
+| Warn | An advisory signal indicating potential risk or a best-practice improvement | Does not affect compliance status |
+| Info | An informational note for awareness | Does not affect compliance status |
+
+A service is non-compliant when at least one rule is failing at Error severity. Services whose only failures are at Warn or Info severity remain compliant. The issues are surfaced in the Governance tab as advisory feedback, but no compliance flag is raised.
+
+<img src="/img/governance/CoreConcepts1.png" alt="Governance tab showing compliance status" />
+
+This separation lets governance owners distinguish between issues that must be fixed and issues that should be considered, without forcing every guidance into a binary pass or fail outcome.
+
+> **Default severity:** If a rule is created without a severity value, it defaults to `warn`, matching the Vacuum engine default. When this happens, the rule's entry in `applied_rules` omits the `severity` field rather than storing it explicitly. Consumers of `applied_rules` should treat a missing `severity` field as `warn`.
+
+## How Evaluation Works
+
+When you save an API definition or a governance ruleset, Tyk Dashboard queues a background evaluation. Evaluation never runs in the path of your API traffic, and it never blocks saving or deploying an API. All of the work happens on the control plane: Tyk Dashboard lints the API definition against the applicable rulesets, writes its findings to the Dashboard database, and releases the resources it used as soon as the evaluation completes. Your Tyk Gateways are not involved at any point.
+
+Evaluation cost is driven by the size of the API definition, primarily the number of endpoints it declares, and to a lesser extent the weight of its schemas. It does not change with the volume of traffic your APIs receive. For measured timings, see [Evaluation Performance](/5.15/tyk-governance/service-compliance#evaluation-performance).
+
+### When Evaluation Runs
+
+Compliance is not a one-time check at service creation. Evaluation runs in the following situations:
+
+- **A service is saved with a category linked to a ruleset**: Whenever a service, new or existing, is saved while carrying an API Category linked to an active ruleset, that ruleset is evaluated against it.
+- **A service's categories change**: Adding the service to a new category, removing it from a category, or moving it between categories changes which rulesets apply. The service is re-evaluated against its new set of applicable rulesets.
+- **A ruleset is added to a category**: When a ruleset is linked to a category for the first time, every service tagged with that category is evaluated against the new ruleset.
+- **A ruleset is edited**: When the rules, categories, status, or any other content of an existing ruleset changes, every service governed by that ruleset is re-evaluated.
+
+For services that are already active and deployed to the gateway, all of the above triggers run as async background re-evaluations. The compliance status displayed in the API List and in each service's Governance tab updates automatically when the background evaluation completes, without any manual action by the API owner. Compliance status can move in either direction as a result: a service that was compliant yesterday can become non-compliant today purely because the rules changed, and vice versa.
+
+For services being created or actively edited, evaluation runs synchronously when the user saves the service. The rulesets linked to the service's categories are evaluated immediately, before the service goes live, and the result is surfaced to the API owner without delay, including the Deployment Warning popup if a relevant ruleset has the toggle enabled.
+
+## Roles and Access
+
+Access to Tyk Governance is governed by the **Rulesets Governance permission group**, which has three levels:
+
+- **Read**: Allows viewing the Rulesets section and using the test functionality per ruleset, but not creating, editing, or deleting rulesets.
+- **Write**: Allows everything in Read, plus creating, editing, and deleting rulesets.
+- **Deny**: Hides the governance ruleset feature entirely.
+
+This separation lets organizations distinguish between users who define governance standards and users who consume compliance information for their own services.
+
+<img src="/img/governance/CoreConcepts7.png" alt="Governance RBAC" />
+
+For how the feature itself is switched on for an organization, see [Availability and Licensing](/5.15/tyk-governance/overview#availability-and-licensing).
+
+## FAQ
+
+<AccordionGroup>
+<Accordion title="What's the practical difference between Error, Warn, and Info severity?">
+Severity determines whether a rule failure affects compliance status. Error means the service is non-compliant until fixed. Warn and Info are surfaced for review but do not affect compliance; a service with only Warn or Info issues is still compliant.
+</Accordion>
+
+<Accordion title="What severity does a rule get if I don't set one?">
+It defaults to Warn.
+</Accordion>
+
+<Accordion title='Can a single service be governed by more than one ruleset?'>
+Yes. A service can be governed by multiple rulesets at once, for example a design-standards ruleset plus an OWASP security ruleset. Each is evaluated and reported independently.
+</Accordion>
+
+<Accordion title='What actually triggers a re-evaluation, and how long does it take?'>
+Re-evaluation runs automatically whenever a service carrying a category linked to an active ruleset is saved or updated, or a ruleset itself changes or is newly applied. It typically completes within a few seconds, and the result is cached until the next run. Because this is ongoing rather than a one-time save-time check, compliance status can flip in either direction over time.
+</Accordion>
+
+<Accordion title='Does Governance evaluate only my OpenAPI spec, or also my Tyk Gateway configuration?'>
+Both. Rules can target standard OpenAPI fields as well as Tyk-specific gateway configuration via the `x-tyk-api-gateway` extension.
+</Accordion>
+
+<Accordion title='What roles can create rulesets, and what permission level should each user get?'>
+The ruleset permission group (Read, Write, Deny) maps to the two main governance roles:
+
+- Platform Teams need Write to define standards and set severity.
+- An API Developer needs Read to see their own APIs' compliance and remediation guidance, separate from whatever access they already have to edit their own APIs.
+</Accordion>
+</AccordionGroup>

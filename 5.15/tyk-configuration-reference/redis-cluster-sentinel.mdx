@@ -1,0 +1,543 @@
+---
+title: "Configure Redis"
+description: "Learn how to configure Redis for use with Tyk Gateway, Tyk Dashboard, Tyk Pump and Tyk MDCB, including single-node, Redis Cluster, Redis Sentinel, TLS, IAM authentication, and connection pool tuning."
+keywords: "configuration, redis, cluster, sentinel, iam, gcp, valkey, memorystore, tyk-gateway, tyk-dashboard, tyk-pump, tyk-mdcb"
+sidebarTitle: "Configure Redis"
+canonical: "https://tyk.io/docs/tyk-configuration-reference/redis-cluster-sentinel"
+noindex: true
+robots: "noindex, follow"
+---
+
+import RedisVersionsInclude from '/snippets/5.15/redis-versions-include.mdx';
+
+Tyk Gateway, Tyk Dashboard, Tyk Pump and Tyk MDCB all connect to Redis. The configuration approach depends on how your Redis infrastructure is deployed:
+
+| Deployment mode | When to use |
+|---|---|
+| [Single node](#single-node-configuration) | Development, small deployments, or where Redis is managed externally as a single endpoint |
+| [Redis Cluster](#configure-redis-cluster) | High throughput or large datasets; data is automatically sharded across multiple nodes |
+| [Redis Sentinel](#configure-redis-sentinel) | High availability with automatic failover; a primary and replicas, with Sentinel nodes managing promotion |
+
+All three modes share the same set of configuration fields. The sections below explain those fields, then show how to apply them for each mode.
+
+<Warning>
+All Tyk components that connect to the same Redis instance must use identical Redis configuration. In a standard deployment, this means Tyk Gateway, Tyk Dashboard, Tyk Pump and Tyk MDCB must all be configured consistently. In a distributed deployment, the Control Plane and each Data Plane have separate Redis instances, so their configurations are independent, but within each plane, all components must still match.
+</Warning>
+
+## Supported Versions
+
+<RedisVersionsInclude />
+
+## Configuration Reference
+
+The various components that use Redis all contain similar configuration options within their config files (or equivalent environment variables):
+
+- Tyk Gateway and Tyk MDCB configure Redis inside a `storage` block
+- Tyk Pump uses `analytics_storage_config`
+- Tyk Dashboard uses top-level fields prefixed with `redis_`
+
+The table below covers all common configuration fields. TLS-specific fields are covered separately in [TLS Encryption](#tls-encryption).
+
+| Purpose | Tyk Gateway / Tyk Pump / Tyk MDCB field | Tyk Dashboard field |
+|---|---|---|
+| Single host address | `host` | `redis_host` |
+| Port | `port` | `redis_port` |
+| Multiple hosts (Cluster or Sentinel) | `addrs` | `redis_addrs` |
+| Username | `username` | `redis_username` |
+| Password | `password` | `redis_password` |
+| Database index | `database` | `redis_database` |
+| Enable Cluster mode | `enable_cluster` | `enable_cluster` |
+| Sentinel primary name | `master_name` | `redis_master_name` |
+| [Sentinel password](https://redis.io/docs/latest/operate/oss_and_stack/management/sentinel/#sentinel-password-only-authentication) | `sentinel_password` | `redis_sentinel_password` |
+| [Max active connections](#connection-pool) | `optimisation_max_active` | `redis_max_active` |
+| Connection timeout (seconds) | `timeout` | `redis_timeout` |
+
+### Address Configuration
+- For a single-node connection, use `host` and `port`.
+- For Redis Cluster, use `addrs` with the addresses of all cluster nodes (both primary and replica).
+- For Redis Sentinel, use `addrs` with the addresses of your Sentinel nodes, not the Redis data nodes directly.
+- When `addrs` is set, `host` and `port` are ignored.
+
+### Connection Pool
+
+Each Tyk component maintains a pool of connections to Redis. Two settings control this pool:
+
+- **`optimisation_max_active`:** the maximum number of active connections (this is called `redis_max_active` for Tyk Dashboard)
+- **`timeout`:** the connection timeout, after which an attempt to connect to Redis is abandoned
+
+The defaults (`optimisation_max_active: 500`, `timeout: 5` seconds) are suitable for most deployments.
+
+If you are running Tyk under high load and see connection pool timeouts, raise the maximum number of active connections incrementally until the timeouts stop. Avoid setting it excessively high, as opening too many connections can place unnecessary load on Redis.
+
+Keep the connection timeout low so that failures are detected quickly rather than queuing behind slow connections.
+
+## Single Node Configuration
+
+Use these settings when connecting to a standalone Redis instance. This is the simplest configuration and is appropriate for development or where your Redis provider exposes a single endpoint.
+
+### Tyk Gateway
+
+In `tyk.conf` (or via environment variables), Redis is configured inside the `storage` block:
+
+```json
+"storage": {
+  "type": "redis",
+  "host": "redis-server",
+  "port": 6379,
+  "username": "",
+  "password": "",
+  "database": 0,
+  "optimisation_max_active": 500
+}
+```
+
+### Tyk Dashboard
+
+In `tyk_analytics.conf` (or via environment variables), Redis settings are top-level fields:
+
+```json
+"redis_host": "redis-server",
+"redis_port": 6379,
+"redis_username": "",
+"redis_password": "",
+"redis_database": 0,
+"redis_max_active": 500
+```
+
+### Tyk Pump
+
+In `pump.conf` (or via environment variables), Redis is configured inside the `analytics_storage_config` block:
+
+```json
+"analytics_storage_config": {
+  "type": "redis",
+  "host": "redis-server",
+  "port": 6379,
+  "username": "",
+  "password": "",
+  "database": 0,
+  "optimisation_max_active": 500
+}
+```
+
+### Tyk MDCB
+
+In `tyk_sink.conf` (or via environment variables), Redis is configured inside the `storage` block:
+
+```json
+"storage": {
+  "type": "redis",
+  "host": "redis-server",
+  "port": 6379,
+  "username": "",
+  "password": "",
+  "database": 0,
+  "optimisation_max_active": 500
+}
+```
+
+## Configure Redis Cluster
+
+[Redis Cluster](https://redis.io/technology/redis-enterprise-cluster-architecture/) automatically shards data across multiple nodes, providing horizontal scalability. It is suited to high-throughput deployments or where the dataset is too large for a single node.
+
+Redis Cluster is not the same as a primary/replica setup. In a primary/replica setup, all nodes hold the full dataset and replicas serve as failover targets. In Redis Cluster, the dataset is split across shards, and each shard has its own primary and optional replicas.
+
+We recommend reviewing [this tutorial](https://redis.io/tutorials/operate/redis-at-scale/scalability/) to learn more about Redis Cluster.
+
+The key differences from a single-node configuration are:
+
+- Set `enable_cluster` to `true`.
+- Replace `host`/`port` with `addrs`, listing **all** cluster node addresses. Tyk needs visibility of the full cluster to route correctly. Do not list only the primary nodes.
+
+<Note>
+When connecting to Amazon ElastiCache in cluster mode, you can use the [configuration endpoint](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/Endpoints.html) in `addrs` instead of listing individual nodes. The configuration endpoint handles routing automatically and supports both read and write operations.
+</Note>
+
+### Tyk Gateway
+
+In `tyk.conf` (or via environment variables), Redis is configured inside the `storage` block. Set `enable_cluster` to `true` and list all cluster nodes under `addrs`:
+
+```json
+"storage": {
+  "type": "redis",
+  "enable_cluster": true,
+  "addrs": [
+    "server1:6379",
+    "server2:6380",
+    "server3:6381"
+  ],
+  "username": "",
+  "password": "",
+  "database": 0,
+  "optimisation_max_active": 4000
+}
+```
+
+### Tyk Dashboard
+
+In `tyk_analytics.conf` (or via environment variables), Redis settings are top-level fields. Set `enable_cluster` to `true` and list all cluster nodes under `redis_addrs`:
+
+```json
+"redis_addrs": [
+  "server1:6379",
+  "server2:6380",
+  "server3:6381"
+],
+"enable_cluster": true,
+"redis_username": "",
+"redis_password": "",
+"redis_database": 0,
+"redis_max_active": 4000
+```
+
+<Note>
+The `enable_cluster` field does not have the `redis_` prefix.
+</Note>
+
+### Tyk Pump
+
+In `pump.conf` (or via environment variables), Redis is configured inside the `analytics_storage_config` block. Set `enable_cluster` to `true` and list all cluster nodes under `addrs`:
+
+```json
+"analytics_storage_config": {
+  "type": "redis",
+  "enable_cluster": true,
+  "addrs": [
+    "server1:6379",
+    "server2:6380",
+    "server3:6381"
+  ],
+  "username": "",
+  "password": "",
+  "database": 0,
+  "optimisation_max_active": 4000
+}
+```
+
+### Tyk MDCB
+
+In `tyk_sink.conf` (or via environment variables), Redis is configured inside the `storage` block. Set `enable_cluster` to `true` and list all cluster nodes under `addrs`:
+
+```json
+"storage": {
+  "type": "redis",
+  "enable_cluster": true,
+  "addrs": [
+    "server1:6379",
+    "server2:6380",
+    "server3:6381"
+  ],
+  "username": "",
+  "password": "",
+  "database": 0,
+  "optimisation_max_active": 4000
+}
+```
+
+## Configure Redis Sentinel
+
+[Redis Sentinel](https://redis.io/docs/latest/operate/oss_and_stack/management/sentinel/) provides high availability for a primary/replica Redis setup. Sentinel nodes monitor the primary, and if it becomes unavailable they coordinate promotion of a replica to primary. No change to Tyk's configuration is required when a failover occurs.
+
+Sentinel is the right choice when you need automatic failover but do not need the horizontal sharding that Redis Cluster provides.
+
+We recommend reviewing [this tutorial](https://redis.io/tutorials/operate/redis-at-scale/high-availability/) to learn more about Redis Sentinel.
+
+The key differences from a single-node configuration are:
+
+- List your Sentinel node addresses under `addrs` (not the Redis data nodes directly).
+- Set `master_name` to the name of the monitored primary, as configured in your Sentinel setup.
+- Tyk connects to the Sentinel nodes as the Redis `default` user. The Username field applies to the primary only.
+
+<Note>
+Do not set `enable_cluster`: Sentinel and Cluster are mutually exclusive modes.
+</Note>
+
+<Warning>
+If the Redis primary that the Sentinel nodes monitor requires a password, you must also set the Redis password (`password`, or `redis_password` for Tyk Dashboard). If you set only the Sentinel password, Tyk connects to the Sentinel nodes but cannot authenticate to the primary.
+</Warning>
+
+<Warning>
+When using Bitnami charts to install Redis Sentinel in Kubernetes, a Redis *service* is exposed rather than the Sentinel nodes directly. In this case, use a standard [single-node configuration](/5.15/tyk-configuration-reference/redis-cluster-sentinel#single-node-configuration) pointing at that service address, and do not set `master_name`.
+</Warning>
+
+### Tyk Gateway
+
+In `tyk.conf` (or via environment variables), Redis is configured inside the `storage` block. Point `addrs` at your Sentinel nodes and set `master_name` to the name of the monitored primary:
+
+```json
+"storage": {
+  "type": "redis",
+  "addrs": [
+    "sentinel1:26379",
+    "sentinel2:26379",
+    "sentinel3:26379"
+  ],
+  "master_name": "mymaster",
+  "username": "",
+  "password": "",
+  "database": 0,
+  "optimisation_max_active": 4000,
+  "sentinel_password": ""
+}
+```
+
+- If your Sentinel nodes require a password, set `sentinel_password`.
+- If the primary requires a password, you must also set `password` (`TYK_GW_STORAGE_PASSWORD`).
+
+### Tyk Dashboard
+
+In `tyk_analytics.conf` (or via environment variables), Redis settings are top-level fields. Point `redis_addrs` at your Sentinel nodes and set `redis_master_name` to the name of the monitored primary:
+
+```json
+"redis_addrs": [
+  "sentinel1:26379",
+  "sentinel2:26379",
+  "sentinel3:26379"
+],
+"redis_master_name": "mymaster",
+"redis_username": "",
+"redis_password": "",
+"redis_database": 0,
+"redis_max_active": 4000,
+"redis_sentinel_password": ""
+```
+
+- If your Sentinel nodes require a password, set `redis_sentinel_password`.
+- If the primary requires a password, you must also set `redis_password` (`TYK_DB_REDISPASSWORD`).
+
+### Tyk Pump
+
+In `pump.conf` (or via environment variables), Redis is configured inside the `analytics_storage_config` block. Point `addrs` at your Sentinel nodes and set `master_name` to the name of the monitored primary:
+
+```json
+"analytics_storage_config": {
+  "type": "redis",
+  "addrs": [
+    "sentinel1:26379",
+    "sentinel2:26379",
+    "sentinel3:26379"
+  ],
+  "master_name": "mymaster",
+  "username": "",
+  "password": "",
+  "database": 0,
+  "optimisation_max_active": 4000,
+  "sentinel_password": ""
+}
+```
+
+- If your Sentinel nodes require a password, set `sentinel_password`.
+- If the primary requires a password, you must also set `password` (`TYK_PMP_ANALYTICSSTORAGECONFIG_PASSWORD`).
+
+### Tyk MDCB
+
+In `tyk_sink.conf` (or via environment variables), Redis is configured inside the `storage` block. Point `addrs` at your Sentinel nodes and set `master_name` to the name of the monitored primary:
+
+```json
+"storage": {
+  "type": "redis",
+  "addrs": [
+    "sentinel1:26379",
+    "sentinel2:26379",
+    "sentinel3:26379"
+  ],
+  "master_name": "mymaster",
+  "username": "",
+  "password": "",
+  "database": 0,
+  "optimisation_max_active": 4000,
+  "sentinel_password": ""
+}
+```
+
+- If your Sentinel nodes require a password, set `sentinel_password`.
+- If the primary requires a password, you must also set `password` (`TYK_MDCB_STORAGE_PASSWORD`).
+
+## TLS Encryption
+
+Redis supports TLS encryption from version 6. TLS configuration uses the same fields regardless of whether you are using single-node, Cluster, or Sentinel mode.
+
+### Configuration Fields
+
+TLS fields are named here as Tyk Gateway configures them, nested inside its `storage` block. The other three components use the same fields, though not always under the same names - see below.
+
+```json
+"storage": {
+  "use_ssl": true,
+  "ssl_insecure_skip_verify": false,
+  "ca_file": "/path/to/ca.crt",
+  "cert_file": "/path/to/client.crt",
+  "key_file": "/path/to/client.key",
+  "tls_min_version": "1.2",
+  "tls_max_version": "1.3"
+}
+```
+
+| Field | Description |
+|---|---|
+| `use_ssl` | Enables TLS for this connection. |
+| `ssl_insecure_skip_verify` | Skips server certificate verification. Not recommended for production. |
+| `ca_file` | Path to the Certificate Authority file. |
+| `cert_file` | Path to the client certificate file, for mutual TLS (mTLS). |
+| `key_file` | Path to the client private key file, for mutual TLS (mTLS). |
+| `tls_min_version` | Minimum TLS version. Valid values: `"1.0"`, `"1.1"`, `"1.2"`, `"1.3"`. Defaults to `"1.2"`. |
+| `tls_max_version` | Maximum TLS version. Valid values: `"1.0"`, `"1.1"`, `"1.2"`, `"1.3"`. Defaults to `"1.3"`. |
+
+The other components rename these fields:
+
+- **Tyk Dashboard**: prefix every field with `redis_` (for example, `redis_use_ssl`, `redis_tls_min_version`).
+- **Tyk MDCB**: identical to Tyk Gateway, except the TLS version fields drop the `tls_` prefix (`min_version`, `max_version`).
+- **Tyk Pump**: identical to Tyk Gateway for `use_ssl` and `ssl_insecure_skip_verify`; every other field swaps its prefix for `ssl_` (`ssl_ca_file`, `ssl_cert_file`, `ssl_key_file`, `ssl_min_version`, `ssl_max_version`).
+
+For background on TLS and mTLS concepts, see [TLS and Certificate Management](/5.15/api-management/certificates).
+
+## IAM Authentication
+
+IAM authentication requires the following minimum versions:
+
+| Component | Minimum version |
+|---|---|
+| Tyk Gateway | 5.15.0 |
+| Tyk Dashboard | 5.15.0 |
+| Tyk Pump | 1.17.0 |
+| Tyk MDCB | 2.13.0 |
+
+<Note>
+IAM authentication is currently available for Google Cloud Memorystore for Valkey and Memorystore for Redis Cluster. Legacy (non-cluster) Memorystore for Redis does not support IAM authentication - continue to use a static password for that service.
+</Note>
+
+As an alternative to a static password, some cloud-managed Redis and Valkey services support authenticating with Identity and Access Management (IAM). This is a Role Based Access Control (RBAC) system for granting specific *permissions* to a specific *identity*, rather than to whoever holds a shared secret.
+
+Every workload (a process such as Tyk Gateway) that runs in a cloud environment has an **identity** of its own, assigned by the platform - for example, a Kubernetes pod's identity on GKE, or the identity attached to a virtual machine. A bundle of permissions granted to an identity is called a **role**.
+
+To use IAM authentication, you grant a *role* that permits connection to your Redis or Valkey instance to Tyk's *identity*.
+
+Tyk requests a short-lived access token from the cloud provider's IAM service, which checks Tyk's identity and, if it holds the granted role, issues the token. Tyk presents that token when connecting to the storage, as proof of its permission to access it. Tyk automatically requests a fresh token ahead of expiry to avoid delays.
+
+Sometimes the workload's own identity can't be granted a role directly - for example, if your organization reserves database permissions for a small set of dedicated service accounts (a cloud provider's term for an identity that belongs to software rather than a person). In that scenario, a workload can impersonate one of those service accounts instead. Tyk then requests tokens as the impersonated service account rather than as itself, so the role only needs to be granted to that one service account, not to every workload that connects.
+
+
+IAM authentication adds an `iam_auth` block, nested inside each component's existing Redis settings - `storage` for Tyk Gateway and Tyk MDCB, `analytics_storage_config` for Tyk Pump:
+
+```json
+"iam_auth": {
+  "enabled": true,
+  "provider": "gcp",
+  "service_account": "",
+  "token_refresh_before_expiry": "5m"
+}
+```
+
+| Field | Description |
+|---|---|
+| `enabled` | Turns on IAM authentication for this connection. When enabled, any configured static username and password are ignored. |
+| `provider` | The cloud IAM provider. The only supported value today is `gcp`. An unsupported or invalid value fails fast, at startup or at the next reconnection attempt, rather than silently falling back to password authentication. |
+| `service_account` | Optional. Impersonate this service account when minting tokens, instead of using the workload's own identity directly. |
+| `token_refresh_before_expiry` | Optional, as a Go duration string (for example `5m`). How far ahead of expiry Tyk refreshes the token. Defaults to `5m`. |
+
+<Note>
+Tyk Dashboard is the exception: its block is `redis_iam_auth`, sitting at the top level alongside its other `redis_`-prefixed settings, rather than nested inside a `storage`-like block.
+</Note>
+
+If separate Redis (or Valkey) instances are used for caching and analytics, Tyk needs its own granted access for each instance where you enable IAM authentication. The `iam_auth` configuration block is available for each storage instance in the Tyk Gateway and Tyk MDCB config:
+
+- **Tyk Gateway:** `storage`, `cache_storage` (used when `enable_separate_cache_store` is set) and `analytics_storage` (used when `enable_separate_analytics_store` is set)
+- **Tyk MDCB:** `storage` and `analytics_storage` (used when `enable_separate_analytics_store` is set)
+
+<Note>
+Each block configures IAM authentication independently, for that block's own Redis connection. If `enable_separate_cache_store` or `enable_separate_analytics_store` is not set, Tyk uses only the primary `storage` connection, and any `iam_auth` block under `cache_storage` or `analytics_storage` is ignored.
+</Note>
+
+### Google Cloud IAM
+
+Tyk supports IAM authentication for two Google Cloud services:
+
+- [Memorystore for Valkey](https://cloud.google.com/memorystore/docs/valkey)
+- [Memorystore for Redis Cluster](https://cloud.google.com/memorystore/docs/cluster)
+
+Only the role you grant differs between the two; this is entirely on the Google Cloud side and invisible to Tyk's configuration.
+
+**How It Works**: Google Cloud's client libraries use a mechanism called Application Default Credentials (ADC) to automatically discover which identity a piece of software is running as. Tyk uses ADC to discover its own identity, then requests a Google OAuth2 access token (Google's name for the access token described above) using that identity, and presents the token as the password when connecting. Tyk caches and refreshes the token ahead of its roughly one-hour expiry, so existing connections keep working across a token rotation and only new connections need the latest token.
+
+**Prerequisites**:
+
+- Grant Tyk's identity the role that permits connecting to your instance: `roles/memorystore.dbConnectionUser` for Memorystore for Valkey, or `roles/redis.dbConnectionUser` for Memorystore for Redis Cluster.
+- Make sure ADC can discover that identity: on GKE, enable Workload Identity so the Kubernetes service account maps to a Google service account holding the role; elsewhere, set `GOOGLE_APPLICATION_CREDENTIALS` to a service account key file, or run on a Compute Engine instance with an attached service account.
+- Enable in-transit encryption on the instance and set `use_ssl` (`redis_use_ssl` for Tyk Dashboard) to `true`.
+
+<Warning>
+Enabling IAM authentication without also enabling TLS logs a warning but does not block the connection. Google strongly recommends TLS for these connections, since the token itself is sent over the wire.
+</Warning>
+
+**Example** (Tyk Gateway, `tyk.conf`):
+
+```json
+"storage": {
+  "type": "redis",
+  "host": "10.0.0.3",
+  "port": 6379,
+  "enable_cluster": true,
+  "use_ssl": true,
+  "username": "",
+  "password": "",
+  "iam_auth": {
+    "enabled": true,
+    "provider": "gcp"
+  }
+}
+```
+
+Set `enable_cluster` to `true` for Memorystore for Redis Cluster, or for Valkey running in cluster mode. Leave it `false` for a standalone Valkey instance.
+
+If the workload's own identity can't hold that role directly, grant it the `roles/iam.serviceAccountTokenCreator` role on a service account that does, then set `service_account` to that account:
+
+```json
+"iam_auth": {
+  "enabled": true,
+  "provider": "gcp",
+  "service_account": "tyk-redis@my-project.iam.gserviceaccount.com"
+}
+```
+
+## Troubleshooting
+
+Before adjusting Tyk configuration, verify that Redis itself is healthy. The commands below help diagnose problems across all deployment modes.
+
+**Check Redis Is Reachable**
+
+```bash
+redis-cli -h <host> -p <port> PING
+```
+
+A healthy Redis instance responds with `PONG`. If this fails, the connection problem is at the network or Redis level, not in Tyk configuration.
+
+**Monitor Key Redis Metrics**
+
+```bash
+redis-cli -h <host> -p <port> INFO
+```
+
+Watch the following metrics:
+
+| Metric | Section | What to look for |
+|---|---|---|
+| `connected_clients` | `clients` | Approaching the `maxclients` limit |
+| `blocked_clients` | `clients` | Non-zero values indicate connection pool pressure |
+| `rejected_connections` | `stats` | Any value above 0 means clients were refused. Set up alerting on this metric. |
+| `instantaneous_ops_per_sec` | `stats` | Sudden drops may indicate a problem with the Redis instance |
+| `used_memory_rss` | `memory` | Growing unboundedly suggests a key eviction or retention issue |
+
+**Google Cloud IAM**
+
+| Symptom | Likely cause |
+|---|---|
+| Connection error mentioning credentials or default credentials | The workload has no resolvable identity. Confirm Workload Identity or `GOOGLE_APPLICATION_CREDENTIALS` is configured. |
+| Authentication rejected by the server | The identity doesn't hold the required role, or holds the wrong one - Valkey and Redis Cluster use different roles. |
+| Connection times out | A network or Private Service Connect issue, not authentication. Confirm Tyk can reach the instance. |
+| Warning that IAM is enabled without TLS | `use_ssl` (or `redis_use_ssl`) is `false`. Enable in-transit encryption on the instance and set it to `true`. |
+
+For further troubleshooting guidance, see the Redis documentation:
+
+- [Troubleshooting Redis](https://redis.io/docs/latest/operate/oss_and_stack/management/troubleshooting/): general Redis problems including latency and memory
+- [Redis Sentinel](https://redis.io/docs/latest/operate/oss_and_stack/management/sentinel/): inspecting primary and replica state, quorum, and failover
+- [Redis Cluster](https://redis.io/docs/latest/operate/oss_and_stack/management/scaling/): checking cluster state, node reachability, and slot distribution
