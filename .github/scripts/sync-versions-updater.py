@@ -40,6 +40,14 @@ COMPONENTS = {
         "repo": "tykio/tyk-microgateway",
         "allow_prerelease": True,
     },
+    "gateway": {
+        "repo": "tykio/tyk-gateway",
+        "allow_prerelease": False,
+    },
+    "mdcb": {
+        "repo": "tykio/tyk-mdcb-docker",
+        "allow_prerelease": False,
+    },
 }
 
 
@@ -131,9 +139,13 @@ def render_file(path: Path, replacements: list[tuple[str, str, str]]) -> str:
 def render_replacements(
     replacements: dict[Path, list[tuple[str, str, str]]],
 ) -> dict[Path, str]:
+    # A target that does not exist yet (a deployment path added to tyk-install
+    # after this script) is skipped, not an error, so the two repositories can
+    # move independently. A target that exists but does not match still fails.
     return {
         path: render_file(path, file_replacements)
         for path, file_replacements in replacements.items()
+        if path.is_file()
     }
 
 
@@ -240,6 +252,107 @@ def build_replacements(versions: dict[str, str]) -> dict[Path, list[tuple[str, s
                 "portal tag",
             ),
         ],
+        REPO_ROOT / "docker/oss/.env.example": [
+            (r"^(GATEWAY_VERSION=).+$", rf"\g<1>{versions['gateway']}", "oss gateway env"),
+            (r"^(PUMP_VERSION=).+$", rf"\g<1>{versions['pump']}", "oss pump env"),
+        ],
+        REPO_ROOT / "docker/oss/docker-compose.yml": [
+            (
+                r"(tykio/tyk-gateway:\$\{GATEWAY_VERSION:-)[^}]+(\})",
+                rf"\g<1>{versions['gateway']}\2",
+                "oss gateway fallback",
+            ),
+            (
+                r"(tykio/tyk-pump-docker-pub:\$\{PUMP_VERSION:-)[^}]+(\})",
+                rf"\g<1>{versions['pump']}\2",
+                "oss pump fallback",
+            ),
+        ],
+        REPO_ROOT / "docker/mdcb/control-plane/.env.example": [
+            (r"^(DASHBOARD_VERSION=).+$", rf"\g<1>{versions['dashboard']}", "mdcb cp dashboard env"),
+            (r"^(GATEWAY_VERSION=).+$", rf"\g<1>{versions['gateway_ee']}", "mdcb cp gateway env"),
+            (r"^(PUMP_VERSION=).+$", rf"\g<1>{versions['pump']}", "mdcb cp pump env"),
+            (r"^(MDCB_VERSION=).+$", rf"\g<1>{versions['mdcb']}", "mdcb cp mdcb env"),
+        ],
+        REPO_ROOT / "docker/mdcb/control-plane/docker-compose.yml": [
+            (
+                r"(tykio/tyk-dashboard:\$\{DASHBOARD_VERSION:-)[^}]+(\})",
+                rf"\g<1>{versions['dashboard']}\2",
+                "mdcb cp dashboard fallback",
+            ),
+            (
+                r"(tykio/tyk-gateway-ee:\$\{GATEWAY_VERSION:-)[^}]+(\})",
+                rf"\g<1>{versions['gateway_ee']}\2",
+                "mdcb cp gateway fallback",
+            ),
+            (
+                r"(tykio/tyk-pump-docker-pub:\$\{PUMP_VERSION:-)[^}]+(\})",
+                rf"\g<1>{versions['pump']}\2",
+                "mdcb cp pump fallback",
+            ),
+            (
+                r"(tykio/tyk-mdcb-docker:\$\{MDCB_VERSION:-)[^}]+(\})",
+                rf"\g<1>{versions['mdcb']}\2",
+                "mdcb cp mdcb fallback",
+            ),
+        ],
+        REPO_ROOT / "docker/mdcb/data-plane/.env.example": [
+            (r"^(GATEWAY_VERSION=).+$", rf"\g<1>{versions['gateway_ee']}", "mdcb dp gateway env"),
+            (r"^(PUMP_VERSION=).+$", rf"\g<1>{versions['pump']}", "mdcb dp pump env"),
+        ],
+        REPO_ROOT / "docker/mdcb/data-plane/docker-compose.yml": [
+            (
+                r"(tykio/tyk-gateway-ee:\$\{GATEWAY_VERSION:-)[^}]+(\})",
+                rf"\g<1>{versions['gateway_ee']}\2",
+                "mdcb dp gateway fallback",
+            ),
+            (
+                r"(tykio/tyk-pump-docker-pub:\$\{PUMP_VERSION:-)[^}]+(\})",
+                rf"\g<1>{versions['pump']}\2",
+                "mdcb dp pump fallback",
+            ),
+        ],
+        REPO_ROOT / "kubernetes/helm-oss/values.yaml": [
+            (
+                rf"(repository: docker\.tyk\.io/tyk-gateway/tyk-gateway\s+tag: ){PINNED_VERSION}",
+                rf"\g<1>{versions['gateway']}",
+                "helm oss gateway tag",
+            ),
+        ],
+        REPO_ROOT / "kubernetes/helm-mdcb/values-control-plane.yaml": [
+            (
+                rf"(repository: tykio/tyk-mdcb-docker\s+tag: ){PINNED_VERSION}",
+                rf"\g<1>{versions['mdcb']}",
+                "helm mdcb cp mdcb tag",
+            ),
+            (
+                rf"(repository: tykio/tyk-dashboard\s+tag: ){PINNED_VERSION}",
+                rf"\g<1>{versions['dashboard']}",
+                "helm mdcb cp dashboard tag",
+            ),
+            (
+                rf"(repository: tykio/tyk-gateway-ee\s+tag: ){PINNED_VERSION}",
+                rf"\g<1>{versions['gateway_ee']}",
+                "helm mdcb cp gateway tag",
+            ),
+            (
+                rf"(repository: tykio/tyk-pump-docker-pub\s+tag: ){PINNED_VERSION}",
+                rf"\g<1>{versions['pump']}",
+                "helm mdcb cp pump tag",
+            ),
+        ],
+        REPO_ROOT / "kubernetes/helm-mdcb/values-data-plane.yaml": [
+            (
+                rf"(repository: tykio/tyk-gateway-ee\s+tag: ){PINNED_VERSION}",
+                rf"\g<1>{versions['gateway_ee']}",
+                "helm mdcb dp gateway tag",
+            ),
+            (
+                rf"(repository: tykio/tyk-pump-docker-pub\s+tag: ){PINNED_VERSION}",
+                rf"\g<1>{versions['pump']}",
+                "helm mdcb dp pump tag",
+            ),
+        ],
         REPO_ROOT / "kubernetes/helm-hybrid/values.yaml": [
             (
                 rf"(repository: tykio/tyk-gateway-ee\s+tag: ){PINNED_VERSION}",
@@ -304,6 +417,13 @@ def main() -> int:
             print(f"  {path.relative_to(REPO_ROOT)}")
     else:
         print("No files changed.")
+
+    missing = [path for path in replacements if not path.is_file()]
+    if missing:
+        print()
+        print("Skipped targets that do not exist in this checkout:")
+        for path in missing:
+            print(f"  {path.relative_to(REPO_ROOT)}")
 
     return 0
 
