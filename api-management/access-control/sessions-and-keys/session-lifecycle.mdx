@@ -166,3 +166,34 @@ You may notice the global Gateway configuration option [`oauth_token_expired_ret
 </Note>
 
 For more detailed information on configuring OAuth token expiration, see the [OAuth 2.0 Token Expiration and Retention](/api-management/authentication/oauth-2#token-expiration-and-retention) documentation.
+
+
+## Automated API Key Expiry Monitoring and Key Rotation via Dashboard API
+
+### Expiration Lifecycle Overview
+Tyk API keys support optional time-to-live settings via the `expires` field (Unix epoch timestamp). When an active key reaches its expiration timestamp:
+* The Gateway automatically invalidates the session and returns an HTTP 403 Forbidden.
+* To avoid service disruptions, platform teams should implement automated monitoring and overlapping key rotation.
+
+### Monitoring Expiring Keys
+Query the Tyk Dashboard API to identify keys nearing expiration:
+1. Call `GET /api/keys` to retrieve the key inventory.
+2. In your automation service, calculate the remaining validity window:
+```python
+import time
+
+current_time = int(time.time())
+warning_threshold_seconds = 14 * 86400  # 14 days
+
+for key in keys:
+    expires = key.get("expires", 0)
+    if 0 < expires < (current_time + warning_threshold_seconds):
+        print(f"Warning: Key {key['id']} expires in {(expires - current_time) // 86400} days")
+```
+
+### Zero-Downtime Key Rotation Pattern
+To rotate keys without client interruption:
+1. **Provision Secondary Key:** Create a new key with identical policy associations and access permissions via `POST /api/keys`.
+2. **Distribute Credential:** Provide the secondary key to the consuming application team during the maintenance window.
+3. **Overlapping Verification:** Allow both keys to operate concurrently until monitoring confirms all client traffic has migrated to the new key.
+4. **Decommission Old Key:** Delete or set `is_inactive: true` on the old key session via `PUT /api/keys/{old_key_id}`.
