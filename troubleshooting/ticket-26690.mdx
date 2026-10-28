@@ -1,0 +1,17 @@
+---
+title: "Troubleshooting Enterprise Developer Portal Record Not Found Error Logs"
+description: "Tyk Enterprise Developer Portal logs repeated error-level 'renderpage.Find: record not found' messages with stack traces when probed at paths like /hello or scanned by automated vulnerability probes. This occurs because probes configured with Gateway endpoints (/hello) hit the portal CMS catch-all route instead of dedicated portal health endpoints (/live, /ready), and unauthenticated misses on non-existent CMS pages are logged at error level."
+---
+
+<h2>Overview</h2><p>In Tyk Enterprise Developer Portal deployments, monitoring systems may capture frequent error-level logs containing <em>renderpage.Find : &quot;record not found&quot;</em> accompanied by stack traces originating from <em>helpers.go</em>. These messages commonly reference paths such as <em>/hello</em> or automated scanner targets such as <em>/.env</em>, <em>/config.js</em>, <em>/composer.json</em>, and <em>/Dockerfile</em>.</p><h2>Root Cause</h2><p>The Enterprise Developer Portal routes requests that do not match internal APIs or static assets to a CMS wildcard catch-all handler. When an unauthenticated request arrives for an unmapped path, the portal queries the database to locate a published CMS page. If no matching record is found, GORM returns a record not found error. The portal logs this lookup failure at <strong>error</strong> level before rendering the standard 404 response. In default production logging mode, error-level entries automatically attach a stack trace.</p><p>Frequent misses for <em>/hello</em> typically indicate that container health checks or uptime monitors were configured using Tyk Gateway or Tyk Dashboard templates. Tyk Gateway and Dashboard expose <em>/hello</em> for health checks, whereas the Enterprise Developer Portal exposes <em>/live</em> and <em>/ready</em>.</p><p>Requests for configuration or environment paths typically originate from automated internet vulnerability scanners probing public endpoints.</p><h2>Remediation and Best Practices</h2><p>To eliminate unnecessary error logs and distinguish expected traffic from operational faults, apply the following steps:</p><ol><li><strong>Update Health Probes:</strong> Configure Kubernetes liveness and readiness probes or load balancer health monitors to use <em>/live</em> and <em>/ready</em> instead of <em>/hello</em>.<pre><code>livenessProbe:
+  httpGet:
+    path: /live
+    port: 3001
+  initialDelaySeconds: 15
+  periodSeconds: 10
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 3001
+  initialDelaySeconds: 20  periodSeconds: 10</code></pre></li><li><strong>Filter Scanner Noise at Ingress:</strong> Block or filter automated vulnerability scanner paths at the ingress controller, API gateway, or Web Application Firewall layer before requests reach the portal service.</li><li><strong>Review Logging Configuration:</strong> Manage portal logging output using the <em>PORTAL_LOG_LEVEL</em> environment variable. Note that setting the log level to error will still output page lookup misses as designed by the CMS router.</li></ol><h2>Verification</h2><p>Verify that dedicated portal probe endpoints return successful responses:</p><pre><code>curl -I 
+curl -I </pre><p>Inspect> centralized monitoring to confirm that <em>renderpage.Find /hello</em> error log entries cease once the probe target has been updated.</p><h2>Applies To</h2><ul><li>Tyk Enterprise Developer Portal</li><li>Kubernetes and Helm deployments</li><li>Self-managed deployments</li></ul>
