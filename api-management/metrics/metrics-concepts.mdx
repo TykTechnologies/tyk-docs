@@ -5,9 +5,89 @@ keywords: "OpenTelemetry, Metrics, Tyk Gateway, Exemplars, Resource Attributes, 
 sidebarTitle: "Metrics Concepts"
 ---
 
-## Metric Groups and Families
+## Introduction
+
+Tyk Gateway, Tyk Dashboard, Tyk MDCB, and Tyk Developer Portal export OpenTelemetry metrics. Tyk Gateway metrics describe API traffic and the state of each gateway. Control plane metrics describe whether gateways are connected, whether configuration reaches them, and whether the dependencies of each component are healthy.
+
+## How Tyk Metrics Work
+
+### Metric Groups and Families
 
 Each component groups its metrics into families, such as dependency health, fleet state, and expiry. Each family has its own on/off flag under `opentelemetry.metrics`. For the flags and their defaults, see [Metrics Configuration](/api-management/logs-metrics#control-plane-fields).
+
+### Control Plane Identity
+
+As with Tyk Gateway metrics, every metric that Tyk Dashboard and Tyk MDCB export carries resource attributes that are set once at process startup:
+
+- `service.name` and `service.instance.id` identify the component and the specific process instance.
+- `service.version` carries the build version.
+- `control_plane_id` identifies the logical control plane that this instance belongs to.
+
+Tyk Dashboard and Tyk MDCB are separate processes, and often separate deployments. In most installations, they represent one logical control plane that serves one set of gateways. `control_plane_id` gives both components the same value for the same logical deployment. A query or dashboard can then group their metrics together, without depending on how the components are named.
+
+There are two ways to resolve `control_plane_id`:
+
+- **Set it explicitly:** set the same value in the Tyk Dashboard and Tyk MDCB configuration for a deployment. We recommend this approach if you want predictable, human-readable IDs.
+- **Leave it unset:** the ID is generated once and shared between the paired instances through the Redis instance that they already share for coordination.
+
+A pair that does not share Redis, and has no explicit `control_plane_id`, does not correlate automatically. In that case, set the ID explicitly.
+
+Tyk Developer Portal is the exception. It does not share Redis with Tyk Dashboard and Tyk MDCB, so it never gets a `control_plane_id`, generated or explicit. To correlate its metrics with the rest of the control plane, use `deployment.environment`. Set it to the same value on all three components for a deployment.
+
+### Resource Attributes in Prometheus
+
+Every Tyk component attaches resource attributes to its metrics, such as `tyk.gw.id` on Tyk Gateway and `control_plane_id` on Tyk Dashboard and Tyk MDCB. For the full list, see [Resource Attributes](/api-management/metrics/default-metrics#resource-attributes).
+
+When using an OTel Collector to export to Prometheus, enable `resource_to_telemetry_conversion` to expose resource attributes as metric labels:
+
+```yaml
+exporters:
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    resource_to_telemetry_conversion:
+      enabled: true
+```
+
+Alternatively, add a transform processor to metrics pipeline for OTLP exporters:
+
+```yaml
+processors:
+  transform/tyk_gw_resource_attrs:
+    error_mode: ignore
+    metric_statements:
+      - context: datapoint
+        statements:
+          - set(attributes["tyk_gw_group_id"], resource.attributes["tyk.gw.group.id"]) where resource.attributes["tyk.gw.group.id"] != nil
+          - set(attributes["tyk_gw_id"], resource.attributes["tyk.gw.id"]) where resource.attributes["tyk.gw.id"] != nil
+          - set(attributes["tyk_gw_tags"], resource.attributes["tyk.gw.tags"]) where resource.attributes["tyk.gw.tags"] != nil
+          - set(attributes["tyk_gw_dataplane"], resource.attributes["tyk.gw.dataplane"]) where resource.attributes["tyk.gw.dataplane"] != nil
+```
+
+This allows PromQL queries such as:
+
+```promql
+# All metrics from a specific gateway node
+{tyk_gw_id="gw-prod-eu-west-1-a"}
+
+# Compare request rates across gateways in an edge group
+sum by (tyk_gw_id) (
+  rate(tyk_api_requests_total{tyk_gw_group_id="edge-eu-west"}[5m])
+)
+```
+
+Without this setting, resource attributes are available via the `target_info` metric and can be joined in PromQL.
+
+### Go Runtime Metrics
+
+Tyk Gateway, Tyk Dashboard, and Tyk MDCB export Go runtime metrics automatically. These metrics reflect the health of the Go runtime inside that process. They come from the standard Go `runtime/metrics` package, through the runtime instrumentation in the OpenTelemetry Go SDK. They are not specific to Tyk.
+
+Because the instrumentation is shared, the metric names and meanings are the same across these components. For example, `go.memory.used` means the same thing on all three. To tell instances apart, use the resource attributes of the component, not the metric name. These are `service.name`, plus `tyk.gw.id` or `control_plane_id` where they apply.
+
+Keep these points in mind when you read them:
+
+- A goroutine count that climbs without a matching rise in traffic is the most common early signal of a goroutine leak. The cause is usually a blocked channel or a context that is never canceled.
+- Heap memory that approaches the configured limit means that garbage collection will soon work harder to stay under it. This trades CPU for memory headroom.
+- A sudden step change right after a deployment tells you more than the absolute value. Compare values before and after a release, not against a fixed number.
 
 ## Tyk Gateway Metrics
 
@@ -67,89 +147,9 @@ GET /api/v1/query_exemplars?query=http_server_request_duration_seconds&start=<st
 
 When exemplar rendering is enabled, Grafana displays scatter plot markers on histogram panels. Clicking a marker navigates directly to the linked trace in your configured tracing backend (Jaeger, Grafana Tempo, etc.), with no manual trace ID lookup required.
 
-## Shared Across Components
-
-These concepts apply to Tyk Gateway and the control plane components.
-
-### Go Runtime Metrics
-
-Tyk Gateway, Tyk Dashboard, and Tyk MDCB export Go runtime metrics automatically. These metrics reflect the health of the Go runtime inside that process. They come from the standard Go `runtime/metrics` package, through the runtime instrumentation in the OpenTelemetry Go SDK. They are not specific to Tyk.
-
-Because the instrumentation is shared, the metric names and meanings are the same across these components. For example, `go.memory.used` means the same thing on all three. To tell instances apart, use the resource attributes of the component, not the metric name. These are `service.name`, plus `tyk.gw.id` or `control_plane_id` where they apply.
-
-Keep these points in mind when you read them:
-
-- A goroutine count that climbs without a matching rise in traffic is the most common early signal of a goroutine leak. The cause is usually a blocked channel or a context that is never canceled.
-- Heap memory that approaches the configured limit means that garbage collection will soon work harder to stay under it. This trades CPU for memory headroom.
-- A sudden step change right after a deployment tells you more than the absolute value. Compare values before and after a release, not against a fixed number.
-
-### Resource Attributes in Prometheus
-
-Every Tyk component attaches resource attributes to its metrics, such as `tyk.gw.id` on Tyk Gateway and `control_plane_id` on Tyk Dashboard and Tyk MDCB. For the full list, see [Resource Attributes](/api-management/metrics/default-metrics#resource-attributes).
-
-When using an OTel Collector to export to Prometheus, enable `resource_to_telemetry_conversion` to expose resource attributes as metric labels:
-
-```yaml
-exporters:
-  prometheus:
-    endpoint: "0.0.0.0:8889"
-    resource_to_telemetry_conversion:
-      enabled: true
-```
-
-Alternatively, add a transform processor to metrics pipeline for OTLP exporters:
-
-```yaml
-processors:
-  transform/tyk_gw_resource_attrs:
-    error_mode: ignore
-    metric_statements:
-      - context: datapoint
-        statements:
-          - set(attributes["tyk_gw_group_id"], resource.attributes["tyk.gw.group.id"]) where resource.attributes["tyk.gw.group.id"] != nil
-          - set(attributes["tyk_gw_id"], resource.attributes["tyk.gw.id"]) where resource.attributes["tyk.gw.id"] != nil
-          - set(attributes["tyk_gw_tags"], resource.attributes["tyk.gw.tags"]) where resource.attributes["tyk.gw.tags"] != nil
-          - set(attributes["tyk_gw_dataplane"], resource.attributes["tyk.gw.dataplane"]) where resource.attributes["tyk.gw.dataplane"] != nil
-```
-
-This allows PromQL queries such as:
-
-```promql
-# All metrics from a specific gateway node
-{tyk_gw_id="gw-prod-eu-west-1-a"}
-
-# Compare request rates across gateways in an edge group
-sum by (tyk_gw_id) (
-  rate(tyk_api_requests_total{tyk_gw_group_id="edge-eu-west"}[5m])
-)
-```
-
-Without this setting, resource attributes are available via the `target_info` metric and can be joined in PromQL.
-
 ## Control Plane Metrics
 
 These concepts apply to Tyk Dashboard, Tyk MDCB, and Tyk Developer Portal.
-
-### Control Plane Identity
-
-As with Tyk Gateway metrics, every metric that Tyk Dashboard and Tyk MDCB export carries resource attributes that are set once at process startup:
-
-- `service.name` and `service.instance.id` identify the component and the specific process instance.
-- `service.version` carries the build version.
-- `control_plane_id` identifies the logical control plane that this instance belongs to.
-
-Tyk Dashboard and Tyk MDCB are separate processes, and often separate deployments. In most installations, they represent one logical control plane that serves one set of gateways. `control_plane_id` gives both components the same value for the same logical deployment. A query or dashboard can then group their metrics together, without depending on how the components are named.
-
-There are two ways to resolve `control_plane_id`:
-
-- **Set it explicitly:** set the same value in the Tyk Dashboard and Tyk MDCB configuration for a deployment. We recommend this approach if you want predictable, human-readable IDs.
-- **Leave it unset:** the ID is generated once and shared between the paired instances through the Redis instance that they already share for coordination.
-
-A pair that does not share Redis, and has no explicit `control_plane_id`, does not correlate automatically. In that case, set the ID explicitly.
-
-Tyk Developer Portal is the exception. It does not share Redis with Tyk Dashboard and Tyk MDCB, so it never gets a `control_plane_id`, generated or explicit. To correlate its metrics with the rest of the control plane, use `deployment.environment`. Set it to the same value on all three components for a deployment.
-
-If you export through an OTel Collector to Prometheus, enable `resource_to_telemetry_conversion` or add a transform processor, as for [Tyk Gateway resource attributes](#resource-attributes-in-prometheus). `control_plane_id` is then available as a label, not only in `target_info`.
 
 ### Connectivity and Fleet Health
 
@@ -169,6 +169,22 @@ Do not alert only on a connected or disconnected flag for a gateway that must be
 
 The node version and address detail on the Tyk Dashboard node registry metrics depend on the connecting gateway sending node metadata headers. Gateways on older builds still appear as connected, but with fewer labels. Expect this during a rolling upgrade. It is not a sign of a problem.
 
+Gateway reconnects happen during normal operation. An occasional reconnect that succeeds is not a concern. Investigate a gateway that keeps reconnecting. This usually also shows up as a discrepancy in the gateway registry.
+
+#### Version Consistency
+
+Watch the version spread of the gateway fleet on its own panel. Expect one version across the fleet, or at most two during a rolling upgrade or canary release. Three or more active versions outside a planned rollout usually mean that an upgrade did not complete.
+
+#### Configuration Drift
+
+Matching loaded API and policy counts across gateways is a good first check for configuration drift. But a matching count does not guarantee matching content. A field-level change to an existing API or policy can propagate correctly without any change to the count.
+
+### Sync and RPC Traffic
+
+`tyk.mdcb.keyspace.events` counts the key-space change events that propagate to gateways. It splits by event type, with an `invalid` bucket for payloads that cannot be parsed. It is easier to read as a trend than as a single snapshot. A few failures that later succeed are usually a short, temporary problem. Investigate a sustained run of failures, especially with a stale gateway registry.
+
+RPC byte volume and call duration between Tyk MDCB and its gateways are most useful when you already suspect a problem. You do not need to watch them all the time. To confirm where a slowdown started, compare the current volume with a day when the system worked correctly.
+
 ### Dependency and Pool Metrics
 
 Dependency metrics carry two labels that are deliberately kept apart:
@@ -183,6 +199,8 @@ There is no built-in pool saturation metric. Compute it at query time from the a
 When a pool has no configured maximum, its max gauge is not exported at all. It is not reported as zero, because zero would read as a pool with no capacity. Treat a missing max series as unbounded and skip it. Do not assume that every active series has a matching max series.
 
 Idle and active connections together describe the current pool size. This can be smaller than the maximum, even under load, because pools usually grow on demand. High active connections with almost no idle connections mean that every open connection is in use. The next request either waits or forces the pool to grow.
+
+In Tyk MDCB, pool pressure is a common root cause of gateway connectivity problems. Check it early when a group of gateways starts to report connectivity problems.
 
 The self health signal is simpler and binary. It tells you whether a dependency is currently reachable and responding, independent of pool pressure. A dependency can be healthy with a saturated pool, or unhealthy with many idle connections. These signals catch different failures, so watch both. Do not treat one as a substitute for the other.
 
@@ -226,7 +244,7 @@ Exporter health answers a narrower question than dependency health. It tells you
 
 If exporter health drops, treat every other metric from that instance as unreliable. Do not conclude that the dependencies have failed, because you may simply have stopped receiving fresh data.
 
-## How Platform Teams Use These Metrics
+## Use the Metrics in Practice
 
 ### What to Check First
 
@@ -239,21 +257,3 @@ Most of these metrics are more useful as a baseline than as an absolute number. 
 Handle certificate and license expiry with alerts, not by checking a dashboard. Set a threshold alert and move on. Panels deep in a dashboard are easy to forget.
 
 Read memory and Go runtime metrics together with latency. Memory that rises toward a configured limit is often the earliest sign of garbage collection pressure, which later shows up as slower requests. Check it first when you investigate a latency spike.
-
-### Signals That Need More Context
-
-Gateway reconnects happen during normal operation. An occasional reconnect that succeeds is not a concern. Investigate a gateway that keeps reconnecting. This usually also shows up as a discrepancy in the gateway registry.
-
-Matching loaded API and policy counts across gateways is a good first check for configuration drift. But a matching count does not guarantee matching content. A field-level change to an existing API or policy can propagate correctly without any change to the count.
-
-`tyk.mdcb.keyspace.events` counts the key-space change events that propagate to gateways. It splits by event type, with an `invalid` bucket for payloads that cannot be parsed. It is easier to read as a trend than as a single snapshot. A few failures that later succeed are usually a short, temporary problem. Investigate a sustained run of failures, especially with a stale gateway registry.
-
-RPC byte volume and call duration between Tyk MDCB and its gateways are most useful when you already suspect a problem. You do not need to watch them all the time. To confirm where a slowdown started, compare the current volume with a day when the system worked correctly.
-
-### Version Consistency
-
-Watch the version spread of the gateway fleet on its own panel. Expect one version across the fleet, or at most two during a rolling upgrade or canary release. Three or more active versions outside a planned rollout usually mean that an upgrade did not complete.
-
-### Tyk MDCB Connection Pools
-
-Connection pool pressure in Tyk MDCB (active versus idle connections, exhausted connections) is a common root cause of its connectivity problems. Check it early when a group of gateways starts to report connectivity problems. Do not wait until you troubleshoot Tyk MDCB on its own.
