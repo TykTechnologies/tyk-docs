@@ -158,18 +158,51 @@ We have introduced OpenTelemetry metrics export for Tyk Dashboard, providing rea
 - **Control Plane Identity:** Every metric carries a `control_plane_id` shared with MDCB, so Dashboard and MDCB metrics from the same deployment can be correlated.
 - **Universal Backend Support:** Export via OTLP to Prometheus, Grafana, Datadog, New Relic, Dynatrace and any other OpenTelemetry-compatible platform.
 
-**Configuration:** Metrics are disabled by default. You enable them in the `opentelemetry.metrics` section of `tyk_analytics.conf`, with the same options as Tyk Gateway. You can switch each group of metrics on or off. Objects and governance metrics have their own settings in `objects_metrics`. The new `control_plane_id` option identifies the Control Plane, so that you can correlate Tyk Dashboard and MDCB metrics. For details, see [Metrics Configuration](/api-management/logs-metrics#configuration-options).
+**Configuration:** Metrics are disabled by default and are configured under the [`opentelemetry.metrics`](/tyk-dashboard/configuration) object in `tyk_analytics.conf`, using the same options as Tyk Gateway. Environment variables use the `TYK_DB_OPENTELEMETRY_METRICS_` prefix (for example, `TYK_DB_OPENTELEMETRY_METRICS_ENABLED`).
+
+Most groups of metrics have their own on/off option under `opentelemetry.metrics` (`gateway_metrics`, `license_metrics`, `http_metrics`, `notification_metrics`, `dependency_metrics`, `health_metrics`, `certificate_metrics`, `runtime_metrics` and `meta_metrics`), all enabled by default once metrics are turned on.
+
+Objects and governance metrics are configured through the `objects_metrics` object instead, which has the following fields:
+
+- `enabled`: turns the whole group on or off (default `true`).
+- `collection_interval`: how often, in seconds, the counts are refreshed (default `300`).
+- `org_ids`: up to 100 organisation IDs to report separately. All other organisations are grouped together. If left empty, all organisations are reported as a single total.
+- `categories`: up to 100 organisation and category pairs to report governance compliance for. Each organisation must also be listed in `org_ids`.
+- `governance`: turns the governance metrics on or off (default `true`). This does not enable governance metrics without a license that grants governance.
+
+Two new options help you correlate metrics across components:
+
+- `control_plane_id` (top-level option; environment variable `TYK_DB_CONTROLPLANEID`) identifies the Control Plane. If left blank, it is generated once and shared with MDCB through the Redis they already share. Set it explicitly, to the same value on Dashboard and MDCB, if they do not share Redis or if you run more than one Control Plane.
+- `opentelemetry.metrics.deployment_environment` is exported as the `deployment.environment` resource attribute. Set the same value on the Dashboard, MDCB and the Developer Portal.
+
+**Default Metrics Exported:**
+
+- **Gateway Fleet Metrics:** `tyk.dashboard.gateways.connected`, `tyk.dashboard.gateways.heartbeat_timestamp`, `tyk.dashboard.gateways.loaded_apis`, `tyk.dashboard.gateways.loaded_policies`
+- **License Metrics:** `tyk.dashboard.license.gateways_limit`, `tyk.dashboard.license.gateways_used`, `tyk.dashboard.license.expiry_timestamp`
+- **Management API Metrics:** `http.server.request.duration`, `http.server.active_requests`
+- **Change Propagation Metrics:** `tyk.dashboard.notifications.published`, `tyk.dashboard.notifications.failures`
+- **Dependency Metrics:** `tyk.dashboard.redis.pool.active`, `tyk.dashboard.redis.pool.idle`, `tyk.dashboard.redis.pool.max`, `tyk.dashboard.datastore.pool.active`, `tyk.dashboard.datastore.pool.idle`, `tyk.dashboard.datastore.pool.max`, `tyk.dashboard.datastore.pool.wait_duration`
+- **Health Metrics:** `tyk.dashboard.health`
+- **Certificate Metrics:** `tyk.dashboard.cert.expiry_timestamp`
+- **Objects Metrics:** `tyk.dashboard.objects.orgs.count`, `tyk.dashboard.objects.apis.count`, `tyk.dashboard.objects.policies.count`, `tyk.dashboard.objects.users.count`, `tyk.dashboard.objects.rulesets.count`
+- **Governance Metrics:** `tyk.dashboard.governance.apis.count`, `tyk.dashboard.governance.rulesets.count` (requires a license that grants governance)
+- **Build and Exporter Metrics:** `tyk.dashboard.build.info`, `tyk.dashboard.telemetry.exporter.healthy`
+- **Go Runtime Metrics:** memory usage, allocations, garbage collection targets, goroutine count and processor limits (`go.*`)
+- **Uptime:** `process.uptime`, always exported once metrics are enabled, confirming the metrics pipeline is working
 
 For the full list of metrics and their labels, see [Tyk Dashboard Metrics](/api-management/metrics/default-metrics#tyk-dashboard-metrics).
 </Accordion>
 
 <Accordion title='Added support for the MCP 2026-07-28 protocol'>
 {/* TT-18011, TT-18010, TT-18012, TT-18007, TT-18008, TT-18014, TT-18015, TT-18031 */}
-Tyk now supports the 2026-07-28 revision of the Model Context Protocol (MCP) for MCP Proxies and REST-as-MCP APIs. Tyk governs 2026-07-28 requests, which don't need an initialization handshake, in the same way as requests that use earlier protocol versions. Clients that use either generation of the protocol can call the same MCP API at the same time. You don't need to change the configuration of your APIs.
+Tyk now supports the 2026-07-28 revision of the Model Context Protocol (MCP) for both MCP Proxies and REST-as-MCP APIs. Modern, handshake-free 2026-07-28 requests are accepted and governed exactly like requests on earlier protocol versions, and both generations of clients can use the same MCP API at the same time. No per-API configuration is required.
 
-For 2026-07-28 requests, Tyk validates the MCP headers before it applies policies or rate limits, supports the new `server/discover` method, and returns Tyk-generated errors in a new code range. Requests that use earlier protocol versions keep their existing behavior and error codes. MCP analytics records now include the protocol version of each request. To store these new fields, use Tyk Pump 1.18.0.
-
-For details, see [MCP Protocol Versions](/ai-management/mcp-gateway/protocol-versions) and [MCP Error Codes](/ai-management/mcp-gateway/error-codes).
+- **Protocol detection and validation at ingress:** Tyk determines the protocol version of every MCP request once, at ingress, and validates modern requests before any MCP policy or rate limit is applied, so invalid requests consume no quota. Modern requests must carry the `MCP-Protocol-Version` and `Mcp-Method` headers (and `Mcp-Name` for `tools/call`, `resources/read` and `prompts/get`), matching the request body; mismatches and unsupported versions are rejected with the corresponding spec-defined error. Headerless legacy requests continue to work, falling back to protocol version 2025-03-26.
+- **REST-as-MCP serves modern clients natively:** REST-as-MCP APIs now run a stateless handler for 2026-07-28 clients alongside the existing session-based handler for legacy clients, sharing a single tool catalog. Previously, 2026-07-28 clients were negotiated down to an older protocol version. When a modern client disconnects or cancels a `tools/call`, the matching upstream REST request is now canceled too, so abandoned calls no longer consume Gateway and upstream resources.
+- **Filtered discovery with `server/discover`:** the new `server/discover` method has the same access-rights filtering as `initialize`, so capabilities denied by the caller's policy are removed from the response. The advertised protocol versions are limited to those the Gateway can actually serve.
+- **Private caching of filtered responses:** whenever Tyk filters a `tools/list`, `prompts/list`, `resources/list`, `resources/templates/list` or `server/discover` result for a caller, the response is marked `cacheScope: "private"` with `ttlMs: 0`, so one consumer's filtered list is never served to another through a shared cache. Unfiltered responses keep the upstream's cache hints.
+- **New Tyk error codes for modern traffic:** for 2026-07-28 requests, Tyk-generated errors now use a dedicated Tyk error-code range outside the reserved JSON-RPC range: `-33000` (server error), `-33001` (authentication missing or failed), `-33002` (access denied), `-33003` (quota exceeded), `-33004` (rate limited), `-33005` (blocked by IP access control) and `-33006` (upstream or Gateway failure). The same code appears in the response, the Gateway logs and MCP analytics. Requests on earlier protocol versions keep their existing error codes, so existing clients are unaffected.
+- **Protocol version in MCP analytics:** MCP analytics records now include the effective protocol version, the declared protocol version, and how it was detected, so you can measure adoption of the 2026-07-28 protocol. Storing these new fields requires Tyk Pump 1.18.0.
 </Accordion>
 
 <Accordion title='Added Origin header validation for MCP endpoints'>

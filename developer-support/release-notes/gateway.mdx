@@ -135,11 +135,14 @@ Tyk Helm Charts are configured to install the LTS version of Tyk Gateway. You wi
 
 <Accordion title='Added support for the MCP 2026-07-28 protocol'>
 {/* TT-18011, TT-18010, TT-18012, TT-18007, TT-18008, TT-18014, TT-18015, TT-18031 */}
-Tyk now supports the 2026-07-28 revision of the Model Context Protocol (MCP) for MCP Proxies and REST-as-MCP APIs. Tyk governs 2026-07-28 requests, which don't need an initialization handshake, in the same way as requests that use earlier protocol versions. Clients that use either generation of the protocol can call the same MCP API at the same time. You don't need to change the configuration of your APIs.
+Tyk now supports the 2026-07-28 revision of the Model Context Protocol (MCP) for both MCP Proxies and REST-as-MCP APIs. Modern, handshake-free 2026-07-28 requests are accepted and governed exactly like requests on earlier protocol versions, and both generations of client can use the same MCP API at the same time. No per-API configuration is required.
 
-For 2026-07-28 requests, Tyk validates the MCP headers before it applies policies or rate limits, supports the new `server/discover` method, and returns Tyk-generated errors in a new code range. Requests that use earlier protocol versions keep their existing behavior and error codes. MCP analytics records now include the protocol version of each request. To store these new fields, use Tyk Pump 1.18.0.
-
-For details, see [MCP Protocol Versions](/ai-management/mcp-gateway/protocol-versions) and [MCP Error Codes](/ai-management/mcp-gateway/error-codes).
+- **Protocol detection and validation at ingress:** Tyk determines the protocol version of every MCP request once, at ingress, and validates modern requests before any MCP policy or rate limit is applied, so invalid requests consume no quota. Modern requests must carry the `MCP-Protocol-Version` and `Mcp-Method` headers (and `Mcp-Name` for `tools/call`, `resources/read` and `prompts/get`), matching the request body; mismatches and unsupported versions are rejected with the corresponding spec-defined error. Headerless legacy requests continue to work, falling back to protocol version 2025-03-26.
+- **REST-as-MCP serves modern clients natively:** REST-as-MCP APIs now run a stateless handler for 2026-07-28 clients alongside the existing session-based handler for legacy clients, sharing a single tool catalog. Previously, 2026-07-28 clients were negotiated down to an older protocol version. When a modern client disconnects or cancels a `tools/call`, the matching upstream REST request is now canceled too, so abandoned calls no longer consume Gateway and upstream resources.
+- **Filtered discovery with `server/discover`:** the new `server/discover` method has the same access-rights filtering as `initialize`, so capabilities denied by the caller's policy are removed from the response. The advertised protocol versions are limited to those the Gateway can actually serve.
+- **Private caching of filtered responses:** whenever Tyk filters a `tools/list`, `prompts/list`, `resources/list`, `resources/templates/list` or `server/discover` result for a caller, the response is marked `cacheScope: "private"` with `ttlMs: 0`, so one consumer's filtered list is never served to another through a shared cache. Unfiltered responses keep the upstream's cache hints.
+- **New Tyk error codes for modern traffic:** for 2026-07-28 requests, Tyk-generated errors now use a dedicated Tyk error-code range outside the reserved JSON-RPC range: `-33000` (server error), `-33001` (authentication missing or failed), `-33002` (access denied), `-33003` (quota exceeded), `-33004` (rate limited), `-33005` (blocked by IP access control) and `-33006` (upstream or Gateway failure). The same code appears in the response, the Gateway logs and MCP analytics. Requests on earlier protocol versions keep their existing error codes, so existing clients are unaffected.
+- **Protocol version in MCP analytics:** MCP analytics records now include the effective protocol version, the declared protocol version and how it was detected, so you can measure adoption of the 2026-07-28 protocol. Storing these new fields requires Tyk Pump 1.18.0.
 </Accordion>
 
 <Accordion title='Added Origin header validation for MCP endpoints'>
@@ -155,7 +158,18 @@ MCP Proxies that authenticate against an upstream MCP server's own OAuth impleme
 
 This also fixes two issues that caused strict OAuth clients, including those following the MCP 2026-07-28 specification, to reject a Tyk-proxied upstream. The mirrored Authorization Server metadata now uses a Tyk-controlled `issuer` consistent with the Tyk-proxied endpoints, instead of passing through the upstream's original issuer unchanged. And Tyk's outbound OAuth discovery requests to the upstream no longer include an unnecessary `MCP-Protocol-Version` header.
 
-This is a distinct upstream authentication option for MCP Proxies, configured through a new `x-tyk-api-gateway.server.mcp.oauthBroker` object, and cannot be combined with generic upstream authentication (upstream basic auth or upstream OAuth) on the same MCP Proxy. For the configuration, see [OAuth Broker](/api-management/authentication/oauth2-authentication#oauth-broker).
+This is a distinct upstream authentication option for MCP Proxies, configured through a new `x-tyk-api-gateway.server.mcp.oauthBroker` object, and cannot be combined with generic upstream authentication (upstream basic auth or upstream OAuth) on the same MCP Proxy.
+
+| Field | Description |
+|---|---|
+| `enabled` | Turns the OAuth broker on for this MCP Proxy. |
+| `publicOrigin` | The externally visible origin clients use to reach this API (no path). |
+| `publicResource` | The externally visible resource identifier clients use for this API; must equal `publicOrigin` plus the API's listen path. |
+| `upstreamResource` | The resource identifier presented to the upstream OAuth server. |
+| `trustedEndpointOrigins` | Upstream authorization/token endpoint origins Tyk is permitted to call. |
+| `allowInsecureLoopback` | Permits HTTP (rather than HTTPS) for loopback addresses only, for local testing. |
+
+`publicOrigin`, `publicResource`, `upstreamResource` and `trustedEndpointOrigins` must all use HTTPS, unless `allowInsecureLoopback` is set and the address is a loopback address.
 </Accordion>
 
 <Accordion title='Introduced Access Conditions for Path-Based Permissions'>
