@@ -317,3 +317,20 @@ webhooks:
 - `tls.secretName`: The name of the Kubernetes Secret storing the TLS certificate.
 - `tls.certificatesMountPath`: Path where the webhook server mounts its certificates.
 
+
+
+## Configuring Namespace-Scoped RBAC and Multi-Namespace Cache Synchronization for Tyk Operator
+
+<h2>Overview</h2><p>When Tyk Operator is configured to monitor multiple namespaces using the <strong>WATCH_NAMESPACE</strong> setting, all watched namespaces must have proper RBAC permissions configured before being added to the operator configuration. Failure to do so halts reconciliation across all namespaces.</p><h2>Shared Cache and Informer Synchronization</h2><p>Tyk Operator utilizes controller-runtime to manage Kubernetes informers. When multiple namespaces are configured under <strong>WATCH_NAMESPACE</strong>, controller-runtime creates a single shared cache covering all specified namespaces. During operator startup or pod restarts, this shared cache must successfully synchronize informers across every listed namespace before any controller can begin reconciling resources.</p><p>If RBAC permissions are missing or unauthorized in any single namespace (such as missing permissions to list newly added Custom Resource Definitions), the informer for that namespace fails to list resources. Consequently, the shared cache cannot sync, preventing the controller manager from starting and completely stopping resource reconciliation across all other namespaces.</p><h2>Configuring Namespace-Scoped RBAC with ClusterRole</h2><p>In environments where cluster-wide permissions via <em>ClusterRoleBinding</em> are prohibited by organizational policy, you can restrict permissions to watched namespaces while ensuring future Custom Resource Definition updates do not break existing deployments:</p><ol><li>Install or retain the default <strong>ClusterRole</strong> definition provided by the Tyk Operator chart (such as <em>tyk-operator-manager-role</em>).</li><li>Delete or omit the global <strong>ClusterRoleBinding</strong>.</li><li>Create a local <strong>RoleBinding</strong> within each watched namespace that references the central <strong>ClusterRole</strong> and binds it to the Tyk Operator <strong>ServiceAccount</strong>.</li></ol><p>Referencing a <strong>ClusterRole</strong> within a namespace-scoped <strong>RoleBinding</strong> restricts permissions strictly to that target namespace. When the operator is upgraded and new Custom Resource Definitions are added to the chart's <strong>ClusterRole</strong>, each namespace automatically inherits the updated permissions without requiring manual updates to individual namespace roles.</p><h3>Example RoleBinding Manifest</h3><pre><code>apiVersion: 
+kind: RoleBinding
+metadata:
+  name: tyk-operator-ns-binding
+  namespace: target-namespace
+roleRef:
+  apiGroup: 
+  kind: ClusterRole
+  name: tyk-operator-manager-role
+subjects:
+- kind: ServiceAccount
+  name: tyk-operator-controller-manager
+  namespace: tyk-operator-system</code></pre><h2>Operational Requirements</h2><ul><li>Ensure the <strong>RoleBinding</strong> is deployed in a namespace before that namespace is added to <strong>WATCH_NAMESPACE</strong>.</li><li>Verify that the operator service account retains necessary permissions in its host namespace for leader election and webhook management.</li></ul><h2>Applies To</h2><ul><li>Tyk Operator 0.13.0 and newer</li><li>Multi-namespace deployments using <strong>WATCH_NAMESPACE</strong></li><li>Environments requiring namespace-isolated RBAC</li></ul>
