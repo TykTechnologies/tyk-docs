@@ -215,3 +215,28 @@ Check the Portal version in the Admin Portal footer or via the Portal API to con
 
 {/* TODO: Re-add link to /portal/install/upgrade-guide once that page is published */}
 For information on how to upgrade again when ready, see the Upgrade Guide.
+
+
+## Troubleshooting Duplicate User Email Collisions After Upgrading to Portal 1.19
+
+### Symptom
+During an upgrade of the Enterprise Developer Portal to version 1.19+, the portal container fails during startup database migrations with an error similar to:
+```text
+Error: failed to apply database migrations: duplicate key error collection: portal_users index: email_1 dup key: { email: "developer@example.com" }
+```
+
+### Root Cause
+Portal v1.19 introduced a mandatory unique index on the `email` field in the user database to enforce case-insensitive uniqueness. In earlier versions of the Developer Portal, email addresses were not strictly case-normalized upon registration. If users registered with varying capitalization (such as `Developer@example.com` and `developer@example.com`), both records coexisted. When the v1.19 migration normalizes email fields to lowercase and constructs the unique index, the operation aborts on collision.
+
+### Resolution Steps
+Before or immediately after applying the v1.19 upgrade, identify and deduplicate colliding email records:
+
+1. **Query Colliding Records:** In your Developer Portal database, find case-insensitive duplicates:
+```sql
+SELECT LOWER(email), COUNT(*)
+FROM portal_users
+GROUP BY LOWER(email)
+HAVING COUNT(*) > 1;
+```
+2. **Merge or Remove Redundant Accounts:** For each duplicate email group, determine the active account (checking `last_login` and associated API access requests). Consolidate API keys and product subscriptions to the primary account, then delete or reassign the email of the duplicate entry.
+3. **Re-run Migrations:** Restart the Developer Portal container to allow the migration process to successfully apply the unique email index.
