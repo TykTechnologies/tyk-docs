@@ -208,12 +208,12 @@ def build_replacements(versions: dict[str, str]) -> dict[Path, list[tuple[str, s
         ],
         REPO_ROOT / "docker/ai-studio/docker-compose.yml": [
             (
-                r"(tykio/tyk-ai-studio:\$\{AI_STUDIO_VERSION:-)[^}]+(\})",
+                r"(tykio/tyk-ai-studio\}?:\$\{AI_STUDIO_VERSION:-)[^}]+(\})",
                 rf"\g<1>{versions['ai_studio']}\2",
                 "ai studio fallback",
             ),
             (
-                r"(tykio/tyk-microgateway:\$\{MICROGATEWAY_VERSION:-)[^}]+(\})",
+                r"(tykio/tyk-microgateway\}?:\$\{MICROGATEWAY_VERSION:-)[^}]+(\})",
                 rf"\g<1>{versions['microgateway']}\2",
                 "microgateway fallback",
             ),
