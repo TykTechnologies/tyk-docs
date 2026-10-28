@@ -21,6 +21,7 @@ These considerations are reflected in our structured upgrade guides, ensuring yo
 Our upgrade process adheres to the following standards:
 
 - **Breaking changes:** Breaking changes are rare and will be explicitly stated in the release notes.
+- **Go plugins on LTS patches:** Under Tyk's rolling Go LTS policy, patch releases may bump the underlying Go compiler and runtime to remediate CVEs. Because Go plugin binaries require exact toolchain compatibility, any custom Go plugins must be recompiled using the matching patch version of `tyk-plugin-compiler`.
 - **Configuration files:** Upgrades do not overwrite your configuration files. However, it’s good practice to routinely back up these files (using git or another tool) before upgrading, so any customizations are saved.
 - **Migration scripts:** Migration scripts for your APIs, policies, or other assets are generally not required unless specified in the release notes.
 - **Long Term Support:** Refer to our [versioning and long-term support policies](/developer-support/release-types/long-term-support) for details on major and minor releases, patches, and support dates.
@@ -58,9 +59,9 @@ Tyk offers supporting tools for database migration and backing up APIs and polic
 
 Use our [migration tool](/tyk-configuration-reference/sql#migrating-tyk-dashboard-from-mongodb-to-sql) to manage the switch from MongoDB to SQL.
 
-##### Backup APIs Script
+##### Tyk Sync
 
-Utilize our bash [backup script](/developer-support/upgrading#backup-apis-and-policies) to export and restore all Tyk API Definitions and Policies.
+Use [Tyk Sync](/api-management/automations/sync) to [back up and restore](/developer-support/upgrading#backup-apis-and-policies) all Tyk API definitions and policies.
 
 ## Preparations
 
@@ -87,7 +88,7 @@ Have backups been performed?
 #### Go plugins
 Do you use custom Go plugins with your APIs?
 
-  - Go plugin must be [recompiled](#go-plugins-upgrade-guide) for the new version.
+  - Go plugin must be [recompiled](#go-plugins-upgrade-guide) for the new version. Under the rolling Go LTS policy, recompilation is required even between patch upgrades (e.g. from `v5.13.1` to `v5.13.2`) if the target patch includes a Go version bump.
   - Identify all Go plugins in use with all your API definitions.
   - Allow sufficient time for testing and troubleshooting Go plugins after the upgrade.
 
@@ -1248,7 +1249,7 @@ go mod vendor
 
 #### Compile the plugins
 
-Download the plugin compiler for the target Gateway version you’re upgrading to (e.g. 5.2.5). Docker images for plugin compiler versions are available in the [Tyk Docker Hub](https://hub.docker.com/r/tykio/tyk-plugin-compiler/tags). 
+Download the plugin compiler for the exact target Gateway version and patch you’re upgrading to (e.g. `v5.13.2` or `v5.2.5`). Because Go toolchains may be updated across LTS patch releases to address security vulnerabilities, ensure you match the exact patch compiler image tag rather than relying on a general minor version tag. Docker images for plugin compiler versions are available in the [Tyk Docker Hub](https://hub.docker.com/r/tykio/tyk-plugin-compiler/tags). 
 
 ```bash
 docker pull tykio/tyk-plugin-compiler:v5.2.5
@@ -1272,32 +1273,46 @@ docker rmi plugin_compiler_image_name_or_id
 ```
 
 
-## Backup APIs and Policies 
+## Backup APIs and Policies
 
-Backing up Tyk APIs and Policies is crucial for ensuring business continuity and data integrity. It safeguards against accidental data loss, system failures or corruption. This provides the opportunity to roll back to a stable state during upgrades or migrations, allowing you to restore configurations to a previous state to prevent disruptions with your API infrastructure.
-If you are using Self-Managed deployment then we recommend that you use [Tyk Sync](/api-management/automations/sync) to backup your Tyk APIs and policies. 
+Backing up Tyk APIs and policies is crucial for ensuring business continuity and data integrity. It safeguards against accidental data loss, system failures, or corruption. This provides the opportunity to roll back to a stable state during upgrades or migrations, allowing you to restore configurations to a previous state to prevent disruptions with your API infrastructure.
+
+We recommend using [Tyk Sync](/api-management/automations/sync) to back up and restore your Tyk APIs and policies. Tyk Sync supports both Tyk Self-Managed and Tyk Cloud deployments, and can export and restore Tyk OAS APIs, Tyk Classic APIs, MCP APIs, and policies.
 
 ### Export and Restore APIs and Policies
 
-To facilitate backing up APIs and policies we have provided a Bash script [backup](https://github.com/TykTechnologies/backup) that can be used to export and restore all Tyk API definitions and Policies from Tyk Dashboard. This will be done by the *export* and *import* commands respectively. The script can be used on both Tyk Cloud and Self Managed deployments.
+With Tyk Sync, use the `dump` command to export API configurations from Tyk Dashboard to a local directory, and use the `sync` (or `publish` / `update`) command to restore them. For full CLI options and installation instructions, see the [Tyk Sync documentation](/api-management/automations/sync).
 
 #### Export APIs and Policies
 
-To export all APIs and Policies use the *export* command:
+To export all APIs and policies from Tyk Dashboard to a backup directory, use the `dump` command:
 
 ```bash
-./backup.sh export --url https://my-tyk-dashboard.com --secret mysecretkey --api-output apis.json --policy-output policies.json
+tyk-sync dump -d <dashboard-url> -s <secret> -t <backup-dir>
 ```
 
-This will export all your API definitions and policies to *apis.json* and *policies.json* files.
-
-#### Import APIs and Policies
-
-To import all your APIs and Policies, use the *import* command:
+For example:
 
 ```bash
-./backup.sh import --url https://my-tyk-dashboard.com --secret mysecretkey --api-file apis.json --policy-file policies.json
+tyk-sync dump -d https://my-tyk-dashboard.com -s mysecretkey -t ./backup
 ```
 
-This will restore the API definitions and policies from the apis.json and policies.json files.
+This exports all your API definitions and policies to the specified backup directory.
 
+#### Restore APIs and Policies
+
+To restore your exported APIs and policies back to Tyk Dashboard, use the `sync` command:
+
+```bash
+tyk-sync sync -d <dashboard-url> -s <secret> -p <backup-dir>
+```
+
+For example:
+
+```bash
+tyk-sync sync -d https://my-tyk-dashboard.com -s mysecretkey -p ./backup
+```
+
+Depending on your requirements, you can also restore configurations using:
+- `publish`: To create new APIs and policies without modifying existing definitions.
+- `update`: To update existing APIs and policies that match the dumped files.
