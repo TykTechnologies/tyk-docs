@@ -40,6 +40,14 @@ COMPONENTS = {
         "repo": "tykio/tyk-microgateway",
         "allow_prerelease": True,
     },
+    "gateway": {
+        "repo": "tykio/tyk-gateway",
+        "allow_prerelease": False,
+    },
+    "mdcb": {
+        "repo": "tykio/tyk-mdcb-docker",
+        "allow_prerelease": False,
+    },
 }
 
 
@@ -120,7 +128,67 @@ def replace_pattern(
     return updated_text
 
 
-def render_file(path: Path, replacements: list[tuple[str, str, str]]) -> str:
+Replacement = tuple[str, str, str]
+
+
+# One entry per image the updater pins: the Docker Hub image name, the
+# `.env.example` variable that carries its tag, and the `repository:` value the
+# Helm values files use. The Helm value defaults to the image name; the OSS
+# gateway is the exception because tyk-charts defaults to Tyk's own registry
+# (`docker.tyk.io/tyk-gateway/tyk-gateway`), which mirrors the same tags as
+# `tykio/tyk-gateway` on Docker Hub, so either spelling is accepted there.
+IMAGES = {
+    "dashboard": {"image": "tykio/tyk-dashboard", "env": "DASHBOARD_VERSION"},
+    "gateway_ee": {"image": "tykio/tyk-gateway-ee", "env": "GATEWAY_VERSION"},
+    "gateway": {
+        "image": "tykio/tyk-gateway",
+        "env": "GATEWAY_VERSION",
+        "helm": r"(?:docker\.tyk\.io/tyk-gateway/tyk-gateway|tykio/tyk-gateway)",
+    },
+    "pump": {"image": "tykio/tyk-pump-docker-pub", "env": "PUMP_VERSION"},
+    "portal": {"image": "tykio/portal", "env": "PORTAL_VERSION"},
+    "mdcb": {"image": "tykio/tyk-mdcb-docker", "env": "MDCB_VERSION"},
+    "ai_studio": {"image": "tykio/tyk-ai-studio", "env": "AI_STUDIO_VERSION"},
+    "microgateway": {"image": "tykio/tyk-microgateway", "env": "MICROGATEWAY_VERSION"},
+}
+
+
+def env_pins(versions: dict[str, str], components: list[str]) -> list[Replacement]:
+    # `NAME_VERSION=v1.2.3` lines in `.env.example` files and the READMEs that
+    # quote them.
+    return [
+        (rf"^({IMAGES[name]['env']}=).+$", rf"\g<1>{versions[name]}", f"{name} env")
+        for name in components
+    ]
+
+
+def compose_fallbacks(versions: dict[str, str], components: list[str]) -> list[Replacement]:
+    # `image: tykio/name:${NAME_VERSION:-v1.2.3}` defaults in compose files. The
+    # optional `}` before the colon tolerates the `${REGISTRY:-tykio/name}:${...}`
+    # form the AI Studio compose uses.
+    return [
+        (
+            rf"({IMAGES[name]['image']}\}}?:\$\{{{IMAGES[name]['env']}:-)[^}}]+(\}})",
+            rf"\g<1>{versions[name]}\2",
+            f"{name} fallback",
+        )
+        for name in components
+    ]
+
+
+def helm_tags(versions: dict[str, str], components: list[str]) -> list[Replacement]:
+    # `repository: tykio/name` followed by `tag: v1.2.3` in Helm values files.
+    return [
+        (
+            rf"(repository: {IMAGES[name].get('helm', IMAGES[name]['image'])}\s+tag: ){PINNED_VERSION}",
+            rf"\g<1>{versions[name]}",
+            f"{name} tag",
+        )
+        for name in components
+    ]
+
+
+def render_file(path: Path, replacements: list[Replacement]) -> str:
     original = path.read_text()
     updated = original
     for pattern, replacement, label in replacements:
@@ -128,130 +196,45 @@ def render_file(path: Path, replacements: list[tuple[str, str, str]]) -> str:
     return updated
 
 
-def render_replacements(
-    replacements: dict[Path, list[tuple[str, str, str]]],
-) -> dict[Path, str]:
+def render_replacements(replacements: dict[Path, list[Replacement]]) -> dict[Path, str]:
     return {
         path: render_file(path, file_replacements)
         for path, file_replacements in replacements.items()
     }
 
 
-def build_replacements(versions: dict[str, str]) -> dict[Path, list[tuple[str, str, str]]]:
+def build_replacements(versions: dict[str, str]) -> dict[Path, list[Replacement]]:
+    self_managed = ["dashboard", "gateway_ee", "pump", "portal"]
+    hybrid = ["gateway_ee", "pump"]
+    oss = ["gateway", "pump"]
+    ai_studio = ["ai_studio", "microgateway"]
+    control_plane = ["dashboard", "gateway_ee", "pump", "mdcb"]
+    data_plane = ["gateway_ee", "pump"]
+
     return {
-        REPO_ROOT / "docker/self-managed/.env.example": [
-            (r"^(DASHBOARD_VERSION=).+$", rf"\g<1>{versions['dashboard']}", "dashboard env"),
-            (r"^(GATEWAY_VERSION=).+$", rf"\g<1>{versions['gateway_ee']}", "gateway env"),
-            (r"^(PUMP_VERSION=).+$", rf"\g<1>{versions['pump']}", "pump env"),
-            (r"^(PORTAL_VERSION=).+$", rf"\g<1>{versions['portal']}", "portal env"),
-        ],
-        REPO_ROOT / "docker/hybrid/.env.example": [
-            (r"^(GATEWAY_VERSION=).+$", rf"\g<1>{versions['gateway_ee']}", "gateway env"),
-            (r"^(PUMP_VERSION=).+$", rf"\g<1>{versions['pump']}", "pump env"),
-        ],
-        REPO_ROOT / "docker/self-managed/docker-compose.yml": [
-            (
-                r"(tykio/tyk-dashboard:\$\{DASHBOARD_VERSION:-)[^}]+(\})",
-                rf"\g<1>{versions['dashboard']}\2",
-                "dashboard fallback",
-            ),
-            (
-                r"(tykio/tyk-gateway-ee:\$\{GATEWAY_VERSION:-)[^}]+(\})",
-                rf"\g<1>{versions['gateway_ee']}\2",
-                "gateway fallback",
-            ),
-            (
-                r"(tykio/tyk-pump-docker-pub:\$\{PUMP_VERSION:-)[^}]+(\})",
-                rf"\g<1>{versions['pump']}\2",
-                "pump fallback",
-            ),
-            (
-                r"(tykio/portal:\$\{PORTAL_VERSION:-)[^}]+(\})",
-                rf"\g<1>{versions['portal']}\2",
-                "portal fallback",
-            ),
-        ],
-        REPO_ROOT / "docker/hybrid/docker-compose.yml": [
-            (
-                r"(tykio/tyk-gateway-ee:\$\{GATEWAY_VERSION:-)[^}]+(\})",
-                rf"\g<1>{versions['gateway_ee']}\2",
-                "gateway fallback",
-            ),
-            (
-                r"(tykio/tyk-pump-docker-pub:\$\{PUMP_VERSION:-)[^}]+(\})",
-                rf"\g<1>{versions['pump']}\2",
-                "pump fallback",
-            ),
-        ],
-        REPO_ROOT / "docker/self-managed/README.md": [
-            (r"^(DASHBOARD_VERSION=).+$", rf"\g<1>{versions['dashboard']}", "dashboard readme"),
-            (r"^(GATEWAY_VERSION=).+$", rf"\g<1>{versions['gateway_ee']}", "gateway readme"),
-            (r"^(PUMP_VERSION=).+$", rf"\g<1>{versions['pump']}", "pump readme"),
-            (r"^(PORTAL_VERSION=).+$", rf"\g<1>{versions['portal']}", "portal readme"),
-            (
-                r"(tykio/portal:\$\{PORTAL_VERSION:-)[^}]+(\})",
-                rf"\g<1>{versions['portal']}\2",
-                "portal image example",
-            ),
-        ],
-        REPO_ROOT / "docker/hybrid/README.md": [
-            (r"^(GATEWAY_VERSION=).+$", rf"\g<1>{versions['gateway_ee']}", "gateway readme"),
-            (r"^(PUMP_VERSION=).+$", rf"\g<1>{versions['pump']}", "pump readme"),
-        ],
-        REPO_ROOT / "docker/ai-studio/.env.example": [
-            (r"^(AI_STUDIO_VERSION=).+$", rf"\g<1>{versions['ai_studio']}", "ai studio env"),
-            (
-                r"^(MICROGATEWAY_VERSION=).+$",
-                rf"\g<1>{versions['microgateway']}",
-                "microgateway env",
-            ),
-        ],
-        REPO_ROOT / "docker/ai-studio/docker-compose.yml": [
-            (
-                r"(tykio/tyk-ai-studio\}?:\$\{AI_STUDIO_VERSION:-)[^}]+(\})",
-                rf"\g<1>{versions['ai_studio']}\2",
-                "ai studio fallback",
-            ),
-            (
-                r"(tykio/tyk-microgateway\}?:\$\{MICROGATEWAY_VERSION:-)[^}]+(\})",
-                rf"\g<1>{versions['microgateway']}\2",
-                "microgateway fallback",
-            ),
-        ],
-        REPO_ROOT / "kubernetes/helm-self-managed/values.yaml": [
-            (
-                rf"(repository: tykio/tyk-gateway-ee\s+tag: ){PINNED_VERSION}",
-                rf"\g<1>{versions['gateway_ee']}",
-                "gateway tag",
-            ),
-            (
-                rf"(repository: tykio/tyk-dashboard\s+tag: ){PINNED_VERSION}",
-                rf"\g<1>{versions['dashboard']}",
-                "dashboard tag",
-            ),
-            (
-                rf"(repository: tykio/tyk-pump-docker-pub\s+tag: ){PINNED_VERSION}",
-                rf"\g<1>{versions['pump']}",
-                "pump tag",
-            ),
-            (
-                rf"(repository: tykio/portal\s+tag: ){PINNED_VERSION}",
-                rf"\g<1>{versions['portal']}",
-                "portal tag",
-            ),
-        ],
-        REPO_ROOT / "kubernetes/helm-hybrid/values.yaml": [
-            (
-                rf"(repository: tykio/tyk-gateway-ee\s+tag: ){PINNED_VERSION}",
-                rf"\g<1>{versions['gateway_ee']}",
-                "gateway tag",
-            ),
-            (
-                rf"(repository: tykio/tyk-pump-docker-pub\s+tag: ){PINNED_VERSION}",
-                rf"\g<1>{versions['pump']}",
-                "pump tag",
-            ),
-        ],
+        REPO_ROOT / "docker/self-managed/.env.example": env_pins(versions, self_managed),
+        REPO_ROOT / "docker/self-managed/docker-compose.yml": compose_fallbacks(versions, self_managed),
+        REPO_ROOT / "docker/self-managed/README.md": (
+            env_pins(versions, self_managed) + compose_fallbacks(versions, ["portal"])
+        ),
+        REPO_ROOT / "docker/hybrid/.env.example": env_pins(versions, hybrid),
+        REPO_ROOT / "docker/hybrid/docker-compose.yml": compose_fallbacks(versions, hybrid),
+        REPO_ROOT / "docker/hybrid/README.md": env_pins(versions, hybrid),
+        REPO_ROOT / "docker/ai-studio/.env.example": env_pins(versions, ai_studio),
+        REPO_ROOT / "docker/ai-studio/docker-compose.yml": compose_fallbacks(versions, ai_studio),
+        REPO_ROOT / "docker/oss/.env.example": env_pins(versions, oss),
+        REPO_ROOT / "docker/oss/docker-compose.yml": compose_fallbacks(versions, oss),
+        REPO_ROOT / "docker/mdcb/control-plane/.env.example": env_pins(versions, control_plane),
+        REPO_ROOT / "docker/mdcb/control-plane/docker-compose.yml": compose_fallbacks(versions, control_plane),
+        REPO_ROOT / "docker/mdcb/data-plane/.env.example": env_pins(versions, data_plane),
+        REPO_ROOT / "docker/mdcb/data-plane/docker-compose.yml": compose_fallbacks(versions, data_plane),
+        REPO_ROOT / "kubernetes/helm-self-managed/values.yaml": helm_tags(versions, self_managed),
+        REPO_ROOT / "kubernetes/helm-hybrid/values.yaml": helm_tags(versions, hybrid),
+        REPO_ROOT / "kubernetes/helm-oss/values.yaml": helm_tags(versions, ["gateway"]),
+        REPO_ROOT / "kubernetes/helm-mdcb/values-control-plane.yaml": helm_tags(
+            versions, ["mdcb", "dashboard", "gateway_ee", "pump"]
+        ),
+        REPO_ROOT / "kubernetes/helm-mdcb/values-data-plane.yaml": helm_tags(versions, data_plane),
     }
 
 
@@ -275,8 +258,18 @@ def main() -> int:
             name: latest_tag(component["repo"], component["allow_prerelease"])
             for name, component in COMPONENTS.items()
         }
-        replacements = build_replacements(versions)
-        rendered_files = render_replacements(replacements)
+        targets = build_replacements(versions)
+        # A target that does not exist yet (a deployment path added to
+        # tyk-install after this script) is skipped, not an error, so the two
+        # repositories can move independently. A target that exists but does
+        # not match still fails.
+        present, missing = {}, []
+        for path, file_replacements in targets.items():
+            if path.is_file():
+                present[path] = file_replacements
+            else:
+                missing.append(path)
+        rendered_files = render_replacements(present)
     except (RuntimeError, urllib.error.URLError) as exc:
         print(f"Failed to prepare version updates: {exc}", file=sys.stderr)
         return 1
@@ -304,6 +297,12 @@ def main() -> int:
             print(f"  {path.relative_to(REPO_ROOT)}")
     else:
         print("No files changed.")
+
+    if missing:
+        print()
+        print("Skipped targets that do not exist in this checkout:")
+        for path in missing:
+            print(f"  {path.relative_to(REPO_ROOT)}")
 
     return 0
 
