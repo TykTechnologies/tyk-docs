@@ -374,38 +374,48 @@ In the above code, the `NewFuncWithError` function demonstrates error handling i
 
 ### Tracing gRPC Plugins
 
-From Tyk Gateway 5.11.0, Tyk Gateway sends the trace context of each API request to your [gRPC plugin](/api-management/plugins/rich-plugins#using-grpc) server. Your plugin can then add its own spans to the same trace.
+**Available from Tyk Gateway 5.11.0.**
+
+Tyk Gateway sends the trace context of each API request to your [gRPC plugin](/api-management/plugins/rich-plugins#using-grpc) server. Your plugin can then add its own spans to the same trace.
+
+To use this feature, [enable tracing](/api-management/traces#enable-tracing) in Tyk Gateway. If tracing is disabled, Tyk Gateway sends no trace context to the plugin. You do not need to enable `detailed_tracing` for gRPC plugins.
 
 <Note>
-Only gRPC plugins receive the trace context. Python and Lua plugins do not. Tyk Gateway also does not send the trace context with events that it dispatches to a gRPC server.
+Among rich plugins, only gRPC plugins receive the trace context. Python and Lua plugins do not. Tyk Gateway also does not send the trace context with events that it dispatches to a gRPC server.
 </Note>
 
 #### How the Trace Context Reaches the Plugin
 
-Tyk Gateway does not add trace fields to the `coprocess.Object` message. It sends the trace context as gRPC metadata on each `Dispatch` call. The metadata keys depend on the [context propagation](/api-management/traces#context-propagation) setting in the Gateway configuration:
+Tyk Gateway does not add trace fields to the `coprocess.Object` message. It sends the trace context as gRPC metadata on each `Dispatch` call. The metadata keys depend on the [context propagation](/api-management/traces#context-propagation) setting in the Tyk Gateway configuration:
 
-| `context_propagation` | gRPC metadata keys |
+| context_propagation | gRPC metadata keys |
 |---|---|
-| `tracecontext` (default) | `traceparent` |
+| `tracecontext` (default) | `traceparent`, and `tracestate` if set |
 | `b3` | `x-b3-traceid`, `x-b3-spanid`, `x-b3-sampled` |
+| `composite` | `traceparent`, and the header set in `custom_trace_header` if the client request contains it |
+| `custom` | The header set in `custom_trace_header`, only if the client request contains it |
 
-For each plugin hook call, Tyk Gateway creates a client span named `coprocess.Dispatcher/Dispatch`. The spans that your plugin creates are children of this span:
+With `custom`, Tyk Gateway does not send `traceparent`. A plugin that uses a standard propagator cannot add its spans to the Tyk Gateway trace.
 
-```
-Gateway request span
+For each plugin hook call, Tyk Gateway creates a client span named `coprocess.Dispatcher/Dispatch`. The spans that your plugin creates are children of this span. For a request hook, the trace looks like this:
+
+```text
+API request span (for example, GET /my-api/)
 └── CoProcessMiddleware                 (only when detailed_tracing is enabled)
     └── coprocess.Dispatcher/Dispatch   (client span, Tyk Gateway)
         └── coprocess.Dispatcher/Dispatch   (server span, your plugin)
             └── your plugin spans
 ```
 
+When `detailed_tracing` is enabled, each middleware span is a child of the middleware span before it. Thus, `CoProcessMiddleware` can be deeper in the tree. For a response hook, the parent of the client span is the upstream request span (`HTTP <METHOD>`). If `detailed_tracing` is enabled, the parent is the `CustomMiddlewareResponseHook` span.
+
 #### Configure the gRPC Server
 
-To add spans to the Gateway trace, your gRPC server must do these three things:
+To add spans to the Tyk Gateway trace, your gRPC server must:
 
 1. Read the trace context from the gRPC metadata. Use the OpenTelemetry gRPC server instrumentation for your language. If the server does not read the metadata, your plugin spans start a new trace.
 2. Use the same propagator as Tyk Gateway. For example, if you set `context_propagation` to `b3`, configure a B3 propagator in your plugin.
-3. Export the spans to your OpenTelemetry collector. Tyk Gateway does not collect or forward plugin spans. Your tracing backend links the Gateway spans and the plugin spans through the shared trace ID.
+3. Export the spans to your OpenTelemetry collector. Tyk Gateway does not collect or forward plugin spans. Your tracing backend links the Tyk Gateway spans and the plugin spans through the shared trace ID.
 
 The following example shows a gRPC plugin server in Go. It uses the [OpenTelemetry Go SDK](https://github.com/open-telemetry/opentelemetry-go) and the `otelgrpc` server handler:
 
@@ -451,7 +461,9 @@ func main() {
 	ctx := context.Background()
 
 	// Export spans to your OpenTelemetry collector.
-	// The exporter reads the endpoint from OTEL_EXPORTER_OTLP_ENDPOINT.
+	// The exporter reads the endpoint from OTEL_EXPORTER_OTLP_ENDPOINT,
+	// for example http://otel-collector:4317 for a plain-text connection.
+	// Set OTEL_SERVICE_NAME to name your plugin service in the traces.
 	exporter, err := otlptracegrpc.New(ctx)
 	if err != nil {
 		log.Fatal(err)
