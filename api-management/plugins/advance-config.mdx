@@ -123,7 +123,7 @@ By instrumenting your custom plugins with Tyk's *OpenTelemetry* library, you can
 
 <Note>
 **Note:**
-Although this documentation is centered around Go plugins, the outlined principles are universally applicable to plugins written in other languages. Ensuring proper instrumentation and enabling detailed tracing will integrate the custom plugin span into the trace, regardless of the underlying programming language.
+The examples in this section use Go plugins. For plugins that run on a gRPC server, see [Tracing gRPC Plugins](#tracing-grpc-plugins).
 </Note>
 
 
@@ -371,6 +371,111 @@ func NewFuncWithError(ctx context.Context) {
 In the above code, the `NewFuncWithError` function demonstrates error handling in OpenTelemetry. First, it creates a new span. Then it sets the status to error, and adds an attribute. Finally, it uses `RecordError()` to log an error event. This two-step process ensures that both the error event is recorded and the span status is set to reflect the error.
 
 <img src="/img/plugins/span_error_handling.png" alt="OTel Span error handling" />
+
+### Tracing gRPC Plugins
+
+From Tyk Gateway 5.11.0, Tyk Gateway sends the trace context of each API request to your [gRPC plugin](/api-management/plugins/rich-plugins#using-grpc) server. Your plugin can then add its own spans to the same trace.
+
+<Note>
+Only gRPC plugins receive the trace context. Python and Lua plugins do not. Tyk Gateway also does not send the trace context with events that it dispatches to a gRPC server.
+</Note>
+
+#### How the Trace Context Reaches the Plugin
+
+Tyk Gateway does not add trace fields to the `coprocess.Object` message. It sends the trace context as gRPC metadata on each `Dispatch` call. The metadata keys depend on the [context propagation](/api-management/traces#context-propagation) setting in the Gateway configuration:
+
+| `context_propagation` | gRPC metadata keys |
+|---|---|
+| `tracecontext` (default) | `traceparent` |
+| `b3` | `x-b3-traceid`, `x-b3-spanid`, `x-b3-sampled` |
+
+For each plugin hook call, Tyk Gateway creates a client span named `coprocess.Dispatcher/Dispatch`. The spans that your plugin creates are children of this span:
+
+```
+Gateway request span
+└── CoProcessMiddleware                 (only when detailed_tracing is enabled)
+    └── coprocess.Dispatcher/Dispatch   (client span, Tyk Gateway)
+        └── coprocess.Dispatcher/Dispatch   (server span, your plugin)
+            └── your plugin spans
+```
+
+#### Configure the gRPC Server
+
+To add spans to the Gateway trace, your gRPC server must do these three things:
+
+1. Read the trace context from the gRPC metadata. Use the OpenTelemetry gRPC server instrumentation for your language. If the server does not read the metadata, your plugin spans start a new trace.
+2. Use the same propagator as Tyk Gateway. For example, if you set `context_propagation` to `b3`, configure a B3 propagator in your plugin.
+3. Export the spans to your OpenTelemetry collector. Tyk Gateway does not collect or forward plugin spans. Your tracing backend links the Gateway spans and the plugin spans through the shared trace ID.
+
+The following example shows a gRPC plugin server in Go. It uses the [OpenTelemetry Go SDK](https://github.com/open-telemetry/opentelemetry-go) and the `otelgrpc` server handler:
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+	"net"
+
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"google.golang.org/grpc"
+
+	"github.com/TykTechnologies/tyk/coprocess"
+)
+
+type Dispatcher struct {
+	coprocess.UnimplementedDispatcherServer
+}
+
+// Dispatch runs for each plugin hook. ctx carries the trace context from Tyk Gateway.
+func (d *Dispatcher) Dispatch(ctx context.Context, object *coprocess.Object) (*coprocess.Object, error) {
+	_, span := otel.Tracer("my-grpc-plugin").Start(ctx, object.HookName)
+	defer span.End()
+
+	span.SetAttributes(attribute.String("hook.name", object.HookName))
+
+	// Add your plugin logic here.
+	return object, nil
+}
+
+func (d *Dispatcher) DispatchEvent(ctx context.Context, event *coprocess.Event) (*coprocess.EventReply, error) {
+	return &coprocess.EventReply{}, nil
+}
+
+func main() {
+	ctx := context.Background()
+
+	// Export spans to your OpenTelemetry collector.
+	// The exporter reads the endpoint from OTEL_EXPORTER_OTLP_ENDPOINT.
+	exporter, err := otlptracegrpc.New(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter))
+	defer tp.Shutdown(ctx)
+	otel.SetTracerProvider(tp)
+
+	// Use the same propagator as Tyk Gateway (W3C trace context by default).
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	listener, err := net.Listen("tcp", ":5555")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// The otelgrpc server handler reads the trace context from the gRPC metadata.
+	server := grpc.NewServer(grpc.StatsHandler(otelgrpc.NewServerHandler()))
+	coprocess.RegisterDispatcherServer(server, &Dispatcher{})
+	log.Fatal(server.Serve(listener))
+}
+```
+
+For other languages, use the OpenTelemetry gRPC server instrumentation for that language. Search for it in the [OpenTelemetry registry](https://opentelemetry.io/ecosystem/registry/?s=grpc&component=instrumentation).
 
 
 ## Highly Available gRPC Servers in Kubernetes
