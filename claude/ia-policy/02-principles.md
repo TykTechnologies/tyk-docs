@@ -2,7 +2,6 @@
 
 These resolve ties when the rules in the other policy files conflict or run out.
 
-**P1 — Organise by reader intent, not by our org chart or component boundaries.** If a reader must know which Tyk component implements a feature in order to find its documentation, the IA has failed. The top-level test is *what am I operating on?*, not *which team built it?*
 
 **P2 — Every page is a front door.** Assume most readers arrive from search, a support ticket, or an AI assistant, not from the homepage. Every page must orient the reader without relying on sidebar position.
 
