@@ -2,8 +2,12 @@ name: Mirror PR to production for Preview
 
 on:
   pull_request:
-    types: [opened, synchronize, closed]
+    types: [opened, synchronize]
     branches: [main]
+  # pull_request_target runs even when the PR has merge conflicts, and has no
+  # base filter so PRs retargeted from main to a release branch are cleaned up.
+  pull_request_target:
+    types: [closed]
 
 permissions:
   contents: read
@@ -12,7 +16,7 @@ permissions:
 jobs:
   mirror-pr:
     runs-on: ubuntu-latest
-    if: github.event.action != 'closed'
+    if: github.event_name == 'pull_request'
     steps:
       - name: Generate GitHub App token
         id: app-token
@@ -81,7 +85,8 @@ jobs:
 
   cleanup-mirror-pr:
     runs-on: ubuntu-latest
-    if: github.event.action == 'closed'
+    # Never check out PR code in this job: it runs in the base repo context with secrets.
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - name: Generate GitHub App token
         id: app-token
@@ -91,29 +96,27 @@ jobs:
           private-key: ${{ secrets.PROBE_APP_PRIVATE_KEY }}
           owner: TykTechnologies
 
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          fetch-depth: 0
-          token: ${{ steps.app-token.outputs.token }}
-
-      - name: Handle mirror PR when original is closed
+      - name: Close mirror PR
         run: |
-          # Find the mirror PR
-          MIRROR_PR=$(gh pr list --base production --head ${{ github.head_ref }} --json number --jq '.[0].number // empty')
+          MIRROR_PR=$(gh pr list --repo "$REPO" --base production --head "$HEAD_REF" --json number --jq '.[0].number // empty')
 
-          if [ -n "$MIRROR_PR" ]; then
-            if [ "${{ github.event.pull_request.merged }}" = "true" ]; then
-              echo "Original PR was merged, closing mirror PR #$MIRROR_PR (no need to merge)..."
-              gh pr close $MIRROR_PR
-              echo "✅ Mirror PR #$MIRROR_PR closed"
-            else
-              echo "Original PR was closed without merging, closing mirror PR #$MIRROR_PR..."
-              gh pr close $MIRROR_PR
-              echo "✅ Mirror PR #$MIRROR_PR closed"
-            fi
-          else
-            echo "No mirror PR found for branch ${{ github.head_ref }}"
+          if [ -z "$MIRROR_PR" ]; then
+            echo "No mirror PR found for branch $HEAD_REF"
+            exit 0
           fi
+
+          if [ "$MERGED" = "true" ]; then
+            STATUS="merged"
+          else
+            STATUS="closed without merging"
+          fi
+
+          gh pr close "$MIRROR_PR" --repo "$REPO" \
+            --comment "Closing this preview: source PR #$SOURCE_PR was $STATUS."
+          echo "✅ Mirror PR #$MIRROR_PR closed"
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          SOURCE_PR: ${{ github.event.pull_request.number }}
+          MERGED: ${{ github.event.pull_request.merged }}
