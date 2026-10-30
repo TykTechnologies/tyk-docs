@@ -49,16 +49,6 @@ In Mintlify, the first page in a group is that group's landing page. Pages such 
 
 A landing page is under 300 words. If it grows past that, the surplus is a `concept` page and the landing page links to it.
 
-## 3.4 The Troubleshooting Rule
-
-Adopted from GitLab, which has the most battle-tested public version of this:
-
-- Troubleshooting topics are the **last** topics on a page
-- A page with **five or more** troubleshooting topics splits them into a dedicated `type: troubleshooting` page
-- Troubleshooting reference entries use a fixed shape: *symptom or error message* → *why this happens* → *workaround* (temporary) or *resolution* (permanent)
-- Error-message titles include at least a partial message, under 70 characters
-
-**FAQ pages are being retired.** When you edit FAQ content, consider moving it to `troubleshooting`, `concept`, or `reference`. Do not add new FAQ pages. `frequently-asked-questions/*` is a frozen namespace (see [6.2 Frozen Namespaces](06-paths-and-naming.md#62-frozen-namespaces)).
 
 ## 3.5 The Layer Model
 
