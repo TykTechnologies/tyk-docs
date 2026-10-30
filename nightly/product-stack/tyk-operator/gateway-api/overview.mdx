@@ -1,0 +1,97 @@
+---
+title: "Kubernetes Gateway API with Tyk Operator"
+description: "Use the Kubernetes Gateway API resources GatewayClass, Gateway and HTTPRoute to route traffic through Tyk Gateway, with Tyk Operator translating each route into Tyk OAS APIs."
+keywords: "Tyk Operator, Kubernetes Gateway API, GatewayClass, Gateway, HTTPRoute, Kubernetes, Routing"
+sidebarTitle: "Overview"
+canonical: "https://tyk.io/docs/product-stack/tyk-operator/gateway-api/overview"
+noindex: true
+robots: "noindex, follow"
+---
+
+## Availability
+
+| Component | Version | Edition |
+| :-------- | :------ | :------ |
+| Tyk Operator | Available since v1.6.0 | Enterprise |
+
+## Introduction
+
+The [Kubernetes Gateway API](https://gateway-api.sigs.k8s.io/) is a set of Kubernetes resources that describe how traffic from outside a cluster reaches the services inside it. Kubernetes Ingress is frozen, and new routing features go into the Kubernetes Gateway API instead. The Kubernetes Gateway API separates the responsibilities of the people involved:
+
+- A platform team defines which gateway implementations are available, and runs the gateways.
+- Application teams define routes that send traffic from a gateway to their services.
+
+Tyk Operator implements the Kubernetes Gateway API. You use the standard `GatewayClass`, `Gateway` and `HTTPRoute` resources, and Tyk Operator turns each route into Tyk OAS APIs on your Tyk Gateways. You can then add Tyk features, such as authentication and rate limits, to those APIs.
+
+<Note>
+In this documentation, **Kubernetes Gateway API** means the Kubernetes specification. The [Tyk Gateway API](/nightly/tyk-gateway-api) is the REST API that manages a Tyk Gateway.
+</Note>
+
+Kubernetes Gateway API support requires Tyk Dashboard, and you must enable it in Tyk Operator. To enable it, see [Get Started](/nightly/product-stack/tyk-operator/gateway-api/get-started).
+
+## Choosing How to Manage APIs in Kubernetes
+
+Tyk Operator gives you three ways to manage APIs in Kubernetes:
+
+| Approach | Use It When |
+| :--- | :--- |
+| Kubernetes Gateway API | You want to use the standard Kubernetes routing resources, and let application teams manage their own routes. |
+| [Kubernetes Ingress](/nightly/product-stack/tyk-operator/tyk-ingress-controller) | You already have Ingress resources, and want Tyk to serve them. |
+| [Tyk custom resources](/nightly/tyk-stack/tyk-operator/create-an-api) | You want full control of the Tyk API definition, or need features that the Kubernetes resources can't express. |
+
+You can use all three in the same cluster. With the Kubernetes Gateway API and Kubernetes Ingress, Tyk Operator creates the APIs for you. With the Tyk custom resources, you write the API definitions yourself.
+
+## How Tyk Operator Implements the Kubernetes Gateway API
+
+Each Kubernetes Gateway API resource maps to a part of your Tyk deployment:
+
+| Resource | Typical Owner | What It Represents in Tyk |
+| :--- | :--- | :--- |
+| `GatewayClass` | Platform team | A Tyk Dashboard and Organisation. Tyk Operator writes the APIs for the class to this Tyk Dashboard. |
+| `Gateway` | Platform team | An existing group of Tyk Gateways (a data plane) that serves the APIs. Tyk Operator doesn't deploy Tyk Gateways. |
+| `HTTPRoute` | Application team | One or more Tyk OAS APIs that route requests to Kubernetes Services. |
+
+You link the Kubernetes resources to your Tyk deployment with [OperatorContext](/nightly/api-management/automations/operator#multi-tenancy-in-tyk) resources:
+
+- The `GatewayClass` refers to an OperatorContext that holds the connection details of Tyk Dashboard.
+- Each `Gateway` refers to an OperatorContext that identifies its data plane. This OperatorContext names the Kubernetes Service in front of the Tyk Gateways, and the [API sharding](/nightly/api-management/api-sharding) tags that those Tyk Gateways load.
+
+{/* TODO: Diagram - How the Kubernetes Gateway API resources map to a Tyk deployment.
+Purpose: show which Kubernetes resource corresponds to which part of Tyk, and that Tyk Operator writes APIs to Tyk Dashboard, which Tyk Gateways then load.
+Structure: left column "Kubernetes cluster" with three stacked boxes: GatewayClass (with an OperatorContext box beside it labelled "Dashboard connection"), Gateway (with an OperatorContext box labelled "Data plane: Service + tags"), and two HTTPRoutes. Middle: Tyk Operator. Right: Tyk Dashboard, and below it a group of Tyk Gateways behind a Kubernetes Service, with Kubernetes Services/pods as upstreams.
+Key elements: arrows from HTTPRoutes through Tyk Operator to "Tyk OAS APIs" in Tyk Dashboard; arrow from Tyk Dashboard to the Tyk Gateways ("load APIs with matching tags"); client traffic arrow into the Tyk Gateways and on to the backend Services.
+Design notes: colour the platform-team resources and the application-team resources differently, matching the "Typical Owner" column. */}
+
+## What Tyk Operator Supports
+
+Tyk Operator supports part of the Kubernetes Gateway API:
+
+| Area | Support |
+| :--- | :--- |
+| Route types | `HTTPRoute` only. Tyk Operator doesn't support `GRPCRoute`, `TLSRoute`, `TCPRoute` or `UDPRoute`. |
+| Listeners | `HTTP` and `HTTPS` |
+| Matches | Path prefix and HTTP method. Exact and regular expression paths, headers and query parameters are not supported. |
+| Backends | Kubernetes Services, with weights |
+| Filters | Header changes, URL rewrites and redirects, with some restrictions |
+
+Tyk Operator creates one Tyk OAS API for each combination of parent `Gateway`, hostname and path in a route. Each API has an ID that starts with `gwapi-`. For how Tyk Operator builds each API, and the full list of supported fields, see the [Kubernetes Gateway API Reference](/nightly/product-stack/tyk-operator/gateway-api/reference).
+
+## Adding Tyk Features to a Route
+
+An API that Tyk Operator creates from a route contains only routing configuration. To add authentication, rate limits and other Tyk features, attach a Tyk OAS API definition to the route. To apply the same features to every route on a `Gateway`, attach the definition to the `Gateway` instead. A platform team can then set standard security for a whole `Gateway`, while application teams keep control of their routes.
+
+To give clients access, reference the route in a [Policy](/nightly/api-management/policies).
+
+For the details, see [Secure and Extend Routes](/nightly/product-stack/tyk-operator/gateway-api/secure-and-extend-routes).
+
+## How Tyk Operator Reports Results
+
+Tyk Operator reports what it has done in the `status` of each resource, using the standard Kubernetes Gateway API conditions:
+
+- The `GatewayClass` and the `Gateway` report whether Tyk Operator accepts them, and the address of the `Gateway`.
+- Each `HTTPRoute` reports, for each parent `Gateway`, whether Tyk Operator has created its APIs, and whether it can resolve its upstream services.
+- Each attached `TykOasApiDefinition` reports whether it applies to its target.
+
+If a rule uses a feature that Tyk doesn't support, Tyk Operator rejects that rule, and gives the field and the reason in the route status. If it can still serve the other rules, it creates their APIs and marks the route as partially invalid.
+
+For the full list of conditions, see [Status and Troubleshooting](/nightly/product-stack/tyk-operator/gateway-api/reference#status-and-troubleshooting).

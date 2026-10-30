@@ -1,0 +1,170 @@
+---
+title: "Secure and Extend Kubernetes Gateway API Routes"
+description: "Add authentication and other Tyk features to HTTPRoutes by attaching a Tyk OAS API definition, and give clients access to routes with Policies."
+keywords: "Tyk Operator, Kubernetes Gateway API, HTTPRoute, TykOasApiDefinition, targetRefs, SecurityPolicy, Authentication"
+sidebarTitle: "Secure and Extend Routes"
+canonical: "https://tyk.io/docs/product-stack/tyk-operator/gateway-api/secure-and-extend-routes"
+---
+
+## Introduction
+
+The Tyk OAS APIs that Tyk Operator creates from an `HTTPRoute` contain only routing configuration. They have no authentication, so any client that can reach the Tyk Gateway can call them.
+
+To secure a route and add other Tyk features:
+
+1. [Attach a Tyk OAS API definition](#attach-a-tyk-oas-api-definition) to the route, or to its `Gateway`. The definition adds settings such as authentication, rate limits and middleware.
+2. [Give clients access with a Policy](#give-clients-access-with-a-policy) that references the route.
+
+## Attach a Tyk OAS API Definition
+
+### How Attachment Works
+
+You write a Tyk OAS API definition in a ConfigMap, and create a `TykOasApiDefinition` resource that refers to it. The `TykOasApiDefinition` doesn't create an API. Instead, it targets an `HTTPRoute` or a `Gateway` with `spec.targetRefs`.
+
+Tyk Operator then combines the two for each API that it creates from the route:
+
+- The route sets the routing configuration: listen path, custom domain, upstream services and Gateway tags.
+- The attached definition sets everything else, such as authentication, rate limits and middleware.
+
+You can attach a definition to:
+
+- an `HTTPRoute`, to apply it to the APIs of that route
+- a `Gateway`, to apply it to the APIs of every route on that `Gateway` that has no definition attached directly
+
+A definition attached to a route replaces the one attached to its `Gateway`. Tyk Operator doesn't merge them. If several definitions target the same route or `Gateway`, the one with the oldest `creationTimestamp` applies. If they have the same timestamp, Tyk Operator uses the first in alphabetical order of namespace and name.
+
+### Example
+
+This ConfigMap holds a Tyk OAS API definition that requires an auth token:
+
+```yaml expandable highlight={20-23}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orders-security
+  namespace: default
+data:
+  orders-security.json: |
+    {
+      "openapi": "3.0.3",
+      "info": { "title": "orders-security", "version": "1.0.0" },
+      "paths": {},
+      "components": {
+        "securitySchemes": {
+          "authToken": { "type": "apiKey", "in": "header", "name": "Authorization" }
+        }
+      },
+      "security": [ { "authToken": [] } ],
+      "x-tyk-api-gateway": {
+        "info": { "name": "orders-security", "state": { "active": true } },
+        "server": {
+          "authentication": {
+            "enabled": true,
+            "securitySchemes": { "authToken": { "enabled": true } }
+          }
+        }
+      }
+    }
+```
+
+This `TykOasApiDefinition` attaches the definition to the `orders` route:
+
+```yaml expandable highlight={12-15}
+apiVersion: tyk.tyk.io/v1alpha1
+kind: TykOasApiDefinition
+metadata:
+  name: orders-security
+  namespace: default # Must be the namespace of the route
+spec:
+  tykOAS:
+    configmapRef:
+      name: orders-security
+      namespace: default
+      keyName: orders-security.json
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: orders
+```
+
+After you apply both, every API that Tyk Operator creates from the `orders` route requires an auth token.
+
+### Rules for Attached Definitions
+
+| Rule | Details |
+| :--- | :--- |
+| Same namespace | The `TykOasApiDefinition` must be in the namespace of the route or `Gateway` that it targets. |
+| One target | `targetRefs` can contain one entry, with `group: gateway.networking.k8s.io` and `kind: HTTPRoute` or `Gateway`. |
+| ConfigMap required | The definition must come from a ConfigMap (`tykOAS.configmapRef`). |
+| Tyk Vendor Extension required | The definition must contain an `x-tyk-api-gateway` object. |
+| Not an Ingress template | A `TykOasApiDefinition` with `targetRefs` can't also be an [Ingress template](/product-stack/tyk-operator/tyk-ingress-controller). |
+| No versioning | You can't set `versioning` on an attached definition. |
+| Fixed mode | You can change the target, but you can't add or remove `targetRefs` after you create the resource. To change between an attached definition and a standalone API, delete the resource and create it again. |
+
+### Settings That Come from the Route
+
+The route sets these settings, so the attached definition can't set them. If it does, Tyk Operator rejects the definition and lists all of the settings in one message:
+
+- `x-tyk-api-gateway.server.listenPath`
+- `x-tyk-api-gateway.server.customDomain`
+- `x-tyk-api-gateway.server.gatewayTags`
+- `x-tyk-api-gateway.server.port`
+- `x-tyk-api-gateway.server.protocol`
+- `x-tyk-api-gateway.upstream.url`
+- `x-tyk-api-gateway.upstream.loadBalancing`
+- `x-tyk-api-gateway.upstream.serviceDiscovery`
+- `x-tyk-api-gateway.upstream.proxy`
+- `x-tyk-api-gateway.upstream.uptimeTests`
+- `x-tyk-api-gateway.info.versioning`
+- `x-tyk-api-gateway.info.state.internal`
+- `allow` and `internal` in `x-tyk-api-gateway.middleware.operations`
+
+If webhooks are enabled, Tyk Operator checks these when you create or update the `TykOasApiDefinition`. It checks them again whenever it combines the definition with a route, and reports the result in the status of the route and the `TykOasApiDefinition`.
+
+### Conflicts with the Route
+
+Some attached settings can't work with some routes. Tyk Operator reports the route with the reason `AttachmentConflict` if:
+
+- the definition contains CORS settings, even if CORS is disabled, and the route matches the `OPTIONS` method
+- the definition sets `transformRequestMethod`, and the route matches by method
+- the definition sets `paths`, and the route has more than one path, so it becomes more than one API
+
+If a route filter and the attached definition set the same middleware setting, Tyk Operator uses the setting from the route. The route status names the setting that the route overrides.
+
+### Attachment Status
+
+Tyk Operator reports the result of an attachment in the `Accepted` condition of the `TykOasApiDefinition`, and reports problems with the attached definition in the status of the route. For the reasons and their meanings, see [TykOasApiDefinition Conditions](/product-stack/tyk-operator/gateway-api/reference#tykoasapidefinition-conditions) and [HTTPRoute Conditions](/product-stack/tyk-operator/gateway-api/reference#httproute-conditions).
+
+## Give Clients Access with a Policy
+
+To give clients access to a route, reference the route in the `access_rights_array` of a [SecurityPolicy](/tyk-stack/tyk-operator/create-an-api#add-a-security-policy-to-your-api), with `kind: HTTPRoute`:
+
+```yaml expandable highlight={10-12}
+apiVersion: tyk.tyk.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: orders-policy
+spec:
+  name: Orders API access
+  state: active
+  active: true
+  access_rights_array:
+    - name: orders       # Name of the HTTPRoute
+      namespace: default # Namespace of the HTTPRoute
+      kind: HTTPRoute
+  rate: 100
+  per: 60
+  quota_max: -1
+  throttle_interval: -1
+  throttle_retry_limit: -1
+```
+
+An `HTTPRoute` entry covers every API that Tyk Operator creates from the route. Tyk Operator finds the API IDs for you, and copies the other settings of the entry, such as `versions`, `limit` and `allowed_urls`, to each API. It updates the Policy when the route gains or loses APIs, for example when you add a hostname or a path. Don't set `api_id` on an `HTTPRoute` entry.
+
+The Policy includes only the APIs that Tyk Operator creates in the same Tyk Dashboard and Organisation as the Policy. Tyk Operator can't apply the Policy until the route has created its APIs, or if none of them are in that Tyk Dashboard. It reports the problem as an `HTTPRouteAccessRejected` event on the Policy.
+
+You must enable Kubernetes Gateway API support in Tyk Operator. Otherwise, Tyk Operator rejects the Policy with the message `access rights of kind HTTPRoute require the operator to run with --enable-gateway-api`.
+
+<Note>
+A Policy controls which clients can call an API, so it has an effect only if the API requires authentication. Attach a definition that enables authentication to the route, as described in [Attach a Tyk OAS API Definition](#attach-a-tyk-oas-api-definition).
+</Note>
