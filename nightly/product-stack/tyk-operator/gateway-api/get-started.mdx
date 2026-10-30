@@ -1,0 +1,239 @@
+---
+title: "Get Started with the Kubernetes Gateway API"
+description: "Enable Kubernetes Gateway API support in Tyk Operator, connect a GatewayClass and a Gateway to your Tyk deployment, and route traffic to a Kubernetes Service with an HTTPRoute."
+keywords: "Tyk Operator, Kubernetes Gateway API, GatewayClass, Gateway, HTTPRoute, OperatorContext, Get Started"
+sidebarTitle: "Get Started"
+canonical: "https://tyk.io/docs/product-stack/tyk-operator/gateway-api/get-started"
+noindex: true
+robots: "noindex, follow"
+---
+
+## Introduction
+
+This guide shows you how to route traffic to a Kubernetes Service through Tyk Gateway, using the [Kubernetes Gateway API](/nightly/product-stack/tyk-operator/gateway-api/overview). You will:
+
+1. Install the Kubernetes Gateway API resource definitions.
+2. Enable Kubernetes Gateway API support in Tyk Operator.
+3. Configure your Tyk Gateways to serve the APIs for a `Gateway`.
+4. Connect a `GatewayClass` and a `Gateway` to your Tyk deployment.
+5. Create an `HTTPRoute`, and check that it works.
+
+## Prerequisites
+
+You need:
+
+- Tyk Operator 1.6.0 or later, [installed](/nightly/tyk-stack/tyk-operator/installing-tyk-operator) and connected to Tyk Dashboard
+- Tyk Gateways that run in the cluster, with a Kubernetes Service in front of them
+- a Kubernetes Service to route traffic to, such as `httpbin` on port `80` in the `default` namespace, which this guide uses
+- `kubectl` and `helm`, with access to the cluster
+
+If you limit Tyk Operator to some namespaces with [`WATCH_NAMESPACE`](/nightly/tyk-stack/tyk-operator/installing-tyk-operator#configure-tyk-operator-via-environment-variable-or-tyk-operator-conf-secret), include the namespaces of your OperatorContexts, `Gateway` and `HTTPRoute` resources. In this guide, those are `tyk-operator-system`, `tyk` and `default`.
+
+## Install the Kubernetes Gateway API Resource Definitions
+
+Install the Kubernetes Gateway API custom resource definitions (CRDs) from the **experimental** channel:
+
+```bash
+kubectl apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.2/experimental-install.yaml
+```
+
+Tyk Operator 1.6.0 is tested with the experimental channel of Kubernetes Gateway API v1.6.2. You must use `--server-side`, because the experimental CRDs are too large for a client-side apply.
+
+## Enable Kubernetes Gateway API Support in Tyk Operator
+
+Tyk Operator doesn't watch Kubernetes Gateway API resources by default. To enable it, set `enableGatewayAPI` to `true` in the Tyk Operator Helm chart:
+
+```bash
+helm upgrade tyk-operator tyk-helm/tyk-operator -n tyk-operator-system --reuse-values --set enableGatewayAPI=true
+```
+
+Install the CRDs before you enable this setting.
+
+## Configure Your Tyk Gateways
+
+Each `Gateway` represents a group of Tyk Gateways that serve its APIs. Tyk Operator tags every API that it creates for a `Gateway` with the [API sharding](/nightly/api-management/api-sharding) tags of that group. Configure the Tyk Gateways in the group to load only the APIs with those tags.
+
+Set these options on each Tyk Gateway in the group:
+
+| Option | Environment Variable | Value |
+| :--- | :--- | :--- |
+| `db_app_conf_options.node_is_segmented` | `TYK_GW_DBAPPCONFOPTIONS_NODEISSEGMENTED` | `true` |
+| `db_app_conf_options.tags` | `TYK_GW_DBAPPCONFOPTIONS_TAGS` | The tags of the group, for example `edge` |
+| `enable_custom_domains` | `TYK_GW_ENABLECUSTOMDOMAINS` | `true`, so that Tyk Gateway routes requests by hostname |
+| `http_server_options.enable_strict_routes` | `TYK_GW_HTTPSERVEROPTIONS_ENABLESTRICTROUTES` | `true`, so that a path such as `/orders` doesn't also match `/orders-archive` |
+
+<Warning>
+A Tyk Gateway with `node_is_segmented` set to `true` loads only the APIs that have one of its tags. If the same Tyk Gateways also serve other APIs, add the tags of the group to those APIs. Alternatively, use a separate group of Tyk Gateways for the Kubernetes Gateway API.
+</Warning>
+
+## Connect Kubernetes to Your Tyk Deployment
+
+You link the Kubernetes Gateway API resources to Tyk with two [OperatorContext](/nightly/api-management/automations/operator#multi-tenancy-in-tyk) resources.
+
+### Create the Tyk Dashboard Context
+
+The `GatewayClass` uses this OperatorContext to connect to Tyk Dashboard. It can refer to the same Secret that you created when you installed Tyk Operator, which holds `TYK_URL`, `TYK_AUTH`, `TYK_ORG` and `TYK_MODE: pro`:
+
+```yaml highlight={7-9}
+apiVersion: tyk.tyk.io/v1alpha1
+kind: OperatorContext
+metadata:
+  name: tyk-dashboard
+  namespace: tyk-operator-system
+spec:
+  secretRef:
+    name: tyk-operator-conf
+    namespace: tyk-operator-system
+```
+
+### Create the Data Plane Context
+
+The `Gateway` uses this OperatorContext to identify its Tyk Gateways. Create it in the namespace of the Kubernetes Service in front of those Tyk Gateways:
+
+```yaml highlight={7-11}
+apiVersion: tyk.tyk.io/v1alpha1
+kind: OperatorContext
+metadata:
+  name: edge-data-plane
+  namespace: tyk
+spec:
+  dataPlane:
+    serviceRef:
+      name: tyk-gateway # The Kubernetes Service in front of the Tyk Gateways
+    tags:
+      - edge # The tags that you set in db_app_conf_options.tags
+```
+
+| Field | Description |
+| :--- | :--- |
+| `dataPlane.serviceRef.name` | The name of the Kubernetes Service in front of the Tyk Gateways. The Service must be in the same namespace as the OperatorContext. Tyk Operator uses it to find the address and ports of the `Gateway`. |
+| `dataPlane.tags` | The API sharding tags of the Tyk Gateways. Tyk Operator adds them to every API that it creates for the `Gateway`. If you don't set tags, every Tyk Gateway that isn't segmented loads the APIs. |
+
+## Create the GatewayClass
+
+Create a `GatewayClass` that Tyk Operator manages, and refer it to the Tyk Dashboard context:
+
+```yaml highlight={6-11}
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: tyk
+spec:
+  controllerName: tyk.io/gateway-controller
+  parametersRef:
+    group: tyk.tyk.io
+    kind: OperatorContext
+    name: tyk-dashboard
+    namespace: tyk-operator-system
+```
+
+Tyk Operator manages only the `GatewayClass` resources whose `controllerName` is `tyk.io/gateway-controller`. The `parametersRef` must include the `namespace` of the OperatorContext.
+
+## Create the Gateway
+
+Create a `Gateway` in the same namespace as the data plane context, and refer it to that context in `spec.infrastructure`:
+
+```yaml expandable highlight={8-12}
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: edge
+  namespace: tyk
+spec:
+  gatewayClassName: tyk
+  infrastructure:
+    parametersRef:
+      group: tyk.tyk.io
+      kind: OperatorContext
+      name: edge-data-plane
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 8080 # Must be a port of the tyk-gateway Service
+      allowedRoutes:
+        namespaces:
+          from: All
+```
+
+Each listener must use the `HTTP` or `HTTPS` protocol, and a port that the Kubernetes Service of the data plane exposes.
+
+<Note>
+Always set `infrastructure.parametersRef`. Without it, any Tyk Gateway that isn't segmented loads the APIs of the `Gateway`. See [Gateways Without a Data Plane Context](/nightly/product-stack/tyk-operator/gateway-api/reference#gateways-without-a-data-plane-context).
+</Note>
+
+## Create an HTTPRoute
+
+Create an `HTTPRoute` that sends requests for `/orders` on `api.example.com` to the `httpbin` Service. The `URLRewrite` filter removes `/orders` from the path before the request reaches the Service:
+
+```yaml expandable highlight={17-22}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: orders
+  namespace: default
+spec:
+  parentRefs:
+    - name: edge
+      namespace: tyk
+  hostnames:
+    - api.example.com
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /orders
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      backendRefs:
+        - name: httpbin
+          port: 80
+```
+
+Without the filter, the Service receives the full path, such as `/orders/get`.
+
+## Check the Result
+
+Check that Tyk Operator has accepted each resource:
+
+```bash
+kubectl get gatewayclass tyk
+kubectl get gateway edge -n tyk
+kubectl get httproute orders -n default -o yaml
+```
+
+When everything works:
+
+- The `GatewayClass` has the condition `Accepted` set to `True`.
+- The `Gateway` has the condition `Programmed` set to `True`, and an address in `status.addresses`.
+- The `HTTPRoute` has the conditions `Accepted` and `ResolvedRefs` set to `True`, for the `edge` parent.
+
+If a condition is `False`, its `reason` and `message` explain the problem. See [Status and Troubleshooting](/nightly/product-stack/tyk-operator/gateway-api/reference#status-and-troubleshooting).
+
+Then send a request through Tyk Gateway, using the address of the `Gateway`:
+
+```bash
+curl -H "Host: api.example.com" http://<GATEWAY-ADDRESS>:8080/orders/get
+```
+
+If the Service in front of your Tyk Gateways is a `ClusterIP` or `NodePort` Service, you might not be able to reach its address from your machine. Forward a local port to the Service instead:
+
+```bash
+kubectl port-forward -n tyk svc/tyk-gateway 8080:8080
+```
+
+Then send the request to `localhost`:
+
+```bash
+curl -H "Host: api.example.com" http://localhost:8080/orders/get
+```
+
+The `httpbin` Service receives the request for `/get`.
+
+<Note>
+This API has no authentication. Any client that can reach the Tyk Gateway can call it. To add authentication, see [Secure and Extend Routes](/nightly/product-stack/tyk-operator/gateway-api/secure-and-extend-routes).
+</Note>
+
