@@ -73,9 +73,12 @@ Apply these rules to all content in this repository.
 
 ### API Definition Types
 
+- Tyk OAS is the standard way to configure APIs. Tyk Classic is a legacy method.
+- By default, write about creating and configuring APIs (or proxies). Do not name the definition format. For example, write "Create an API", not "Create a Tyk OAS API".
+- Name the format only when it matters to the reader, for example in reference content, in migration guides, or where the behaviour differs between Tyk OAS and Tyk Classic.
+- Mention Tyk Classic only as a legacy method. Do not add new Tyk Classic content unless the feature exists only there.
 - Always use the full names "Tyk OAS APIs" and "Tyk Classic APIs". Never shorten to "OAS APIs" or "Classic APIs" alone. "OAS" in isolation could be confused with the OpenAPI Specification standard, which is a distinct concept.
 - When content covers both Tyk OAS and Tyk Classic API definitions, always present Tyk OAS first.
-- Tyk Classic is the legacy approach. Do not state this explicitly, but structure content to guide users towards Tyk OAS.
 - Write as if Tyk OAS is the default. Introduce Tyk Classic behaviour with "If using Tyk Classic, ..." rather than labelling both options symmetrically.
 
 ### Structure
