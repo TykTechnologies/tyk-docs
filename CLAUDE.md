@@ -1,6 +1,6 @@
 # Rules for AI Assistant
 
-This repository contains technical documentation for Tyk products. The primary audience is developers integrating with or operating Tyk.
+This repository contains technical documentation for Tyk products. The primary audience is developers integrating with or operating Tyk. Documentation is increasingly consumed by AI agents as well as humans, so accuracy and consistency of terminology are essential. Ambiguous or inconsistent language creates errors downstream.
 
 The rules are split into two areas. Read both before making non-trivial changes.
 
