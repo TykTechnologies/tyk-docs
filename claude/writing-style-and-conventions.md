@@ -52,14 +52,36 @@ Apply these rules to all content in this repository.
 
 ### Product Names
 
-- Tyk product names are always capitalised: Tyk Gateway, Tyk Dashboard, Tyk Pump, Tyk Operator, Tyk Portal, Tyk MDCB.
+- Tyk product names are always capitalised: Tyk Gateway, Tyk Dashboard, Tyk Pump, Tyk Operator, Tyk Portal, Tyk MDCB, Tyk Sync, Tyk Identity Broker.
+- Use the full product name (for example, Tyk Dashboard) rather than the short form (Dashboard) to avoid confusion with generic terms.
 - When a word is used generically and does not refer to the Tyk component, do not capitalise it. For example: "a gateway" (generic), "Tyk Gateway" (the product).
 - Avoid repeating the full product name in close proximity. Once established as the subject, use "it", "its", or a descriptive shorthand (such as "registered APIs" instead of "APIs registered on Tyk Gateway") to avoid awkward repetition.
+- Introduce Tyk Identity Broker by its full name, then use the abbreviation TIB on the rest of the page.
+- Tyk MDCB stands for Tyk Multi Data Centre Bridge. Write Tyk MDCB. Spell out the full name only where the reader needs to know what it stands for, such as on its overview page.
+
+### Tyk Concepts
+
+- Capitalize Tyk concepts: Policy, Session, Organisation, Product, Plan, Asset, API Fragment, API Template.
+- Write "Policy", not "Security Policy". The exception is the Tyk Operator `SecurityPolicy` resource, which keeps its kind name.
+- Write UI labels exactly as they appear in the UI, in bold. Write literal values exactly, in backticks.
+
+### API and Component Names
+
+- Write "Tyk Gateway API" for the `/tyk/` endpoints of Tyk Gateway. Never write "Gateway API" or "Control API" for them. Use the same pattern for other components, for example "Tyk Dashboard API".
+- Write "Kubernetes Gateway API" for the Kubernetes specification. Never write "Gateway API" alone.
+- Write "upstream services" for the services that Tyk sends requests to.
 
 ### Language
 
+- No em-dashes (—) or en-dashes (–). Use a hyphen or restructure the sentence instead. Em-dashes and en-dashes are associated with AI-generated content and should be avoided.
+- Do not use "like" to mean "such as" or "for example". Use those words explicitly.
+- Use "such as" or "for example" when introducing examples.
 - Use American English spelling for general terminology: "behavior" not "behaviour", "authorization" not "authorisation", "color" not "colour", and so on.
-- Exception: Tyk-specific proper nouns that use British spelling must retain that spelling and be capitalised to signal they are intentional. Examples: Organisation, Synchroniser. Do not correct these to American English.
+- Exception: Tyk-specific proper nouns that use British spelling must retain that spelling and be capitalised to signal they are intentional. Examples: Organisation, Synchroniser, Multi Data Centre Bridge. Do not correct these to American English.
+- When you describe a concept that belongs to a third party, use its terms and spelling, for example the InfluxDB "organization". The British spelling exception applies only to Tyk's own terms.
+- Do not use "operator" for a person, because it can be confused with Tyk Operator. Write administrator, platform team or user instead.
+- Avoid contrast constructions such as "X, not Y" or "not just X, but Y", and slogan-style headings. They read as marketing copy. State facts plainly.
+- Do not pack a multi-part explanation into one long paragraph. Use short sentences or bullets.
 
 ### Lists
 
@@ -87,4 +109,41 @@ Apply these rules to all content in this repository.
 - Link to dedicated pages for detail rather than expanding inline.
 - Aim for short pages. If a page is growing large, consider whether a concept deserves its own page.
 
+### Configuration Fields
 
+- Describe configuration fields in a table with Field and Description columns, and a Default column where useful. Do not use a bullet list.
+
+### Version Availability
+
+- Mark a new feature with `<Note>Available from Tyk X.Y.Z</Note>`, or an availability table that lists each component and version.
+
+### Diagrams
+
+- When suggesting diagrams, include a comment block with instructions for the designer covering: purpose, structure, key visual elements, and design notes.
+- Use `{/* ... */}` comment syntax in MDX files for diagram placeholders.
+
+### Accuracy
+
+- Verify each fact against the source code of the component, on the release branch of the target version. This includes configuration names, types and defaults, status codes, error and log messages, UI labels, and API endpoints. Tickets, drafts and PR descriptions can be wrong or out of date.
+- List any fact that you could not verify as an open question in the PR description.
+
+### Links to Generated Content
+
+- A link to a new configuration option, such as `/tyk-oss-gateway/configuration#new_option`, fails the anchor check until the generated snippets are synced for the release. Keep the link, and wait for the sync before you merge.
+
+---
+
+## STE100 Style Check
+
+This repo has tooling to check content against ASD-STE100 Simplified Technical English (short sentences, active voice, imperative procedure steps). It targets the same failure modes AI-generated prose tends to produce.
+
+- `ste.yaml` (repo root) is the project config. It disables the dictionary-based rules (`approved-words`, `approved-form`, `abbreviation`, `punctuation`, `numbers`) because ASD-STE100's ~1,000-word aviation-maintenance dictionary doesn't cover general API vocabulary or Tyk product names. Only the style rules run: `sentence-length`, `passive-voice`, `ing-form`, `procedure-step`, `modal-verb`, `one-instruction`, `paragraph-length`, `noun-cluster`.
+- `scripts/ste_check.py` is the wrapper. It diffs a branch against a base ref (default `origin/main`), strips YAML frontmatter/imports/JSX lines before checking (those aren't prose), and shells out to the `ste` CLI. Install the CLI with `go install github.com/probelabs/ste/cmd/ste@latest`.
+  - `python3 scripts/ste_check.py`: check the current branch's diff before opening a PR.
+  - `python3 scripts/ste_check.py path/to/file.mdx`: check a specific file directly, no git diff involved.
+- `.github/workflows/ste100-check.yml` runs this as an advisory (non-blocking) PR comment on any PR touching `.mdx`/`.md` files. It does not gate merging. Not present on `production` (separate workflow/scripts set, no auto-sync from `main`).
+
+Known false positives and rule limitations. Don't try to fix these by rewording; they're accepted residuals:
+- `procedure-step` flags ordinary software verbs (`Configure`, `Restart`, `Create`, `Login`, `Import`, `Bind`, `Serve`, and similar) as "not an approved imperative verb". This is ASD-STE100's closed aviation-maintenance verb list; there's no config escape hatch (confirmed: adding a verb to `technical_names` does not suppress it). Only treat a `procedure-step` finding as real when the step doesn't open with a verb at all (for example it starts with "The", "This", "You", "If", "It").
+- `ing-form` sometimes flags nouns that merely end in "-ing" as if they were gerunds, for example "string" (as in "connection string"), "signing" (as in "signing key"), "Operating" (as in "Operating System"). These are real compound technical terms, not verb forms, leave them as is.
+- Short list items that read as fragments or labels (matching the Lists rule above, such as `- Your **Organization Name**`) can still trip `sentence-length`/`procedure-step` because the parser merges adjacent short lines into one pseudo-sentence. Treat these as accepted residuals rather than rewriting the list.
