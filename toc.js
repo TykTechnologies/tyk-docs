@@ -161,6 +161,3 @@
         init();
     }
 })();
-
-// Cache-bust: forces Mintlify to publish a new toc.js URL
-window.__tykTocVersion = "2026-11-04";
