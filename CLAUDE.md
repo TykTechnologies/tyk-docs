@@ -2,7 +2,7 @@
 
 This repository contains technical documentation for Tyk products. The primary audience is developers integrating with or operating Tyk. Documentation is increasingly consumed by AI agents as well as humans, so accuracy and consistency of terminology are essential. Ambiguous or inconsistent language creates errors downstream.
 
-The rules are split into two areas. Read both before making non-trivial changes.
+The rules are split into three areas. Read all of them before making non-trivial changes.
 
 ## Writing Style and Repository Conventions
 
@@ -11,7 +11,10 @@ The rules are split into two areas. Read both before making non-trivial changes.
 - Auto-generated files you must not edit directly
 - Writing style rules (product names, language, lists, headings, API definition types, structure, diagrams)
 - The STE100 Simplified Technical English style check
-- Release note conventions, such as Docker image digests in the Downloads section
+
+## Release Notes
+
+[`claude/release-notes.md`](claude/release-notes.md) covers the conventions for release notes, such as the Docker image digests in the **Downloads** section. Read it before you add or update a release note.
 
 ## Information Architecture Policy
 
