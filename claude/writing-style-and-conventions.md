@@ -137,15 +137,11 @@ Apply these rules to all content in this repository.
 
 ### Docker Image Digests
 
-Each release note lists the Docker images for the release in the **Downloads** section. For each image, add a pull command that pins the image by tag and SHA256 digest. A digest identifies an immutable image. A tag can move.
+Each release note lists the Docker images for the release in the **Downloads** section. The pull command for each image must use the tag and the SHA256 digest. Do not add a pull command that uses only the tag. A digest identifies an immutable image. A tag can move.
 
 ````markdown
 - [Docker Image to pull](https://hub.docker.com/r/tykio/tyk-dashboard/tags?page=&page_size=&ordering=&name=v5.16.0)
   - ```bash
-    docker pull tykio/tyk-dashboard:v5.16.0
-    ```
-  - Pin the image by tag and digest:
-    ```bash
     docker pull tykio/tyk-dashboard:v5.16.0@sha256:b358479ee285a29a981c9256482a11b3958c170659960d614782f4a7b85e6933
     ```
 ````
