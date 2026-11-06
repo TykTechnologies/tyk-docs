@@ -153,7 +153,6 @@ Each release note lists the Docker images for the release in the **Downloads** s
   ```
 
 - Get the digest from the published image after the release. Do not copy it from a ticket, a draft or a CI log.
-- Add a digest for each image that the release note lists, for example the Enterprise and FIPS variants.
 - Use the same format in every component release note.
 
 ---
