@@ -11,6 +11,7 @@ The rules are split into two areas. Read both before making non-trivial changes.
 - Auto-generated files you must not edit directly
 - Writing style rules (product names, language, lists, headings, API definition types, structure, diagrams)
 - The STE100 Simplified Technical English style check
+- Release note conventions, such as Docker image digests in the Downloads section
 
 ## Information Architecture Policy
 

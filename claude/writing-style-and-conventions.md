@@ -133,6 +133,35 @@ Apply these rules to all content in this repository.
 
 ---
 
+## Release Notes
+
+### Docker Image Digests
+
+Each release note lists the Docker images for the release in the **Downloads** section. For each image, add a pull command that pins the image by tag and SHA256 digest. A digest identifies an immutable image. A tag can move.
+
+````markdown
+- [Docker Image to pull](https://hub.docker.com/r/tykio/tyk-dashboard/tags?page=&page_size=&ordering=&name=v5.16.0)
+  - ```bash
+    docker pull tykio/tyk-dashboard:v5.16.0
+    ```
+  - Pin the image by tag and digest:
+    ```bash
+    docker pull tykio/tyk-dashboard:v5.16.0@sha256:b358479ee285a29a981c9256482a11b3958c170659960d614782f4a7b85e6933
+    ```
+````
+
+- Use the digest of the multi-architecture image index. Do not use the digest of a single-platform manifest. Get it with:
+
+  ```bash
+  docker buildx imagetools inspect tykio/<image>:<tag> | awk '/^Digest:/ {print $2}'
+  ```
+
+- Get the digest from the published image after the release. Do not copy it from a ticket, a draft or a CI log.
+- Add a digest for each image that the release note lists, for example the Enterprise and FIPS variants.
+- Use the same format in every component release note.
+
+---
+
 ## STE100 Style Check
 
 This repo has tooling to check content against ASD-STE100 Simplified Technical English (short sentences, active voice, imperative procedure steps). It targets the same failure modes AI-generated prose tends to produce.
