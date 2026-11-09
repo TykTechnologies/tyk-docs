@@ -50,6 +50,8 @@ If no configured provider's `issuers` list matches the inbound token's `iss` cla
 Token exchange is configured under `tokenExchange` within the `oauth2` security scheme in your Tyk OAS API definition. The `oauth2` scheme must be enabled on the API; see [OAuth 2.0 (External IdP)](/api-management/authentication/oauth2-authentication). You must configure at least one provider.
 
 <Note>
+Token exchange runs only when `authentication.enabled` is `true` on the API. When authentication is disabled, Tyk Gateway skips the exchange and forwards the inbound token unchanged.
+
 Token exchange reads the `iss` claim from the inbound bearer token at request time. The `oauth2` scheme does not validate the token's JWT signature itself in Tyk 5.14.0. JWT authentication must be configured on the API so that the inbound token is verified before the exchange middleware runs. Without a JWT auth method configured, Tyk's auth chain will reject the request before token exchange is reached.
 </Note>
 
@@ -97,8 +99,51 @@ Each entry in `providers` matches inbound tokens by `iss` claim and routes excha
 | `clientAuth.clientSecret` | string | No | Client secret. Accepts `env://`, `secrets://`, `vault://`, `consul://` prefixes. |
 | `defaultTarget.audience` | string | No | Default audience requested for the exchanged token. Applied when no per-operation override is set. |
 | `defaultTarget.scopes` | array of strings | No | Default scopes requested. Applied when no per-operation override is set. |
+| `defaultTarget.resources` | array of strings | No | Default [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707) resource indicators. Each value must be an absolute URI without a fragment and is sent as its own `resource` parameter. Not allowed with `grantType: jwt-bearer`. See [Audience and resource](#audience-and-resource). |
 | `timeout` | duration string | No | Per-call timeout for requests to `tokenEndpoint`. Accepts values such as `"5s"` or `"500ms"`. Defaults to `"15s"`. |
 | `customParams` | map | No | Additional form parameters appended to the exchange request. Standard RFC 8693 keys (`grant_type`, `subject_token`, `audience`, and others) are reserved and cannot be overridden. |
+
+### Audience and resource
+
+RFC 8693 has two parameters that name the target of the exchanged token:
+
+- `audience` is a logical name for the target service, such as a client ID.
+- `resource` is the location of the target service. RFC 8707 requires an absolute URI without a fragment, and strict authorization servers reject any other value with `invalid_target`.
+
+From Tyk 5.17.0, Tyk Gateway sends these parameters as follows under the default `token-exchange` grant:
+
+| Configuration | `audience` sent | `resource` sent |
+|---|---|---|
+| `audience: abc123`, no `resources` | `abc123` | Not sent |
+| `audience: https://orders.example.com`, no `resources` | `https://orders.example.com` | `https://orders.example.com` |
+| `audience: abc123`, `resources: [https://orders.example.com, https://billing.example.com]` | `abc123` | `https://orders.example.com` and `https://billing.example.com`, as two parameters |
+
+When `resources` is empty, Tyk sends the audience as the resource only if the audience is an absolute URI without a fragment. For example, `https://orders.example.com`, `api://orders`, and `urn:example:orders` are sent as both parameters. When `resources` is set, Tyk sends only the configured values as `resource`, whatever the audience is.
+
+<Note>
+In Tyk 5.15 and 5.16, Tyk Gateway also sends every audience as `resource`. An authorization server that validates `resource` rejects a client ID audience, and the request fails with `502 Bad Gateway`. Upgrade to Tyk 5.17.0 or later to use a client ID audience with such a server.
+</Note>
+
+Use `resources` when your authorization server identifies the target service by a client ID but also needs a resource indicator:
+
+```yaml
+providers:
+  - name: corp-idp
+    issuers:
+      - https://idp.example.com
+    tokenEndpoint: https://idp.example.com/oauth2/token
+    clientAuth:
+      clientId: tyk-gateway
+      clientSecret: env://EXCHANGE_CLIENT_SECRET
+    defaultTarget:
+      audience: abc123
+      resources:
+        - https://orders.example.com
+```
+
+Tyk Gateway rejects the API definition at load time if a `resources` value is empty, relative, or contains a fragment. `resource` is a reserved `customParams` key under the `token-exchange` grant, so you cannot set it there.
+
+The [jwt-bearer grant](#grant-type) sends no `audience` or `resource` parameter. Tyk Gateway rejects `defaultTarget.resources` on a `jwt-bearer` provider. It ignores `resources` on a per-operation or per-primitive override when the request uses a `jwt-bearer` provider.
 
 ### Grant Type
 
@@ -263,6 +308,7 @@ x-tyk-api-gateway:
 | `enabled` | boolean | Activates this per-operation override. When `false` or absent, the provider's `defaultTarget` is used. |
 | `audience` | string | Audience requested for this operation's exchanged token. |
 | `scopes` | array of strings | Explicit scope list for this operation. When empty and `enabled` is `true`, scopes are inferred from the operation's `security:` declaration; see [Scope inference](#scope-inference). |
+| `resources` | array of strings | Resource indicators for this operation. When set, they replace the provider's `defaultTarget.resources`. Each value must be an absolute URI without a fragment. See [Audience and resource](#audience-and-resource). |
 
 ---
 
@@ -333,6 +379,7 @@ Tyk writes one JSON log line per exchange decision, using stable, `oauth2_`-name
 | `oauth2_exchanged_azp` | The `azp` of the exchanged token, when the authorization server returns one. |
 | `oauth2_audience` | The audience requested for the exchanged token. |
 | `oauth2_scopes_requested` | The scopes requested for the exchanged token. |
+| `oauth2_resource` | The `resource` values requested for the exchanged token. Present only when Tyk sends a `resource` parameter. Available from Tyk 5.17.0. |
 
 ```json
 {
@@ -346,7 +393,8 @@ Tyk writes one JSON log line per exchange decision, using stable, `oauth2_`-name
   "duration_ms": 42,
   "oauth2_subject_azp": "agent-frontend",
   "oauth2_audience": "https://api.internal.example.com",
-  "oauth2_scopes_requested": ["api:read", "api:write"]
+  "oauth2_scopes_requested": ["api:read", "api:write"],
+  "oauth2_resource": ["https://api.internal.example.com"]
 }
 ```
 
@@ -372,7 +420,7 @@ A cache hit still fires `OAuth2ExchangeSucceeded`, because a backend call is sti
 `misconfig` does not produce an audit event. An unresolvable client secret or other configuration fault is an operational error, not an authorization decision made by the IdP, so it's surfaced only through the metric and log line.
 </Note>
 
-The audit event's metadata carries the same `oauth2_`-namespaced fields as the structured log line: the provider, outcome, audience, requested scopes, the `azp` client identifiers, and the IdP error code and description when applicable. As with the logs, no raw token material, `jti`, or `sub` ever appears in audit metadata.
+The audit event's metadata carries the same `oauth2_`-namespaced fields as the structured log line: the provider, outcome, audience, requested scopes, requested resources, the `azp` client identifiers, and the IdP error code and description when applicable. As with the logs, no raw token material, `jti`, or `sub` ever appears in audit metadata.
 
 ### Distributed tracing
 
