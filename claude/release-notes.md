@@ -2,6 +2,8 @@
 
 Rules for writing and updating the release notes in `developer-support/release-notes/`.
 
+In a Helm Charts release note, the LTS version that the chart installs must match the Gateway and Dashboard image tags in tyk-charts `components/*/values.yaml` at release time, because security patches can bump them after the draft.
+
 ## Docker Image Digests
 
 Each release note lists the Docker images for the release in the **Downloads** section. The pull command for each image must use the tag and the SHA256 digest. Do not add a pull command that uses only the tag. A digest identifies an immutable image. A tag can move.
