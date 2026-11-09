@@ -197,27 +197,63 @@ storage:
 
 `secretRef.name` takes precedence over `useSecretName` for S3 credentials only. If `accessKeyIdKey` or `secretAccessKeyKey` is omitted, the defaults above apply.
 
-### Environment Variables
+### Environment Variables and Secret Management
 
 Use `extraEnvs` to set any of the variables described in the [configuration section](/product-stack/tyk-enterprise-developer-portal/deploy/configuration). Full Kubernetes environment variable syntax is supported, including `valueFrom`, so you can source values from Secrets and ConfigMaps rather than committing them to your values file:
 
 ```yaml expandable
 extraEnvs:
-  - name: PORTAL_REFRESHINTERVAL
-    value: "10"
   - name: PORTAL_API_SECRET
     valueFrom:
       secretKeyRef:
-        name: my-secret
-        key: apiSecret
-  - name: PORTAL_LOG_LEVEL
+        name: dev-portal-secrets
+        key: portalApiSecret
+  - name: PORTAL_JWTSIGNINGKEY
     valueFrom:
-      configMapKeyRef:
-        name: portal-settings
-        key: logLevel
+      secretKeyRef:
+        name: dev-portal-secrets
+        key: jwtSigningKey
+  - name: PORTAL_SESSION_KEY
+    valueFrom:
+      secretKeyRef:
+        name: dev-portal-secrets
+        key: sessionKey
+  - name: PORTAL_WEBHOOKS_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: dev-portal-secrets
+        key: webhooksSecret
 ```
 
 **`valueFrom` is available from Tyk Helm Chart v5.4.0.**
+
+#### Secret Management and Production Hardening
+
+In production, all sensitive credentials and signing keys must be managed securely:
+
+*   **`PORTAL_API_SECRET`**: Required for Single Sign-On (SSO) with Tyk Identity Broker. Do not omit or leave empty; omitting it allows unauthenticated SSO endpoint access.
+*   **`PORTAL_JWTSIGNINGKEY`**: Overrides the internal default `"secret-jwt-signing-key"`. Overriding this is mandatory in production to prevent JWT forgery.
+*   **`PORTAL_SESSION_KEY`**: A persistent 32-byte key used to encrypt session cookies. Mandatory for multi-replica deployments to ensure session cookies can be decrypted by all pods.
+*   **`PORTAL_WEBHOOKS_SECRET`**: Global secret key used to sign outgoing webhook payloads.
+
+#### Securing Bootstrap Admin Credentials
+
+By default, the chart configures default credentials (`password: 123456`) under `global.adminUser`. In production environments:
+
+1. Create a Kubernetes Secret containing your admin credentials:
+   ```bash
+   kubectl create secret generic portal-admin-secret \
+     --from-literal=adminUserPassword='<your-secure-password>' \
+     --from-literal=adminUserEmail='admin@example.com' \
+     -n <namespace>
+   ```
+2. Reference the secret in your `values.yaml`:
+   ```yaml
+   global:
+     adminUser:
+       useSecretName: "portal-admin-secret"
+   ```
+Alternatively, override `global.adminUser.password` directly with a strong password. Never leave the default `123456` in production.
 
 ### Scaling and Replicas
 
@@ -233,11 +269,11 @@ storage:
 
 Portal sessions are stored in the Portal database. All replicas share the same session store automatically via the shared database connection. No sticky sessions or additional session store configuration is required.
 
-### Troubleshooting
+<Warning>
+**Shared Session Key Required for Multiple Replicas**
 
-For bootstrap job failures, crash-loops, database connectivity issues, and license key errors, see [Kubernetes Bootstrap Failures](/portal/troubleshooting/kubernetes-bootstrap-failures).
-
-## Legacy Helm Chart
+When running multiple replicas (`replicaCount > 1`), you **must** configure `PORTAL_SESSION_KEY` (using `extraEnvs` backed by a Kubernetes Secret) with a persistent 32-byte key shared across all pods. If `PORTAL_SESSION_KEY` is not set, each pod generates a different random key on startup, causing session decryption failures and dropped sessions whenever requests are routed to different pods.
+</Warning>
 
 <Warning>
 **Note**
