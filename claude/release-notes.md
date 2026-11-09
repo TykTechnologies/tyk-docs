@@ -29,11 +29,10 @@ Each release note lists the Docker images for the release in the **Downloads** s
 The [Latest Releases](/developer-support/release-notes/overview) page gets its data from `snippets/release-data.mdx`. When you add release notes for a new version, update the entry for that component in the same PR:
 
 - `latest` and `latestData.name`: the new version.
-- `latestData.date`: the release date from the release notes, in `DD/MM/YYYY` format.
 - `latestData.docker` and `latestData.tag`: links to the new version.
 - `lts`: update it only when you add a patch release for the LTS line.
 
-Do not copy the date from the previous release. The `Check Latest Releases data` CI step (`scripts/check_release_data.py`) compares this data with the release notes.
+The `Check Latest Releases data` CI step (`scripts/check_release_data.py`) compares this data with the release notes.
 
 On older release branches, such as `release-5.13`, `snippets/release-data.mdx` does not exist. The data is inline in `developer-support/release-notes/overview.mdx`.
 
