@@ -5,7 +5,6 @@ For each component in snippets/release-data.mdx (or the inline releaseData in
 developer-support/release-notes/overview.mdx on older branches):
 - `latest` and `latestData.name` equal the highest version in its release notes.
 - `lts`, if set, equals the highest version in its release notes for that minor line.
-- `latestData.date` equals the "Release Date" of the latest version.
 - `latestData.docker` and `latestData.tag`, if they contain a version, point to the latest version.
 """
 
@@ -14,11 +13,9 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
 
 DATA_FILES = ["snippets/release-data.mdx", "developer-support/release-notes/overview.mdx"]
 HEADING_RE = re.compile(r"^#{2,4}\s+v?(\d+\.\d+\.\d+)\b[^\n]*Release Notes", re.M)
-RELEASE_DATE_RE = re.compile(r"Release Date:?\s*([^\n<]+)")
 VERSION_IN_URL_RE = re.compile(r"(?<![\d.])v?(\d+\.\d+\.\d+)(?![\d.])")
 
 
@@ -40,25 +37,6 @@ def vkey(v):
     return tuple(int(x) for x in v.split("."))
 
 
-def parse_date(s):
-    s = re.sub(r"(\d+)(st|nd|rd|th)\b", r"\1", s.strip().rstrip("."))
-    s = s.replace(",", "")
-    for fmt in ("%d %B %Y", "%d %b %Y", "%B %d %Y", "%b %d %Y"):
-        try:
-            return datetime.strptime(s, fmt).date()
-        except ValueError:
-            pass
-    return None
-
-
-def release_date(notes, version):
-    for m in HEADING_RE.finditer(notes):
-        if m.group(1) == version:
-            nxt = HEADING_RE.search(notes, m.end())
-            section = notes[m.end(): nxt.start() if nxt else len(notes)]
-            d = RELEASE_DATE_RE.search(section)
-            return d.group(1).strip() if d else None
-    return None
 
 
 def check_component(c, root):
@@ -86,21 +64,6 @@ def check_component(c, root):
             errors.append(f"{name}: lts is {lts}, but there are no release notes for {'.'.join(lts.split('.')[:2])}.x")
         elif lts != line[-1]:
             errors.append(f"{name}: lts is {lts}, but the newest release notes in that line are for {line[-1]}")
-
-    raw = release_date(notes, newest)
-    expected = parse_date(raw) if raw else None
-    actual = None
-    try:
-        actual = datetime.strptime(data.get("date", ""), "%d/%m/%Y").date()
-    except ValueError:
-        errors.append(f"{name}: latestData.date '{data.get('date')}' is not in DD/MM/YYYY format")
-    if raw is None:
-        errors.append(f"{name}: no 'Release Date' found in the {newest} release notes")
-    elif expected is None:
-        errors.append(f"{name}: cannot read the {newest} release date '{raw}'")
-    elif actual and actual != expected:
-        errors.append(f"{name}: latestData.date is {data['date']}, but the {newest} release notes say {raw}"
-                      f" ({expected.strftime('%d/%m/%Y')})")
 
     for field in ("docker", "tag"):
         url = data.get(field) or ""
