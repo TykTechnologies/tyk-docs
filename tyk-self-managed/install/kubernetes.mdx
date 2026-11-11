@@ -322,8 +322,293 @@ Once you complete your modifications you can run the following command from the 
 helm upgrade tyk-pro values.yaml -n tyk
 ```
 
+<<<<<<< HEAD
 This chart implies there's a **ConfigMap** with a `profiles.json` definition in it. Please use `tib.configMap.profiles` value
 to set the name of this **ConfigMap** (`tyk-tib-profiles-conf` by default).
+=======
+Expected pods:
+
+| Pod | Status |
+| --- | ------ |
+| `gateway-xxx` | Running |
+| `dashboard-xxx` | Running |
+| `tyk-pump-xxx` | Running |
+| `tyk-portal-xxx` | Running |
+| `tyk-postgres-xxx` | Running |
+| `tyk-redis-xxx` | Running |
+| `tyk-tyk-operator-xxx` | Running |
+
+
+### Step 5: Access the Services
+
+The bundled `values.yaml` sets the Gateway, Dashboard, and Portal services to `LoadBalancer`. Choose the access method that matches your environment.
+
+**Local cluster (port-forward):** the quickest way to reach the services on a local cluster. Run each command in a separate terminal:
+
+```bash
+kubectl port-forward -n tyk svc/dashboard-svc-tyk-tyk-dashboard 3000:3000
+kubectl port-forward -n tyk svc/gateway-svc-tyk-tyk-gateway 8080:8080
+kubectl port-forward -n tyk svc/dev-portal-svc-tyk-tyk-dev-portal 3001:3001
+```
+
+**Cloud cluster (LoadBalancer):** EKS, GKE, and AKS provision an external address for each service. List them and wait for `EXTERNAL-IP` to be assigned:
+
+```bash
+kubectl get svc -n tyk
+```
+
+For production setups with custom domains and TLS, configure Ingress (AWS ALB, GKE GCE, AKS Application Gateway, or NGINX). See the [helm-self-managed README](https://github.com/TykTechnologies/tyk-install/tree/main/kubernetes/helm-self-managed) for per-provider Ingress configuration.
+
+### Step 6: Get Admin Credentials
+
+The chart bootstraps the admin user from the `tyk-conf` secret. Retrieve the credentials to log in to the Tyk Dashboard:
+
+```bash
+# Admin email
+kubectl get secret tyk-conf -n tyk -o jsonpath='{.data.adminUserEmail}' | base64 -d && echo
+
+# Admin password
+kubectl get secret tyk-conf -n tyk -o jsonpath='{.data.adminUserPassword}' | base64 -d && echo
+```
+
+### Step 7: Verify the Installation
+
+Test that all components are responding (adjust the host if you are not using port-forward):
+
+```bash
+# Gateway
+curl http://localhost:8080/hello
+
+# Dashboard
+curl http://localhost:3000/hello
+
+# Portal
+curl http://localhost:3001/ready
+```
+
+You are now ready to [create an API](/api-management/gateway-config-managing-classic#create-an-api), or manage APIs declaratively with [Tyk Operator](/api-management/automations/operator), which is installed as part of this stack.
+
+## Configuration
+
+Two files control the deployment:
+
+| File | Purpose |
+| ---- | ------- |
+| `.env` | License keys, the shared API secret, database credentials, and the bootstrap admin user. |
+| `values.yaml` | Tyk stack configuration for the Gateway, Dashboard, Pump, Developer Portal, and Operator. |
+
+The bundled `values.yaml` is tuned for trials and evaluation, with Pump analytics to PostgreSQL, audit logging, hashed-key listing, OPA, and Dashboard security settings enabled. Inline comments mark the options to change for production and performance. For production deployments, also review the [Planning for Production](/planning-for-production) guide and the [helm-self-managed README](https://github.com/TykTechnologies/tyk-install/tree/main/kubernetes/helm-self-managed) for Ingress, TLS, autoscaling, and troubleshooting.
+
+### Hybrid Control Plane and Data Plane
+
+The installation above deploys a single, self-contained Tyk stack. To distribute API traffic across multiple data centers or regions, you can instead run a hybrid topology: a central Control Plane that hosts the management components and one or more remote Data Planes whose Gateways serve traffic locally and sync configuration from the Control Plane over [Tyk MDCB](/api-management/mdcb).
+
+To set up a hybrid deployment with Helm:
+
+- Install the [Control Plane](/api-management/mdcb#installing-in-a-kubernetes-cluster-with-our-helm-chart) first to provision the Dashboard, MDCB, and supporting services.
+- Install each [Data Plane](/api-management/mdcb#installing-in-a-kubernetes-cluster-with-our-helm-chart-1) using the connection details produced by the Control Plane installation.
+
+
+## Cleanup
+
+```bash
+# Remove the Tyk stack
+helm uninstall tyk -n tyk
+
+# Remove the databases (this deletes all data)
+helm uninstall tyk-postgres -n tyk
+helm uninstall tyk-redis -n tyk
+
+# Remove secrets and persistent volume claims
+kubectl delete secrets -n tyk --all
+kubectl delete pvc -n tyk --all
+
+# Delete the namespace
+kubectl delete namespace tyk
+```
+
+To remove cert-manager (only if you installed it specifically for Tyk):
+
+```bash
+kubectl delete namespace cert-manager
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+
+<Accordion title='Pods Not Starting'>
+
+Pods fail to initialize or remain in a pending state.
+
+```bash
+# Check pod details
+kubectl describe pod -n tyk <pod-name>
+
+# Check recent events
+kubectl get events -n tyk --sort-by='.lastTimestamp' | tail -20
+
+# Check pod logs
+kubectl logs -n tyk <pod-name>
+```
+
+</Accordion>
+
+<Accordion title='Secret Issues'>
+
+Missing or incorrectly configured Kubernetes secrets prevent proper authentication and configuration.
+
+```bash
+# Verify the secret exists and has all required keys
+kubectl get secret tyk-conf -n tyk -oyaml
+
+# Decode and verify specific values
+kubectl get secret tyk-conf -n tyk -o jsonpath='{.data.APISecret}' | base64 -d && echo
+kubectl get secret tyk-conf -n tyk -o jsonpath='{.data.DashLicense}' | base64 -d && echo
+
+# If the secret is missing or incorrect, recreate it
+kubectl delete secret tyk-conf -n tyk
+# Re-export the environment variables and run Step 3 again
+source .env
+```
+
+</Accordion>
+
+<Accordion title='Portal Login Returns "Bad Request"'>
+
+Developer Portal authentication fails with a bad request error.
+
+Set `PORTAL_DISABLECSRFCHECK=true` in `values.yaml` under `tyk-dev-portal.extraEnvs`. This is needed when accessing the Developer Portal via HTTP or a LoadBalancer IP. Set it to `false` when using a proper domain with TLS and Ingress.
+
+</Accordion>
+
+<Accordion title='Database Connection Issues'>
+
+The Developer Portal or Tyk Dashboard cannot connect to the PostgreSQL database.
+
+```bash
+# Check PostgreSQL is running
+kubectl get pods -n tyk -l app.kubernetes.io/name=postgresql
+
+# Test database connectivity from a pod
+kubectl exec -it -n tyk deployment/dashboard-tyk-tyk-dashboard -- /bin/sh
+# Inside the pod:
+env | grep DATABASE
+
+# Verify the connection string format in the secret
+kubectl get secret tyk-conf -n tyk -o jsonpath='{.data.DashDatabaseConnectionString}' | base64 -d && echo
+# Expected format: postgresql://user:password@host:5432/database
+
+# Check PostgreSQL logs
+kubectl logs -n tyk -l app.kubernetes.io/name=postgresql
+```
+
+</Accordion>
+
+<Accordion title='License Key Issues'>
+
+The Tyk Dashboard or other components fail due to a missing or invalid license key.
+
+```bash
+# Verify the license key is set
+kubectl get secret tyk-conf -n tyk -o jsonpath='{.data.DashLicense}' | base64 -d && echo
+
+# Check Dashboard logs for license errors
+kubectl logs -n tyk -l app=dashboard-tyk-tyk-dashboard --tail=100 | grep -i license
+
+# Check license expiration in the Tyk Dashboard:
+# Settings > License
+```
+
+</Accordion>
+
+<Accordion title='Gateway Not Loading APIs'>
+
+Tyk Gateway fails to retrieve or display API definitions from the Tyk Dashboard.
+
+```bash
+# Check the Gateway is connected to the Dashboard
+kubectl logs -n tyk -l app=gateway-tyk-tyk-gateway --tail=100
+
+# Force a Gateway reload (using APISecret for auth)
+API_SECRET=$(kubectl get secret tyk-conf -n tyk -o jsonpath='{.data.APISecret}' | base64 -d)
+curl -X GET http://localhost:8080/tyk/reload \
+  -H "X-Tyk-Authorization: $API_SECRET"
+
+# Confirm the APIs are published in the Dashboard:
+# APIs > check the "Published" status
+```
+
+</Accordion>
+
+<Accordion title='Dashboard Not Accessible'>
+
+The Tyk Dashboard web interface is unavailable or unreachable.
+
+```bash
+# Check Dashboard pod status
+kubectl get pods -n tyk -l app=dashboard-tyk-tyk-dashboard
+
+# Check the Dashboard service
+kubectl get svc -n tyk | grep dashboard
+
+# Check Dashboard logs
+kubectl logs -n tyk -l app=dashboard-tyk-tyk-dashboard --tail=100
+
+# If using a LoadBalancer, verify an external IP is assigned
+kubectl get svc -n tyk dashboard-svc-tyk-tyk-dashboard
+
+# If using Ingress, verify the ingress is created
+kubectl get ingress -n tyk
+kubectl describe ingress -n tyk <dashboard-ingress-name>
+```
+
+</Accordion>
+
+<Accordion title='Operator Issues'>
+
+Tyk Operator fails to start or manage custom resources.
+
+```bash
+# Check the operator pod is running
+kubectl get pods -n tyk -l control-plane=tyk-operator-controller-manager
+
+# Check operator logs
+kubectl logs -n tyk -l control-plane=tyk-operator-controller-manager --tail=100
+
+# Verify the operator secret exists
+kubectl get secret tyk-operator-conf -n tyk
+
+# Check the CRDs are installed
+kubectl get crds | grep tyk
+```
+
+</Accordion>
+
+<Accordion title='Ingress Not Working'>
+
+Ingress routes fail to direct traffic to the services.
+
+```bash
+# Verify the ingress controller is installed
+kubectl get pods -n kube-system | grep ingress  # For NGINX
+kubectl get pods -n kube-system | grep aws-load-balancer  # For AWS LB Controller
+
+# Check the ingress resource
+kubectl get ingress -n tyk
+kubectl describe ingress -n tyk <ingress-name>
+
+# For AWS ALB, check the AWS console for ALB creation
+# For GKE, check the Google Cloud console for the Load Balancer
+
+# Verify DNS is pointing to the ingress address
+nslookup gateway.yourdomain.com
+```
+
+</Accordion>
+
+</AccordionGroup>
+>>>>>>> 8519bb0f4 (Recommend pinning container images by tag and digest (#3820))
 
 ## Legacy Helm Chart
 
