@@ -1,0 +1,455 @@
+---
+title: "Environment Variables Best Practices"
+description: "Recommended environment variable configurations and production best practices for Tyk Gateway across security, performance, and operations."
+sidebarTitle: "Environment Variables Best Practices"
+type: reference
+---
+
+Tyk Gateway can be fully configured using environment variables. Any setting in the `tyk.conf` file can be overridden by setting an environment variable before starting the Gateway process.
+
+This guide details recommended environment variable configurations and operational best practices for production deployments of Tyk Gateway.
+
+## Overview
+
+Tyk Gateway uses the Go `envconfig` library to parse environment variables. All Gateway-specific environment variables share the following characteristics:
+
+- **Prefix**: Every variable begins with `TYK_GW_`.
+- **Casing and Delimiters**: Variable names are uppercase and separated by underscores.
+- **Hierarchy**: Nested JSON objects in `tyk.conf` are mapped to environment variables by concatenating parent and child keys. For example, `http_server_options.use_ssl` maps to `TYK_GW_HTTPSERVEROPTIONS_USESSL`, and `storage.use_ssl` maps to `TYK_GW_STORAGE_USESSL`.
+- **Precedence**: Environment variables take precedence over settings in `tyk.conf`. If a value is defined in both places, the environment variable is used.
+
+For a full list of all available options and how specific types are converted, see [Tyk Gateway Configuration Options](/tyk-oss-gateway/configuration).
+
+### Priority Levels
+
+Recommendations in this guide are classified using four priority levels:
+
+| Priority | Definition |
+| :--- | :--- |
+| **Must** | Non-negotiable requirements for security, data integrity, and production stability. |
+| **Should** | Strongly recommended for efficiency, scalability, and operational resilience. |
+| **Optional** | Architecture-specific configurations depending on topology or custom requirements. |
+| **Avoid** | Configurations or anti-patterns that introduce security vulnerabilities or performance degradation. |
+
+---
+
+## Security Best Practices
+
+Securing Tyk Gateway requires protecting administrative endpoints, hardening cryptographic primitives, and isolating management interfaces from public network traffic.
+
+### Administrative Secrets and Access Control
+
+#### TYK_GW_SECRET
+- **Priority**: Must
+- **JSON Equivalent**: `secret`
+- **Default Value**: `352d20ee67be67f6340b4c0605b044b7`
+- **Recommended Value**: A cryptographically random string of 32 or more characters
+
+The Gateway API secret protects Tyk Gateway REST API endpoints (such as reloading definitions or inspecting health). The default secret is public and well-known. You must change this value to a strong, randomly generated string in any deployed environment.
+
+```bash
+export TYK_GW_SECRET="a-very-strong-and-unique-random-secret-32-chars-or-more"
+```
+
+#### TYK_GW_NODESECRET
+- **Priority**: Must
+- **JSON Equivalent**: `node_secret`
+- **Default Value**: `""`
+- **Recommended Value**: A strong, randomly generated string of 32 or more characters
+
+Used for authenticated communication between Tyk Gateway and Tyk Dashboard or Tyk MDCB. This must match across components and should be a dedicated, cryptographically strong secret.
+
+#### TYK_GW_ALLOWMASTERKEYS
+- **Priority**: Must / Avoid
+- **JSON Equivalent**: `allow_master_keys`
+- **Default Value**: `false`
+- **Recommended Value**: `false`
+
+Master keys bypass all API policy definitions and rate limits. Keep this setting set to `false` in production. Enabling master keys presents a severe security risk if a key token is compromised.
+
+#### TYK_GW_ENABLEKEYLOGGING
+- **Priority**: Must / Avoid
+- **JSON Equivalent**: `enable_key_logging`
+- **Default Value**: `false`
+- **Recommended Value**: `false`
+
+When set to `true`, Tyk Gateway prints raw API keys and authentication tokens in log files. Never enable key logging in production to avoid exposing sensitive credentials in centralized log aggregators.
+
+### API Key Hashing and Token Length
+
+#### TYK_GW_HASHKEYS
+- **Priority**: Must
+- **JSON Equivalent**: `hash_keys`
+- **Default Value**: `false`
+- **Recommended Value**: `true`
+
+By default, Tyk stores API tokens in plaintext in Redis. Set `TYK_GW_HASHKEYS=true` so that tokens are hashed before writing them to the cache. If Redis is ever compromised, hashed keys prevent attackers from retrieving usable credentials.
+
+<Warning>
+Enabling `hash_keys` is an irreversible operational change for existing keys without migrating them. Enable key hashing before provisioning keys in a new environment.
+</Warning>
+
+#### TYK_GW_HASHKEYFUNCTION
+- **Priority**: Should
+- **JSON Equivalent**: `hash_key_function`
+- **Default Value**: `murmur64`
+- **Recommended Value**: `sha256` (or `murmur64` for extreme throughput requirements)
+
+Determines the cryptographic hash algorithm applied to API keys. `sha256` provides cryptographic collision resistance. For ultra-high-throughput architectures where hashing latency must be minimized, `murmur64` offers higher hashing throughput.
+
+#### TYK_GW_MINTOKENLENGTH
+- **Priority**: Should
+- **JSON Equivalent**: `min_token_length`
+- **Default Value**: `0`
+- **Recommended Value**: `32`
+
+Defines the minimum character length required for client API tokens. Setting this to `32` prevents users or automated workflows from generating weak, brute-forceable API tokens.
+
+### Network and Management Isolation
+
+#### TYK_GW_CONTROLAPIPORT
+- **Priority**: Should
+- **JSON Equivalent**: `control_api_port`
+- **Default Value**: `0` (shares main listen port)
+- **Recommended Value**: A dedicated internal port (for example, `9696`)
+
+By default, the Tyk Gateway REST API (the Control API) shares the same port as public data-plane API traffic. Set `TYK_GW_CONTROLAPIPORT` to bind administrative endpoints (such as `/tyk/keys`, `/tyk/reload`, and `/hello`) to an isolated port. You can then restrict access to this port at the firewall or network layer so that external consumers cannot reach control endpoints.
+
+```bash
+export TYK_GW_CONTROLAPIPORT=9696
+```
+
+### Transport Layer Security (TLS and SSL)
+
+#### TYK_GW_HTTPSERVEROPTIONS_USESSL
+- **Priority**: Must
+- **JSON Equivalent**: `http_server_options.use_ssl`
+- **Default Value**: `false`
+- **Recommended Value**: `true` (unless TLS is terminated at an upstream load balancer or ingress)
+
+Enforces TLS encryption on downstream connections between API consumers and Tyk Gateway.
+
+#### TYK_GW_HTTPSERVEROPTIONS_MINVERSION
+- **Priority**: Must
+- **JSON Equivalent**: `http_server_options.min_version`
+- **Default Value**: `0` (Go runtime default)
+- **Recommended Value**: `771` (TLS 1.2) or `772` (TLS 1.3)
+
+Restricts the minimum TLS version accepted by the downstream listener. Values correspond to Go TLS constants:
+- `771`: TLS 1.2
+- `772`: TLS 1.3
+
+Setting this to `771` or `772` disables insecure TLS 1.0 and TLS 1.1 protocols.
+
+#### TYK_GW_HTTPSERVEROPTIONS_SSLINSECURESKIPVERIFY
+- **Priority**: Must / Avoid
+- **JSON Equivalent**: `http_server_options.ssl_insecure_skip_verify`
+- **Default Value**: `false`
+- **Recommended Value**: `false`
+
+Disables server certificate verification. Must remain `false` in production.
+
+#### TYK_GW_PROXYSSLMINVERSION
+- **Priority**: Should
+- **JSON Equivalent**: `proxy_ssl_min_version`
+- **Default Value**: `0`
+- **Recommended Value**: `771` (TLS 1.2)
+
+Controls the minimum TLS version used by Tyk Gateway when establishing upstream proxy connections to backend services.
+
+#### TYK_GW_PROXYSSLINSECURESKIPVERIFY
+- **Priority**: Must / Avoid
+- **JSON Equivalent**: `proxy_ssl_insecure_skip_verify`
+- **Default Value**: `false`
+- **Recommended Value**: `false`
+
+Controls upstream SSL certificate validation. Keeping this set to `false` prevents man-in-the-middle attacks between Tyk Gateway and upstream services. If backend services use internal private certificates, mount the private CA into the Gateway trust store rather than skipping verification.
+
+#### TYK_GW_JWTSSLINSECURESKIPVERIFY
+- **Priority**: Must / Avoid
+- **JSON Equivalent**: `jwt_ssl_insecure_skip_verify`
+- **Default Value**: `false`
+- **Recommended Value**: `false`
+
+Controls whether Tyk Gateway verifies TLS certificates when fetching remote JWKS keys from Identity Providers (IdPs). Skipping verification exposes JWKS retrieval to interception and spoofing.
+
+#### TYK_GW_BUNDLEINSECURESKIPVERIFY
+- **Priority**: Must / Avoid
+- **JSON Equivalent**: `bundle_insecure_skip_verify`
+- **Default Value**: `false`
+- **Recommended Value**: `false`
+
+Controls whether certificate validation is performed when downloading dynamic plugin bundles. Must remain `false`.
+
+### Storage and Redis Security
+
+#### TYK_GW_STORAGE_USESSL
+- **Priority**: Should
+- **JSON Equivalent**: `storage.use_ssl`
+- **Default Value**: `false`
+- **Recommended Value**: `true`
+
+Enables TLS encryption between Tyk Gateway and Redis. In cloud environments or distributed networks, encrypting Redis traffic in transit protects token hashes, session state, and cached data.
+
+#### TYK_GW_STORAGE_SSLINSECURESKIPVERIFY
+- **Priority**: Must / Avoid
+- **JSON Equivalent**: `storage.ssl_insecure_skip_verify`
+- **Default Value**: `false`
+- **Recommended Value**: `false`
+
+Ensures the Redis server TLS certificate is fully verified. Keep this set to `false` in production.
+
+#### TYK_GW_STORAGE_USERNAME and TYK_GW_STORAGE_PASSWORD
+- **Priority**: Must
+- **JSON Equivalent**: `storage.username`, `storage.password`
+- **Default Value**: `""`
+- **Recommended Value**: Configured using least-privilege Redis ACL credentials
+
+Never run Redis without authentication in production. Use Redis 6+ Access Control Lists (ACLs) to configure dedicated credentials for Tyk Gateway with permissions limited to required keyspaces and commands.
+
+### Attack Surface and Payload Limits
+
+#### TYK_GW_ENABLEJSVM
+- **Priority**: Should
+- **JSON Equivalent**: `enable_jsvm`
+- **Default Value**: `true`
+- **Recommended Value**: `false` (if JavaScript plugins are not used)
+
+Tyk includes an embedded Otto JavaScript virtual machine for legacy JS middleware. If your APIs do not require JavaScript middleware (for example, if you use built-in middleware, Go plugins, or Python plugins), set this to `false`. Disabling the JSVM reduces memory consumption and removes unnecessary execution surface.
+
+#### TYK_GW_HTTPSERVEROPTIONS_MAXREQUESTBODYSIZE
+- **Priority**: Should
+- **JSON Equivalent**: `http_server_options.max_request_body_size`
+- **Default Value**: `0` (unlimited)
+- **Recommended Value**: A non-zero size limit in bytes (for example, `5242880` for 5 MB)
+
+Configures the maximum allowed request body size in bytes across all APIs. Requests exceeding this limit return an `HTTP 413 Request Entity Too Large` status. Setting a strict upper bound protects the Gateway and upstream services against memory exhaustion and denial-of-service (DoS) attacks.
+
+---
+
+## Performance Best Practices
+
+Fine-tuning network sockets, rate limit synchronization, and Go runtime variables is essential for high-throughput production workloads.
+
+### Connection Reuse and Keep-Alive
+
+#### TYK_GW_CLOSECONNECTIONS
+- **Priority**: Must / Avoid
+- **JSON Equivalent**: `close_connections`
+- **Default Value**: `false`
+- **Recommended Value**: `false`
+
+When set to `false`, Tyk Gateway maintains downstream HTTP keep-alive connections with clients, avoiding repeated TCP and TLS handshake overhead. Never set this to `true` in production unless explicitly required by upstream proxies.
+
+#### TYK_GW_PROXYCLOSECONNECTIONS
+- **Priority**: Must / Avoid
+- **JSON Equivalent**: `proxy_close_connections`
+- **Default Value**: `false`
+- **Recommended Value**: `false`
+
+When set to `false`, Tyk Gateway keeps persistent upstream connections open in a connection pool for reuse across multiple proxy requests. Setting this to `true` closes the backend connection after every request, introducing severe latency and socket exhaustion.
+
+#### TYK_GW_MAXIDLECONNSPERHOST
+- **Priority**: Must
+- **JSON Equivalent**: `max_idle_connections_per_host`
+- **Default Value**: `0` (Go standard library default: `2`)
+- **Recommended Value**: `500` to `10000`
+
+The Go standard library defaults to only 2 idle connections per upstream host. Under high concurrency, 2 idle connections cause aggressive connection cycling and socket exhaustion (`TIME_WAIT`). Increase `TYK_GW_MAXIDLECONNSPERHOST` to at least `500` for moderate traffic, or up to `10000` for high-throughput environments.
+
+```bash
+export TYK_GW_MAXIDLECONNSPERHOST=2000
+```
+
+### Distributed Rate Limiting (DRL)
+
+Tyk features a high-performance Distributed Rate Limiter that evaluates rate limits locally in memory and synchronizes state asynchronously across Gateway nodes using Redis.
+
+#### TYK_GW_DRLTHRESHOLD
+- **Priority**: Should
+- **JSON Equivalent**: `drl_threshold`
+- **Default Value**: `5`
+- **Recommended Value**: `5` (adjust based on gateway count)
+
+The distributed rate limiter switches from the central Redis limiter to the in-memory DRL algorithm when a client rate limit exceeds `drl_threshold * number_of_gateways`. A threshold of `5` ensures low rate limits maintain strict global precision while high-volume limits bypass Redis round-trips.
+
+#### TYK_GW_DRLNOTIFICATIONFREQUENCY
+- **Priority**: Should
+- **JSON Equivalent**: `drl_notification_frequency`
+- **Default Value**: `2` (seconds)
+- **Recommended Value**: `1` (for rapid rate sync) or `2`
+
+Specifies how frequently Gateway nodes broadcast their local rate limit counters to other cluster nodes via Redis pub/sub. Reducing this value to `1` second provides faster cross-node synchronization at the cost of slightly more frequent pub/sub messages.
+
+### Logging and Go Runtime Tuning
+
+#### TYK_GW_LOGLEVEL
+- **Priority**: Must
+- **JSON Equivalent**: `log_level`
+- **Default Value**: `info`
+- **Recommended Value**: `warn` or `error` in high-throughput production
+
+Logging every request at `debug` or `info` generates significant console and disk I/O, which directly degrades Gateway throughput. Use `warn` or `error` in production. Only switch to `debug` temporarily during targeted troubleshooting.
+
+#### GOMAXPROCS
+- **Priority**: Should
+- **Scope**: Go Runtime Environment Variable
+- **Default Value**: Number of logical CPUs on the host
+- **Recommended Value**: Explicitly matched to container CPU limit
+
+In container environments (such as Kubernetes or Docker), the Go runtime may detect the CPU count of the underlying physical host rather than the container quota. Setting `GOMAXPROCS` to match the container CPU allocation prevents CPU throttling and excessive thread context switching.
+
+#### GOGC
+- **Priority**: Avoid
+- **Scope**: Go Runtime Environment Variable
+- **Default Value**: `100`
+- **Recommended Value**: Do not change without heap profiling
+
+The `GOGC` variable controls the aggressiveness of Go garbage collection. Tyk is heavily optimized for low memory allocations. Modifying `GOGC` without profiling can cause unexpected memory ballooning or increased CPU utilization.
+
+---
+
+## Operations and Observability Best Practices
+
+### Analytics Configuration
+
+#### TYK_GW_ENABLEANALYTICS
+- **Priority**: Should
+- **JSON Equivalent**: `enable_analytics`
+- **Default Value**: `true`
+- **Recommended Value**: `true` (when using Tyk Pump or Tyk Dashboard)
+
+Controls whether Tyk Gateway buffers transaction metrics in Redis for Tyk Pump to process. If you operate a headless Gateway without Tyk Pump or Tyk Dashboard, set this to `false` to eliminate Redis write operations for analytics.
+
+#### TYK_GW_ANALYTICSCONFIG_STORAGEEXPIRATIONTIME
+- **Priority**: Should
+- **JSON Equivalent**: `analytics_config.storage_expiration_time`
+- **Default Value**: `60` (seconds)
+- **Recommended Value**: `60`
+
+Defines the time-to-live (TTL) in seconds for analytics records stored in Redis. If Tyk Pump is temporarily stopped or under heavy load, unpurged analytics records expire after this time window, protecting Redis from unbounded memory growth.
+
+#### TYK_GW_ANALYTICSCONFIG_ENABLEMULTIPLEANALYTICSKEYS
+- **Priority**: Must (for Redis Cluster) / Optional (for standalone Redis)
+- **JSON Equivalent**: `analytics_config.enable_multiple_analytics_keys`
+- **Default Value**: `false`
+- **Recommended Value**: `true` in Redis Cluster environments
+
+In a Redis Cluster deployment, analytics records can bottleneck on a single master node if stored under a single key. Setting `TYK_GW_ANALYTICSCONFIG_ENABLEMULTIPLEANALYTICSKEYS=true` distributes analytics buffers across multiple Redis keys and hash slots, balancing write throughput across all cluster nodes.
+
+### System and Time Synchronization
+
+#### TZ
+- **Priority**: Must
+- **Scope**: Operating System / Container Environment Variable
+- **Recommended Value**: `UTC`
+
+Always set the system timezone to `UTC` across all Gateway instances, Redis nodes, Tyk Pump, and Tyk Dashboard. Mismatched timezones cause inconsistencies in rate limiting time windows, analytics aggregation buckets, and audit log correlation.
+
+```bash
+export TZ=UTC
+```
+
+---
+
+## Summary Reference Table
+
+| Environment Variable | JSON Equivalent | Priority | Production Recommendation |
+| :--- | :--- | :--- | :--- |
+| `TYK_GW_SECRET` | `secret` | **Must** | Random string (32+ chars) |
+| `TYK_GW_NODESECRET` | `node_secret` | **Must** | Random string (32+ chars) |
+| `TYK_GW_ALLOWMASTERKEYS` | `allow_master_keys` | **Must / Avoid** | `false` |
+| `TYK_GW_ENABLEKEYLOGGING` | `enable_key_logging` | **Must / Avoid** | `false` |
+| `TYK_GW_HASHKEYS` | `hash_keys` | **Must** | `true` |
+| `TYK_GW_HASHKEYFUNCTION` | `hash_key_function` | **Should** | `sha256` |
+| `TYK_GW_MINTOKENLENGTH` | `min_token_length` | **Should** | `32` |
+| `TYK_GW_CONTROLAPIPORT` | `control_api_port` | **Should** | Dedicated internal port (e.g. `9696`) |
+| `TYK_GW_HTTPSERVEROPTIONS_USESSL` | `http_server_options.use_ssl` | **Must** | `true` |
+| `TYK_GW_HTTPSERVEROPTIONS_MINVERSION` | `http_server_options.min_version` | **Must** | `771` (TLS 1.2) or `772` (TLS 1.3) |
+| `TYK_GW_HTTPSERVEROPTIONS_SSLINSECURESKIPVERIFY` | `http_server_options.ssl_insecure_skip_verify` | **Must / Avoid** | `false` |
+| `TYK_GW_PROXYSSLMINVERSION` | `proxy_ssl_min_version` | **Should** | `771` (TLS 1.2) |
+| `TYK_GW_PROXYSSLINSECURESKIPVERIFY` | `proxy_ssl_insecure_skip_verify` | **Must / Avoid** | `false` |
+| `TYK_GW_JWTSSLINSECURESKIPVERIFY` | `jwt_ssl_insecure_skip_verify` | **Must / Avoid** | `false` |
+| `TYK_GW_BUNDLEINSECURESKIPVERIFY` | `bundle_insecure_skip_verify` | **Must / Avoid** | `false` |
+| `TYK_GW_STORAGE_USESSL` | `storage.use_ssl` | **Should** | `true` |
+| `TYK_GW_STORAGE_SSLINSECURESKIPVERIFY` | `storage.ssl_insecure_skip_verify` | **Must / Avoid** | `false` |
+| `TYK_GW_STORAGE_USERNAME` | `storage.username` | **Must** | Redis ACL username |
+| `TYK_GW_STORAGE_PASSWORD` | `storage.password` | **Must** | Strong Redis ACL password |
+| `TYK_GW_ENABLEJSVM` | `enable_jsvm` | **Should** | `false` (if JS plugins not used) |
+| `TYK_GW_HTTPSERVEROPTIONS_MAXREQUESTBODYSIZE` | `http_server_options.max_request_body_size` | **Should** | `5242880` (5 MB limit) |
+| `TYK_GW_CLOSECONNECTIONS` | `close_connections` | **Must / Avoid** | `false` |
+| `TYK_GW_PROXYCLOSECONNECTIONS` | `proxy_close_connections` | **Must / Avoid** | `false` |
+| `TYK_GW_MAXIDLECONNSPERHOST` | `max_idle_connections_per_host` | **Must** | `500` to `10000` |
+| `TYK_GW_DRLTHRESHOLD` | `drl_threshold` | **Should** | `5` |
+| `TYK_GW_DRLNOTIFICATIONFREQUENCY` | `drl_notification_frequency` | **Should** | `1` or `2` |
+| `TYK_GW_LOGLEVEL` | `log_level` | **Must** | `warn` or `error` |
+| `GOMAXPROCS` | N/A (Go runtime) | **Should** | Match container CPU quota |
+| `GOGC` | N/A (Go runtime) | **Avoid** | Keep default (`100`) |
+| `TYK_GW_ENABLEANALYTICS` | `enable_analytics` | **Should** | `true` |
+| `TYK_GW_ANALYTICSCONFIG_STORAGEEXPIRATIONTIME` | `analytics_config.storage_expiration_time` | **Should** | `60` |
+| `TYK_GW_ANALYTICSCONFIG_ENABLEMULTIPLEANALYTICSKEYS` | `analytics_config.enable_multiple_analytics_keys` | **Must** (Redis Cluster) | `true` |
+| `TZ` | N/A (OS / Container) | **Must** | `UTC` |
+
+---
+
+## Production Configuration Example
+
+Below is an example environment variable configuration for a production Tyk Gateway container deployment:
+
+```bash
+# Timezone
+TZ=UTC
+
+# Go runtime settings
+GOMAXPROCS=4
+
+# Core secrets and management
+TYK_GW_SECRET=c8f8b0e5d9a44e7fb2a1d3f6c8e5b7a0d2f4e6a8b1c3d5e7f9a2b4c6d8e0f2a4
+TYK_GW_NODESECRET=f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2
+TYK_GW_ALLOWMASTERKEYS=false
+TYK_GW_ENABLEKEYLOGGING=false
+TYK_GW_CONTROLAPIPORT=9696
+
+# Token security and hashing
+TYK_GW_HASHKEYS=true
+TYK_GW_HASHKEYFUNCTION=sha256
+TYK_GW_MINTOKENLENGTH=32
+
+# Downstream TLS and server limits
+TYK_GW_HTTPSERVEROPTIONS_USESSL=true
+TYK_GW_HTTPSERVEROPTIONS_MINVERSION=771
+TYK_GW_HTTPSERVEROPTIONS_SSLINSECURESKIPVERIFY=false
+TYK_GW_HTTPSERVEROPTIONS_MAXREQUESTBODYSIZE=5242880
+
+# Upstream proxy TLS
+TYK_GW_PROXYSSLMINVERSION=771
+TYK_GW_PROXYSSLINSECURESKIPVERIFY=false
+TYK_GW_JWTSSLINSECURESKIPVERIFY=false
+TYK_GW_BUNDLEINSECURESKIPVERIFY=false
+
+# Redis storage connection and security
+TYK_GW_STORAGE_USESSL=true
+TYK_GW_STORAGE_SSLINSECURESKIPVERIFY=false
+TYK_GW_STORAGE_USERNAME=tyk_gateway_user
+TYK_GW_STORAGE_PASSWORD=StrongRedisPasswordHere
+
+# Attack surface reduction
+TYK_GW_ENABLEJSVM=false
+
+# Network performance and connection pooling
+TYK_GW_CLOSECONNECTIONS=false
+TYK_GW_PROXYCLOSECONNECTIONS=false
+TYK_GW_MAXIDLECONNSPERHOST=2000
+
+# Distributed rate limiting
+TYK_GW_DRLTHRESHOLD=5
+TYK_GW_DRLNOTIFICATIONFREQUENCY=1
+
+# Logging
+TYK_GW_LOGLEVEL=warn
+
+# Analytics
+TYK_GW_ENABLEANALYTICS=true
+TYK_GW_ANALYTICSCONFIG_STORAGEEXPIRATIONTIME=60
+TYK_GW_ANALYTICSCONFIG_ENABLEMULTIPLEANALYTICSKEYS=true
+```
