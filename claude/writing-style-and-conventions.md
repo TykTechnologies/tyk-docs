@@ -27,7 +27,7 @@ The above pages can be edited, but they reference snippets which are imported fr
 - `snippets/dashboard-config.mdx`
 - `snippets/pump-config.mdx`
 - `snippets/mdcb-config.mdx`
-- `snippets/env-type-mapping.mdx`
+
 
 ### Tyk OAS API Reference
 
