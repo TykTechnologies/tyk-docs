@@ -28,7 +28,6 @@ The above pages can be edited, but they reference snippets which are imported fr
 - `snippets/pump-config.mdx`
 - `snippets/mdcb-config.mdx`
 
-`snippets/env-type-mapping.mdx` is hand-written. No sync job writes it, so you can edit it directly.
 
 ### Tyk OAS API Reference
 
