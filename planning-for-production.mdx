@@ -20,34 +20,73 @@ For detailed information on our performance testing and results, please refer to
 - **[Performance Tuning Your Gateway](https://tyk.io/blog/performance-tuning-your-tyk-api-gateway/)**: A step-by-step guide to fine-tuning your Gateway for maximum performance.  
 - **[Manual Performance Testing on AWS](https://tyk.io/blog/a-manual-for-simple-performance-testing-with-tyk-on-aws/)**: Best practices for setting up and running manual performance tests on AWS to ensure your Gateway is optimized.
 
-## Change all the shared secrets
+## Change All the Shared Secrets
 
-Ensure that these are changed before deploying to production. The main secrets to consider are:
+Tyk packages, Docker images and Helm charts ship with sample values for secrets. These values are the same in every installation. Replace each one before you deploy to production. The [Default Secrets Reference](/deployment/default-secrets-reference) lists every secret, its environment variable, its Helm value and the value that Tyk ships.
 
-### `tyk.conf`:
+Tyk Gateway and Tyk Dashboard log a warning at startup for only some sample values, and they continue to start. Do not rely on the warning.
 
-*   `secret`
-*   `node_secret`
+1. Generate a different random value for each secret, for example with `openssl rand -hex 32`.
 
-### `tyk_analytics.conf`:
+2. Set the Tyk Gateway and Tyk Dashboard secrets. Some settings must have the same value in both components:
 
-*   `admin_secret`
-*   `shared_node_secret`
-*   `typ_api_config.secret`
+   | Tyk Gateway | Tyk Dashboard | Description |
+   | :---- | :---- | :---- |
+   | `secret` (`TYK_GW_SECRET`) | `tyk_api_config.secret` (`TYK_DB_TYKAPI_SECRET`) | Authenticates requests to the Tyk Gateway API. Must match. |
+   | `node_secret` (`TYK_GW_NODESECRET`) | `shared_node_secret` (`TYK_DB_NODESECRET`) | Authenticates Tyk Gateway to Tyk Dashboard. Must match. |
+   | None | `admin_secret` (`TYK_DB_ADMINSECRET`) | Authenticates requests to the Tyk Dashboard Admin API. |
 
-GW `secret` and DB `tyk_api_config.secret` must match
+3. Set `security.private_certificate_encoding_secret` to the same value in Tyk Gateway, Tyk Dashboard and Tyk MDCB. When it is empty, Tyk Gateway and Tyk Dashboard use the API secret to encrypt certificate private keys. On an existing installation, follow [Change the API Secret Safely](/deployment/default-secrets-reference#change-the-api-secret-safely) before you change the API secret.
 
-GW `node_secret` and DB `shared_node_secret` must match
+4. Set the secrets of the other components that you use: [Tyk MDCB](/deployment/default-secrets-reference#tyk-mdcb), [Tyk Pump](/deployment/default-secrets-reference#tyk-pump), the [Developer Portal](/deployment/default-secrets-reference#tyk-developer-portal) and [Tyk AI Studio](/deployment/default-secrets-reference#tyk-ai-studio).
 
-### Use the public/private key message security!
+5. Set passwords for Redis, MongoDB and PostgreSQL, and give them to each component.
 
-Tyk makes use of public-key message verification for messages that are sent from the Dashboard to the Gateways, these messages can include:
+6. If you install with Helm, keep the secrets in Kubernetes Secrets and refer to them from your values file. See [Supply Helm Values From Kubernetes Secrets](/deployment/default-secrets-reference#supply-helm-values-from-kubernetes-secrets).
 
-*   Zeroconfig Dashboard auto-discovery details
-*   Cluster reload messages
-*   Cluster configuration getters/setters for individual Gateways in a cluster
+7. Change the password of the first admin user if your installation method created it with a fixed password. See [Admin User From the Setup Script](/deployment/default-secrets-reference#admin-user-from-the-setup-script) and the [Helm chart defaults](/deployment/default-secrets-reference#tyk-helm-charts).
 
-These keys are also used for plugin security, so it is important to use them if you are deploying code to your Gateway. The public key that ships with your Gateways is used to verify the manifest and files that come with any plugin bundle that gets downloaded by the bundle downloader.
+<a id="use-the-publicprivate-key-message-security"></a>
+## Sign Tyk Dashboard Notifications With a Key Pair
+
+Tyk Dashboard sends notifications to Tyk Gateway instances through Redis, for example to reload APIs or to read and change the configuration of a Tyk Gateway. Tyk Gateway can verify these notifications with a key pair:
+
+| Component | Field | Environment variable | Description |
+| :---- | :---- | :---- | :---- |
+| Tyk Dashboard | [`private_key_path`](/tyk-dashboard/configuration#private_key_path) | `TYK_DB_PRIVATEKEYPATH` | The private key that signs notifications. |
+| Tyk Gateway | [`public_key_path`](/tyk-oss-gateway/configuration#public_key_path) | `TYK_GW_PUBLICKEYPATH` | The public key that verifies notifications and plugin bundles. |
+| Tyk Gateway | [`allow_insecure_configs`](/tyk-oss-gateway/configuration#allow_insecure_configs) | `TYK_GW_ALLOWINSECURECONFIGS` | When `true`, Tyk Gateway does not verify the signatures of the notifications it receives through Redis. |
+
+The setup templates in the Linux packages and the Tyk Helm charts (`gateway.allowInsecureConfigs`) set `allow_insecure_configs` to `true`.
+
+<Warning>
+Tyk Gateway uses the same public key to verify [plugin bundles](/api-management/plugins/overview#plugin-bundles). If you use plugin bundles, set `public_key_path` only after you sign every bundle with the matching private key. Otherwise, APIs that use plugin bundles stop loading, possibly days after the change.
+</Warning>
+
+### How the Public Key Affects Plugin Bundles
+
+When you set `public_key_path`, these changes apply to plugin bundles:
+
+- **One key does two jobs.** Tyk Gateway verifies Tyk Dashboard notifications and plugin bundles with the same public key. You must sign bundles with the private key that Tyk Dashboard uses, so that key must also be available where you build bundles.
+- **Tyk Gateway verifies every bundle that it downloads.** If a downloaded bundle is not signed, verification fails with the error `Bundle isn't signed`. If a bundle is signed with a different key, the signature verification fails. In both cases Tyk Gateway logs `Couldn't load bundle` and does not load the API that uses the bundle. Other APIs load normally.
+- **The failure can occur later.** When Tyk Gateway reloads, it does not download again a bundle that is already in `middleware_path/bundles`. It checks the signature of that bundle only if the bundle has one, so an unsigned bundle continues to load. The failure occurs when a Tyk Gateway downloads the bundle again, for example:
+  - a new pod or node
+  - a restart on ephemeral storage
+  - a Data Plane that scales out
+  - a cleared middleware directory
+  - a new bundle name or version
+- **API loads take longer.** Each time Tyk Gateway loads an API that uses a signed bundle, including on every reload, it reads and hashes all the files in the bundle again and verifies the signature. Tyk Gateway does not do this for unsigned bundles that are already on disk. This does not affect request processing. The extra time increases with the size of your bundles, the number of APIs that use them and how often your Tyk Gateway instances reload.
+- **`skip_verify_existing_plugin_bundle: true`** stops Tyk Gateway from verifying the bundles that are already on disk, which removes this extra load time. Tyk Gateway then does not detect changes to bundle files after download. It does not change the verification of downloaded bundles.
+- **To rotate the key**, sign every bundle again with the new private key and publish it under a new name before any Tyk Gateway downloads it with the new public key.
+
+### Enable Key-Pair Signing
+
+1. List every API that uses a plugin bundle (`custom_middleware_bundle`).
+2. Generate an RSA key pair. Give the private key to Tyk Dashboard (`private_key_path`) and to the pipeline that builds your bundles. Give the public key to every Tyk Gateway.
+3. Build every bundle again and sign it with the private key: `tyk bundle build --key=<private.pem>`. Do not use `-y` (`--skip-signing`). Publish the signed bundles to your bundle server under new names, so that Tyk Gateway instances do not continue to use unsigned copies that are already on disk.
+4. Update your APIs to use the new bundle names.
+5. Set `private_key_path` on Tyk Dashboard and `public_key_path` on every Tyk Gateway, in the Control Plane and in each Data Plane. Then set `allow_insecure_configs` to `false` and restart the components.
+6. Before you roll out the change, test it on a Tyk Gateway with an empty bundle directory, such as a new pod or node. Look in the logs for `Bundle isn't signed` and `Couldn't load bundle`.
 
 ## Change your Control Port
 
