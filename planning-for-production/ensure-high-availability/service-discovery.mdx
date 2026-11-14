@@ -126,15 +126,82 @@ serviceDiscovery:
 </Tab>
 <Tab title="Eureka">
 
-The query endpoint must return JSON. Eureka returns XML by default, so create a Tyk API that adds an `Accept: application/json` header to the request, and use that API as the query endpoint.
+The query endpoint must return JSON. Eureka returns XML by default. Tyk Gateway sends the query as a plain `GET` request with no extra headers, so it can't ask Eureka for JSON. To get JSON, put a second Tyk API in front of Eureka. This API adds an `Accept: application/json` header to each request.
+
+**Step 1: Create an API in Front of Eureka**
+
+Create an API that proxies requests to the applications endpoint of your Eureka server. Add the `Accept` header with an [API-level request header transform](/api-management/traffic-transformation/request-headers#api-level-transform):
+
+```yaml
+x-tyk-api-gateway:
+  server:
+    listenPath:
+      value: /eureka/
+      strip: true
+  upstream:
+    url: "http://eureka.example.com:8761/eureka/apps/"
+  middleware:
+    global:
+      transformRequestHeaders:
+        enabled: true
+        add:
+          - name: Accept
+            value: application/json
+```
+
+Tyk Gateway sends no credentials with the query, so don't enable authentication on this API. The path of the applications endpoint depends on your Eureka server. For details, see [Eureka REST operations](https://github.com/Netflix/eureka/wiki/Eureka-REST-operations).
+
+**Step 2: Check the Response**
+
+Send a request for your application through the new API. This example requests the `ROUTE` application:
+
+```bash
+curl http://tyk-gateway.example.com:8080/eureka/ROUTE
+```
+
+Eureka returns the instances of the application as JSON. This shortened example shows the fields that service discovery uses:
+
+```json
+{
+  "application": {
+    "name": "ROUTE",
+    "instance": [
+      {
+        "hostName": "ip-172-31-57-136",
+        "status": "UP",
+        "port": {
+          "@enabled": "true",
+          "$": "60565"
+        }
+      },
+      {
+        "hostName": "ip-172-31-13-37",
+        "status": "UP",
+        "port": {
+          "@enabled": "true",
+          "$": "50045"
+        }
+      }
+    ]
+  }
+}
+```
+
+**Step 3: Configure Service Discovery**
+
+In the API that uses the discovered upstream, set the query endpoint to the URL from step 2:
 
 ```yaml
 serviceDiscovery:
+  enabled: true
+  queryEndpoint: "http://tyk-gateway.example.com:8080/eureka/ROUTE"
   useTargetList: true
   parentDataPath: "application.instance"
   dataPath: "hostName"
   portDataPath: "port.$"
 ```
+
+Tyk Gateway reads each item in the `application.instance` array. It takes the hostname from `hostName` and the port from `port.$`. For the response in step 2, the target list is `ip-172-31-57-136:60565` and `ip-172-31-13-37:50045`. Eureka returns no scheme in `hostName`, so Tyk Gateway adds `http://` to each target for an HTTP API. Enable [load balancing](/planning-for-production/ensure-high-availability/load-balancing#load-balancing) to send requests to all targets.
 
 </Tab>
 <Tab title="Mesosphere">
