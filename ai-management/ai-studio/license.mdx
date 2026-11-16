@@ -1,0 +1,184 @@
+---
+title: "License and Quotas in Tyk AI Studio"
+description: "How the Tyk AI Studio Enterprise license limits edge namespaces, users, Apps, and LLMs, what happens at a limit, where to set the license, and how to set per-user App quotas."
+keywords: "AI Studio, AI Management, License, Licensing, Quotas, App Quota, Limits, Enterprise, TYK_AI_LICENSE"
+type: concept
+sidebarTitle: "License and Quotas"
+---
+
+## Availability
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
+
+License limits and App quotas are available from v2.3.0. The Community Edition needs no license. It has no limits and no App quota.
+
+## Overview
+
+The Enterprise Edition of AI Studio needs a license from Tyk. The license is a signed token. It contains:
+
+- An expiry date.
+- The products that it covers. AI Studio accepts only a license that includes the Tyk AI Studio product.
+- The licensed features, for example the AI Portal, Chat, and the AI Gateway.
+- The limits of your deployment.
+
+A limit stops new use only. AI Studio does not remove or disable anything that already exists.
+
+The App quota is a separate control. Administrators use it to limit how many Apps each user can create. The App quota is not part of the license.
+
+To get a license, or to change your limits, contact your Tyk account manager.
+
+## Set the License
+
+Set the license in the `TYK_AI_LICENSE` environment variable. Set it on these components:
+
+- Each AI Studio replica. Use the same license on all replicas.
+- Each Enterprise [Edge Gateway](/ai-management/ai-studio/manage-edge-gateway), in edge mode and in standalone mode.
+- Each run of `microgateway -migrate`, when you run the Edge Gateway database migration as a separate step. Use the same license as the Edge Gateway. Without it, the command stops and does not migrate the database.
+
+AI Studio checks the license before it opens or migrates its database. If the license is missing, expired, or not valid, AI Studio does not start. It logs `license validation failed at boot:` followed by the reason. Examples of the reason:
+
+| Reason | Cause |
+| :--- | :--- |
+| `no license provided` | `TYK_AI_LICENSE` is empty or not set. |
+| `license expired` | The expiry date of the license has passed. |
+| `invalid license: license does not include the Tyk AI Studio SKU` | The license does not include AI Studio. For example, Tyk issued the license for v2.2 or earlier, or for a different Tyk product. |
+
+An Enterprise Edge Gateway checks its license in the same way, before it opens its database. If the check fails, the Edge Gateway does not start and logs `Microgateway license validation failed at boot:` followed by the reason.
+
+AI Studio and the Edge Gateway check the license again every 24 hours. If the license is no longer valid, for example because it expired, the process stops. To change the interval on AI Studio, set `LICENSE_VALIDITY_CHECK_PERIOD`. The Edge Gateway always uses 24 hours.
+
+To renew a license, set the new value in `TYK_AI_LICENSE` and restart each component.
+
+### Configuration
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `TYK_AI_LICENSE` | Not set | The license token. Required by the Enterprise Edition of AI Studio and of the Edge Gateway. |
+| `LICENSE_VALIDITY_CHECK_PERIOD` | `24h` | How often AI Studio checks the license again. Use a Go duration, for example `12h`. |
+| `LICENSE_DISABLE_TELEMETRY` | `false` | Set to `true` to stop the license usage reports that AI Studio sends to Tyk. |
+| `DEFAULT_APP_QUOTA` | `1` | The number of Apps that each user can create, when no team quota applies. Use a number, or `*` for no limit. Refer to [App Quota](#app-quota). |
+
+The Community Edition ignores these variables.
+
+## What the License Limits
+
+The license sets a limit for each of these items. A limit is a number or unlimited. Each limit applies to the full deployment.
+
+| Limit | What counts against it |
+| :--- | :--- |
+| **Edge namespaces** | Each edge namespace that has a licensed slot. The default namespace does not count. |
+| **Users with admin access** | Each enabled user who can open the admin area. A user counts if they are an administrator, if they have a role, or if a team gives them a role. Users with the Viewer or Auditor role also count. |
+| **Users with portal access** | Each enabled user with access to the AI Portal. |
+| **Apps** | Each App, however it was created. |
+| **LLMs** | Each LLM, active or inactive, however it was created. |
+
+To free a user seat, disable the user or remove their access. To free an App or LLM slot, delete the App or LLM.
+
+At startup, AI Studio adds its default LLMs. These LLMs count against the LLM limit. If the limit has no room for a default LLM, AI Studio does not add it and logs a warning. If you delete a default LLM, AI Studio does not add it again.
+
+### Edge Namespaces
+
+Each [Edge Gateway](/ai-management/ai-studio/manage-edge-gateway) belongs to a namespace. A namespace other than the default one needs a licensed slot.
+
+When an Edge Gateway registers in a namespace without a slot, AI Studio gives the namespace a free slot if one exists. If no slot is free, the namespace waits. Its Edge Gateways stay connected, but they get no configuration from AI Studio. When a slot becomes free, AI Studio gives it to the namespace that waited longest. Then AI Studio sends the configuration to the Edge Gateways of that namespace.
+
+A slot becomes free in these cases:
+
+- The namespace has no connected Edge Gateway for 24 hours.
+- An Owner releases the slot on the License page. Refer to [View the License and Usage](#view-the-license-and-usage).
+
+### Standalone Edge Gateways
+
+A standalone Edge Gateway applies the LLM limit of its own license to the LLMs that you create through its management API. If you try to create an LLM over the limit, the API returns `409` with the code `QUOTA_EXCEEDED`. At startup, the Edge Gateway logs a warning when it is at the limit.
+
+An Edge Gateway in edge mode gets its LLMs from AI Studio. The limits of the AI Studio license apply to them.
+
+## Behavior at a Limit
+
+AI Studio refuses a change that takes usage over a limit. The message tells you what to do. For example:
+
+```text
+Your organisation has reached its licensed limit of 10 apps. Remove an app to make room, or contact your administrator to increase the quota.
+```
+
+The API returns HTTP `409` with the error code `QUOTA_EXCEEDED`. Plugins that call AI Studio through the plugin SDK get the gRPC status `ResourceExhausted`.
+
+AI Studio checks these changes against the limits:
+
+- Create an App or an LLM.
+- Create or edit a user.
+- Add a user to a team.
+- Give a role to a user or to a team. A role on a team gives admin access to each member of the team.
+
+A change that does not increase usage is always allowed. If a new license has lower limits than your current usage, everything continues to work. AI Studio refuses new use until usage is below the limit.
+
+### Single Sign-On
+
+A [single sign-on](/ai-management/ai-studio/sso) login does not fail because of a user limit. If the login gives access that goes over a limit, the user signs in without that access. For example, the user does not get AI Portal access, or AI Studio does not add the user to the team that gives admin access.
+
+AI Studio then sends a notification to the Owners. The notification tells who did not get access and why. When a seat is free, an administrator can give the access.
+
+### Near-Limit Banners
+
+When usage of a limit is one below the maximum or at the maximum, AI Studio shows a banner. Users with admin access see a banner at the top of the admin area. The banner names the limit and shows its usage. AI Portal users see a banner when they are near their own App quota.
+
+To hide a banner, close it. The banner stays hidden for that user. If a new license changes the number for that limit, the banner shows again.
+
+## View the License and Usage
+
+Only users with the Owner role can see the license. Refer to [Role-Based Access Control](/ai-management/ai-studio/rbac#owner-rules).
+
+To see the license, go to **Settings > License**. Other users do not see this menu item. If they open the page, AI Studio shows **Only an Owner can view this page**.
+
+{/* Screenshot: Settings > License page with the Licence, Limits, Features, and Licensed namespaces sections, one limit marked "At limit" */}
+
+The page has these sections:
+
+| Section | What it shows |
+| :--- | :--- |
+| **Licence** | The products in the license, the expiry date, and the days left. |
+| **Limits** | Each limit and its usage, for example `3 of 10` or `3 of unlimited`. A limit that is reached has the **At limit** label. |
+| **Features** | The licensed features. |
+| **Licensed namespaces** | Each namespace with a slot. For each one, the page shows when it got the slot, its connected Edge Gateways, and when an idle slot becomes free. |
+| **Waiting namespaces** | The namespaces with a connected Edge Gateway that wait for a slot, in the order that they get one. This section shows only when a namespace waits. |
+
+To free a slot now, select **Release slot** next to the namespace. You can release a slot only when the namespace has no connected Edge Gateway. AI Studio gives the free slot to the next waiting namespace.
+
+The API for this page is in the [AI Studio API reference](/ai-management/ai-studio/ai-studio-swagger).
+
+## App Quota
+
+The App quota limits how many Apps each user can create for themselves. It applies to Apps that a user creates in the AI Portal or through a plugin. Apps that an administrator creates in the admin area do not count against the quota. All Apps count against the Apps limit of the license.
+
+AI Studio uses the first setting in this table that applies to the user:
+
+| Setting | When it applies | Quota |
+| :--- | :--- | :--- |
+| Team quota | The user is a member of a [team](/ai-management/ai-studio/teams) that sets a quota. | The quota of the team. If more than one team sets a quota, the largest one applies. |
+| `DEFAULT_APP_QUOTA` | No team of the user sets a quota. | The value of the variable. If the value is not valid, AI Studio logs a warning and uses `1`. |
+| Built-in default | No team quota, and `DEFAULT_APP_QUOTA` is not set. | `1` App. |
+
+The quota counts the Apps that the user owns. If a user tries to create an App over the quota, AI Studio refuses it with HTTP `409` and the code `QUOTA_EXCEEDED`. The message tells the user to remove an App or to ask an administrator for a larger quota.
+
+The App builder in the AI Portal shows the usage of the quota. For example: "You are using 1 of 3 apps you may create."
+
+### Set a Team Quota
+
+1. Go to **Access > Teams**.
+1. Open the team.
+1. In the **App quota** section, enter a number in **Apps per member**. For no limit, select **Unlimited**.
+1. Select **Save**.
+
+To remove the team quota, select **Use the default**. The members then get the default quota.
+
+{/* Screenshot: Team detail page, App quota section with Apps per member, Unlimited, and Save */}
+
+## Related Pages
+
+- [Edge Gateway management](/ai-management/ai-studio/manage-edge-gateway)
+- [Role-Based Access Control](/ai-management/ai-studio/rbac)
+- [Teams](/ai-management/ai-studio/teams)
+- [User management](/ai-management/ai-studio/user-management)
+- [Single sign-on](/ai-management/ai-studio/sso)
