@@ -1,19 +1,26 @@
 name: Check Swagger Versions
 
+# PRs to main: check main. Daily and on demand: check the latest and LTS
+# release branches with main's script, so release branches need no copy of it.
 on:
   pull_request:
+    branches: [main]
     paths:
       - 'swagger/**'
       - 'snippets/release-data.mdx'
       - 'developer-support/release-notes/**'
       - 'scripts/check_swagger_versions.py'
       - '.github/workflows/check-swagger-versions.yml'
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  check:
+  main:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -25,4 +32,28 @@ jobs:
           python-version: '3.9'
 
       - name: Check swagger info.version against the release notes
-        run: python scripts/check_swagger_versions.py . --branch "${{ github.base_ref }}"
+        run: python scripts/check_swagger_versions.py . --branch main
+
+  release-branches:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.9'
+
+      - name: Check latest and LTS release branches
+        run: |
+          status=0
+          for branch in $(python scripts/check_swagger_versions.py . --print-branches); do
+            echo "::group::$branch"
+            git fetch --depth 1 origin "$branch"
+            git worktree add --detach "../$branch" FETCH_HEAD
+            python scripts/check_swagger_versions.py "../$branch" --branch "$branch" || status=1
+            echo "::endgroup::"
+          done
+          exit $status

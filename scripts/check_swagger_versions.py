@@ -9,7 +9,8 @@ older branches). The branch decides which value applies:
 - release-X.Y where X.Y is the Gateway `lts` minor: `lts`.
 - Any other branch: skipped.
 
-Use --fix to rewrite stale info.version values in place.
+Use --fix to rewrite stale info.version values in place. Use --print-branches
+to list the latest and LTS release branches (CI checks them from main).
 """
 
 import argparse
@@ -88,12 +89,18 @@ def main():
     ap.add_argument("root", nargs="?", default=".")
     ap.add_argument("--branch", help="branch to check as (default: GITHUB_BASE_REF, GITHUB_REF_NAME, or the git branch)")
     ap.add_argument("--fix", action="store_true", help="rewrite stale info.version values")
+    ap.add_argument("--print-branches", action="store_true", help="print the latest and LTS release branches, then exit")
     args = ap.parse_args()
 
     data = load_release_data(args.root)
     gateway = component(data, "release-notes/gateway")
     if not gateway:
         raise SystemExit("❌ No Tyk Gateway entry in releaseData")
+
+    if args.print_branches:
+        minors = dict.fromkeys(minor(gateway.get(k)) for k in ("latest", "lts"))
+        print(" ".join(f"release-{m}" for m in minors if m))
+        return 0
 
     branch = args.branch or current_branch(args.root)
     mode = branch_mode(branch, gateway)
