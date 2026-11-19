@@ -235,6 +235,13 @@ def build_anchor_map(directory: str) -> Dict[str, Set[str]]:
     return anchor_map
 
 
+# Absolute links to the live Mintlify docs (https://tyk.io/docs/...) are checked
+# as internal links. Versioned paths (/docs/5.7/...) do not resolve to a local
+# file, so the anchor check skips them.
+FIRST_PARTY_DOCS_PREFIX_RE = re.compile(r'^https?://(?:www\.)?tyk\.io/docs(?=[/#]|$)', re.IGNORECASE)
+FIRST_PARTY_DOCS_URL_RE = re.compile(r'https?://(?:www\.)?tyk\.io/docs/[^\s)\]"\'<>`]*#[^\s)\]"\'<>`]+', re.IGNORECASE)
+
+
 def find_internal_links_with_anchors(mdx_content: str) -> Set[Tuple[str, str]]:
     """Extract internal links that contain an anchor fragment.
 
@@ -251,29 +258,39 @@ def find_internal_links_with_anchors(mdx_content: str) -> Set[Tuple[str, str]]:
         r'<Card[^>]+href=["\']([^"\']+)["\']',  # <Card href="url">
     ]
 
-    for pattern in patterns:
-        for m in re.finditer(pattern, clean, re.IGNORECASE):
-            raw = m.group(1).strip().strip('"\'')
+    candidates = [
+        m.group(1).strip().strip('"\'')
+        for pattern in patterns
+        for m in re.finditer(pattern, clean, re.IGNORECASE)
+    ]
+    # Bare first-party URLs (Mintlify autolinks them), e.g. in synced config snippets.
+    candidates += [m.group(0).rstrip('.,;:') for m in FIRST_PARTY_DOCS_URL_RE.finditer(clean)]
 
-            # Skip external URLs and pure-anchor links
-            if raw.startswith(('http://', 'https://', 'mailto:', 'tel:', 'ftp://', '#', '<mailto:')):
-                continue
+    for raw in candidates:
+        # Check absolute first-party docs URLs as internal links.
+        fp = FIRST_PARTY_DOCS_PREFIX_RE.match(raw)
+        if fp:
+            raw = '/' + raw[fp.end():].lstrip('/')
 
-            if '#' not in raw:
-                continue
+        # Skip external URLs and pure-anchor links
+        if raw.startswith(('http://', 'https://', 'mailto:', 'tel:', 'ftp://', '#', '<mailto:')):
+            continue
 
-            path_part, anchor = raw.split('#', 1)
-            if not anchor:
-                continue
+        if '#' not in raw:
+            continue
 
-            # Normalise the path the same way find_internal_links does
-            path_part = path_part.split('?')[0]  # strip query params
-            if path_part.startswith('/'):
-                path_part = path_part[1:]
-            path_part = path_part.rstrip('/')
+        path_part, anchor = raw.split('#', 1)
+        if not anchor:
+            continue
 
-            if path_part:  # skip anchor-only refs on the current page
-                results.add((path_part, anchor))
+        # Normalise the path the same way find_internal_links does
+        path_part = path_part.split('?')[0]  # strip query params
+        if path_part.startswith('/'):
+            path_part = path_part[1:]
+        path_part = path_part.rstrip('/')
+
+        if path_part:  # skip anchor-only refs on the current page
+            results.add((path_part, anchor))
 
     return results
 
