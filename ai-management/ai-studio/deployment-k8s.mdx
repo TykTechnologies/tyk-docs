@@ -372,19 +372,63 @@ These values **must match** between AI Studio and Edge Gateway configuration:
 
 ## Advanced Configuration
 
-### Message Queue (NATS)
+### Several AI Studio Replicas
 
-For distributed deployments with message persistence, add NATS configuration to your values file:
+From v2.3, several AI Studio replicas can serve one PostgreSQL database. Set `replicaCount` above `1`. The chart then needs:
+
+- An external PostgreSQL database (`database.internal: false`). The bundled PostgreSQL is a single pod, and SQLite serves one process, so the render fails with either.
+- One `CSRF_KEY` for every replica (`config.csrfKey`). Generate it with `openssl rand -hex 32`. The render fails without it.
+
+With `replicaCount` above `1`, the chart also renders:
+
+- A rolling update that starts a new replica before it stops an old one. With one replica, the strategy stays `Recreate`.
+- A PodDisruptionBudget that keeps `podDisruptionBudget.minAvailable` (`1`) replicas through node drains.
+- A spread of the replicas over nodes and zones.
+- Cookie affinity on the nginx Ingress (`midsommar.ingress.sessionAffinity`). Chat, agent, and MCP SSE sessions stay on the replica that started them. For another ingress controller, set its own affinity annotations.
+
+The readiness probe uses `/ready`. Set `probes.readiness.requireWrite: true` to probe `/ready?require=write` instead.
 
 ```yaml
+replicaCount: 3
+
+database:
+  internal: false
+  existingSecret: studio-database   # key DATABASE_URL
+
 config:
-  queueType: "nats"
-  natsUrl: "nats://nats-server:4222"
-  natsStorageType: "file"
-  natsRetentionPolicy: "interest"
-  natsMaxAge: "4h"
-  natsTlsEnabled: true
-  natsCredentialsFile: "/etc/nats/user.creds"
+  csrfKey: "<openssl rand -hex 32>"
+  databaseConnectTimeout: "3s"
+
+# The in-memory chat queue works only on one replica
+extraEnv:
+  - name: QUEUE_TYPE
+    value: "postgres"
+```
+
+The upgrade to v2.3 is not rolling. Stop every older replica before the first v2.3 replica starts. For this upgrade, set `midsommar.strategy.type: Recreate`, or scale to one replica first.
+
+To run AI Studio in two clusters over one replicated PostgreSQL database, refer to [Active-Active Deployment of Tyk AI Studio](/ai-management/ai-studio/deployment-active-active).
+
+### Message Queue (NATS)
+
+For distributed deployments with message persistence, set the NATS variables with `extraEnv` in your values file. The chart has no dedicated values for the queue. For all NATS variables, refer to [NATS JetStream Configuration](/ai-management/ai-studio/installation/nats).
+
+```yaml
+extraEnv:
+  - name: QUEUE_TYPE
+    value: "nats"
+  - name: NATS_URL
+    value: "nats://nats-server:4222"
+  - name: NATS_STORAGE_TYPE
+    value: "file"
+  - name: NATS_RETENTION_POLICY
+    value: "interest"
+  - name: NATS_MAX_AGE
+    value: "4h"
+  - name: NATS_TLS_ENABLED
+    value: "true"
+  - name: NATS_CREDENTIALS_FILE
+    value: "/etc/nats/user.creds"
 ```
 
 ### Optional Components
