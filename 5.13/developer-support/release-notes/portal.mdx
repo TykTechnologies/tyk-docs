@@ -18,6 +18,112 @@ Only the most recent Tyk Developer Portal release is supported. We recommend sta
 
 ## 1.20 Release Notes
 
+### 1.20.1 Release Notes
+
+#### Release Date 18 November 2026
+
+#### Release Highlights
+
+This patch implements several security fixes and improves the stability of the Developer Portal. We strongly recommend that all users upgrade as soon as possible. This release contains breaking changes. Read the [Breaking Changes](#breaking-changes-1.20.1) before you upgrade.
+
+For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-v1.20.1) below.
+
+#### Breaking Changes
+<a id="breaking-changes-1.20.1"></a>
+
+This release includes several changes that require action before or after upgrading:
+
+**Portal now enforces strong JWT signing key**  The Portal now automatically secures itself if no [TYK_PORTAL_JWTSIGNINGKEY](/5.13/product-stack/tyk-enterprise-developer-portal/deploy/configuration#portal_jwtsigningkey) is configured: it generates a strong random key on first boot and stores it so every instance in the deployment shares it. No user action is needed for a default install.
+
+If a key is configured, validation is now stricter: a key shorter than 32 characters, or matching any value ever published in the Portal repository or documentation, causes the Portal to abort startup. The error names `TYK_PORTAL_JWTSIGNINGKEY` with a suggested fix (`openssl rand -base64 32`).
+
+Changing the key, including automatic generation on upgrade, invalidates every existing admin API token and all active admin and TIB sessions. Rotate any credentials or integrations (including Tyk Operator's Portal client) that depend on a long-lived admin token before or immediately after upgrading.
+
+A temporary option, [TYK_PORTAL_ALLOWUNSAFEJWTSIGNINGKEY](/5.13/product-stack/tyk-enterprise-developer-portal/deploy/configuration#portal_allowunsafejwtsigningkey), lets you start with an explicitly set weak key while you rotate it. It logs a warning on every boot and will be removed in a future release.
+
+**Password reset, invitation and confirmation links.** The password reset handler now accepts only server-generated single-use tokens. Any such link generated before upgrading to Portal 1.20.1 stops working once the upgrade is applied. Users need to request a new password reset, and admins need to resend any pending targeted invite.
+
+**Removed theme template functions.** The `env`, `expandenv` and `getHostByName` functions are removed from theme templates. Custom themes that call these functions fail to render. Update them before you upgrade. The default theme is not affected.
+
+**Portal API secret no longer shipped.** The `portal.conf` file in the release packages no longer sets `PortalAPISecret`. If no secret is configured, the SSO API (`POST /api/sso` and the `/api/portal/developers` endpoints) now rejects all external requests with `HTTP 401 Unauthorized`.
+
+We recommend every deployment set a unique, strong, randomly generated [TYK_PORTAL_PORTALAPISECRET](/5.13/product-stack/tyk-enterprise-developer-portal/deploy/configuration#portal_api_secret), regardless of any value already configured. The embedded Tyk Identity Broker is not affected.
+
+**Configuration API response fully redacts secrets.** `GET /portal-api/configs` now returns `***` for all secret fields (`JwtSigningKey`, `Session.Key`, `Webhooks.Secret`, `LicenseKey`, `Database.ConnectionString`, `S3.AccessKey`, `S3.SecretKey`, `PortalAPISecret`) and for OTLP metrics header values. Previously, the API returned some secrets in full and masked others only partially. API clients that parsed partially masked values will see different output.
+
+#### Deprecations
+
+There are no deprecations in this release.
+
+#### Upgrade instructions
+For users currently on v1.20.0 or earlier, we strongly recommend promptly upgrading to v1.20.1. Before you upgrade:
+
+1. If you manage the signing key yourself, set `TYK_PORTAL_JWTSIGNINGKEY` to a strong random value of at least 32 characters (for example: `openssl rand -base64 32`). If you do not set it, the Portal generates one automatically on first boot.
+2. If you use a standalone Tyk Identity Broker or a custom SSO integration, set `TYK_PORTAL_PORTALAPISECRET` to a strong random value.
+3. Remove calls to `env`, `expandenv` or `getHostByName` from custom themes.
+4. After the upgrade, reissue the admin API tokens that scripts and integrations use, and resend pending invitation emails.
+
+<a id="upgrade-1.20.1"></a>
+
+If you are upgrading to 1.20.1, please follow the detailed [upgrade instructions](#upgrading-tyk).
+
+#### Downloads
+
+- [Docker Image to pull](https://hub.docker.com/r/tykio/portal/tags?page=&page_size=&ordering=&name=v1.20.1)
+  - ```bash
+    docker pull tykio/portal:v1.20.1@sha256:44138106fdae4c5d1bd17de37240c8b9ca33fc163d687ca554ce611487eaf24f
+    ```
+- Helm charts
+  - [Tyk Charts](/5.13/developer-support/release-notes/helm-chart)
+
+#### Changelog
+<a id="Changelog-v1.20.1" data-scroll-offset></a>
+
+##### Changed
+
+<AccordionGroup>
+
+<Accordion title='Portal enforces strong JWT signing key'>
+{/* TT-19081 */}
+The Portal now enforces the use of a strong signing key for admin sessions and admin API tokens. A weak user-provided key (fewer than 32 characters or ever published in the Portal repository or documentation) now stops the Portal from starting. If no key is set, the Portal now generates a strong key automatically.
+
+A temporary option, [TYK_PORTAL_ALLOWUNSAFEJWTSIGNINGKEY](/5.13/product-stack/tyk-enterprise-developer-portal/deploy/configuration#portal_allowunsafejwtsigningkey), lets you start with an explicitly set weak key while you rotate it. It logs a warning on every boot and will be removed in a future release.
+
+See [Breaking Changes](#breaking-changes-1.20.1) for the implications of this enhancement.
+</Accordion>
+
+<Accordion title='Removed the legacy token fallback in password reset, invite, and confirmation flows'>
+{/* TT-19082 */}
+These flows, and the forced password change redirect after login, now rely exclusively on a server-generated, single-use, time-limited recovery link, closing a path that let the old token format be used to reset a password without a genuine reset request.
+
+See [Breaking Changes](#breaking-changes-1.20.1) for details.
+</Accordion>
+
+<Accordion title='Removed the env, expandenv and getHostByName theme template functions'>
+{/* TT-18947 */}
+Theme and email templates can no longer call the Sprig functions `env`, `expandenv`, or `getHostByName`. All other template functions, including `date` and `now`, are unaffected. The default theme's product page now escapes API descriptions instead of rendering them as raw HTML, along with a small number of other places in the default theme where content not authored by a Portal admin is now escaped or sanitized instead of rendered directly.
+
+See [Breaking Changes](#breaking-changes-1.20.1) for the implications of this change.
+</Accordion>
+
+<Accordion title='Rejected SSO API requests when no Portal API secret is set'>
+{/* TT-18949 */}
+The SSO API (`POST /api/sso` and the `/api/portal/developers` endpoints) now rejects all external requests made with an empty Portal API secret, returning `HTTP 401 Unauthorized`. The embedded Tyk Identity Broker is not affected.
+
+The `portal.conf` file in the release packages no longer sets [PortalAPISecret](/5.13/product-stack/tyk-enterprise-developer-portal/deploy/configuration#portal_api_secret). 
+
+See [Breaking Changes](#breaking-changes-1.20.1) for details.
+</Accordion>
+
+<Accordion title='Redacted all secrets in the configuration API response'>
+{/* TT-18972 */}
+`GET /portal-api/configs` returns `***` for all secret fields and for OTLP metrics header values. Previously, the API returned some secrets in full and masked others only partially. See [Breaking Changes](#breaking-changes-1.20.1) for the list of fields.
+</Accordion>
+
+</AccordionGroup>
+
+
+
 ### 1.20.0 Release Notes 
 
 #### Release Date 27 October 2026
