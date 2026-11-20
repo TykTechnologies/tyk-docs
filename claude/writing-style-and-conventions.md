@@ -55,6 +55,10 @@ Apply these rules to all content in this repository.
 - Tyk product names are always capitalised: Tyk Gateway, Tyk Dashboard, Tyk Pump, Tyk Operator, Tyk Portal, Tyk MDCB, Tyk Sync, Tyk Identity Broker.
 - Use the full product name (for example, Tyk Dashboard) rather than the short form (Dashboard) to avoid confusion with generic terms.
 - When a word is used generically and does not refer to the Tyk component, do not capitalise it. For example: "a gateway" (generic), "Tyk Gateway" (the product).
+- When you use the short form of a Tyk component, capitalise it: "the Gateway", "the Dashboard", "the Portal". This also applies in compounds such as "Gateway-level" and in tables and link text.
+- Use product names, not GitHub repository names. Write "Tyk Charts" or "Tyk Sync", not `tyk-charts` or `tyk-sync`.
+- Write "Developer Portal" or "Tyk Developer Portal". Do not write "Enterprise Developer Portal" or "EDP".
+- Write "Tyk Operator" for the product. Do not write "the operator", because it can mean a person.
 - Avoid repeating the full product name in close proximity. Once established as the subject, use "it", "its", or a descriptive shorthand (such as "registered APIs" instead of "APIs registered on Tyk Gateway") to avoid awkward repetition.
 - Introduce Tyk Identity Broker by its full name, then use the abbreviation TIB on the rest of the page.
 - Tyk MDCB stands for Tyk Multi Data Centre Bridge. Write Tyk MDCB. Spell out the full name only where the reader needs to know what it stands for, such as on its overview page.
@@ -63,13 +67,26 @@ Apply these rules to all content in this repository.
 
 - Capitalize Tyk concepts: Policy, Session, Organisation, Product, Plan, Asset, API Fragment, API Template.
 - Write "Policy", not "Security Policy". The exception is the Tyk Operator `SecurityPolicy` resource, which keeps its kind name.
+- Write "Session" for the object that stores access rights, quotas and rate limits. Do not call it a "key", an "access token" or a "credential".
+- Capitalize Developer Portal concepts: Live Portal, Admin Portal, API Owner, API Consumer, Provider, Catalog, Developer App, Organisation. The Developer Portal uses Products and Plans. Do not write "Policies" for Developer Portal objects.
+- Write "MCP Proxy" and "MCP Proxy definition". Do not write "MCP API" or "MCP Proxy API". MCP Gateway is a capability of Tyk Gateway, not a separate component.
+- Give a new concept one name, define it once, and use that name everywhere, including headings and other component pages. Two names for one concept make the reader think there are two things.
+- Use the feature name that the docs and the UI use in the target version. Do not use a ticket title, a code name or the name of a later version.
 - Write UI labels exactly as they appear in the UI, in bold. Write literal values exactly, in backticks.
+- Write HTTP status codes with the prefix and the reason phrase, for example `HTTP 404 Not Found`.
 
 ### API and Component Names
 
 - Write "Tyk Gateway API" for the `/tyk/` endpoints of Tyk Gateway. Never write "Gateway API" or "Control API" for them. Use the same pattern for other components, for example "Tyk Dashboard API".
 - Write "Kubernetes Gateway API" for the Kubernetes specification. Never write "Gateway API" alone.
 - Write "upstream services" for the services that Tyk sends requests to.
+- Write "Control Plane" and "Data Plane" (capitalised), and "Data Plane Gateways". Do not write "worker Gateway", "edge Gateway", "management Gateway" or "dataplane".
+- Write "distributed Data Plane" or "distributed deployment" for any deployment with separate Control Plane and Data Plane. A "hybrid" Data Plane is one specific type. Do not use "hybrid" for all of them.
+- Write "in-memory storage (typically Redis)" for the Tyk Gateway storage dependency, because it is not always Redis.
+- Write "Tyk Vendor Extension (`x-tyk-api-gateway`)" for the Tyk section of a Tyk OAS API definition.
+- Write "OpenAPI document" for the API description that a user imports. Do not write "OpenAPI specification" for it. The OpenAPI Specification is the standard.
+- Certificate authentication and mutual TLS are different features. Do not write "Certificate authentication (mTLS)" or describe one as the other.
+- Use the full vendor name for third-party products on first mention, for example "HashiCorp Vault", not "Vault".
 
 ### Language
 
@@ -82,6 +99,17 @@ Apply these rules to all content in this repository.
 - Do not use "operator" for a person, because it can be confused with Tyk Operator. Write administrator, platform team or user instead.
 - Avoid contrast constructions such as "X, not Y" or "not just X, but Y", and slogan-style headings. They read as marketing copy. State facts plainly.
 - Do not pack a multi-part explanation into one long paragraph. Use short sentences or bullets.
+- Describe what the user sees or can do. Do not describe internal mechanisms such as function names, struct or Go field names, RPC methods, internal endpoints or the build process of an image, because the user cannot act on them.
+- Remove marketing words and filler, such as "comprehensive", "enterprise-grade", "seamless", "the full power of" and "efficiently". State the fact.
+- Do not overclaim. Describe only what the change does. Do not write "full support" or "across the platform" unless it is true.
+- Do not use vague quantifiers such as "most of the remaining gaps" or "much closer to". They make the reader think that something is missing. Be specific, or remove the statement.
+- Describe a feature on its own terms. Do not compare it with unrelated features, other endpoints or old workarounds unless the difference matters to the reader.
+- State the exact scope of each statement: the component, the API definition type, the fields, the deployment model and the versions that it applies to. Do not make a claim wider or narrower than the change.
+- Use "could" for a problem that occurred only in some conditions. Use "would" only when it always occurred.
+- Do not use time-relative phrases such as "at the time of writing" or "currently". State the versions.
+- Do not speculate about future versions, unreleased features or internal plans.
+- Do not repeat a fact that the page, a table or a linked page already gives.
+- Write "existing" or "previous" for the earlier of two supported options. Write "legacy" only for a deprecated option.
 
 ### Lists
 
@@ -108,10 +136,23 @@ Apply these rules to all content in this repository.
 - Progressive disclosure: introduce the concept before Tyk-specific terminology or configuration detail.
 - Link to dedicated pages for detail rather than expanding inline.
 - Aim for short pages. If a page is growing large, consider whether a concept deserves its own page.
+- Write procedures as numbered steps. Start each step with an imperative verb. Do not use narrative such as "Begin by" or "Next,".
+- Put prerequisites in a Prerequisites section. Do not repeat a prerequisite as a step. An item is a prerequisite or a step, not both.
+- Introduce a variant of a procedure with a full sentence that names the condition, for example "To enable tracing when you use Docker Compose, add ...".
+- Give complete examples. If you show a response, show all of it, explain each field, and show the error case where it is useful.
+- Use placeholders such as `<PORT>` in examples. Do not use values from a local test setup.
+- Start internal links with `/`, for example `/api-management/in-memory-database`. Do not use `https://tyk.io/docs/` for internal links. For the backport exception, see `release-notes.md`.
+- Define or link a term on first use when it is a Tyk feature, a third-party concept or a term with more than one meaning.
 
 ### Configuration Fields
 
 - Describe configuration fields in a table with Field and Description columns, and a Default column where useful. Do not use a bullet list.
+- Name a configuration option by its full path in the configuration file, in snake_case, for example `http_server_options.max_version`. Do not use the Go field name (camelCase or PascalCase) or only the last segment. Link the option to the configuration reference.
+- After a linked configuration option, write "or the equivalent environment variable". Do not list the environment variable as well, because the reference gives it.
+- Describe what each field does, its allowed values and what each value does, its default and its constraints. Do not write generic text such as "Map of string keys to values".
+- Give the effective default, for example "(default: unlimited)". Do not give a sentinel value only, such as "The default `0` means unlimited".
+- Document only options that work in that context. Do not document internal, experimental or not-applicable options.
+- Do not put worked examples in a configuration reference entry. Put them on the feature page.
 
 ### Version Availability
 
