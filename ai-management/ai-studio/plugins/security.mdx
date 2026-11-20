@@ -1,0 +1,272 @@
+---
+title: "Plugin Security in Tyk AI Studio"
+description: "How Tyk AI Studio and the Edge Gateway verify plugin signatures, restrict plugin sources and registries, limit the plugin environment, enforce scopes, and check cached plugin binaries."
+keywords: "AI Studio, AI Management, Plugins, Security, OCI, Cosign, Signature Verification, Sigstore, FIPS"
+sidebarTitle: "Plugin Security"
+---
+
+## Availability
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| [Community](/ai-management/ai-studio/overview#community-edition) & [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
+
+Signature verification is an Enterprise Edition feature. The other controls on this page apply in both editions. This page describes AI Studio 2.3.0 and later.
+
+## Overview
+
+A plugin is a program that runs next to AI Studio or an [Edge Gateway](/ai-management/ai-studio/manage-edge-gateway). Each plugin runs as a separate operating system process. A plugin that stops or fails does not stop its host. A plugin can read AI Studio data only through the [Service API](/ai-management/ai-studio/plugins/service-api), within the scopes that an administrator approved.
+
+A plugin runs with the privileges of the host user. It can read and write the files that the host user can access. It can also connect to any network address that the host can reach. Install only plugins that you trust. Treat a plugin installation as a deployment of code to the host.
+
+This table shows what the platform controls and what it does not control:
+
+| Property | Controlled by AI Studio | Notes |
+| :--- | :--- | :--- |
+| Crash isolation | Yes | A plugin failure stops only the plugin process. |
+| Access to AI Studio data | Yes | The host checks each Service API call against the approved scopes. |
+| Host environment variables | Yes | A plugin gets an allowlist of variables. Refer to [Plugin Environment](#plugin-environment). |
+| Plugin origin | Yes | Signatures, allowed sources, allowed registries and internal host checks. |
+| CPU and memory limits | No | Set limits at the container or operating system level. |
+| Filesystem isolation | No | Run the host as a non-root user with a read-only filesystem where possible. |
+| Network egress | No | Use a Kubernetes `NetworkPolicy`, firewall rules or an egress proxy. Plugins share the network namespace of their host. |
+
+For the deployment methods (`file://`, `grpc://` and `oci://`), refer to [Deployment Options](/ai-management/ai-studio/plugins/deployment). For how to package and sign a plugin, refer to [Publishing](/ai-management/ai-studio/plugins/publishing).
+
+## Signature Verification
+
+AI Studio and the Edge Gateway can verify the cosign signature of each OCI plugin before they load it. Signature verification is an Enterprise Edition feature.
+
+From 2.3.0, both AI Studio and the Edge Gateway require signatures by default. Before 2.3.0, the default of AI Studio was `false`. An unsigned plugin does not load. A plugin with a signature from an unknown key also does not load.
+
+The host verifies signatures in its own process. You do not need the `cosign` binary at runtime, so verification also works in the distroless images. Use the cosign CLI only to sign plugins. The host reads signatures from the registry with the same registry authentication (`OCI_PLUGINS_REGISTRY_*`) as the plugin itself.
+
+The host accepts two signature formats:
+
+- A cosign v2 signature, stored as the `sha256-<digest>.sig` tag.
+- A cosign v3 Sigstore bundle, attached to the plugin as an OCI referrer.
+
+The signature must be for the digest that the host pulled. This is the multi-platform index that the tag points to, or the platform manifest that the host pulled. An in-toto attestation, such as SLSA provenance or an SBOM, is not a signature, even when the same key signed it. Cosign policy files are not supported.
+
+{/* Diagram: OCI plugin load flow. Steps: source policy, registry allowlist, internal host check, pull by digest, signature and transparency log check, cache hash, start with the allowlisted environment. */}
+
+### Signature Settings
+
+Set these variables on AI Studio and on each Edge Gateway. An invalid value stops the process at startup.
+
+| AI Studio Variable | Edge Gateway Variable | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `AI_STUDIO_OCI_REQUIRE_SIGNATURE` | `OCI_PLUGINS_REQUIRE_SIGNATURE` | `true` | Requires a valid signature on OCI plugins. Set to `false` to load unsigned plugins, for example while you develop a plugin. |
+| `AI_STUDIO_OCI_TLOG_POLICY` | `OCI_PLUGINS_TLOG_POLICY` | `required` | Transparency log policy. Refer to [Transparency Log Policy](#transparency-log-policy). |
+| `AI_STUDIO_OCI_TRUSTED_ROOT_FILE` | `OCI_PLUGINS_TRUSTED_ROOT_FILE` | Empty | Path to a Sigstore `trusted_root.json`. It replaces the embedded Sigstore public-good trusted root. |
+
+In the Helm chart, `config.ociRequireSignature` sets the signature requirement of AI Studio.
+
+### Public Keys
+
+The host always trusts the Tyk signing key. You cannot turn it off. To trust your own keys or the keys of a publisher, add them on AI Studio and on each Edge Gateway that loads the plugins:
+
+| Variable | Description |
+| :--- | :--- |
+| `OCI_PLUGINS_PUBKEY_<N>` | PEM content of a key, numbered from `1` to `20`. Select it with `?pubkey=<N>`. |
+| `OCI_PLUGINS_PUBKEY_<NAME>` | PEM content of a named key. Select it with `?pubkey=<NAME>`. |
+| `OCI_PLUGINS_PUBKEY_FILE_<NAME>` | Path to a key file. The file must be a regular file of 64 KiB or less. Select it with `?pubkey=<NAME>`. |
+
+AI Studio and the Edge Gateway use the same variable names for keys.
+
+```bash
+OCI_PLUGINS_PUBKEY_1="$(cat /path/to/cosign.pub)"
+OCI_PLUGINS_PUBKEY_FILE_CI=/path/to/ci-cosign.pub
+```
+
+The host selects the key as follows:
+
+- **Command without `?pubkey=`:** The host tries each configured key, and the Tyk key first. The plugin loads if one key verifies it. Marketplace installations use this behavior. To trust a new publisher, add the key. You do not change the install command.
+- **Command with `?pubkey=<key>`:** The host uses only that key. For example, `oci://registry.example.com/plugins/my-plugin@sha256:<digest>?pubkey=CI`.
+
+When you remove a key, the plugins that it verified stop loading. This includes cached copies.
+
+### Transparency Log Policy
+
+By default, a signature must also have a valid Rekor transparency log entry for the signing key. The host checks the entry offline against the embedded Sigstore trusted root.
+
+| Value | Behavior |
+| :--- | :--- |
+| `required` | The signature must have a valid transparency log entry. This is the default. |
+| `optional` | The host checks a transparency log entry only when one exists. |
+| `disabled` | The host checks the key only. The host logs a warning at startup. |
+
+Keep `required`. With `optional`, a user who can write to your registry can remove the log entry. The signature then verifies against the key only. Use `disabled` only for air-gapped signing (`cosign sign --tlog-upload=false`).
+
+If you run a private Sigstore deployment, set `AI_STUDIO_OCI_TRUSTED_ROOT_FILE` and `OCI_PLUGINS_TRUSTED_ROOT_FILE` to its `trusted_root.json`. Use the same setting after a Rekor key rotation.
+
+### Community Edition Behavior
+
+The Community Edition does not verify signatures. The signature settings have no effect. OCI plugins load, and AI Studio records them as unverified. The host logs a warning once at startup.
+
+In the Enterprise Edition, when signatures are required and no verifier is available, the host refuses the plugin. It never loads the plugin unverified.
+
+## Restrict Plugin Sources
+
+You can refuse complete plugin deployment types. AI Studio and each Edge Gateway apply their own setting.
+
+| Variable | Process | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `AI_STUDIO_PLUGIN_ALLOWED_SOURCES` | AI Studio | Empty (all sources) | Comma-separated list of the accepted sources: `oci`, `file`, `grpc`. Case and spaces are ignored. |
+| `PLUGINS_ALLOWED_SOURCES` | Edge Gateway | Empty (all sources) | The same list for the Edge Gateway. |
+
+In the Helm charts, use `config.pluginAllowedSources` (AI Studio) and `config.pluginsAllowedSources` (Edge Gateway).
+
+An unknown value, such as `ocii`, stops the process at startup. A list without a source, such as `,`, also stops the process. Thus a typo cannot allow all sources or refuse all sources. The host logs a restricted policy at startup.
+
+The host classifies a plugin command by its prefix. The prefixes are case-sensitive:
+
+| Command | Source |
+| :--- | :--- |
+| `oci://...` | `oci` |
+| `grpc://...` | `grpc` |
+| Any other command, such as a path, `file://...` or `http://...` | `file` |
+
+When a source is not allowed:
+
+- AI Studio refuses to create or update a plugin with that command. The API returns `400`. This includes marketplace installations and upgrades. AI Studio does not fetch the OCI plugin or its manifest, and it does not load the plugin.
+- The AI Studio UI shows only the allowed types. When `oci` is not allowed, AI Studio turns off marketplace installations.
+- The Edge Gateway does not load the plugin. This applies even when AI Studio sends the plugin. The refusal shows in the plugin health and the logs of the Edge Gateway.
+- Existing plugins with that source stay in the database. You can read, edit or delete them. They do not load, and you cannot save them with that command.
+
+This example allows only signed OCI plugins from one registry:
+
+```bash
+# AI Studio
+AI_STUDIO_PLUGIN_ALLOWED_SOURCES=oci
+AI_STUDIO_OCI_ALLOWED_REGISTRIES=registry.example.com
+AI_STUDIO_OCI_REQUIRE_SIGNATURE=true
+
+# Each Edge Gateway
+PLUGINS_ALLOWED_SOURCES=oci
+OCI_PLUGINS_ALLOWED_REGISTRIES=registry.example.com
+```
+
+Within an allowed source, other controls still apply:
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `AI_STUDIO_OCI_ALLOWED_REGISTRIES` / `OCI_PLUGINS_ALLOWED_REGISTRIES` | Empty (all registries) | Comma-separated list of registry hosts. The host refuses an `oci://` command for any other registry. |
+| `AI_STUDIO_PLUGIN_ALLOWED_DIRS` | Empty | Extra directories for local plugin executables on AI Studio, separated by `:` on Linux. The built-in directories are `/usr/bin/`, `/bin/`, `/usr/local/bin/`, `/opt/plugins/` and the relative `plugins/` directory. |
+
+To make plugin loads repeatable, pin each OCI plugin by digest (`@sha256:<digest>`). A tag can move to different content.
+
+## Internal Registries and Hosts
+
+From 2.3.0, AI Studio and the Edge Gateway refuse a plugin whose host is an internal address. This applies to the registry of an `oci://` plugin and to the host of a `grpc://` plugin. It also applies to plugins that are already installed and cached. Internal addresses include loopback, private ranges, link-local addresses (including cloud metadata endpoints) and shared address space (`100.64.0.0/10`). A host name that does not resolve also counts as internal.
+
+The host checks the address at connection time too. A DNS answer that changes later cannot reach an internal address. The error message starts with `plugin host "<host>" is an internal address`.
+
+To use an internal registry or plugin host, use one of these options:
+
+| Option | Scope |
+| :--- | :--- |
+| **Allow internal host** switch on the plugin | Only the hosts in the command of that plugin, on AI Studio and on the Edge Gateways that receive it. Only an administrator can change it. This is the preferred option. |
+| `LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS` | Comma-separated host names, for every plugin and every other managed asset. An entry that starts with `.`, such as `.corp.internal`, matches the domain and its subdomains. Set it on AI Studio and on each Edge Gateway that loads the plugins. |
+| `ALLOW_INTERNAL_NETWORK_ACCESS=true` | Allows every internal host on the complete platform, including LLM upstreams. Use it only for local development. |
+
+{/* Screenshot: Plugin form in AI Studio with the Allow internal host switch visible. */}
+
+Behind an HTTP proxy, the registry name must still resolve on the host. On a proxy-only network, add the registry and each host that it redirects downloads to. For example, for `docker.tyk.io`, set `LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS=docker.tyk.io,dl.cloudsmith.io`.
+
+If DNS is not available, a cached plugin that passes its checks still loads. The host logs a warning that names the registry.
+
+## Plugin Environment
+
+From 2.3.0, AI Studio and the Edge Gateway start each `file://` and `oci://` plugin with an explicit environment. A plugin does not get the environment of its host. A plugin gets only these host variables:
+
+| Variables | Purpose |
+| :--- | :--- |
+| `PATH`, `HOME`, `USER`, `TMPDIR`, `TZ`, `LANG`, `LC_*` | Process basics and locale |
+| `SSL_CERT_FILE`, `SSL_CERT_DIR` | Custom CA bundles |
+| `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and the lowercase forms | Outbound proxy settings |
+| `GOMAXPROCS`, `GOMEMLIMIT`, `GOGC`, `GODEBUG`, `GOTRACEBACK` | Go runtime tuning |
+| `PLUGIN_RUNTIME`, `GATEWAY_MODE`, `MICROGATEWAY_MODE`, `PLUGIN_GRPC_MAX_MSG_BYTES`, `EDGE_ID` | Settings that the Plugin SDK and the shipped plugins read |
+
+The plugin does not get other host variables, such as the database URL, the encryption keys or the license.
+
+To pass more variables, set `PLUGIN_ENV_PASSTHROUGH` on the host:
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `PLUGIN_ENV_PASSTHROUGH` | Empty | Comma-separated host variables to pass to every plugin. An entry that ends in `*` matches a prefix. An entry that starts with `*` matches a suffix. A bare `*` is ignored. |
+
+```bash
+PLUGIN_ENV_PASSTHROUGH="GITHUB_RAG_*"
+```
+
+Obey these rules:
+
+- The pass-through applies to every plugin that the host starts. List only the variables that your plugins need.
+- The host logs a warning when the pass-through includes a host secret. Examples are `ENCRYPTION_KEY`, `DATABASE_URL`, `TYK_AI_LICENSE`, or any name that ends in `_API_KEY`, `_SECRET`, `_TOKEN` or `_PASSWORD`. The host still passes the variable.
+- The host passes proxy variables by default. Do not put credentials in a proxy URL unless plugins can use them.
+- `ALLOW_INTERNAL_NETWORK_ACCESS` is not passed by default.
+
+A `grpc://` plugin runs outside the host. Its environment is the environment of its own process.
+
+<Warning>
+Before 2.3.0, plugins got the complete host environment. If you set `GITHUB_RAG_SECRET_ENCRYPTION_KEY` or `GITHUB_RAG_KNOWN_HOSTS` for the GitHub RAG ingest plugin, add `GITHUB_RAG_*` to `PLUGIN_ENV_PASSTHROUGH` before you upgrade. As an alternative, set `secret_encryption_key` and `known_hosts_path` in the plugin configuration. Without the key, the plugin stores new credentials unencrypted.
+</Warning>
+
+## Plugin Configuration and Secrets
+
+AI Studio does not encrypt plugin configuration. Administrators with plugin access can read it. AI Studio sends it to each Edge Gateway, and the plugin receives it in plain text. Do not put a literal credential in plugin configuration.
+
+To give a plugin a credential, store it in [Secrets](/ai-management/ai-studio/secrets). Then set a top-level configuration value to exactly `$SECRET/NAME`. AI Studio resolves the reference before it starts the plugin. For a plugin that runs on an Edge Gateway, AI Studio sends the value encrypted. The stored configuration keeps the reference.
+
+- AI Studio does not resolve a reference inside a longer string, an array or an object.
+- AI Studio does not resolve `$ENV/NAME` for plugins.
+- To set or change a `$SECRET/` reference, you need read access to secrets.
+- A plugin cannot add a reference to its own configuration.
+
+The plugin process still receives the value in plain text. Give a plugin only a credential that you would give to its author.
+
+## Scopes and Administrator Approval
+
+A plugin declares the Service API scopes that it needs in its [manifest](/ai-management/ai-studio/plugins/manifests). An administrator approves the scopes when they install the plugin. From 2.3.0, the host refuses each Service API call outside the approved scopes. The call fails with `PermissionDenied` and the message `insufficient scope: <scope> (plugin: <name>)`.
+
+These rules also apply:
+
+- A plugin can read and update only its own configuration.
+- When a new plugin version declares new scopes, an administrator must approve them before the upgrade. If the scopes are not approved, the upgrade fails with `Scopes Not Approved`.
+
+Review the requested scopes before you approve them. For the list of scopes, refer to [Service Scopes Reference](/ai-management/ai-studio/plugins/manifests#service-scopes-reference).
+
+## Credentials in Events and Object Hooks
+
+Plugins can subscribe to system events and register [object hooks](/ai-management/ai-studio/plugins/object-hooks). From 2.3.0, literal credentials show as `[redacted]` in these payloads. This applies to LLM API keys, tool authentication keys, datasource connection strings, user password hashes and tokens, App gateway keys and guardrail secrets. `$SECRET/` and `$ENV/` references stay visible.
+
+If a `before_*` hook returns an object where a credential is still `[redacted]`, AI Studio keeps the stored value.
+
+## Cached Plugin Binaries
+
+AI Studio and the Edge Gateway cache each pulled OCI plugin binary. The cache directory is `AI_STUDIO_OCI_CACHE_DIR` on AI Studio and `OCI_PLUGINS_CACHE_DIR` on the Edge Gateway.
+
+When the host fetches a binary, it records the SHA-256 hash. Each time the plugin loads, the host compares the cached binary with the recorded hash. If the binary changed on disk, the host does not use the cached copy. It fetches the plugin from the registry again and verifies the signature again. If that fetch fails, the plugin does not load.
+
+After an upgrade to 2.3.0, entries from older releases have no recorded hash. The host fetches each OCI plugin again on its first load, so make sure that the registry is available. The host logs `Cached OCI plugin failed its integrity check, fetching it again` for each plugin. These warnings are normal.
+
+The hash check finds a binary that changed or became corrupt on disk. It does not stop a user who can change both the binary and its record. Make the cache directory writable only by the service user.
+
+## FIPS Plugin Variants
+
+AI Studio and the Edge Gateway are available as FIPS 140-3 builds. A FIPS deployment is compliant only if each plugin is also a FIPS build. Plugin publishers can release FIPS variants, with the `<version>-fips` tag.
+
+In FIPS mode, the host logs a warning when it starts a plugin binary that is not a FIPS build. The plugin still starts. Use RSA 2048 or larger, or ECDSA, for plugin signing keys in FIPS mode.
+
+## Production Checklist
+
+1. Install only plugins that you trust.
+2. Use OCI plugins pinned by digest from an allowed registry, with signatures required (Enterprise Edition).
+3. Allow only the plugin sources that you use, on AI Studio and on each Edge Gateway.
+4. Keep `ALLOW_INTERNAL_NETWORK_ACCESS` unset. Use the **Allow internal host** switch or `LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS` for internal registries.
+5. Keep `PLUGIN_ENV_PASSTHROUGH` short, and act on each warning that it logs.
+6. Store plugin credentials as `$SECRET/` references.
+7. Review the scopes in each manifest before you approve them.
+8. Restrict network egress at the network layer.
+9. Run the host as a non-root user, and make the OCI cache directory writable only by that user.
