@@ -241,3 +241,60 @@ The example API Definition above configures an API to listen on path `/transform
 
 In this example the Request Method Transform middleware has been configured for `HTTP GET` requests to the `/anything` endpoint. Any request received to that endpoint will be modified to `POST /anything`.
 
+
+
+## Transforming POST Requests to GET with Query Parameters
+
+### Overview
+
+When integrating client applications with upstream APIs, a common requirement is transforming an incoming HTTP POST request containing a JSON body into an upstream HTTP GET request with query parameters. While Tyk provides the Request Method Transform middleware to alter HTTP verbs, changing the method alone does not move JSON payload attributes into URL query parameters.
+
+### Root Cause and Background
+
+The Request Method Transform middleware modifies only the HTTP method and leaves the payload intact. Furthermore, Tyk Request Body Transform operates exclusively on request and response bodies and cannot modify request URLs or query strings. To extract values from an incoming JSON body and append them as query parameters while changing the method to GET, Tyk OAS API definitions require combining Request Method Transform with the URL Rewrite middleware using an Advanced Trigger on the request body.
+
+### Configuration Steps
+
+1. **Configure Method Transformation:** Under the endpoint operation in the Tyk OAS API definition, enable transformRequestMethod and set toMethod to GET.
+2. **Add URL Rewrite with Request Body Trigger:** Enable urlRewrite on the operation. Define an advanced trigger rule with in set to requestBody and a regex pattern capturing the required field. In the trigger rewriteTo path, reference the captured value using $tyk_context.trigger-0-payload-0-0.
+3. **Match Operation Paths:** Ensure the OpenAPI paths key matches the relative path called by the client so the operation-level middleware triggers properly.
+
+#### Example Tyk OAS Configuration
+
+```
+paths:
+  /:
+    post:
+      operationId: postToGetExample
+      responses:
+        "200":
+          description: "Success"
+components: {}
+x-tyk-api-gateway:
+  middleware:
+    operations:
+      postToGetExample:
+        transformRequestMethod:
+          enabled: true
+          toMethod: "GET"
+        urlRewrite:
+          enabled: true
+          pattern: ".*"
+          rewriteTo: "/upstream-path"
+          triggers:
+            - condition: "any"
+              rules:
+                - in: "requestBody"
+                  pattern: '"itemId"\s*:\s*"?([^",}\s]+)'
+              rewriteTo: "/upstream-path?itemId=$tyk_context.trigger-0-payload-0-0"
+```
+
+### Important Considerations
+
+- **Upstream Body Handling:** Transforming the method to GET does not automatically clear the incoming request body. Most upstream servers ignore bodies on GET requests, but if the upstream rejects GET requests carrying a body, a custom plugin or body transformation can be used to remove it.
+- **URL Encoding:** Values captured via trigger regex context variables are inserted into the target URL without automatic URL encoding.
+- **Listen Path Boundaries:** Ensure incoming client request URLs include any trailing slashes configured in the API listen path to avoid routing 404 Not Found responses.
+
+### Applies To
+
+Tyk Gateway 5.0 and later with Tyk OAS API definitions.
