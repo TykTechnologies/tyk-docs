@@ -17,6 +17,178 @@ Only the most recent Tyk Gateway release and the most recent on the [Long Term S
 
 ## 5.16 Release Notes
 
+### 5.16.3 Release Notes
+
+#### Release Date xx November 2026
+
+#### Release Highlights
+
+This patch implements several changes and fixes to improve the stability and correct the behavior of the Gateway.
+
+This release also includes security hardening changes that can affect some deployments. Before you upgrade, read the [Breaking Changes](#breaking-changes-5.16.3) section to check whether you're affected and what to do.
+
+For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-v5.16.3) below.
+
+#### Breaking Changes
+<a id="breaking-changes-5.16.3"></a>
+
+**Endpoint matching now uses the path that is sent upstream**
+
+For APIs that use an Allow List, Tyk Gateway now matches each request against the path that it will forward to the upstream, instead of the full incoming request path. This applies to both Tyk Classic and Tyk OAS APIs, whether Strip Listen Path is enabled or not. Requests to parameterized endpoints must also match the declared parameters.
+
+You're affected if an API's endpoint entries (for example Allow List or Block List paths, or declared Tyk OAS paths) include the API's listen path. For example, with the listen path `/api` and an endpoint entry `/api/static`, the entry no longer matches and requests to it may be rejected.
+
+**What to do:** before you upgrade, check that endpoint paths are written relative to the listen path. To temporarily restore the previous behavior, set the new configuration option `allow_unsafe_listen_path_matching` to `true` (default `false`). This is not recommended.
+
+**Virtual Endpoint scripts must be inside the middleware directory**
+
+Tyk Gateway now loads Virtual Endpoint script files only from inside the configured `middleware_path` directory (default `./middleware`). Virtual Endpoints that point to a script file outside this directory stop working. Scripts provided inline in the API definition are not affected.
+
+**What to do:** before you upgrade, move any Virtual Endpoint script files into the `middleware_path` directory and update the API definitions. To temporarily restore the previous behavior, set the new configuration option `allow_unsafe_virtual_endpoint_paths` to `true` (default `false`). This is not recommended.
+
+#### Deprecations
+
+There are no deprecations in this release.
+
+#### Dependencies 
+<a id="dependencies-5.16.3"></a>
+
+##### Compatibility Matrix For Tyk Components
+
+| Gateway Version | Recommended Releases | Backwards Compatibility |
+| :------         | :----------------    | :---------------------- |
+| 5.16.3          | MDCB v2.14.0         | MDCB v2.14.0            |
+|                 | Operator v1.6.0      | Operator v0.17          |
+|                 | Sync v2.3.0          | Sync v2.3.0             |
+|                 | Helm Chart v5.5.0    | Helm all versions       |
+|                 | Pump v1.18.0         | Pump all versions       |
+
+##### 3rd Party Dependencies & Tools
+
+| Third Party Dependency                                             | Tested Versions            | Compatible Versions         | Comments                                                                 | 
+| :----------------------------------------------------------------- | :------------------------- | :-------------------------- | :----------------------------------------------------------------------- | 
+| [Golang](https://go.dev/dl/)                                       | 1.26                       |  1.26                       | [Go plugins](/api-management/plugins/golang) must be built using Go 1.26 | 
+| [Redis](https://redis.io/download/)                                | 7.x, 7.4.x, 8.x            | 7.x, 7.4.x, 8.x (up to 8.4) |                                                                          | 
+| [Valkey](https://valkey.io/download/)                              | 7.2.x, 8.0.x, 8.1.x, 9.1.x | 7.2.x, 8.0.x, 8.1.x, 9.1.x  |                                                                          | 
+| [OpenAPI Specification](https://spec.openapis.org/oas/v3.1.2.html) | 3.1.x, 3.0.x               | 3.1.x, 3.0.x                | Supported by [Tyk OAS](/api-management/gateway-config-tyk-oas)           |
+
+Given the potential time difference between your upgrade and the release of this version, we recommend users verify the ongoing support of third-party dependencies they install, as their status may have changed since the release.
+
+#### Upgrade instructions
+<a id="upgrade-5.16.3"></a>
+
+If you are upgrading to 5.16.3, please follow the detailed [upgrade instructions](#upgrading-tyk).
+
+#### Downloads
+
+- [Docker Image to pull](https://hub.docker.com/r/tykio/tyk-gateway/tags?page=&page_size=&ordering=&name=v5.16.3)
+  - ```bash
+    docker pull tykio/tyk-gateway:v5.16.3@sha256:<digest>
+    ```
+- Helm charts
+  - [tyk-charts](/developer-support/release-notes/helm-chart)
+
+<Note>
+Tyk Helm Charts are configured to install the LTS version of Tyk Gateway. You will need to modify them to install v5.16.3.
+</Note>
+
+- [Source code tarball of Tyk Gateway v5.16.3](https://github.com/TykTechnologies/tyk/releases/tag/v5.16.3)
+
+#### Changelog
+<a id="Changelog-v5.16.3" data-scroll-offset></a>
+
+##### Fixed
+
+<AccordionGroup>
+
+<Accordion title='Improved endpoint matching for APIs with an Allow List'>
+{/* TT-18034, TT-18822 */}
+Fixed an issue where, for some Tyk Classic and Tyk OAS APIs with an Allow List, the path checked against the declared endpoints could differ from the path forwarded upstream. Tyk Gateway now makes the Allow List decision on the same path that it sends to the upstream.
+
+This may affect APIs whose endpoint paths include the listen path. See [Breaking Changes](#breaking-changes-5.16.3) for details.
+</Accordion>
+
+<Accordion title='Restricted where Virtual Endpoint scripts can be loaded from'>
+{/* TT-18665 */}
+Tyk Gateway now loads Virtual Endpoint script files only from inside the configured `middleware_path` directory. A Virtual Endpoint whose script file is outside this directory fails to load, and the rejection is recorded in the Gateway log.
+
+This may affect Virtual Endpoints that load scripts from other locations. See [Breaking Changes](#breaking-changes-5.16.3) for details.
+</Accordion>
+
+<Accordion title='Failed body transforms now return an error'>
+{/* TT-1678 */}
+When a Go template used for a request or response body transform failed, Tyk Gateway logged the error but carried on, forwarding an empty or unchanged body to the upstream or returning a partial response with `200 OK`.
+
+Tyk Gateway now stops the request and returns an error instead: `500` with "Template compilation failed" when the template can't be compiled, and `400` with "Template execution failed" when it can't be executed against the request. The details are written to the Gateway log. If you see these errors after upgrading, check the Gateway log and fix the affected templates.
+</Accordion>
+
+<Accordion title='Auth plugins returning 401 now trigger the AuthFailure event'>
+{/* TT-10233 */}
+When a Go plugin used for authentication rejected a request with `401`, Tyk Gateway treated it as a generic plugin error, so the `AuthFailure` event did not fire and webhooks or event handlers were not notified. Both `401` and `403` from a Go auth plugin are now treated as auth failures and fire the `AuthFailure` event. The client still receives the plugin's own response.
+
+The log messages now tell the two apart: "Authentication error in Go-plugin middleware func" for `401` and "Authorization error in Go-plugin middleware func" for `403`. If you alert on the previous message for `403`, update your log filters.
+</Accordion>
+
+<Accordion title='Synchronized keys keep their expiry on data plane Gateways'>
+{/* TT-10795 */}
+In Tyk MDCB deployments with the synchroniser enabled, keys synchronized to a data plane Gateway that didn't have the key's API loaded were stored in Redis with no expiry, so unused keys built up over time. Synchronized keys now keep their expiry whether or not the API is loaded on that Gateway.
+</Accordion>
+
+<Accordion title='Gateway API now returns the full certificate list on every call'>
+{/* TT-14003 */}
+The `GET /tyk/certs` endpoint could return the certificate list only on the first call and `{"certs":null}` afterwards, especially on data plane Gateways. It now returns the complete list on every call, with or without `org_id`, on standalone, control plane and data plane Gateways.
+
+When there are no certificates, the endpoint now returns an empty list (`{"certs":[]}`) instead of `null`.
+</Accordion>
+
+<Accordion title='Removed the "Legacy path detected" warning'>
+{/* TT-14976 */}
+Tyk Gateway no longer logs the warning "Legacy path detected! Upgrade to extended." for API versions that don't use extended paths. The warning was obsolete and created log noise on every API load and reload. Path handling is unchanged.
+</Accordion>
+
+<Accordion title='Corrected the key hashing fallback log message'>
+{/* TT-15098 */}
+When `hash_key_function` was set to an unrecognized value, Tyk Gateway logged that it was falling back to `murmur32` while it actually used `murmur64`. The log message now correctly says "Falling back to murmur64". Values of `hash_key_function` are case-sensitive, and existing keys keep working.
+</Accordion>
+
+<Accordion title='Reduced Redis load when creating keys from multi-API Policies'>
+{/* TT-16797 */}
+Creating or updating a key from a Policy that covers several APIs made Tyk Gateway repeat its Redis writes and cluster notifications once for each API. These operations now run once per key, however many APIs the Policy covers, so key creation is faster and puts less load on Redis.
+</Accordion>
+
+<Accordion title='Analytics plugins now load when using multiple plugin bundles'>
+{/* TT-18097 */}
+When an API used several plugin bundles, an analytics plugin declared in a bundle's `traffic_logs` entry was silently ignored. Tyk Gateway now loads it, as it does with a single bundle.
+
+If more than one bundle in the list declares an active `traffic_logs` hook, the API fails to load and the Gateway logs an error naming the conflicting bundle.
+</Accordion>
+
+<Accordion title='Accurate Redis rate limiting across Gateways with different clocks'>
+{/* TT-18135 */}
+With the Redis rate limiter (`enable_redis_rolling_limiter`) and several Gateways sharing Redis, differences between the Gateways' system clocks could let clients exceed their rate limit, and the `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers could move in the wrong direction. Rate limits are now enforced accurately across Gateways, regardless of local clock differences.
+</Accordion>
+
+<Accordion title='Client libraries generated from the Gateway API description now compile'>
+{/* TT-18852 */}
+Java and Go client libraries generated from the Tyk Gateway API OpenAPI description failed to compile. Clients generated with openapi-generator 7.x now compile for Go, Java, TypeScript and Python. The OpenAPI description and the API responses are unchanged.
+</Accordion>
+
+</AccordionGroup>
+
+##### Security Fixes
+
+<AccordionGroup>
+
+<Accordion title='Resolved CVEs'>
+We have addressed CVEs reported in dependent libraries, providing increased protection against security vulnerabilities, including, but not limited to:
+
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-116587" target="_blank">CVE-2026-116587</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-116585" target="_blank">CVE-2026-116585</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-116586" target="_blank">CVE-2026-116586</a>
+</Accordion>
+
+</AccordionGroup>
+
 ### 5.16.0 Release Notes 
 
 #### Release Date 27 October 2026
