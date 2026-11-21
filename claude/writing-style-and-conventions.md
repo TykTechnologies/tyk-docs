@@ -75,7 +75,7 @@ Apply these rules to all content in this repository.
 
 - Write "OpenAPI" for the specification in general.
 - Write "OpenAPI 2.0 (Swagger)" the first time you mention Swagger 2.0 specifically.
-- Keep "Swagger" only for literal UI labels, API fields, endpoints and flags (such as `doc_type: swagger`, `/api/import/swagger/`, `--import-swagger` and `swagger_custom_url`), and SmartBear tools (such as Swagger UI and swagger.io).
+- Keep "Swagger" only for literal UI labels, API fields, endpoints and flags, and SmartBear tools. Examples: `doc_type: swagger`, `/api/import/swagger/`, `--import-swagger`, `swagger_custom_url`, Swagger UI and swagger.io.
 - Do not rename URL slugs, image files or the `swagger/` directory. Do not rewrite archived release notes.
 
 ### Language
