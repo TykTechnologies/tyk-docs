@@ -71,6 +71,13 @@ Apply these rules to all content in this repository.
 - Write "Kubernetes Gateway API" for the Kubernetes specification. Never write "Gateway API" alone.
 - Write "upstream services" for the services that Tyk sends requests to.
 
+### OpenAPI and Swagger
+
+- Write "OpenAPI" for the specification in general.
+- Write "OpenAPI 2.0 (Swagger)" the first time you mention Swagger 2.0 specifically.
+- Keep "Swagger" only for literal UI labels, API fields, endpoints and flags, and SmartBear tools. Examples: `doc_type: swagger`, `/api/import/swagger/`, `--import-swagger`, `swagger_custom_url`, Swagger UI and swagger.io.
+- Do not rename URL slugs, image files or the `swagger/` directory. Do not rewrite archived release notes.
+
 ### Language
 
 - No em-dashes (—) or en-dashes (–). Use a hyphen or restructure the sentence instead. Em-dashes and en-dashes are associated with AI-generated content and should be avoided.
