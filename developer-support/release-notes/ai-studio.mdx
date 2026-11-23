@@ -19,7 +19,7 @@ Tyk AI Studio is available as a [Community edition](/ai-management/ai-studio/ove
 
 #### Release Highlights
 
-Tyk AI Studio 2.3.0 is for teams that run AI agents. You can see what each agent does, step by step, with no change to the agent. Guardrails protect agents from prompt injection in the pages, files, and API responses that they read. A new plugin reduces what agents spend on tokens. This release also adds FIPS 140-3 builds, decision models, governed native SDK features from OpenAI and Anthropic, MCP governance on open-source Tyk Gateways, and active-active control planes. It also changes several defaults to make deployments safer.
+Tyk AI Studio 2.3.0 is for teams that run AI agents. You can see what each agent does, step by step, with no change to the agent. Guardrails protect agents from prompt injection in the pages, files, and API responses that they read. A new plugin reduces what agents spend on tokens. This release also adds FIPS 140-3 builds, decision models, and governed native SDK features from OpenAI and Anthropic. Other additions are MCP governance on open-source Tyk Gateways, active-active control planes, and Workspaces. It also changes several defaults to make deployments safer.
 
 This is not a rolling upgrade. You must stop every AI Studio replica before the first 2.3 replica starts, and some changes cannot be undone without a database backup. Enterprise deployments also need a new license. Read the Breaking Changes and Upgrade Instructions sections below before you upgrade.
 
@@ -63,6 +63,10 @@ AI Studio can manage MCP proxies and keys directly on open-source Tyk Gateways (
 
 You can run AI Studio in two sites with one replicated PostgreSQL database. AI Studio follows a database failover without a restart. Edge Gateways can use several control planes. They can also start from their last known configuration when no control plane answers. In the Enterprise edition, they can validate App keys from a hashed list while no control plane is available.
 
+**Workspaces and Service Accounts**
+
+Every configuration object belongs to a Workspace. In the Enterprise edition, you can give a team, user, or service account a role within one Workspace. That role applies only to the objects of that Workspace. Roles assigned before the upgrade stay global, so nothing changes until you create a Workspace. Service accounts are users for automation, such as the Tyk Operator, that sign in with an API key only. A push to Edge Gateways can carry the changes of one Workspace only.
+
 **Safer Defaults**
 
 Internal network addresses are blocked unless you allow them. OCI plugins must be signed. LLM credentials and App keys are encrypted at rest. Plugins get only the access that they declare.
@@ -86,6 +90,8 @@ This release changes several defaults, the database, and some API behavior. Chec
 - **SSO needs `TYK_AI_SECRET_KEY`.** Without it, AI Studio refuses every SSO login.
 - **Setting or changing a `$SECRET/` or `$ENV/` reference needs the `secrets:read` permission.** Without it, the API returns `403`.
 - **The quickstart ships placeholders instead of sample secrets.** AI Studio does not start until you replace the `__REPLACE_WITH_…__` values.
+- **API keys are shown in full only when they are issued.** The users API (`/api/v1/users`) no longer returns `api_key`, also for administrators. It returns `api_key_hint` (the last four characters) and `has_api_key`. To get a key that you can copy, roll the key. Scripts that read keys from the users API must store each key when it is issued.
+- **Data source connection strings show their password as `[redacted]`.** If you change a connection string that still contains `[redacted]`, the API returns `422`. Type the password again when you change the host or user.
 - **Standalone Edge Gateway API tokens are hashed at rest, and this is one-way.** A version before 2.3 accepts none of the tokens afterwards. Changing `ENCRYPTION_KEY` now invalidates every API token.
 
 **Plugins**
@@ -96,6 +102,7 @@ This release changes several defaults, the database, and some API behavior. Chec
 - **Plugins on an internal registry or host are refused**, including installed plugins, unless you list the host in `LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS`. `PLUGIN_BLOCK_INTERNAL_URLS` is deprecated.
 - **Request-path plugins built on an older SDK keep a 4 MiB message limit.** Larger requests get `413`. Rebuild your plugins on the 2.3 SDK, and install the 2.3.0 releases of the shipped plugins.
 - **Plugins and filter scripts on Bedrock LLMs see the Bedrock Converse format** on `/ai/`, `/v1`, routers, and `/anthropic/`. Filter scripts get `input.format == "bedrock"`.
+- **Edge Gateways refuse traffic for an LLM with a plugin that cannot load.** Requests to that LLM get `503` (`plugin_load_failed`) with `Retry-After: 30`. Before 2.3, the Edge Gateway skipped all plugins of the LLM. You cannot turn this off. Other LLMs are not affected.
 - **Plugins no longer see credentials.** System events and object hooks show LLM, tool, data source, and user credentials as `[redacted]`.
 - **For plugin authors and Go embedders:** `models.LLMVendorProvider` has two new methods, `ProvidesChat()` and `DecisionEndpoint()`. `CallLLM` returns `FailedPrecondition` when the App of the agent has no credential. Request IDs now have the format `tyai_` followed by a UUIDv7.
 
@@ -132,6 +139,7 @@ This release changes several defaults, the database, and some API behavior. Chec
 
 **API and Deployment**
 
+- **Chat and AI Portal agent responses no longer contain credentials or configuration.** The first event of a chat stream lists tools and data sources by ID, name, and description only. `/common/agents` returns only `plugin_id` and `app_id` for the plugin and App of an agent. Update integrations that read these values.
 - **Tool and LLM names must be unique**, ignoring case, spaces, and punctuation. Duplicates stored before 2.3 stay editable.
 - **AI Studio returns `503 database_unavailable` during a database outage.** Management API requests that returned `500`, and sign-in and session checks that returned `401`, now return `503` with `Retry-After`.
 - **`/ready` no longer fails as soon as PostgreSQL stops answering.** It stays `200` for `DATABASE_READY_GRACE` (30 seconds). Set it to `0` for the 2.2 behavior.
@@ -175,6 +183,7 @@ The upgrade to 2.3 has three stages: prepare, upgrade, and check. Do the steps i
    3. **Registries.** If a plugin registry is on an internal address, list it in `LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS` on AI Studio and every Edge Gateway. On proxy-only networks, also list the hosts that the registry redirects downloads to. For `docker.tyk.io`, use `docker.tyk.io,dl.cloudsmith.io`.
    4. **Versions.** Plan to install the 2.3.0 releases of the shipped plugins (see **Updated the shipped plugins for 2.3** in the Changelog). Rebuild your own request-path plugins on the 2.3 Plugin SDK. For Bedrock, use the SDK helpers `RequestModel`, `IsStreamingRequest`, and `ResponseUsage`.
    5. **Order.** Check the plugin order on each LLM that has more than one plugin. Edge Gateways now use this order.
+   6. **Loading on Edge Gateways.** Make sure that every plugin attached to an LLM loads on each Edge Gateway. Check the signatures and keys, `PLUGINS_ALLOWED_SOURCES`, and internal hosts. If a plugin does not load, the Edge Gateway logs `Plugin could not be loaded` with the cause.
 
 7. **Check filter scripts on Bedrock LLMs.** Scripts now get the Bedrock Converse format (`input.format == "bedrock"`). Read `input.messages`, or handle the Converse format.
 
@@ -182,47 +191,49 @@ The upgrade to 2.3 has three stages: prepare, upgrade, and check. Do the steps i
 
 9. **Update clients of the native OpenAI APIs.** Make sure that `/v1/responses` requests and batch lines name a `model`. Plan to re-upload batch files on LLMs with request filters. Replace the `OpenAI-Organization`, `OpenAI-Project`, and `anthropic-workspace-id` headers with the workspace setting of the LLM.
 
-10. **Size your Edge Gateways.** Edge Gateways now keep undelivered analytics in memory during a control-plane outage. Allow the working set of the Edge Gateway, plus the backlog (64 MiB with the Helm chart, 256 MiB without it), plus about 50 MB. If you set your own Helm resources, check that they leave room for this.
+10. **Update scripts that read credentials.** The users API no longer returns API keys. Store each key when you issue or roll it. Also update integrations that read tool or data source credentials from chat events, or agent configuration from `/common/agents`.
 
-11. **Prepare the Helm values.**
+11. **Size your Edge Gateways.** Edge Gateways now keep undelivered analytics in memory during a control-plane outage. Allow the working set of the Edge Gateway, plus the backlog (64 MiB with the Helm chart, 256 MiB without it), plus about 50 MB. If you set your own Helm resources, check that they leave room for this.
+
+12. **Prepare the Helm values.**
     - AI Studio chart with `replicaCount` above 1: set `midsommar.strategy.type: Recreate` for this upgrade, or scale to one replica. You need an external database and `config.csrfKey`.
     - If you use `nameOverride` or `fullnameOverride` with the bundled Edge Gateway, set `microgateway.config.controlEndpoint`, or set `microgateway.enabled: false`.
     - `config.ociRequireSignature: false` now works as a boolean.
 
-12. **Back up the database.** A backup is the only way to roll back.
+13. **Back up the database.** A backup is the only way to roll back.
     - PostgreSQL: take a full backup. It must include the `credentials` table.
     - SQLite on 2.2: stop AI Studio and copy `midsommar.db`. A 2.2 database has no `-wal` file, so the copy is complete.
 
 **Upgrade**
 
-13. **Stop every older AI Studio replica, in every site.** No older replica can run on the database after the first 2.3 replica starts. An older replica that shares the database refuses every App key, and can become the cluster leader.
+14. **Stop every older AI Studio replica, in every site.** No older replica can run on the database after the first 2.3 replica starts. An older replica that shares the database refuses every App key, and can become the cluster leader.
 
-14. **Set the 2.3 license.** Set `TYK_AI_LICENSE` on every AI Studio replica, with the same license, and on every Enterprise Edge Gateway.
+15. **Set the 2.3 license.** Set `TYK_AI_LICENSE` on every AI Studio replica, with the same license, and on every Enterprise Edge Gateway.
 
-15. **Start the first 2.3 replica.**
+16. **Start the first 2.3 replica.**
     - Keep the branding directory (`BRANDING_STORAGE_PATH`, default `./data/branding`) in place. AI Studio imports the custom logo and favicon once, and logs `Branding: imported the logo from …`.
     - Wait for the migrations to finish before you start other replicas. Converting App keys takes about 1.5 seconds for each 10,000 keys on SQLite, and about 7 seconds on PostgreSQL.
     - On PostgreSQL, AI Studio waits up to `DATABASE_STARTUP_TIMEOUT` (60 seconds) for a writable database. Neither `/health` nor `/ready` answers during this time. On Kubernetes, use a startup probe that allows for this time plus the migrations. The Helm chart adds one.
     - On the first start, AI Studio downloads each cached plugin again to record its hash. Make sure that the registry is reachable. The log line `Cached OCI plugin failed its integrity check, fetching it again` is expected.
 
-16. **Start the other AI Studio replicas.** Give every replica the same `CSRF_KEY`, `TYK_AI_SECRET_KEY`, `MICROGATEWAY_ENCRYPTION_KEY`, and `GRPC_AUTH_TOKEN`. The cluster status (`GET /api/v1/cluster/status`) warns when they differ.
+17. **Start the other AI Studio replicas.** Give every replica the same `CSRF_KEY`, `TYK_AI_SECRET_KEY`, `MICROGATEWAY_ENCRYPTION_KEY`, and `GRPC_AUTH_TOKEN`. The cluster status (`GET /api/v1/cluster/status`) warns when they differ.
 
-17. **Upgrade your Edge Gateways.**
+18. **Upgrade your Edge Gateways.**
     - Upgrade all Edge Gateways together with AI Studio. Upgrade AI Studio first.
     - Upgrade every standalone Edge Gateway that shares a database at the same time. The first 2.3 Edge Gateway hashes the stored API tokens. `./microgateway -migrate` now needs `TYK_AI_LICENSE` on Enterprise.
     - Edge Gateways resync when they reconnect. An Edge Gateway that starts without local configuration shows **Pending** until you push the configuration.
 
-18. **Install the 2.3.0 releases of the shipped plugins.** Approve new plugin scopes when AI Studio asks. For example, advanced-llm-cache now needs `apps.write`.
+19. **Install the 2.3.0 releases of the shipped plugins.** Approve new plugin scopes when AI Studio asks. For example, advanced-llm-cache now needs `apps.write`.
 
 **Check**
 
-19. **Check the license (Enterprise).** Go to **Admin > Settings > License** to see the limits and your current usage.
+20. **Check the license (Enterprise).** Go to **Admin > Settings > License** to see the limits and your current usage.
 
-20. **Check credentials.** Look for LLMs, tools, and data sources that show an unresolved credential, and for `502 LLM credential not usable` responses.
+21. **Check credentials.** Look for LLMs, tools, and data sources that show an unresolved credential, and for `502 LLM credential not usable` responses.
 
-21. **Check Edge Gateways.** Push the configuration, and check that each Edge Gateway shows **In sync**. If a push lists skipped entries, rename the duplicate tool or LLM names that AI Studio logs. Move filters and plugins that an LLM in another namespace needs to the global namespace or to the namespace of the LLM.
+22. **Check Edge Gateways.** Push the configuration, and check that each Edge Gateway shows **In sync**. If a push lists skipped entries, rename the duplicate tool or LLM names that AI Studio logs. Move filters and plugins that an LLM in another namespace needs to the global namespace or to the namespace of the LLM. If an LLM returns `503` (`plugin_load_failed`), find the cause in the Edge Gateway log.
 
-22. **Turn on the new features that you want.** New features are off by default, such as `AGENT_TRACING_ENABLED`, `CONTROL_ENDPOINTS`, `EDGE_START_FROM_LAST_KNOWN_GOOD`, and `EDGE_CREDENTIAL_SYNC=full`. If you turn on Agent Call Tracing, also set `AGENT_TRACING_CONTENT_CEILING`. When it is not set, the ceiling is `metadata`, and it overrides Apps set to Redacted or Full.
+23. **Turn on the new features that you want.** New features are off by default, such as `AGENT_TRACING_ENABLED`, `CONTROL_ENDPOINTS`, `EDGE_START_FROM_LAST_KNOWN_GOOD`, and `EDGE_CREDENTIAL_SYNC=full`. If you turn on Agent Call Tracing, also set `AGENT_TRACING_CONTENT_CEILING`. When it is not set, the ceiling is `metadata`, and it overrides Apps set to Redacted or Full. To use Workspaces (Enterprise), create them after the upgrade. Until then, every object is in the Default Workspace and every role stays global.
 
 After this upgrade, later upgrades of AI Studio with several replicas can roll.
 
@@ -234,6 +245,12 @@ To roll back to 2.2, you must restore the backup. Anything changed after the upg
 2. Restore the backup that you took before the upgrade.
    - For SQLite, delete `midsommar.db-wal` and `midsommar.db-shm` first, then copy the backup over `midsommar.db`. A leftover `-wal` file corrupts the restored copy (`database disk image is malformed`). Keep the original backup file until the restored database starts.
 3. Start 2.2 with your 2.2 license.
+
+If you used Workspaces or service accounts, these change on 2.2:
+
+- Roles assigned within a Workspace grant nothing.
+- Service accounts keep working with their API keys, without the restrictions of a service account.
+- The users API returns full API keys again to callers who can read users.
 
 If 2.3 did not start because the license was refused, AI Studio did not change the database. You can start 2.2 again on it without a restore.
 
@@ -255,6 +272,10 @@ To back up a running 2.3 SQLite database later, use `sqlite3 midsommar.db ".back
 - **A revocation does not reach an Edge Gateway that cannot reach any control plane.** The Edge Gateway serves its last known configuration until it reconnects.
 - **AI Studio does not queue writes after the retry window.** If the database has no primary for longer than `DATABASE_WRITE_RETRY_WINDOW` (15 seconds), writes fail with `503`. Clients must retry after `Retry-After`.
 - **Script filters see tool results as sent.** Guardrails decode tool results, but script filters do not. An empty `input.segments` with a non-empty `raw_input` means an unreadable body. A script that screens tool results must block it.
+- **Workspaces control who can change an object, not who can use it (Enterprise).** An App linked to a model provider, tool, or data source in another Workspace uses it, including its credentials.
+- **File store content is readable from every Workspace.** Do not keep secrets in file stores.
+- **Tyk connections are global.** They do not belong to a Workspace.
+- **Unique names are unique across Workspaces.** A name conflict can show the name of a hidden object. Dependency and pending-change counts include hidden objects, but never their names.
 - **MCP call records have no retention pruning yet.**
 - **The proxy log API does not return `service_tier` yet.**
 - **MCP proxies created in Tyk Dashboard do not set `stripAuthorizationData`.** AI Studio-minted Tyk keys can reach third-party upstream services. Tyk Gateway connections set it.
@@ -500,6 +521,12 @@ AI Studio can run in two sites with one replicated PostgreSQL database.
 - **Startup waits for the database.** On PostgreSQL, AI Studio waits up to `DATABASE_STARTUP_TIMEOUT` (60 seconds) for a writable database. `DATABASE_STARTUP_TIMEOUT=0` keeps the old behavior.
 - **New settings:** `CLUSTER_NODE_LABEL`, `DATABASE_MAX_OPEN_CONNS`, `DATABASE_MAX_IDLE_CONNS`, `DATABASE_CONN_MAX_LIFETIME`, and `DATABASE_CONNECT_TIMEOUT`.
 - **New metrics:** `aistudio_db_writable`, `aistudio_db_failovers_total`, `aistudio_db_write_retries_total`, `aistudio_db_write_hold_seconds`, `aistudio_db_writes_held`, and `aistudio_db_unavailable_responses_total`.
+</Accordion>
+
+<Accordion title='Added Workspaces and service accounts'>
+- **Workspaces (Enterprise).** Every configuration object belongs to a Workspace. You can assign a role within one Workspace to a user, a service account, or a team. The role then applies only to the objects of that Workspace. Model providers, tools, data sources, filters, embedders, secrets, file stores, and MCP servers stay readable from every Workspace. You change them only from their own Workspace. Apps, agents, routers, and catalogs outside your Workspaces are hidden. Manage Workspaces in **Access > Workspaces**. Object lists have a Workspace column and filter, and forms have a Workspace selector.
+- **Service accounts.** A service account is a user for automation that signs in with an API key only. It has no password, SSO, AI Portal, Chat, or teams. The key is shown once, when you create the account. In the Enterprise edition, each enabled service account uses an admin seat.
+- **Pushes for one Workspace.** The push dialog shows the Workspace of each pending change, with a count for each Workspace. A push that names `only_workspace_id` is refused with `409 push_stained` while changes from other Workspaces wait in the target namespace.
 </Accordion>
 
 <Accordion title='Added license limits (Enterprise)'>
@@ -831,6 +858,10 @@ We have resolved these issues:
 - Analytics and spend could be counted twice. This occurred when the control plane stored a pulse but stopped before it acknowledged it, and the Edge Gateway sent the pulse again. Each pulse now has an identity, and AI Studio stores it once. AI Studio and the Edge Gateway must both run 2.3.
 </Accordion>
 
+<Accordion title='Fixed Enterprise plugins failing when an Edge Gateway starts (Enterprise)'>
+We have resolved an issue where a new or recreated Edge Gateway started its plugins before it was able to answer their license check. Enterprise plugins, such as llm-load-balancer and advanced-llm-cache, found no Enterprise license and exited. The LLMs that used them returned `500` for about 30 seconds. The Edge Gateway now answers the license check before any plugin starts.
+</Accordion>
+
 <Accordion title='Fixed database is locked errors on SQLite'>
 We have resolved an issue where SQLite returned "database is locked" errors under concurrent writes. SQLite now runs in WAL mode.
 </Accordion>
@@ -889,6 +920,7 @@ We have resolved these issues:
 - `global.nodeSelector`, `global.tolerations`, and `global.affinity` were ignored. They now apply to the AI Studio pods and the bundled PostgreSQL pod.
 - `config.ociRequireSignature: false` was ignored unless written as a string.
 - `extraEnv`, `extraVolumes`, and `extraVolumeMounts` were not rendered for AI Studio.
+- `metrics.serviceMonitor.enabled` did nothing for AI Studio. The chart now renders a ServiceMonitor for AI Studio. Set the bearer token with `metrics.bearerTokenSecret`, or set `metrics.allowUnauthenticated`. By default, the chart renders no monitor, and AI Studio does not serve `/metrics`.
 </Accordion>
 
 <Accordion title='Fixed AI Studio stopping before background work finished'>
@@ -925,6 +957,23 @@ The internal-address block now covers outbound calls for LLMs, Studio Chat, embe
 - Guardrail provider credentials reach Edge Gateways encrypted.
 - Guardrail error events no longer include the error message of the provider, which could contain the screened text.
 - Secret fields stay masked in plugin configuration forms, including the Redis passwords of advanced-llm-cache and rate-limiter.
+</Accordion>
+
+<Accordion title='Stopped API keys from being read back'>
+Before this release, listing or reading users returned the full API key of each user to anyone with permission to read users. A role that only views users was able to take over any account, including administrator accounts. AI Studio now shows a key in full only once, when it is issued or rolled. After that, the console and the API show only its last four characters.
+</Accordion>
+
+<Accordion title='Hid passwords in data source connection strings'>
+A password in a data source connection string, such as `postgres://user:password@host/db`, was shown to everyone with permission to read data sources. It now reads `[redacted]`. References such as `$SECRET/` and `$ENV/` are still shown.
+</Accordion>
+
+<Accordion title='Removed credentials from chat and AI Portal agent responses'>
+- Starting a chat sent the full records of its tools and data sources to the browser. These included vector store API keys, connection strings, and tool auth keys. Chat now receives only their names and descriptions.
+- The AI Portal agent list returned the configuration of each agent, its plugin, and its App. Everyone with access to the agent saw them. It now returns only the details of the agent, with the plugin and App as IDs.
+</Accordion>
+
+<Accordion title='Stopped Edge Gateways from skipping plugins that fail to load'>
+If one pre-auth or post-auth plugin of an LLM did not load on an Edge Gateway, the Edge Gateway skipped all plugins of that LLM. It then sent the request to the vendor. As a result, a second, broken plugin let requests bypass a firewall or rate limiter plugin. The Edge Gateway now refuses the request with `503` (`plugin_load_failed`) until the plugin loads.
 </Accordion>
 
 <Accordion title='Restricted credential references'>
