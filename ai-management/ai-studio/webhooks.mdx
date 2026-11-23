@@ -87,8 +87,31 @@ AI Studio publishes these topics:
 | Embedders | `system.embedder.created`, `system.embedder.updated`, `system.embedder.deleted` |
 | Governed Metadata | `system.governed_metadata.updated`, `system.governed_metadata.deleted` |
 | Team budgets | `budget.team.threshold` (a team reaches 80% or 100% of its budget), `budget.team.over_allocated` |
+| Guardrail alerts | `guardrail.alert.<name>`, for each alert name that a guardrail filter or exception sets. Available from Tyk AI Studio 2.3.0. |
+| Guardrail outcomes | `guardrail.outcome.blocked`, `guardrail.outcome.quarantined`, `guardrail.outcome.judge_softened`. Available from Tyk AI Studio 2.3.0. |
 
-Enterprise plugins can publish more topics, for example the [Asset Catalog](/ai-management/ai-studio/asset-catalog) plugin. The target editor shows the topics in the list above and all other topics that AI Studio received in the last 30 days.
+Enterprise plugins can publish more topics, for example the [Asset Catalog](/ai-management/ai-studio/asset-catalog) plugin. The target editor shows the topics in the list above and the guardrail alert topics that filters and exceptions set. It also shows all other topics that AI Studio received in the last 30 days.
+
+### Guardrail Events
+
+A [guardrail](/ai-management/ai-studio/guardrails#alerts) with the **Log and raise event** action raises a `guardrail.alert.<name>` event. A guardrail block, a quarantine, or a softening by the LLM judge raises a [`guardrail.outcome.*` event](/ai-management/ai-studio/guardrails#outcome-events). In the guardrail form, the **Create a webhook for this event** link opens a new target for the alert.
+
+A guardrail alert has the object type `guardrail_alert` and the action `raised`. Its object contains these fields:
+
+- `name` and `alert`: the alert name
+- `topic`, `filter_id`, `filter_name`, `app_id`, and `app_name`
+- `detector`, `kinds`, `roles`, `tool_names`, and `max_score`
+- `action`: the action on the traffic
+- `exception_id`: the exception that raised the alert, if any
+- `request_id`, `compliance_event_id`, and `timestamp`
+- `link` and `url`: the link to the compliance event
+- `excerpts`: masked excerpts of the flagged text, only when the filter's alert includes them
+
+A guardrail outcome event has the object type `guardrail` and the outcome as its action. Its object contains the same filter, App, detector, and request fields, and also `outcome`, `event_type`, `severity`, `reason_code`, and `exception_ids`. A judge softening adds `judge`, with the verdict, reason, model, prompt version, coverage, and the actions before and after. An outcome event never contains the flagged text.
+
+`link` is the path of the Compliance page that opens the event, for example `/admin/compliance?event=1234`. `url` is the full link. AI Studio builds it from `SITE_URL`, and leaves it out when `SITE_URL` is not set. {/* TODO: link reference for SITE_URL */}
+
+Only AI Studio raises `guardrail.alert.*` and `guardrail.outcome.*` events. Plugins cannot publish these topics. For Edge Gateway traffic, AI Studio raises them when the analytics pulse arrives.
 
 ### Topic Filters
 
@@ -100,6 +123,8 @@ A target subscribes to topics with one or more filters. A filter is a topic name
 | `system.llm.*` | `system.llm.created`, `system.llm.updated`, and `system.llm.deleted`. |
 | `system.*.deleted` | Each deletion. |
 | `budget.team.*` | All team budget events. |
+| `guardrail.alert.*` | All guardrail alerts. |
+| `guardrail.outcome.*` | All guardrail outcome events. |
 | `*` | All topics. |
 
 A target can have a maximum of 50 filters.
@@ -111,7 +136,7 @@ Each target uses a payload template. Select one of these presets, or write your 
 | Preset | Content |
 | :--- | :--- |
 | `standard` | The full event: the event ID, topic, and time, the object type and action, the ID of the user who did the action, the object, delivery information, and the AI Studio edition and version. This is the default. |
-| `slack` | A message for a Slack incoming webhook that summarizes the event. |
+| `slack` | A message for a Slack incoming webhook that summarizes the event. For a guardrail alert or outcome event, it adds an **Open in AI Studio** link to the compliance event. |
 | `minimal` | Identifiers only: the event ID, topic, object type, action, object ID, and time. |
 | `custom` | A Go `text/template` that you write. The output must be valid JSON. |
 
@@ -126,6 +151,12 @@ This custom template sends the object type, the action, and the name of the obje
   "text": {{ jsonStr (printf "%s %s: %s" (title .ObjectType) .Action (default "-" (get .Object "name"))) }},
   "event_id": {{ jsonStr .Event.ID }}
 }
+```
+
+From 2.3.0, a custom template can use `.StudioLink`. It is the AI Studio page that the event links to. AI Studio sets it only for guardrail alerts and outcome events, and only when it is an `http` or `https` URL. For example, in a Slack message:
+
+```text
+{{ with .StudioLink }}<{{ . }}|Open in AI Studio>{{ end }}
 ```
 
 ### Redaction
@@ -270,6 +301,6 @@ Set these environment variables on the AI Studio server:
 
 Each AI Studio node receives the events that it creates and stores them in the shared database. Each node with a delivery worker takes deliveries from the database. Two nodes do not send the same delivery at the same time. AI Studio does not guarantee the order of deliveries.
 
-Edge Gateways do not publish `system.*` events. Only changes on the AI Studio control plane create webhook events.
+Edge Gateways do not publish `system.*` events. Only changes on the AI Studio control plane create webhook events. AI Studio raises the guardrail events for Edge Gateway traffic when the analytics pulse arrives.
 
 AI Studio sends an event only after it saves the change. If AI Studio stops between the save and the event, that one event is lost.
