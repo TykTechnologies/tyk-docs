@@ -9,7 +9,7 @@ The rules are split into three areas. Read all of them before making non-trivial
 [`claude/writing-style-and-conventions.md`](claude/writing-style-and-conventions.md) covers:
 
 - Auto-generated files you must not edit directly
-- Writing style rules (product names, language, lists, headings, API definition types, structure, diagrams)
+- Writing style rules (product names, language, lists, headings, API definition types, structure, dollar signs, diagrams)
 - The STE100 Simplified Technical English style check
 
 ## Release Notes

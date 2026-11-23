@@ -117,6 +117,10 @@ Apply these rules to all content in this repository.
 
 - Mark a new feature with `<Note>Available from Tyk X.Y.Z</Note>`, or an availability table that lists each component and version.
 
+### Dollar Signs
+
+- Mintlify renders text between two `$` characters as inline LaTeX math. Outside code blocks, put every `$` in backticks, for example `` `$TYK_OPERATOR_VERSION` `` or `` `$10` ``. A bare `$VAR` in prose, a callout, or a table cell can garble the rest of the paragraph.
+
 ### Diagrams
 
 - When suggesting diagrams, include a comment block with instructions for the designer covering: purpose, structure, key visual elements, and design notes.
