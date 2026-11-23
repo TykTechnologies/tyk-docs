@@ -114,6 +114,8 @@ Modifies LLM responses before returning to client. Two-phase processing:
 - **OnBeforeWriteHeaders**: Modify response headers
 - **OnBeforeWrite**: Modify response body
 
+`OnBeforeWriteHeaders` returns the full header set. The gateway removes a header that the plugin leaves out. On the Edge Gateway, it also runs on streamed responses, before the first event. It has 2 seconds there. After that time, the stream goes out with the upstream headers. On a stream, the plugin cannot change `Content-Type`, `Content-Length` or `Transfer-Encoding`. `OnBeforeWrite` runs only on buffered responses.
+
 Use for:
 - Response filtering and content moderation
 - Response transformation and formatting
@@ -159,6 +161,65 @@ Registers and serves custom HTTP endpoints under `/plugins/{slug}/`. Plugins hav
 Supports both unary responses and streaming (SSE) via the `stream_response` flag on endpoint registrations.
 
 **Full Guide**: [Custom Endpoints Guide](/ai-management/ai-studio/plugins/custom-endpoints)
+
+## Where Request Plugins Run
+
+Pre-auth, post-auth and response plugins run on the `/llm/` endpoints of the gateway, on the API of the vendor. The `/ai/{slug}`, unified `/v1`, `/router/{slug}` and `/anthropic/{slug}` endpoints translate the request into the API of the vendor. Then they send it through an internal `/llm/` hop of the gateway:
+
+- The plugin chain runs once, on the vendor-native request and response.
+- A failover waterfall makes one attempt on each rung. Each attempt runs the chain again with the same request ID.
+- Auth plugins run once, on the endpoint that the client called. The internal hop runs no auth plugin.
+
+From the internal hop, these items reach the client:
+
+- **Blocks**: A plugin block keeps its status and message, in the error format of the endpoint that the client called. A 4xx block does not fail over to the next rung. A 5xx or 429 block fails over.
+- **Headers**: The gateway passes on the `X-Cache*`, `X-Tyk-Compression*`, `X-LB-*` and `X-RateLimit-*` headers that plugins set, on buffered and streamed responses. Other plugin headers stay on the internal hop.
+
+Edge Gateways run the plugins of an LLM in the order set in AI Studio. Before Tyk AI Studio 2.3.0, they used the install order.
+
+### Plugins on Bedrock
+
+From Tyk AI Studio 2.3.0, every plugin attached to a Bedrock LLM runs on `/ai/`, `/v1`, routers and `/anthropic/`, as for other vendors. Before 2.3.0, only auth plugins ran on these endpoints for Bedrock. A plugin on a Bedrock LLM sees the Bedrock Converse API on every endpoint:
+
+| Item | Bedrock Value |
+| :--- | :--- |
+| `Vendor` | `bedrock` |
+| Path | `/llm/call/{slug}/model/{modelId}/converse` or `.../converse-stream`. The model ID is in the path. An ARN or inference profile keeps its `/`. |
+| Request body | A Converse request. The body has no `model` field. |
+| Buffered response | A Converse response, with camelCase `usage.inputTokens` and `usage.outputTokens` |
+| Streamed response | One SSE `data:` line for each Converse event, such as `{"contentBlockDelta":{...}}` |
+
+To read the model, the streaming flag and the token usage for any vendor, use the SDK helpers `plugin_sdk.RequestModel`, `plugin_sdk.IsStreamingRequest` and `plugin_sdk.ResponseUsage`. Do not parse the bodies yourself. Refer to [Model and Stream Metadata](/ai-management/ai-studio/plugins/sdk#model-and-stream-metadata).
+
+When a plugin refuses a Bedrock runtime call with a status of 400 or more, the gateway answers in the AWS error format. It sets `X-Amzn-ErrorType` from the status, for example `ThrottlingException` for `429`, and returns the message of the plugin. AWS SDK clients show this message.
+
+## When a Plugin Cannot Be Loaded
+
+From Tyk AI Studio 2.3.0, an Edge Gateway refuses requests to an LLM while one of its pre-auth or post-auth plugins cannot load. The missing plugin can be the plugin that enforces a policy, such as a firewall or a rate limiter. For this reason, the gateway does not run the rest of the chain and does not forward the request. Before 2.3.0, the gateway skipped every plugin of the LLM and sent the request to the vendor.
+
+A load fails for these causes:
+
+- A missing binary, or a plugin that does not start
+- An unsigned plugin, or a failed signature or transparency log check
+- A source that `PLUGINS_ALLOWED_SOURCES` refuses
+- An internal host that is not allowed
+- A registry or `grpc://` host that the gateway cannot reach
+
+The client gets `503` with `Retry-After: 30` and the error code `plugin_load_failed`. The message names the LLM. It does not name the plugin or the cause:
+
+```json
+{"error": {"message": "A plugin attached to LLM \"claude\" could not be loaded, so the gateway did not forward the request. ...", "type": "api_error", "code": "plugin_load_failed"}}
+```
+
+On `/ai/`, `/v1`, `/anthropic/` and `/router/`, the refusal uses the error format of that endpoint. A failover waterfall moves to its next rung.
+
+To find the cause, look for this log line on the gateway: `Plugin could not be loaded; requests to the LLMs it is attached to are refused until it loads`. The gateway logs it once when the failure starts or its cause changes. The health of the plugin is `failed`.
+
+The gateway keeps a failed load for 30 seconds, and refuses requests immediately during this time. The first request after this time tries the load again. A configuration push from AI Studio also tries the load again immediately.
+
+Other LLMs on the gateway are not affected. No setting lets requests through without the plugin. Fix the plugin, or detach or deactivate it in AI Studio and push the configuration.
+
+Auth plugins follow their own rule: the gateway returns `503` only when it cannot load any of the auth plugins of the endpoint. Refer to [Where Auth Plugins Run](#where-auth-plugins-run). A response plugin that cannot load does not stop a response.
 
 ## Quick Start
 
@@ -844,6 +905,7 @@ curl -X POST http://localhost:3000/api/v1/llms/1/proxy/v1/chat/completions \
 - Sanitize user-provided data
 - Use secure connections for external services
 - Don't log sensitive data (tokens, PII)
+- Store credentials as `$SECRET/` references in the plugin configuration. Refer to [Plugin Configuration and Secrets](/ai-management/ai-studio/plugins/security#plugin-configuration-and-secrets).
 - Implement rate limiting for external calls
 
 ### Configuration
@@ -861,6 +923,8 @@ curl -X POST http://localhost:3000/api/v1/llms/1/proxy/v1/chat/completions \
 
 - Check plugin command path is absolute with `file://`
 - Verify plugin binary has execute permissions
+- For `oci://`, check the signature and the configured keys (Enterprise Edition)
+- Check `PLUGINS_ALLOWED_SOURCES` and the internal host rules. Refer to [Plugin Security](/ai-management/ai-studio/plugins/security).
 - Check logs for initialization errors
 - Ensure plugin implements all required interfaces
 

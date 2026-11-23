@@ -90,7 +90,7 @@ func (p *MyPlugin) OnSessionReady(ctx plugin_sdk.Context) {
     // Eagerly establish the broker connection by making a lightweight API call.
     // This ensures the connection is ready before any RPC calls come in.
     if ai_studio_sdk.IsInitialized() {
-        _, err := ai_studio_sdk.GetPluginsCount(context.Background())
+        _, err := ai_studio_sdk.GetLicenseInfo(context.Background()) // needs no service scope
         if err != nil {
             log.Printf("Service API warmup failed: %v", err)
         } else {
@@ -277,6 +277,18 @@ Events have a direction that controls routing:
 | Down | `plugin_sdk.DirDown` | Flows from control (AI Studio) to edge(s) |
 
 Topics that start with `system.` are reserved for the object change events of AI Studio. The control plane drops `system.*` events that come from an edge. Gateway plugins must publish events under their own topics.
+
+From Tyk AI Studio 2.3.0, topics that start with `guardrail.alert.` and `guardrail.outcome.` are also reserved. AI Studio raises them for guardrail alerts and for guardrail outcomes: a block, a quarantine or a softening by the judge. The host refuses a plugin publish on these topics, on AI Studio and on an Edge Gateway. A Studio plugin can subscribe to them, with one topic for each subscription:
+
+```go
+for _, topic := range []string{"guardrail.outcome.blocked", "guardrail.outcome.quarantined", "guardrail.outcome.judge_softened"} {
+    ctx.Services.Events().Subscribe(topic, func(ev plugin_sdk.Event) {
+        // ev.Payload: {"object_type":"guardrail","action":"blocked","object_id":<compliance event id>,"object":{...}}
+    })
+}
+```
+
+AI Studio raises these events locally (`DirLocal`). For Edge Gateway traffic, it raises them when the analytics pulse of the edge arrives. Gateway plugins do not receive them. For the events, refer to [Guardrails](/ai-management/ai-studio/guardrails).
 
 #### Publish Event
 
@@ -550,6 +562,18 @@ type ObjectEventPayload struct {
     Object     interface{} `json:"object"`       // The full object (for create/update, nil for delete)
 }
 ```
+
+From Tyk AI Studio 2.3.0, literal credentials in the object show as `[redacted]`:
+
+- `system.llm.*`: the API key, and each metadata value whose name contains `key`, `secret` or `token`, such as the AWS keys of a Bedrock LLM
+- `system.tool.*`: the auth key of the tool and of its dependencies
+- `system.datasource.*`: the connection string, the connection API key and the embedder key (`embed_api_key`, shown as `[REDACTED]`)
+- `system.user.*`: the password hash, the API key, and the session, reset and verification tokens
+- `system.filter.*`, and the filters in tool and LLM events: the secret connection values of a guardrail, such as an API key
+- `system.app.*`: the App has no credential secret, and the credentials of its LLMs, tools and datasources are redacted
+- `system.group.*`: the members, and the LLMs, datasources and tools of the catalogues, are redacted
+
+`$SECRET/` and `$ENV/` references show as written. Other AI Studio replicas read the same payload from the cluster event log.
 
 #### Subscribing to System Events
 
@@ -1220,7 +1244,7 @@ log.Printf("Tool result: %s", result.Data)
 
 ## Plugin Operations
 
-Requires: `plugins.read` or `plugins.write` scope
+Requires: `plugins.read` scope. From Tyk AI Studio 2.3.0, `plugins.read` lists other plugins and reads their details, but never their configuration. A plugin calls `GetPlugin` and `UpdatePluginConfig` with its own plugin ID without a scope. No scope lets a plugin read or change the configuration of another plugin.
 
 ### List Plugins
 
@@ -1258,6 +1282,8 @@ log.Printf("Plugin: %s - Hook: %s", plugin.Name, plugin.HookType)
 ```
 
 ### Get Plugins Count
+
+`GetPluginsCount` calls `ListPlugins` for one row. A plugin without the `plugins.read` scope still gets the count, with no plugin rows. To warm up the broker connection, use `GetLicenseInfo`, which needs no scope.
 
 ```go
 func GetPluginsCount(ctx context.Context) (int64, error)
@@ -1688,7 +1714,9 @@ llmsResp, err := ai_studio_sdk.ListLLMs(ctx, 1, 10)
 | CreateTool, UpdateTool | `tools.write` |
 | ListApps, ListAppsWithFilters, GetApp | `apps.read` |
 | CreateApp, UpdateApp, PatchAppMetadata | `apps.write` |
-| ListPlugins, GetPlugin | `plugins.read` |
+| ListPlugins, GetPlugin (other plugins) | `plugins.read` |
+| GetPlugin, UpdatePluginConfig (own plugin) | None |
+| GetLicenseInfo | None |
 | ReadPluginKV, ListPluginKVKeys | `kv.read` |
 | WritePluginKV, DeletePluginKV | `kv.readwrite` |
 | ListDatasources, GetDatasource | `datasources.read` |

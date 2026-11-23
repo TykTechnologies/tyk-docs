@@ -17,7 +17,7 @@ Signature verification and more than one marketplace source are Enterprise Editi
 To publish a plugin, you put it where AI Studio can download it, and you tell administrators where it is. Publishing has three parts:
 
 1. **Package**: You push the plugin binary to an OCI registry as an OCI artifact.
-2. **Sign**: You sign the artifact with cosign. This part is necessary only when the installation verifies signatures.
+2. **Sign**: You sign the artifact with cosign. From Tyk AI Studio 2.3.0, Enterprise Edition installations require a signature by default.
 3. **List**: You add an entry for the version to a marketplace index. This part is optional.
 
 An administrator can install a published plugin in two ways:
@@ -64,7 +64,7 @@ The maximum size of a plugin layer is 512 MB by default. Refer to [Plugin Size L
 
 ## Sign the Plugin
 
-AI Studio uses [cosign](https://docs.sigstore.dev/cosign/) to verify plugin signatures. Sign the index by its digest, and then verify the signature:
+Sign plugins with the [cosign](https://docs.sigstore.dev/cosign/) CLI. AI Studio and the Edge Gateway verify signatures in their own process, so the hosts do not need cosign. Sign the index by its digest, and then verify the signature:
 
 ```bash
 DIGEST=$(oras manifest fetch --descriptor $REPO:$VERSION | jq -r .digest)
@@ -72,25 +72,52 @@ cosign sign --key plugin-signing.key $REPO@$DIGEST
 cosign verify --key plugin-signing.pub $REPO@$DIGEST
 ```
 
-Signature verification runs only in the Enterprise Edition, and only when it is on:
+Signature verification runs only in the Enterprise Edition. From Tyk AI Studio 2.3.0, it is on by default:
 
 | Runtime | Setting | Default |
 | :--- | :--- | :--- |
-| AI Studio | `AI_STUDIO_OCI_REQUIRE_SIGNATURE` | `false` |
+| AI Studio | `AI_STUDIO_OCI_REQUIRE_SIGNATURE` | `true` (`false` before 2.3.0) |
 | Edge Gateway | `OCI_PLUGINS_REQUIRE_SIGNATURE` | `true` |
+
+For all signature settings, refer to [Signature Settings](/ai-management/ai-studio/plugins/security#signature-settings).
+
+### Signature Formats
+
+AI Studio 2.3.0 and later accept two formats:
+
+- A cosign v2 signature, stored as the `sha256-<digest>.sig` tag.
+- A cosign v3 Sigstore bundle, attached to the plugin as an OCI referrer. This is the default format of cosign v3.
+
+Releases before 2.3.0 read only the `.sig` tag. If administrators run an earlier release and you sign with cosign v3, add `--new-bundle-format=false --use-signing-config=false` to `cosign sign`.
+
+### Transparency Log
+
+By default, the host also requires a valid entry in the Rekor transparency log for the signature. `cosign sign` uploads the entry by default. If you sign without an entry (`--tlog-upload=false`), for example in an air-gapped environment, tell administrators to set `AI_STUDIO_OCI_TLOG_POLICY` and `OCI_PLUGINS_TLOG_POLICY` to `disabled`. For a private Sigstore deployment, they set `AI_STUDIO_OCI_TRUSTED_ROOT_FILE` and `OCI_PLUGINS_TRUSTED_ROOT_FILE`. Refer to [Transparency Log Policy](/ai-management/ai-studio/plugins/security#transparency-log-policy).
 
 ### Public Keys
 
-AI Studio and Edge Gateways always have the Tyk plugin signing key. To verify your own plugins, give administrators your public key. They add it as an environment variable on AI Studio and on each Edge Gateway:
+AI Studio and Edge Gateways always trust the Tyk plugin signing key. To verify your own plugins, give administrators your public key. They add it as an environment variable on AI Studio and on each Edge Gateway:
 
 - `OCI_PLUGINS_PUBKEY_<NAME>`: the PEM content of the key.
 - `OCI_PLUGINS_PUBKEY_FILE_<NAME>`: the path to the key file.
 
-To select your key, the `oci://` reference must include `?pubkey=<NAME>`. For example, `oci://registry.example.com/ai-studio/request-tagger:1.4.0?pubkey=ACME` uses `OCI_PLUGINS_PUBKEY_ACME`. Without `pubkey`, AI Studio verifies the plugin only with the Tyk signing key.
+From Tyk AI Studio 2.3.0, the host checks a reference without `pubkey` against each configured key, and the Tyk key first. The plugin loads if one key verifies it. A plugin that you sign with your own key therefore installs from the **Marketplace** page with no change to the command.
 
-<Warning>
-A plugin installed from the Marketplace page gets a reference without `pubkey`. If verification is on, a plugin that you signed with your own key fails verification. Tell administrators to install it from the **Add Plugin** form with `?pubkey=<NAME>`, or to edit the command of the installed plugin.
-</Warning>
+To accept only one key for a plugin, add `?pubkey=<NAME>` to the `oci://` reference. For example, `oci://registry.example.com/ai-studio/request-tagger:1.4.0?pubkey=ACME` uses only `OCI_PLUGINS_PUBKEY_ACME`. Refer to [Public Keys](/ai-management/ai-studio/plugins/security#public-keys).
+
+### FIPS Variants
+
+Each plugin does its own cryptography. A FIPS 140-3 deployment of AI Studio therefore needs FIPS builds of its plugins. In FIPS mode, AI Studio and the Edge Gateway log a warning when they start a plugin that is not a FIPS build.
+
+{/* TODO: link to FIPS page once merged */}
+
+To publish a FIPS variant of a version:
+
+1. Build each platform with `GOFIPS140=v1.0.0`, for example `GOFIPS140=v1.0.0 CGO_ENABLED=0 go build -trimpath -tags fips -o request-tagger-linux-amd64 .`.
+2. Push the binaries and the index under the tag `<version>-fips`, for example `1.4.0-fips`.
+3. Sign the FIPS index by its digest.
+
+Administrators install the FIPS variant with its tag or digest, for example `oci://registry.example.com/ai-studio/request-tagger:1.4.0-fips`. In FIPS mode, use an RSA key of 2048 bits or more, or an ECDSA key, to sign plugins.
 
 ## List the Plugin in a Marketplace
 
@@ -197,6 +224,6 @@ AI Studio shows the value on the **Marketplace** page, but it does not block an 
 
 ## Install Without a Marketplace
 
-Administrators can also install any published artifact from **Plugins > Add Plugin**. In **Command**, they enter the `oci://` reference, with `?pubkey=<NAME>` if verification is on.
+Administrators can also install any published artifact from **Plugins > Add Plugin**. In **Command**, they enter the `oci://` reference. To accept only one signing key, they add `?pubkey=<NAME>`.
 
 <img src="/img/ai-management/ai-studio-plugin-publishing-add-plugin.png" alt="Add Plugin form with an oci:// command that selects a public key with the pubkey parameter" />
