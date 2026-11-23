@@ -1,0 +1,38 @@
+---
+title: "Availability and Failure Behavior with Separate Cache Storage"
+description: "Tyk Gateway supports isolating API response caching to a dedicated Redis cluster using enable_separate_cache_store and cache_storage. However, existing documentation does not cover the availability and failure behavior when the dedicated cache cluster becomes unreachable, specifically that global Redis health checks fail, authenticated APIs return HTTP 403 Forbidden, and keyless APIs continue proxying upstream."
+---
+
+## Overview
+
+When configuring a dedicated Redis cluster for API response caching using `enable_separate_cache_store` and `cache_storage`, cached responses are isolated from primary session and key storage. However, this configuration does not isolate Redis failure. Tyk Gateway requires all configured Redis connections to remain healthy to maintain normal operations.
+
+## Availability and Health Check Behavior
+
+Tyk Gateway monitors connectivity across all configured Redis connections (`storage`, `cache_storage`, and `analytics_storage`). The Gateway evaluates overall Redis availability using a logical AND across all connections.
+
+When the dedicated cache Redis cluster becomes unavailable:
+- **Global Redis Status Fails:** The Gateway marks the Redis subsystem as down globally (`ErrRedisIsDown`), even if the primary storage cluster hosting session state and API keys remains fully operational.
+- **Gateway Health Endpoints:** The `/ready` health check endpoint returns HTTP 503 Service Unavailable after 1015 seconds. The `/hello` endpoint reports status `warn` while returning HTTP 200.
+
+## Impact on API Traffic
+
+A failure of the dedicated cache Redis cluster affects incoming API traffic differently depending on the API authentication mode:
+
+- **Authenticated APIs (Auth Token, HMAC, JWT, OAuth):** The Gateway attempts session validation against the storage layer, but encounters the global `ErrRedisIsDown` state. The Gateway treats session lookup as missing and rejects requests with **HTTP 403 Forbidden** (`"Access to this API has been disallowed"`), even when valid credentials are provided.
+- **Keyless APIs:** APIs configured for keyless access do not execute session authentication middleware. When caching middleware encounters a connection error to the cache store, it treats the failure as a cache miss and forwards requests directly to the upstream service.
+
+Once connectivity to the dedicated cache Redis cluster is restored, authenticated traffic and `/ready` health checks recover automatically within seconds without requiring a Gateway restart.
+
+## Production Recommendations
+
+To avoid unexpected service disruption to authenticated APIs when enabling separate cache storage:
+
+1. **Provide High Availability for Cache Storage:** Deploy the dedicated cache cluster with production-grade redundancy matching the primary storage cluster (e.g. Multi-AZ deployment with automatic failover via Redis Sentinel or Redis Cluster).
+2. **Configure Load Balancer Probes on `/ready`:** Use `/ready` for orchestrator (Kubernetes, AWS ECS) and load balancer health checks rather than `/hello` to ensure traffic is redirected away from degraded Gateway instances during Redis outages.
+3. **Proactive Cache Monitoring:** Set up monitoring and alerts for connection errors and latency on the cache Redis cluster to detect and mitigate issues before connectivity is lost.
+
+## Applies To
+
+- Tyk Gateway v5.0.0 and later
+- Deployments using `enable_separate_cache_store: true`
