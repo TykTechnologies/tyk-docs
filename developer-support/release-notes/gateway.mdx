@@ -1104,26 +1104,24 @@ We have addressed CVEs reported in dependent libraries, providing increased prot
 
 This patch implements several changes and fixes to improve the stability and correct the behavior of the Gateway.
 
-This release also includes security hardening changes that can affect some deployments. Before you upgrade, read the [Breaking Changes](#breaking-changes-5.13.8) section to check whether you're affected and what to do.
+This release also includes a change that can affect some deployments. Before you upgrade, read the [Breaking Changes](#breaking-changes-5.13.8) section to check whether you're affected and what to do.
 
 For a comprehensive list of changes, please refer to the detailed [changelog](#Changelog-v5.13.8) below.
 
 #### Breaking Changes
 <a id="breaking-changes-5.13.8"></a>
 
-**Endpoint matching now uses the path that is sent upstream**
+**New error message when hashed key listing is disabled**
 
-For APIs that use an Allow List, Tyk Gateway now matches each request against the path that it will forward to the upstream, instead of the full incoming request path. This applies to both Tyk Classic and Tyk OAS APIs, whether Strip Listen Path is enabled or not. Requests to parameterized endpoints must also match the declared parameters.
+When `hash_keys` is enabled and `enable_hashed_keys_listing` is disabled, a request to list keys returns `404` with an error message. This message now says that `enable_hashed_keys_listing` is a Tyk Gateway setting and how to enable it:
 
-You're affected if an API's endpoint entries (for example Allow List or Block List paths, or declared Tyk OAS paths) include the API's listen path. For example, with the listen path `/api` and an endpoint entry `/api/static`, the entry no longer matches and requests to it may be rejected.
+`Hashed key listing is disabled in the Gateway config: set enable_hashed_keys_listing to true in tyk.conf (or TYK_GW_ENABLEHASHEDKEYSLISTING)`
 
-**What to do:** before you upgrade, check that endpoint paths are written relative to the listen path. To temporarily restore the previous behavior, set the new configuration option `allow_unsafe_listen_path_matching` to `true` (default `false`). This is not recommended.
+The previous message was `Hashed key listing is disabled in config (enable_hashed_keys_listing)`. The status code and the response format are unchanged.
 
-**Virtual Endpoint scripts must be inside the middleware directory**
+You're affected if your scripts, tests, log filters or alerts match the previous message text.
 
-Tyk Gateway now loads Virtual Endpoint script files only from inside the configured `middleware_path` directory (default `./middleware`). Virtual Endpoints that point to a script file outside this directory stop working. Scripts provided inline in the API definition are not affected.
-
-**What to do:** before you upgrade, move any Virtual Endpoint script files into the `middleware_path` directory and update the API definitions. To temporarily restore the previous behavior, set the new configuration option `allow_unsafe_virtual_endpoint_paths` to `true` (default `false`). This is not recommended.
+**What to do:** before you upgrade, update any checks that match the previous message.
 
 #### Deprecations
 
@@ -1172,15 +1170,15 @@ If you are upgrading to 5.13.8, please follow the detailed [upgrade instructions
 #### Changelog
 <a id="Changelog-v5.13.8" data-scroll-offset></a>
 
-##### Added
+##### Changed
 
 <AccordionGroup>
 
-<Accordion title='Analytics plugins can now be loaded from plugin bundles'>
-{/* TT-17998 */}
-Go analytics plugins can now be delivered in a plugin bundle, as other Go plugins can, instead of only from a file path on the Gateway host. Declare the plugin under `traffic_logs` in the bundle's `manifest.json`, and Tyk Gateway loads it when the API uses that bundle. This works for both Tyk Classic and Tyk OAS APIs.
+<Accordion title='Clearer error message when hashed key listing is disabled'>
+{/* TT-1790 */}
+When `hash_keys` is enabled and `enable_hashed_keys_listing` is disabled, the Tyk Gateway API returns `404` to requests that list keys. The error message now says that this is a Tyk Gateway setting and how to enable it: "Hashed key listing is disabled in the Gateway config: set enable_hashed_keys_listing to true in tyk.conf (or TYK_GW_ENABLEHASHEDKEYSLISTING)". The status code and the response format are unchanged.
 
-This feature was introduced in Tyk Gateway 5.15.0 and is now available in this LTS release. Existing analytics plugins loaded from a file path keep working unchanged. If a bundled analytics plugin fails to load, the API still loads without it.
+This may affect scripts, log filters and alerts that match the previous message text. See [Breaking Changes](#breaking-changes-5.13.8) for details.
 </Accordion>
 
 </AccordionGroup>
@@ -1189,20 +1187,6 @@ This feature was introduced in Tyk Gateway 5.15.0 and is now available in this L
 
 <AccordionGroup>
 
-<Accordion title='Improved endpoint matching for APIs with an Allow List'>
-{/* TT-18034, TT-18822 */}
-Fixed an issue where, for some Tyk Classic and Tyk OAS APIs with an Allow List, the path checked against the declared endpoints could differ from the path forwarded upstream. Tyk Gateway now makes the Allow List decision on the same path that it sends to the upstream.
-
-This may affect APIs whose endpoint paths include the listen path. See [Breaking Changes](#breaking-changes-5.13.8) for details.
-</Accordion>
-
-<Accordion title='Restricted where Virtual Endpoint scripts can be loaded from'>
-{/* TT-18665 */}
-Tyk Gateway now loads Virtual Endpoint script files only from inside the configured `middleware_path` directory. A Virtual Endpoint whose script file is outside this directory fails to load, and the rejection is recorded in the Gateway log.
-
-This may affect Virtual Endpoints that load scripts from other locations. See [Breaking Changes](#breaking-changes-5.13.8) for details.
-</Accordion>
-
 <Accordion title='Failed body transforms now return an error'>
 {/* TT-1678 */}
 When a Go template used for a request or response body transform failed, Tyk Gateway logged the error but carried on, forwarding an empty or unchanged body to the upstream or returning a partial response with `200 OK`.
@@ -1210,23 +1194,18 @@ When a Go template used for a request or response body transform failed, Tyk Gat
 Tyk Gateway now stops the request and returns an error instead: `500` with "Template compilation failed" when the template can't be compiled, and `400` with "Template execution failed" when it can't be executed against the request. The details are written to the Gateway log. If you see these errors after upgrading, check the Gateway log and fix the affected templates.
 </Accordion>
 
+<Accordion title='No more false warnings when loading Go plugins'>
+{/* TT-8143 */}
+Each time Tyk Gateway loaded a Go plugin, it logged one or two "plugin file ... doesn't exist" warnings for other file names it checked, even though the plugin then loaded correctly. These checks are now logged at debug level only.
+
+If no plugin file is found, Tyk Gateway now logs one error that lists every file name it tried. The order in which file names are tried is unchanged.
+</Accordion>
+
 <Accordion title='Auth plugins returning 401 now trigger the AuthFailure event'>
 {/* TT-10233 */}
 When a Go plugin used for authentication rejected a request with `401`, Tyk Gateway treated it as a generic plugin error, so the `AuthFailure` event did not fire and webhooks or event handlers were not notified. Both `401` and `403` from a Go auth plugin are now treated as auth failures and fire the `AuthFailure` event. The client still receives the plugin's own response.
 
 The log messages now tell the two apart: "Authentication error in Go-plugin middleware func" for `401` and "Authorization error in Go-plugin middleware func" for `403`. If you alert on the previous message for `403`, update your log filters.
-</Accordion>
-
-<Accordion title='Synchronized keys keep their expiry on data plane Gateways'>
-{/* TT-10795 */}
-In Tyk MDCB deployments with the synchroniser enabled, keys synchronized to a data plane Gateway that didn't have the key's API loaded were stored in Redis with no expiry, so unused keys built up over time. Synchronized keys now keep their expiry whether or not the API is loaded on that Gateway.
-</Accordion>
-
-<Accordion title='Gateway API now returns the full certificate list on every call'>
-{/* TT-14003 */}
-The `GET /tyk/certs` endpoint could return the certificate list only on the first call and `{"certs":null}` afterwards, especially on data plane Gateways. It now returns the complete list on every call, with or without `org_id`, on standalone, control plane and data plane Gateways.
-
-When there are no certificates, the endpoint now returns an empty list (`{"certs":[]}`) instead of `null`.
 </Accordion>
 
 <Accordion title='Removed the "Legacy path detected" warning'>
@@ -1244,9 +1223,14 @@ When `hash_key_function` was set to an unrecognized value, Tyk Gateway logged th
 Creating or updating a key from a Policy that covers several APIs made Tyk Gateway repeat its Redis writes and cluster notifications once for each API. These operations now run once per key, however many APIs the Policy covers, so key creation is faster and puts less load on Redis.
 </Accordion>
 
-<Accordion title='Accurate Redis rate limiting across Gateways with different clocks'>
-{/* TT-18135 */}
-With the Redis rate limiter (`enable_redis_rolling_limiter`) and several Gateways sharing Redis, differences between the Gateways' system clocks could let clients exceed their rate limit, and the `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers could move in the wrong direction. Rate limits are now enforced accurately across Gateways, regardless of local clock differences.
+<Accordion title='Documented a limitation for 24-character hexadecimal API IDs'>
+{/* TT-18558 */}
+The description of the API ID field for Tyk Classic and Tyk OAS APIs now explains that a custom API ID of exactly 24 hexadecimal characters (for example `3f32f827a4eb4457a2e3309a`) is treated as a database ID by the Tyk Dashboard API. An API with such an ID can't be read, updated or deleted by its API ID, so don't use API IDs in this format.
+</Accordion>
+
+<Accordion title='Client libraries generated from the Gateway API description now compile'>
+{/* TT-18852 */}
+Java and Go client libraries generated from the Tyk Gateway API OpenAPI description failed to compile. Clients generated with openapi-generator 7.x now compile for Go, Java, TypeScript and Python. The OpenAPI description and the API responses are unchanged.
 </Accordion>
 
 </AccordionGroup>
@@ -1259,6 +1243,7 @@ With the Redis rate limiter (`enable_redis_rolling_limiter`) and several Gateway
 We have addressed CVEs reported in dependent libraries, providing increased protection against security vulnerabilities, including, but not limited to:
 
 - <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-111497" target="_blank">CVE-2026-111497</a>
+- <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-116591" target="_blank">CVE-2026-116591</a>
 </Accordion>
 
 </AccordionGroup>
