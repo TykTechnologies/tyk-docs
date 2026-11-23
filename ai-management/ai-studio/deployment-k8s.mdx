@@ -42,15 +42,15 @@ Before installing, generate three secret keys to secure communication and encryp
 ```bash expandable
 # Secret key for encryption (used for secrets management and SSO)
 openssl rand -hex 16
-# Example output: a35b3f7b0fb4dd3a048ba4fc6e9fe0a8
+# Example output (sample only, generate your own): xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 # Encryption key for Edge Gateway communication (must be exactly 32 hex chars)
 openssl rand -hex 16
-# Example output: 822d3d1e0e2d849263e45fc7bb842364
+# Example output (sample only, generate your own): yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
 
 # gRPC auth token (for hub-spoke communication)
 openssl rand -hex 16
-# Example output: 9f2c4a6b8d0e1f3a5c7d9e1b3a5c7d9e
+# Example output (sample only, generate your own): zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz
 ```
 
 Save these values — you will substitute them into the values file below.
@@ -79,7 +79,7 @@ Replace the placeholder secrets with your generated values. The `grpcAuthToken` 
 midsommar:
   image:
     repository: tykio/tyk-ai-studio-ent
-    tag: v2.2.2
+    tag: v2.3.0
   service:
     type: NodePort
     ports:
@@ -104,7 +104,7 @@ config:
   tykAiSecretKey: "CHANGE-ME-first-secret"
   tykAiLicense: "your-license-key"
   ociCacheDir: "./data/cache/plugins"
-  ociRequireSignature: "false"
+  ociRequireSignature: "false"                          # Development only: loads unsigned plugins (default "true")
   gatewayMode: "control"
   grpcPort: "50051"
   grpcHost: "0.0.0.0"
@@ -128,7 +128,7 @@ microgateway:
   enabled: true
   image:
     repository: tykio/tyk-microgateway-ent
-    tag: v2.2.2
+    tag: v2.3.0
   service:
     type: NodePort
     port: 8080
@@ -212,7 +212,7 @@ Replace all placeholder values with your actual configuration.
 midsommar:
   image:
     repository: tykio/tyk-ai-studio-ent
-    tag: v2.2.2
+    tag: v2.3.0
   ingress:
     enabled: true
     certificateEnabled: true
@@ -250,7 +250,7 @@ config:
   tykAiSecretKey: "CHANGE-ME-first-secret"
   tykAiLicense: "your-license-key"
   ociCacheDir: "./data/cache/plugins"
-  ociRequireSignature: "false"
+  ociRequireSignature: "true"
   gatewayMode: "control"
   grpcPort: "50051"
   grpcHost: "0.0.0.0"
@@ -267,7 +267,7 @@ microgateway:
   enabled: true
   image:
     repository: tykio/tyk-microgateway-ent
-    tag: v2.2.2
+    tag: v2.3.0
   ingress:
     enabled: true
     certificateEnabled: true
@@ -338,7 +338,7 @@ AI Studio pre-populates OpenAI and Anthropic LLM configurations on first startup
 
 ### Push Configuration to the Edge Gateway
 
-1. Navigate to **AI Portal → Edge Gateways** in the sidebar
+1. Navigate to **Portal administration → Edge Gateways** in the sidebar
 2. Verify that your Edge Gateway shows as **Connected**. Its Edge ID is the pod name, for example `midsommar-microgateway-64b5f9879d-mf5p2`.
 3. Click **Push Configuration** to sync the latest settings to the Edge Gateway
 
@@ -387,6 +387,12 @@ With `replicaCount` above `1`, the chart also renders:
 - Cookie affinity on the nginx Ingress (`midsommar.ingress.sessionAffinity`). Chat, agent, and MCP SSE sessions stay on the replica that started them. For another ingress controller, set its own affinity annotations.
 
 The readiness probe uses `/ready`. Set `probes.readiness.requireWrite: true` to probe `/ready?require=write` instead.
+
+At startup, AI Studio waits for its database for up to `DATABASE_STARTUP_TIMEOUT` (60 seconds by default){/* TODO: link reference for DATABASE_STARTUP_TIMEOUT */}. Then it runs its migrations. During this time, neither `/health` nor `/ready` answers. The chart has a startup probe on `/health` that allows `probes.startup.periodSeconds` × `probes.startup.failureThreshold`, 180 seconds by default. Keep it longer than the database wait plus the migration time. Increase it for the first start of a new version on a large database.
+
+When a replica stops, the chart keeps the pod serving for `shutdown.preStopDelaySeconds` (10 seconds) while Kubernetes removes it from the Service. AI Studio then lets the requests in flight finish for up to 30 seconds. The default grace period is 45 seconds. The delay uses the `sleep` preStop action of Kubernetes 1.30 and later. On an older cluster, the chart renders no preStop hook, and a rolling update can refuse a few requests.
+
+To keep the database credentials out of your values file, put the full `DATABASE_URL` in a Secret and set `database.existingSecret` (key `DATABASE_URL`, or `database.existingSecretKey`).
 
 ```yaml
 replicaCount: 3
@@ -467,7 +473,60 @@ transformer-server:
 
 ### Scaling Edge Gateways
 
-Each Edge Gateway pod registers with AI Studio under its own pod name as its Edge ID. To deploy Edge Gateways for different regions, deploy a separate Helm release for each region and set a different `edgeNamespace`:
+Each Edge Gateway pod registers with AI Studio under its own pod name as its Edge ID.
+
+#### Use the StatefulSet Form
+
+A Deployment keeps the Edge Gateway database on an `emptyDir` volume. The volume survives a container restart, but a rescheduled pod starts with an empty database. Set `microgateway.kind: StatefulSet` and `microgateway.persistence.enabled: true` when the Edge Gateway must keep its database across a rescheduling:
+
+- With `config.startFromLastKnownGood`, the Edge Gateway starts from the configuration stored in its database.
+- With `config.credentialSync: full` (Enterprise), the Edge Gateway validates keys from the list stored in its database.
+- A StatefulSet pod keeps its name, for example `midsommar-microgateway-0`, so the edge keeps its entry in AI Studio.
+
+The chart shows a warning after install when you set `startFromLastKnownGood` or `credentialSync: full` without StatefulSet persistence.
+
+#### Several Control Planes
+
+From v2.3.0, the Edge Gateway chart has values for several control planes and for control-plane outages:
+
+```yaml expandable
+microgateway:
+  kind: StatefulSet
+  persistence:
+    enabled: true
+  config:
+    controlEndpoints:
+      - studio.region-a.example.com:50051
+      - studio.region-b.example.com:50051
+    controlFailbackInterval: "5m"     # Optional: go back to the first endpoint
+    startFromLastKnownGood: true      # Optional: start from the stored configuration
+    # startupControlTimeout: "30s"
+    # lastKnownGoodMaxAge: "72h"
+    # credentialSync: "full"          # Enterprise: validate keys from a synced, hashed list
+    # credentialSyncMaxAge: "24h"
+```
+
+`controlEndpoints` replaces `controlEndpoint` when it is not empty. Keep `probes.startup` (`periodSeconds` × `failureThreshold`, 150 seconds by default) longer than `startupControlTimeout`. For the behavior of each setting, refer to [Edge Gateway Resilience](/ai-management/ai-studio/manage-edge-gateway#edge-gateway-resilience).
+
+#### Size the Volume
+
+The Edge Gateway stores one analytics row for each request, for `config.analyticsRetentionDays` (90 days in the chart). Each request uses about 400 bytes. The default `persistence.size` of 2Gi with 90 days holds less than one request per second. AI Studio also receives these records through the analytics pulse, so a short retention, such as `"1"`, is often enough on the edge:
+
+| Requests per Second | 1 Day | 7 Days | 90 Days |
+| :--- | :--- | :--- | :--- |
+| 1 | 35 MB | 240 MB | 3 GB |
+| 10 | 350 MB | 2.4 GB | 31 GB |
+| 100 | 3.5 GB | 24 GB | 310 GB |
+
+When the volume is full, the Edge Gateway continues to serve, but it cannot apply a configuration push. Its `/ready` response shows `"database_full": true`.
+
+#### Size the Memory
+
+From v2.3.0, the chart requests 256Mi of memory and sets a 1Gi limit for each Edge Gateway. Set the request to what your edges use under load. During a control-plane outage, the Edge Gateway keeps undelivered analytics in memory, up to `analyticsPulse.maxBacklogBytes` (64 MiB). Set the memory limit to the working set of the edge, plus the backlog, plus about 50 MB. Keep this total below 85% of the limit, because the Edge Gateway starts to refuse requests at that point. Increase the limit and the backlog together.
+
+#### Separate Edge Gateways for Each Region
+
+To deploy Edge Gateways for different regions, deploy a separate Helm release for each region and set a different `edgeNamespace`:
 
 ```yaml
 microgateway:
@@ -518,7 +577,20 @@ database:
 helm upgrade midsommar . -f your-values.yaml
 ```
 
-From v2.2.1, the AI Studio Deployment uses the `Recreate` strategy (`midsommar.strategy`). Kubernetes stops the old AI Studio pod before it starts the new one, so two AI Studio instances never run at the same time. During an upgrade, AI Studio is not available for a short time. Edge Gateways continue to serve traffic.
+With one replica, the AI Studio Deployment uses the `Recreate` strategy (`midsommar.strategy`). Kubernetes stops the old AI Studio pod before it starts the new one, so two AI Studio instances never run at the same time. During an upgrade, AI Studio is not available for a short time. Edge Gateways continue to serve traffic. With `replicaCount` above `1`, the chart uses a rolling update by default.
+
+Before you upgrade to v2.3.0:
+
+1. Get a v2.3 license (Enterprise). AI Studio and Enterprise Edge Gateways on v2.3.0 do not start with an older license.
+2. Take a database backup. To roll back, you must restore the backup.
+3. With `replicaCount` above `1`, set `midsommar.strategy.type: Recreate` for this upgrade, or scale to one replica. An older replica on a v2.3 database refuses every App key.
+4. Upgrade the Edge Gateways together with AI Studio. Refer to [Upgrade Edge Gateways With AI Studio](/ai-management/ai-studio/manage-edge-gateway#upgrade-edge-gateways-with-ai-studio).
+
+{/* TODO: link to the AI Studio 2.3.0 upgrade notes once merged */}
+
+From v2.3.0, the Edge Gateway chart sets a memory limit of 1Gi and a request of 256Mi, unless your values set `resources`. The Edge Gateway pods are then recreated at the upgrade.
+
+If your values set `nameOverride` or `fullnameOverride` and no Edge Gateway control endpoint, `helm upgrade` fails with a message that names the endpoint to set. Set `microgateway.config.controlEndpoint` to that value, or set `microgateway.enabled: false` if you do not use the bundled Edge Gateway.
 
 ### Uninstalling
 
@@ -537,6 +609,12 @@ kubectl logs -l app=microgateway
 
 # Database logs (internal postgres)
 kubectl logs -l app=postgres
+```
+
+For more detail, increase the log level. From v2.3.0, `config.logLevel` sets [`LOG_LEVEL`](/ai-management/ai-studio/ai-studio-env#log_level) for AI Studio. The Edge Gateway chart has its own `microgateway.config.logLevel`:
+
+```bash
+helm upgrade midsommar . --reuse-values --set config.logLevel=debug
 ```
 
 ## Troubleshooting
@@ -559,7 +637,7 @@ kubectl describe pod <pod-name>
 * **Ingress not working**: Verify DNS records and TLS configuration
 * **Login fails on HTTP**: Set `devMode: "true"` — session cookies require this when not using HTTPS
 * **Marketplace page is empty**: Set `ociCacheDir: "./data/cache/plugins"` in your config values — the marketplace service will not start without it
-* **Plugin signature verification**: Docker images use distroless bases without cosign. Set `ociRequireSignature: "false"` to disable signature verification
+* **Plugin refused because its signature does not verify**: From v2.3.0, AI Studio and the Edge Gateway verify signatures themselves (Enterprise), and require them by default (`config.ociRequireSignature` and `microgateway.config.ociPluginsRequireSignature`). Configure the signing key of the plugin, or set these values to `"false"` to load unsigned plugins. Refer to [Signature Verification](/ai-management/ai-studio/plugins/security#signature-verification)
 
 </Accordion>
 
@@ -587,7 +665,7 @@ In AI Studio v2.1.x, over plain HTTP, the CSRF check accepts browser requests on
 kubectl logs -l app=microgateway
 ```
 
-* Check that `CONTROL_ENDPOINT` resolves to the AI Studio service (default: `midsommar:50051`)
+* Check that `CONTROL_ENDPOINT` resolves to the AI Studio service. By default, the bundled Edge Gateway uses the AI Studio Service of the release. For a release named `midsommar`, this is `midsommar:50051`. Before v2.3.0, the bundled Edge Gateway of a release with another name restarted in a loop
 * Verify `edgeAuthToken` matches `grpcAuthToken` exactly
 * Verify `encryptionKey` matches `microgatewayEncryptionKey` exactly
 * Check that `GATEWAY_MODE=control` is set in AI Studio config
