@@ -79,17 +79,19 @@ If your gateways are [segmented](/api-management/multiple-environments), a proxy
 
 ### Endpoint URLs in the AI Portal
 
-AI Studio does not proxy MCP traffic. The endpoint URL that AI Portal users see is the address where Tyk Gateway serves the proxy. It is not the address of the AI Studio gateway for LLMs and AI Studio tools.
+The endpoint URL that AI Portal users see is the address where Tyk Gateway serves the proxy, not the AI Studio gateway.
 
 AI Studio uses the first of these URLs that it can build:
 
-1. The custom domain of the proxy. If the proxy has [`server.customDomain`](/api-management/gateway-config-tyk-oas#domain) enabled, the URL is `<scheme>://<custom domain><listen path><transport path>`. The scheme comes from the **Public gateway base URL** of the connection. If the connection has no base URL, the scheme is `https`. Tyk Gateway serves the proxy only on that host, and only when [`enable_custom_domains`](/tyk-oss-gateway/configuration#enable_custom_domains) is on. AI Studio ignores domain patterns such as `{tenant:[a-z]+}.example.com`, because a pattern does not name one URL.
+1. The custom domain of the proxy, when [`server.customDomain`](/api-management/gateway-config-tyk-oas#domain) is enabled: `<scheme>://<custom domain><listen path><transport path>`. The scheme comes from the **Public gateway base URL** of the connection, or is `https`. The gateway must have [`enable_custom_domains`](/tyk-oss-gateway/configuration#enable_custom_domains) on. AI Studio ignores domain patterns, such as `{tenant:[a-z]+}.example.com`.
 2. The URL of each gateway tag of the proxy. The AI Portal shows one URL for each target.
+
+   {/* TODO: Add screenshot: MCP server page in the AI Portal with one endpoint URL for each gateway tag */}
 3. The **Public gateway base URL** of the connection, with the listen path and the transport path. For example, `https://gateway.example.com/weather/mcp`. Usually, this base URL is the load balancer in front of the gateways.
 
-If AI Studio cannot build a URL, the AI Portal tells the user that the endpoint URL is not configured. AI Studio ignores the `servers` entries in the proxy definition. These entries give the listen address of the gateway, which clients cannot always reach.
+If AI Studio cannot build a URL, the AI Portal tells the user that the endpoint URL is not configured.
 
-When you change the base URLs of a connection, AI Studio syncs the connection at the next poll. The URL of each server changes, also when its definition did not change.
+When you change the base URLs of a connection, AI Studio updates the URL of each server at the next sync.
 
 ## Discover and Publish MCP Servers
 
@@ -210,24 +212,20 @@ The handoff publishes the `system.mcp_server.registration_handoff` event. You ca
 
 Available from Tyk AI Studio 2.3.0.
 
-AI Studio does not proxy the traffic of Tyk-managed MCP servers. To show MCP usage, it uses the analytics records of Tyk Gateway. Tyk Pump sends these records to an ingest endpoint on AI Studio. AI Studio keeps the MCP calls. It shows calls, error rates, latency (p50 and p95), use per tool, and use per App in these places:
+AI Studio gets MCP usage from the analytics records of Tyk Gateway, for Dashboard and Gateway connections. Tyk Pump sends the records to an ingest endpoint on AI Studio. AI Studio shows calls, error rates, latency (p50 and p95), use per tool, and use per App in these places:
 
 - The **Usage** tab of each MCP server.
 - The **MCP usage** section of the App pages, in the admin UI and in the AI Portal.
 - The **MCP traffic** panel of the admin dashboard.
 
-MCP analytics work for all Tyk connections.
-
-<Note>
-AI Studio keeps MCP call records with no time limit. The table grows with MCP traffic.
-</Note>
+{/* TODO: Add screenshot: MCP traffic panel of the admin dashboard */}
 
 {/* TODO: Add screenshot: Usage tab of an MCP server with calls, error rate, latency, and per-tool usage */}
 
 ### Prerequisites
 
 - Tyk Gateway 5.14 or later, with [`enable_analytics`](/tyk-oss-gateway/configuration#enable_analytics) set to `true`.
-- [Traffic logs](/api-management/logs/traffic-logs) on each MCP proxy (`x-tyk-api-gateway.middleware.global.trafficLogs.enabled: true`). The proxies that AI Studio registers have traffic logs on. A proxy that the platform team creates records nothing until they turn on traffic logs.
+- [Traffic logs](/api-management/logs/traffic-logs) on each MCP proxy (`x-tyk-api-gateway.middleware.global.trafficLogs.enabled: true`). The proxies that AI Studio registers have traffic logs on.
 - Tyk Pump 1.16 or later.
 
 ### Ingest Token
@@ -245,7 +243,7 @@ The **Analytics** section also shows when the last batch arrived and the record 
 
 ### Send Records With the HTTP Pump
 
-The Tyk Pump `http` pump sends records directly to AI Studio. It is not in a Tyk Pump release yet. Until your Tyk Pump has it, use [Vector with the stdout pump](#send-records-with-vector-and-the-stdout-pump).
+The Tyk Pump `http` pump sends records directly to AI Studio. It is not in a Tyk Pump release yet. Until your Tyk Pump has it, use [Vector with the stdout pump](#send-records-with-vector-and-the-stdout-pump). {/* TODO: Name the Tyk Pump version that ships the http pump (TT-18824) and drop the Vector fallback note. */}
 
 Add the pump to `pump.conf`. Replace the URL with the address of your AI Studio, and `<INGEST_TOKEN>` with the ingest token:
 
@@ -274,11 +272,11 @@ Add the pump to `pump.conf`. Replace the URL with the address of your AI Studio,
 - [`omit_detailed_recording`](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables#omit_detailed_recording) keeps the raw requests and responses out of the batches.
 - [`dont_purge_uptime_data`](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables#dont_purge_uptime_data) is a top-level setting. Keep it `true` unless you run an uptime pump. If it is `false`, Tyk Pump looks for MongoDB and stops at start.
 
-Tyk Pump removes records from Redis when it reads them. If it cannot deliver a batch, it tries again `max_retries` times. {/* TODO: link reference for max_retries and timeout */} The wait between tries starts at half a second and doubles each time, within the pump `timeout`. With `max_retries: 3`, this covers about 3 seconds of AI Studio downtime. With `max_retries: 8`, it covers up to the 30-second `timeout`. After the last try, Tyk Pump drops the batch. For longer outages, run more than one AI Studio replica behind the ingest URL.
+Tyk Pump removes records from Redis when it reads them. It retries a failed batch `max_retries` times, with a wait that doubles each time, within the pump `timeout`. {/* TODO: link reference for max_retries and timeout */} With the example above (`max_retries: 8`, `timeout: 30`), this covers about 30 seconds of AI Studio downtime. After the last try, Tyk Pump drops the batch. For longer outages, run more than one AI Studio replica behind the ingest URL.
 
 ### Send Records With Vector and the Stdout Pump
 
-This method works with Tyk Pump 1.16 and later. The stdout pump writes the records to its output, and [Vector](https://vector.dev/) sends them to AI Studio.
+The stdout pump writes the records to its output, and [Vector](https://vector.dev/) sends them to AI Studio.
 
 1. Add the stdout pump to `pump.conf`. Also set [`dont_purge_uptime_data`](/tyk-pump/tyk-pump-configuration/tyk-pump-environment-variables#dont_purge_uptime_data) to `true`, unless you run an uptime pump.
 
@@ -345,7 +343,7 @@ Vector reads the output of Tyk Pump from the time that it attaches. If Vector is
 | `404` | Community Edition, or the integration is off. | Drops the batch |
 | `413` | The body is larger than 16 MiB, also after gzip expansion, or has more than 5000 records. | Drops the batch |
 | `415` | The `Content-Encoding` is not `gzip` or none. | Drops the batch |
-| `429` | The connection sent more than 20 batches a second. | Tries again |
+| `429` | The connection sent more than 20 batches a second, with bursts of up to 40. | Tries again |
 | `503` | AI Studio is busy. | Tries again |
 
 For the endpoint, refer to the [AI Studio API reference](/ai-management/ai-studio/ai-studio-swagger).
@@ -357,7 +355,7 @@ AI Studio assigns a call to an App in one of these ways:
 - The call uses a key that AI Studio issued for the App on this connection. AI Studio matches the key hash that the gateway records. If [`hash_keys`](/tyk-oss-gateway/configuration#hash_keys) is off on the gateway, it matches the key.
 - The key alias names an App that has a key on this connection.
 
-AI Studio does not issue keys for servers with OAuth, JWT, mTLS, or no authentication. It counts their calls for each server only. AI Studio does not store API keys, request or response bodies, or client addresses.
+Calls to [servers without keys](#servers-without-keys) count for each server only, without an App. AI Studio does not store API keys, request or response bodies, or client addresses.
 
 AI Portal users see the MCP usage of their own Apps only.
 
@@ -369,6 +367,7 @@ AI Portal users see the MCP usage of their own Apps only.
 - Tyk Gateway 5.15 writes no record when the MCP access rights of the key refuse a call. Tools that key access blocks do not show. Tyk Gateway 5.16 records these calls as errors. Tyk Gateway records calls with a missing or bad key, without an App.
 - REST-to-MCP proxies do not report the upstream latency. Use the total latency.
 - If a call arrives after you delete its server, AI Studio counts it as an unknown API and drops it.
+- AI Studio keeps MCP call records with no time limit. The table grows with MCP traffic.
 
 ## Permissions
 
