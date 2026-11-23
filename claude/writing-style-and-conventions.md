@@ -27,7 +27,7 @@ The above pages can be edited, but they reference snippets which are imported fr
 - `snippets/dashboard-config.mdx`
 - `snippets/pump-config.mdx`
 - `snippets/mdcb-config.mdx`
-- `snippets/env-type-mapping.mdx`
+
 
 ### Tyk OAS API Reference
 
@@ -116,6 +116,10 @@ Apply these rules to all content in this repository.
 ### Version Availability
 
 - Mark a new feature with `<Note>Available from Tyk X.Y.Z</Note>`, or an availability table that lists each component and version.
+
+### Dollar Signs
+
+- Mintlify renders text between two `$` characters as inline LaTeX math. Outside code blocks, put every `$` in backticks, for example `` `$TYK_OPERATOR_VERSION` `` or `` `$10` ``. A bare `$VAR` in prose, a callout, or a table cell can garble the rest of the paragraph.
 
 ### Diagrams
 
