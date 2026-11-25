@@ -27,7 +27,7 @@ There are two Edge Gateway variants:
 
 | Variant | Where it runs | Capabilities | Use case |
 |---------|---------------|-------------|----------|
-| **Embedded Gateway** | Inside AI Studio | LLM proxying, tool calling (REST + MCP), datasource querying. No filters, no middleware, no plugins. | Testing LLM configurations, powering the Chat interface |
+| **Embedded Gateway** | Inside AI Studio | LLM proxying with authentication, filters, budgets, and analytics. Tool calling (REST + MCP), datasource querying. No plugins. | Testing LLM configurations, powering the Chat interface |
 | **Edge Gateway** | Standalone binary, deployed at edge | Full middleware pipeline: authentication, filters, plugins, analytics, budget enforcement, tool calling (REST + MCP), datasource querying | Production data plane in hub-and-spoke deployments |
 
 Both variants rely on the core proxy library and access control mechanisms. The embedded gateway is lightweight, while the Edge Gateway offers the full feature set. Tools, datasources, and OAuth state are synced to edge gateways through the hub-spoke configuration system.
@@ -130,7 +130,7 @@ curl -X POST "https://your-gateway-host/llm/call/my-anthropic-config/v1/messages
   }'
 ```
 
-For SDK features that are not a single request, such as batches and the OpenAI Responses API, refer to [Native API Operations](#native-api-operations).
+For SDK features that are not a single request, such as batches and the OpenAI Responses API, refer to [Native API Operations](/ai-management/ai-studio/native-api-operations).
 
 #### Use Claude Code and the Anthropic SDKs
 
@@ -265,244 +265,12 @@ The AI Portal reads the value from AI Studio when it shows the Main Ingress on a
 
 The `{llmSlug}` in the endpoint path is automatically generated from the LLM configuration name when you create it. For example, an LLM named "My OpenAI Config" would have a slug like `my-openai-config`.
 
-## Native API Operations
-
-From v2.3.0, the vendor-native endpoint serves SDK features that are not a single `POST` request with a `model` field. The gateway applies the same model checks, filters, budgets, and analytics to these operations as to a synchronous call.
-
-| Vendor | Operations |
-| :--- | :--- |
-| Anthropic | Message Batches, `count_tokens` |
-| OpenAI | Responses, Conversations, Batches, Files |
-
-Each App owns the resources that it creates. The gateway signs batch, file, response, and conversation IDs for the App and the LLM, for example `msgbatch_01Hk….t1k3f2a9c1d.9b…`. Use an ID exactly as the gateway returns it. Another App, another LLM, or a changed ID gets `404`, and the request does not go to the vendor. Lists show only the resources of the calling App.
-
-### Anthropic Message Batches
-
-The SDK methods `client.messages.batches.create`, `retrieve`, `list`, `cancel`, `results`, and `delete` of the [Message Batches API](https://docs.anthropic.com/en/api/creating-message-batches) work on the vendor-native endpoint of an Anthropic LLM.
-
-The gateway checks each request in a batch:
-
-*   The `params.model` of each request must be an allowed model of the LLM. If not, the gateway returns `403` with the `custom_id` of the request.
-*   The request filters of the LLM run on each request. If a filter blocks one request, the gateway refuses the full batch with `400`. The batch does not go to Anthropic.
-*   The gateway refuses a body with a duplicate key with `400`, for example two `model` keys, or `messages` and `Messages`. The same rule applies to a synchronous `/v1/messages` call. Keys that differ only in case inside tool schemas or tool call inputs are allowed.
-*   The response filters run on each line of the results. A blocked line comes back as an `errored` result with the same `custom_id`.
-Usage and budgets:
-
-*   A batch create goes through the same [budget check](/ai-management/ai-studio/budgeting#batches-and-native-api-operations) as a synchronous call.
-*   The gateway records the usage of a batch one time, when a client first downloads the results. If no client downloads them, a background reconciler on the gateway that created the batch records the usage.
-*   The gateway prices the usage at the [batch tier](/ai-management/ai-studio/model-prices#service-tiers).
-
-The `results_url` of a batch points to the gateway, and the gateway streams the results line by line. To get an absolute URL, set [`PROXY_URL`](#native-api-settings) on AI Studio or [`GATEWAY_PUBLIC_URL`](#native-api-settings) on the Edge Gateway. Without these variables, `results_url` is a path such as `/v1/messages/batches/{id}/results`. The Python and TypeScript SDKs resolve this path against their base URL.
-
-Limitations:
-
-1.  The gateway that created a batch owns it and records its usage. On Edge Gateways, `list` shows only the batches that the edge created. Only the edge that created a batch can delete it. Other gateways return `409`. AI Studio replicas share one list.
-2.  You cannot delete a batch that is in progress (`409`). For an ended batch, the gateway records the usage first, then deletes the batch.
-3.  On an LLM with response plugins, a results download returns `501`. A plugin that changes response bodies cannot process a streamed results file.
-4.  Batches need a direct grant for the LLM. A grant through a failover waterfall or a Model Router gets `403`. Plugin upstream overrides do not apply to batch calls.
-5.  The gateway forwards only the `anthropic-version`, `anthropic-beta`, `content-type`, `accept`, and `x-request-id` headers, and only the `beta` query parameter. For workspaces, refer to [Anthropic Workspace](/ai-management/ai-studio/llm-management#anthropic-workspace).
-6.  If the database connection drops just after the gateway marks a batch as recorded, the gateway can lose its usage. The gateway never charges a batch two times.
-
-AI Studio signs batch IDs with a key that it generates for each LLM. When you rotate the Anthropic API key of the LLM, open batch IDs stay valid. To revoke open IDs, rotate the signing key. Refer to [Native API Resource IDs](/ai-management/ai-studio/llm-management#native-api-resource-ids). Standalone Edge Gateways sign with the API key.
-
-### Anthropic Token Counting
-
-Claude Code calls `client.messages.count_tokens` before most turns. The gateway checks these calls in the same way as a synchronous call. The `model` must be an allowed model (`403` if not), and the request filters of the LLM run on the request. The gateway logs the call. The call does not count against budgets.
-
-### OpenAI Responses and Conversations
-
-For OpenAI LLMs, the vendor-native endpoint supports these SDK methods:
-
-*   [Responses API](https://platform.openai.com/docs/api-reference/responses): `client.responses.create`, `retrieve`, `cancel`, `delete`, and `input_items.list`
-*   Conversations API: `client.conversations.create`, `retrieve`, `update`, `delete`, and `items`
-
-The gateway signs response IDs for the App and the LLM, for example `resp_67cc….t1k3f2a9c1d.9b…`. The signed `id` and `previous_response_id` appear in JSON responses and in every streamed event. Use them exactly as the gateway returns them. A request that uses the response of another App gets `404`, and the request does not go to OpenAI. This applies to `previous_response_id`, to retrieve, cancel, and delete, and to `responses.input_tokens` and `responses.compact`. Conversation IDs are signed in the same way.
-
-Filters and guardrails read these fields of a request:
-
-*   `instructions`
-*   A string `input`, or the text of each input item: messages, tool call outputs, tool call arguments, and the text of built-in items such as MCP call results, code interpreter logs, and reasoning summaries
-*   `prompt` variables
-
-A redaction goes back into the same field. The filters also screen items when a client stores them in a conversation. On an LLM with request filters, the gateway refuses some requests with `400`. This applies when the gateway cannot read the prompt fields. It also applies to an input item type that the gateway does not know.
-
-The gateway prices a synchronous or streamed response from its `usage`, with cached input tokens at the cache price. For a background response (`background: true`), the gateway that created it records the usage one time, when the response ends. A background reconciler polls the response. If you delete the response, the gateway records the usage first.
-
-Limitations:
-
-1.  The gateway does not accept response IDs from versions before 2.3.0 as `previous_response_id`. Start a new chain.
-2.  Only the gateway that created a background response can delete it, after it ends (`409` if not). Any gateway can delete other responses.
-3.  The gateway does not support a resumed background stream (`retrieve(..., stream=True)`) and returns `400`. Poll the response instead.
-4.  Each Responses call must contain `model`, because the gateway checks the model against the allowed models of the LLM. A call without `model` gets `400` (`model field is required`). This includes a call that uses the model of a stored prompt, or that names only a conversation.
-6.  The filters do not screen attached files. `input_file` parts, including base64 PDFs, pass without a check. The gateway sends a `file_id` in an `input_file` or `input_image` part to OpenAI without a check.
-8.  The gateway removes the `OpenAI-Organization` and `OpenAI-Project` headers from every Responses request. Responses always stay in the project of the API key of the LLM.
-
-For OpenAI LLMs, the filters also read the text of `/v1/embeddings`, `/v1/completions`, and `/v1/moderations` requests (`input`, `prompt`, and `suffix`). The filters cannot screen inputs in token array format. On an LLM with request filters, the gateway refuses these inputs with `400`.
-
-### OpenAI Batches and Files
-
-For OpenAI LLMs, the [Batch API](https://platform.openai.com/docs/guides/batch) works on the vendor-native endpoint with these SDK methods:
-
-*   `client.files.create(file=..., purpose="batch")`, `content`, `retrieve`, `list`, and `delete`
-*   `client.batches.create`, `retrieve`, `list`, and `cancel`
-
-The gateway checks each request in the file when a client uploads the file:
-
-*   The `body.model` of each request must be an allowed model. If not, the gateway returns `403` with the `custom_id`.
-*   The request filters of the LLM run on each body. If a filter blocks one request, the gateway refuses the upload.
-*   The gateway refuses a line with a duplicate key, an unsupported `url`, or a method other than `POST` with `400`.
-*   The gateway accepts only `purpose="batch"` uploads, in the multipart format that the OpenAI SDKs send. It refuses other multipart encodings with `400`. It also refuses a file name that contains a backslash or a double quote.
-
-A batch runs only under the filters that checked its file. On an LLM with filters, the gateway refuses a batch create with `400` if the request filters changed after the upload. An example is a guardrail that an administrator attached or edited. The same applies to files that a client uploaded before v2.3.0. On Edge Gateways, it also applies when the batch create goes to a different edge from the upload. Upload the file again, and create the batch from the new file ID.
-
-An App can create a batch only from its own file.
-
-The gateway that created a batch records its usage one time, at the [batch tier](/ai-management/ai-studio/model-prices#service-tiers), after the batch ends. You cannot delete an output file before the gateway records the usage of its batch (`409`).
-
-Limitations:
-
-1.  The upload size limit is [`NATIVE_API_MAX_BODY_BYTES`](#native-api-settings). On an LLM with filters, the file can contain at most [`NATIVE_API_MAX_FILTERED_ITEMS`](#native-api-settings) requests.
-2.  On Edge Gateways, only the edge that created a file or batch lists and deletes it. On an LLM with filters, create the batch through the edge that received its file.
-3.  The gateway ignores the `purpose` and `order` parameters of `files.list`.
-
-### Native API Settings
-
-These environment variables apply to AI Studio and to the Edge Gateway. An unset value or `0` keeps the default.
-
-| Variable | Default | Description |
-| :--- | :--- | :--- |
-| `PROXY_URL` (AI Studio), `GATEWAY_PUBLIC_URL` (Edge Gateway) | Not set | The public base URL for the `results_url` of a batch. When not set, `results_url` is a relative path. |
-| `NATIVE_API_MAX_BODY_BYTES` | `67108864` (64 MiB) | The size limit of a batch create or a batch file upload. The maximum is 256 MiB. |
-| `NATIVE_API_MAX_CONCURRENT_CREATES` | `4` | The number of batch creates that the gateway handles at the same time. |
-| `NATIVE_API_MAX_FILTERED_ITEMS` | `10000` | The maximum number of requests in a batch or file when the LLM has request filters. |
-| `NATIVE_API_MAX_GUARDRAIL_CALLS` | `10000` | The maximum number of remote guardrail provider calls for one batch create or upload. |
-| `NATIVE_API_MAX_IN_PROGRESS_PER_APP` | `0` (no limit) | The maximum number of batches in progress for each App and LLM. |
-| `NATIVE_API_RECONCILE_INTERVAL` | `30s` | The interval between two passes of the reconciler. |
-| `NATIVE_API_RECONCILE_BATCH` | `50` | The number of batches that the reconciler checks in one pass. |
-| `NATIVE_API_RECONCILE_WORKERS` | `4` | The number of batches that the reconciler processes at the same time. |
-| `NATIVE_API_POLL_INTERVAL` | `2m` | The time before the gateway polls an unfinished batch again. |
-| `NATIVE_API_POLL_MAX_BACKOFF` | `30m` | The longest wait after failed polls. |
-
-{/* TODO: Add reference links to each environment variable. */}
-
-The `aistudio_native_*` metrics count these operations. Refer to [Prometheus and OpenTelemetry Metrics](/ai-management/ai-studio/analytics#prometheus-and-opentelemetry-metrics).
-
 ## Model Router
 
 The Edge Gateway also routes requests through [Model Routers](/ai-management/ai-studio/model-router). A Model Router selects an LLM from a pool of vendors by model name pattern. Clients call a router on the Main Ingress with the model string `{routerSlug}/{model}`, in the same way as an LLM. The embedded gateway in AI Studio does not route through Model Routers.
 
 A [Semantic Router](/ai-management/ai-studio/semantic-router) selects the LLM from the text of the prompt. Clients call it on the Main Ingress with the model string `{routerSlug}/auto`.
 
-## Request IDs
-
-From v2.3.0, the gateway gives each request an ID. AI Studio and every Edge Gateway return the ID in the `X-Tyk-AI-Request-ID` response header, for example `X-Tyk-AI-Request-ID: tyai_0192d8a4f6b37c1e9a5b2d4c6e8f0a1b`.
-
-*   All the attempts of one request have the same ID. This includes the internal hop of the `/ai/` and `/anthropic/` endpoints, and each fallback of a failover waterfall.
-*   The ID is `tyai_` followed by a UUIDv7. IDs from different edges and AI Studio replicas do not collide.
-*   The gateway does not set or change the `X-Request-ID` header. When a request contains this header, AI Studio records its value as the client request ID. The value can have up to 128 characters of letters, digits, and `- _ . : /`.
-*   The gateway ignores an `X-Tyk-AI-Request-ID` header that a client sends.
-
-| Where | Field |
-| :--- | :--- |
-| Request logs on the App and LLM pages | `request_id`, `client_request_id`. The log search finds an exact match for either value. |
-| Guardrail and filter compliance events | `request_id` and `client_request_id` in the metadata. The event details have a link to the request log. |
-| HTTP guardrail classifiers | `meta.request_id` in the classify request |
-| Plugins | The `request_id` value of the request context |
-| Analytics plugins on Edge Gateways | `gateway_request_id`, `client_request_id` |
-
-Requests without usage, for example a policy block or a vendor or gateway error, also create a request log row. Edge Gateways send these rows to AI Studio with their analytics. AI Studio records them without a chat record or spend.
-
-## Outbound Network Policy
-
-From v2.3.0, AI Studio and the Edge Gateway refuse outbound connections to internal network addresses by default. Internal addresses include:
-
-*   Loopback (`localhost`, `127.0.0.0/8`, `::1`)
-*   Private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`)
-*   Shared address space (`100.64.0.0/10`)
-*   Link-local and cloud metadata addresses (`169.254.0.0/16`, `fe80::/10`)
-*   Multicast, reserved, and benchmarking ranges
-*   IPv6 prefixes that contain an IPv4 address (NAT64, 6to4)
-
-The check runs on the address that the gateway connects to, after DNS resolution. A hostname that resolves to an internal address is refused. A redirect to an internal address is also refused.
-
-| Variable | Default | Description |
-| :--- | :--- | :--- |
-| `LLM_UPSTREAM_BLOCK_INTERNAL` | `true` | `true` refuses internal addresses. `false` allows them. A value that is not a boolean stops AI Studio or the Edge Gateway at startup. |
-| `LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS` | Not set | A comma-separated list of hosts that can be internal. Blocking stays on for all other hosts. A value that starts with a dot matches a domain and its subdomains, for example `.svc.cluster.local`. Use it for a local Ollama, an in-cluster model server, or a classifier. |
-| `LLM_UPSTREAM_ALLOWED_HOSTS` | Not set | A global allowlist. When set, the gateway refuses all other hosts. |
-| `ALLOW_INTERNAL_NETWORK_ACCESS` | `false` | `true` removes all internal-address checks in the process, including plugin hosts. Use it for development only. |
-
-{/* TODO: Add reference links to each environment variable. */}
-
-AI Studio and the Edge Gateway log a warning at startup when internal addresses are allowed. Each process applies its own setting. When blocking is on at an edge, the edge refuses an internal upstream, whatever the setting of AI Studio is.
-
-The policy covers these outbound calls:
-
-*   LLM upstreams on all gateway routes (`/llm/`, `/ai/`, `/anthropic/`, `/v1`, native and Bedrock routes), on the embedded gateway and the Edge Gateway
-*   The LLM calls of AI Studio Chat and semantic routing, and embedders
-*   Guardrail providers (Enterprise)
-*   `tyk.makeHTTPRequest` in filter scripts (Enterprise). Only the environment variables can exempt a script host.
-*   Tool calls from chat, from the tool and MCP endpoints of the gateway, and from edges
-*   Data source and vector store connections
-*   The tool discovery call of AI Studio to a remote MCP server in the registration wizard (Enterprise)
-
-Plugin registries and `grpc://` plugin hosts follow the plugin host rule. This rule refuses internal addresses whatever the value of `LLM_UPSTREAM_BLOCK_INTERNAL` is. Refer to [Plugin Security](/ai-management/ai-studio/plugins/security).
-
-The policy does not cover SSO and identity providers, SMTP, the gRPC connection between AI Studio and edges, or marketplace index fetches. To restrict these connections, use network controls such as a Kubernetes `NetworkPolicy`, firewall rules, or an egress proxy.
-
-The gateway answers a refused upstream with `502`. The message gives the reason and the setting, for example: `upstream endpoint not permitted: upstream host "10.0.0.5" is an internal address — blocked by LLM_UPSTREAM_BLOCK_INTERNAL`.
-
-### Allow Internal Host
-
-LLMs, embedders, tools, data sources, guardrails, plugins, and MCP servers have an **Allow internal host** switch (`allow_internal_host` in the API). The switch is off by default. When it is on, the host of that asset can be an internal address. Blocking stays on for all other hosts, also for another asset on the same host.
-
-*   Only an administrator can change the switch. Other users get `403`. An update without the field keeps the stored value. Community submissions do not carry the switch.
-*   The switch of an LLM covers its endpoint and its linked embedders. It applies on gateway routes, routers, AI Studio Chat, and semantic routing.
-*   The switch removes only the internal-address check. `LLM_UPSTREAM_ALLOWED_HOSTS` still applies when set.
-*   When you turn the switch off, the change applies without a restart.
-*   Edge Gateways apply the switch for the assets that AI Studio pushes. Edges older than v2.3.0 ignore the switch and keep blocking.
-
 ## Configuration Reference
 
 To know more about configuring Edge Gateways, see the [Configuration Reference](/ai-management/ai-studio/edge-gateway-env) for detailed documentation on all environment variables.
-
-## Troubleshooting
-
-<AccordionGroup>
-
-<Accordion title="Edge Shows &quot;Disconnected&quot;">
-
-- Check network connectivity between the edge and control plane
-- Verify the edge gateway is running and healthy
-- Check edge gateway logs for connection errors
-- Ensure firewall rules allow gRPC traffic (default port 50051)
-
-</Accordion>
-
-<Accordion title="Edge Shows &quot;Pending&quot; After Push">
-
-- Wait a few seconds for the heartbeat cycle to complete
-- Check if the edge is connected (not disconnected)
-- Verify the edge gateway logs for configuration load errors
-- Check if the edge has sufficient permissions to fetch configuration
-
-</Accordion>
-
-<Accordion title="Checksum Mismatch Persists">
-
-- Try pushing configuration again
-- Check for configuration validation errors in edge logs
-- Verify the edge and control plane are running compatible versions
-- Check for database replication lag if using PostgreSQL replication
-
-</Accordion>
-
-<Accordion title="Sync Status Banner Doesn’t Disappear">
-
-- Verify all edges have successfully loaded the new configuration
-- Check for any disconnected edges that can't receive updates
-- Refresh the page to ensure the latest status is displayed
-
-</Accordion>
-
-</AccordionGroup>
