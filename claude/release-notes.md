@@ -42,6 +42,7 @@ A release note tells the user what changed. The topic page tells the user how to
 
 - Put a change in Breaking Changes if it changes default behavior or can break an existing deployment. Do not mention it only in the changelog. A new `allow_unsafe_*` opt-out option is a sign of a breaking change.
 - For each breaking change, give the previous behavior, what changed, who is affected, what happens to them and what to do. Give any opt-out option with its full path and default. If the opt-out weakens security, recommend it only as a temporary measure.
+- Describe the opt-out option for a breaking change in the changelog entry for that change and in Breaking Changes. Do not add a separate Added entry for the option.
 - Do not write "There are no breaking changes" when a change can affect existing users. For example, a Go version update in Tyk Gateway means users must rebuild their custom Go plugins. State the condition and link to the details.
 - In the changelog entry for a breaking change, write "This may affect existing <items>. See [Breaking Changes](#breaking-changes) for details."
 - For a deprecation, give the full configuration path with a link, the version that deprecated it, the reason and the replacement.
