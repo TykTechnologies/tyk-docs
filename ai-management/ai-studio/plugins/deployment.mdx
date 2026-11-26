@@ -208,12 +208,7 @@ curl -X POST http://localhost:3000/api/v1/plugins \
 
 #### Internal Network Access
 
-From Tyk AI Studio 2.3.0, AI Studio and the Edge Gateway refuse a `grpc://` plugin at an internal address. Examples are a private IP address and a cluster-internal service name. To allow an internal plugin host, use one of these options:
-
-- Turn on **Allow internal host** on the plugin. This allows only the hosts in the command of that plugin.
-- Add the host name to `LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS` on AI Studio and on each Edge Gateway that loads the plugin.
-
-Use `ALLOW_INTERNAL_NETWORK_ACCESS=true` only for local development. It allows every internal host on the platform. Refer to [Internal Registries and Hosts](/ai-management/ai-studio/plugins/security#internal-registries-and-hosts).
+From Tyk AI Studio 2.3.0, AI Studio and the Edge Gateway refuse a `grpc://` plugin at an internal address, such as a private IP address or a cluster-internal service name. To allow one host, turn on **Allow internal host** on the plugin, or add the host to `LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS`. Refer to [Internal Registries and Hosts](/ai-management/ai-studio/plugins/security#internal-registries-and-hosts).
 
 #### Load Balancing
 
@@ -324,13 +319,9 @@ From v2.2.0, AI Studio and the Edge Gateway stream plugin layers directly from t
 
 #### Signature Verification
 
-<Note>
-OCI signature verification is an Enterprise Edition feature. The Community Edition does not verify signatures. It loads OCI plugins as unverified and logs a warning once at startup. The block on internal network addresses for plugin hosts applies in both editions.
-</Note>
+From Tyk AI Studio 2.3.0, AI Studio and the Edge Gateway require a valid signature on each OCI plugin by default (Enterprise Edition). The Helm charts also require signatures by default. An unsigned plugin, or a plugin signed with a key that is not configured, does not load. The Community Edition does not verify signatures. It loads OCI plugins as unverified.
 
-From Tyk AI Studio 2.3.0, AI Studio and the Edge Gateway require a valid signature on each OCI plugin by default. Before 2.3.0, the AI Studio default was `false`. The Helm charts also require signatures by default. An unsigned plugin, or a plugin signed with a key that is not configured, does not load.
-
-The host verifies the signature in its own process. You do not need the `cosign` binary at runtime. The host reads the signature from the registry with the same registry authentication (`OCI_PLUGINS_REGISTRY_*`) as the plugin. You do not configure a Docker credential store. By default, the signature must also have a valid transparency log entry.
+The host verifies the signature in its own process, with the registry authentication of the plugin (`OCI_PLUGINS_REGISTRY_*`). You do not need the `cosign` binary or a Docker credential store.
 
 The host always trusts the Tyk signing key. To trust your own key or the key of a publisher, add it on AI Studio and on each Edge Gateway:
 
@@ -341,11 +332,9 @@ OCI_PLUGINS_PUBKEY_ACME="-----BEGIN PUBLIC KEY-----..."
 OCI_PLUGINS_PUBKEY_FILE_ACME=/path/to/cosign.pub
 ```
 
-When the `oci://` reference has no `pubkey` parameter, the host tries each configured key, and the Tyk key first. Marketplace installations use this behavior. To accept only one key for a plugin, add `?pubkey=ACME` to the reference.
-
 To load unsigned plugins while you develop a plugin, set `AI_STUDIO_OCI_REQUIRE_SIGNATURE=false` on AI Studio and `OCI_PLUGINS_REQUIRE_SIGNATURE=false` on the Edge Gateway.
 
-For the signature formats, the transparency log policy, key settings and Community Edition behavior, refer to [Signature Verification](/ai-management/ai-studio/plugins/security#signature-verification). To sign a plugin, refer to [Sign the Plugin](/ai-management/ai-studio/plugins/publishing#sign-the-plugin).
+For key selection with `?pubkey=`, the signature formats, the transparency log policy, key settings and Community Edition behavior, refer to [Signature Verification](/ai-management/ai-studio/plugins/security#signature-verification). To sign a plugin, refer to [Sign the Plugin](/ai-management/ai-studio/plugins/publishing#sign-the-plugin).
 
 #### Cloudsmith-Specific Notes
 
@@ -386,7 +375,7 @@ AI_STUDIO_OCI_CACHE_DIR=/var/cache/ai-studio/plugins
 OCI_PLUGINS_CACHE_DIR=/var/cache/microgateway/plugins
 ```
 
-From Tyk AI Studio 2.3.0, the host records the SHA-256 hash of each pulled binary. It checks the cached binary against this hash each time the plugin loads. After an upgrade from an earlier release, the host fetches each OCI plugin again on its first load. Make sure that the registry is available at that time. Refer to [Cached Plugin Binaries](/ai-management/ai-studio/plugins/security#cached-plugin-binaries).
+From Tyk AI Studio 2.3.0, the host checks each cached binary against its SHA-256 hash. After an upgrade, the host fetches each OCI plugin again on its first load, so the registry must be available. Refer to [Cached Plugin Binaries](/ai-management/ai-studio/plugins/security#cached-plugin-binaries).
 
 ## Security Considerations
 
@@ -402,37 +391,15 @@ The platform validates plugin commands:
 
 ### Production Security
 
-For production deployments:
-
-```bash
-# Accept only OCI plugins (set PLUGINS_ALLOWED_SOURCES on each Edge Gateway)
-AI_STUDIO_PLUGIN_ALLOWED_SOURCES=oci
-# Load OCI plugins only from these registries
-AI_STUDIO_OCI_ALLOWED_REGISTRIES=registry.example.com
-# Require signatures with a transparency log entry (the defaults, Enterprise Edition)
-AI_STUDIO_OCI_REQUIRE_SIGNATURE=true
-AI_STUDIO_OCI_TLOG_POLICY=required
-# Allow one internal registry by name. Keep ALLOW_INTERNAL_NETWORK_ACCESS unset.
-LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS=registry.corp.internal
-```
+Follow the [Production Checklist](/ai-management/ai-studio/plugins/security#production-checklist). For an example configuration, refer to [Restrict Plugin Sources](/ai-management/ai-studio/plugins/security#restrict-plugin-sources).
 
 `PLUGIN_BLOCK_INTERNAL_URLS` is deprecated. The host blocks internal plugin hosts by default.
 
-Restrict network egress and resources at the container or network layer. Refer to the [Production Checklist](/ai-management/ai-studio/plugins/security#production-checklist).
-
 ### Plugin Process Environment
 
-From Tyk AI Studio 2.3.0, AI Studio and the Edge Gateway start each `file://` and `oci://` plugin with an explicit environment. A plugin does not inherit the environment variables of its host. It gets only an allowlist of variables, such as `PATH`, proxy settings and Go runtime settings.
-
-To pass more host variables to plugins, set `PLUGIN_ENV_PASSTHROUGH` to a comma-separated list of names. An entry that ends in `*` matches a prefix:
-
-```bash
-PLUGIN_ENV_PASSTHROUGH="GITHUB_RAG_*"
-```
+From Tyk AI Studio 2.3.0, `file://` and `oci://` plugins do not inherit the environment of their host. They get only an allowlist of variables. To pass more host variables, set `PLUGIN_ENV_PASSTHROUGH`. Refer to [Plugin Environment](/ai-management/ai-studio/plugins/security#plugin-environment).
 
 The GitHub RAG ingest plugin reads `GITHUB_RAG_SECRET_ENCRYPTION_KEY` and `GITHUB_RAG_KNOWN_HOSTS` from its environment. If you set either variable, add `GITHUB_RAG_*` to `PLUGIN_ENV_PASSTHROUGH` before you upgrade. As an alternative, set `secret_encryption_key` and `known_hosts_path` in the plugin configuration. Without the key, repositories with encrypted credentials do not sync, and the plugin stores new credentials unencrypted.
-
-A `grpc://` plugin runs as its own process, outside the host. These rules do not apply to it. For the full allowlist, refer to [Plugin Environment](/ai-management/ai-studio/plugins/security#plugin-environment).
 
 ### Plugin Message Size
 
@@ -441,6 +408,8 @@ The host and the plugin exchange each hook call as one gRPC message. The message
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `PLUGIN_GRPC_MAX_MSG_BYTES` | `67108864` (64 MiB) | Largest message, in bytes, between the host and its plugins. Set it on the host. The host passes it to each plugin that it starts. |
+
+{/* TODO: Add reference links to each environment variable. */}
 
 On an Edge Gateway LLM with `pre_auth`, `auth` or `post_auth` plugins, the gateway refuses a request body over this limit with `413`.
 
