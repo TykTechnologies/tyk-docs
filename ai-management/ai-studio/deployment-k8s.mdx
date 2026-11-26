@@ -42,15 +42,15 @@ Before installing, generate three secret keys to secure communication and encryp
 ```bash expandable
 # Secret key for encryption (used for secrets management and SSO)
 openssl rand -hex 16
-# Example output: a35b3f7b0fb4dd3a048ba4fc6e9fe0a8
+# Example output (sample only, generate your own): xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 # Encryption key for Edge Gateway communication (must be exactly 32 hex chars)
 openssl rand -hex 16
-# Example output: 822d3d1e0e2d849263e45fc7bb842364
+# Example output (sample only, generate your own): yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
 
 # gRPC auth token (for hub-spoke communication)
 openssl rand -hex 16
-# Example output: 9f2c4a6b8d0e1f3a5c7d9e1b3a5c7d9e
+# Example output (sample only, generate your own): zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz
 ```
 
 Save these values — you will substitute them into the values file below.
@@ -79,7 +79,7 @@ Replace the placeholder secrets with your generated values. The `grpcAuthToken` 
 midsommar:
   image:
     repository: tykio/tyk-ai-studio-ent
-    tag: v2.2.2
+    tag: v2.3.0
   service:
     type: NodePort
     ports:
@@ -104,7 +104,7 @@ config:
   tykAiSecretKey: "CHANGE-ME-first-secret"
   tykAiLicense: "your-license-key"
   ociCacheDir: "./data/cache/plugins"
-  ociRequireSignature: "false"
+  ociRequireSignature: "false"                          # Development only: loads unsigned plugins (default "true")
   gatewayMode: "control"
   grpcPort: "50051"
   grpcHost: "0.0.0.0"
@@ -128,7 +128,7 @@ microgateway:
   enabled: true
   image:
     repository: tykio/tyk-microgateway-ent
-    tag: v2.2.2
+    tag: v2.3.0
   service:
     type: NodePort
     port: 8080
@@ -212,7 +212,7 @@ Replace all placeholder values with your actual configuration.
 midsommar:
   image:
     repository: tykio/tyk-ai-studio-ent
-    tag: v2.2.2
+    tag: v2.3.0
   ingress:
     enabled: true
     certificateEnabled: true
@@ -250,7 +250,7 @@ config:
   tykAiSecretKey: "CHANGE-ME-first-secret"
   tykAiLicense: "your-license-key"
   ociCacheDir: "./data/cache/plugins"
-  ociRequireSignature: "false"
+  ociRequireSignature: "true"
   gatewayMode: "control"
   grpcPort: "50051"
   grpcHost: "0.0.0.0"
@@ -267,7 +267,7 @@ microgateway:
   enabled: true
   image:
     repository: tykio/tyk-microgateway-ent
-    tag: v2.2.2
+    tag: v2.3.0
   ingress:
     enabled: true
     certificateEnabled: true
@@ -338,7 +338,7 @@ AI Studio pre-populates OpenAI and Anthropic LLM configurations on first startup
 
 ### Push Configuration to the Edge Gateway
 
-1. Navigate to **AI Portal → Edge Gateways** in the sidebar
+1. Navigate to **Portal administration → Edge Gateways** in the sidebar
 2. Verify that your Edge Gateway shows as **Connected**. Its Edge ID is the pod name, for example `midsommar-microgateway-64b5f9879d-mf5p2`.
 3. Click **Push Configuration** to sync the latest settings to the Edge Gateway
 
@@ -369,229 +369,3 @@ These values **must match** between AI Studio and Edge Gateway configuration:
 | 5432 | PostgreSQL | Database |
 
 ---
-
-## Advanced Configuration
-
-### Several AI Studio Replicas
-
-From v2.3, several AI Studio replicas can serve one PostgreSQL database. Set `replicaCount` above `1`. The chart then needs:
-
-- An external PostgreSQL database (`database.internal: false`). The bundled PostgreSQL is a single pod, and SQLite serves one process, so the render fails with either.
-- One `CSRF_KEY` for every replica (`config.csrfKey`). Generate it with `openssl rand -hex 32`. The render fails without it.
-
-With `replicaCount` above `1`, the chart also renders:
-
-- A rolling update that starts a new replica before it stops an old one. With one replica, the strategy stays `Recreate`.
-- A PodDisruptionBudget that keeps `podDisruptionBudget.minAvailable` (`1`) replicas through node drains.
-- A spread of the replicas over nodes and zones.
-- Cookie affinity on the nginx Ingress (`midsommar.ingress.sessionAffinity`). Chat, agent, and MCP SSE sessions stay on the replica that started them. For another ingress controller, set its own affinity annotations.
-
-The readiness probe uses `/ready`. Set `probes.readiness.requireWrite: true` to probe `/ready?require=write` instead.
-
-```yaml
-replicaCount: 3
-
-database:
-  internal: false
-  existingSecret: studio-database   # key DATABASE_URL
-
-config:
-  csrfKey: "<openssl rand -hex 32>"
-  databaseConnectTimeout: "3s"
-
-# The in-memory chat queue works only on one replica
-extraEnv:
-  - name: QUEUE_TYPE
-    value: "postgres"
-```
-
-The upgrade to v2.3 is not rolling. Stop every older replica before the first v2.3 replica starts. For this upgrade, set `midsommar.strategy.type: Recreate`, or scale to one replica first.
-
-To run AI Studio in two clusters over one replicated PostgreSQL database, refer to [Active-Active Deployment of Tyk AI Studio](/ai-management/ai-studio/deployment-active-active).
-
-### Message Queue (NATS)
-
-For distributed deployments with message persistence, set the NATS variables with `extraEnv` in your values file. The chart has no dedicated values for the queue. For all NATS variables, refer to [NATS JetStream Configuration](/ai-management/ai-studio/installation/nats).
-
-```yaml
-extraEnv:
-  - name: QUEUE_TYPE
-    value: "nats"
-  - name: NATS_URL
-    value: "nats://nats-server:4222"
-  - name: NATS_STORAGE_TYPE
-    value: "file"
-  - name: NATS_RETENTION_POLICY
-    value: "interest"
-  - name: NATS_MAX_AGE
-    value: "4h"
-  - name: NATS_TLS_ENABLED
-    value: "true"
-  - name: NATS_CREDENTIALS_FILE
-    value: "/etc/nats/user.creds"
-```
-
-### Optional Components
-
-#### Reranker Service
-
-Improves RAG result relevance:
-
-```yaml
-reranker:
-  enabled: true
-  image:
-    repository: tykio/reranker_cpu
-    tag: latest
-  resources:
-    requests:
-      cpu: 500m
-      memory: 1Gi
-```
-
-#### Transformer Server
-
-Handles embedding generation:
-
-```yaml
-transformer-server:
-  enabled: true
-  image:
-    repository: tykio/transformer_server_cpu
-    tag: latest
-  resources:
-    requests:
-      cpu: 500m
-      memory: 1Gi
-```
-
-### Scaling Edge Gateways
-
-Each Edge Gateway pod registers with AI Studio under its own pod name as its Edge ID. To deploy Edge Gateways for different regions, deploy a separate Helm release for each region and set a different `edgeNamespace`:
-
-```yaml
-microgateway:
-  config:
-    edgeNamespace: "eu-west"
-```
-
-Each Edge Gateway receives only the configuration assigned to its namespace.
-
-<Note>
-A Deployment gives each pod a new name after a restart, and AI Studio removes the stale entries. For stable Edge IDs (for example, `midsommar-microgateway-0`), set `microgateway.kind: StatefulSet`.
-</Note>
-
-### Database Options
-
-**Internal PostgreSQL** (testing/small deployments):
-
-```yaml expandable
-database:
-  internal: true
-  user: "tyk"
-  password: "secure-password"
-  name: "tyk_ai_studio"
-
-postgres:
-  persistence:
-    enabled: true
-    size: 10Gi
-    storageClass: "standard"
-```
-
-**External Database** (production):
-
-```yaml
-database:
-  internal: false
-  url: "postgres://user:password@your-db-host:5432/tyk_ai_studio?sslmode=require"
-```
-
----
-
-
-## Maintenance
-
-### Upgrading
-
-```bash
-helm upgrade midsommar . -f your-values.yaml
-```
-
-From v2.2.1, the AI Studio Deployment uses the `Recreate` strategy (`midsommar.strategy`). Kubernetes stops the old AI Studio pod before it starts the new one, so two AI Studio instances never run at the same time. During an upgrade, AI Studio is not available for a short time. Edge Gateways continue to serve traffic.
-
-### Uninstalling
-
-```bash
-helm uninstall midsommar
-```
-
-### Viewing Logs
-
-```bash
-# AI Studio logs
-kubectl logs -l app.kubernetes.io/name=midsommar
-
-# Edge Gateway logs
-kubectl logs -l app=microgateway
-
-# Database logs (internal postgres)
-kubectl logs -l app=postgres
-```
-
-## Troubleshooting
-
-<AccordionGroup>
-
-<Accordion title="Check pod and ingress status">
-
-```bash
-kubectl get pods
-kubectl get ingress
-kubectl describe pod <pod-name>
-````
-
-</Accordion>
-
-<Accordion title="Common Issues">
-
-* **Database connection failures**: Check credentials and network access
-* **Ingress not working**: Verify DNS records and TLS configuration
-* **Login fails on HTTP**: Set `devMode: "true"` — session cookies require this when not using HTTPS
-* **Marketplace page is empty**: Set `ociCacheDir: "./data/cache/plugins"` in your config values — the marketplace service will not start without it
-* **Plugin signature verification**: Docker images use distroless bases without cosign. Set `ociRequireSignature: "false"` to disable signature verification
-
-</Accordion>
-
-<Accordion title="Pods restart during the first install">
-
-On the first install, the AI Studio pod can restart until PostgreSQL is ready. The Edge Gateway pod can restart until the AI Studio gRPC server is ready. These restarts are normal. The pods recover without action. Check that all pods show `Running` and `READY 1/1`:
-
-```bash
-kubectl get pods
-```
-
-</Accordion>
-
-<Accordion title="Registration fails with an unexpected error">
-
-In AI Studio v2.1.x, over plain HTTP, the CSRF check accepts browser requests only from `localhost:3000`. Registration from any other address fails with `403 Forbidden - origin invalid`. Upgrade to v2.2.0 or later. From v2.2.0, AI Studio also accepts requests from the host in `SITE_URL`.
-
-</Accordion>
-
-<Accordion title="Edge Gateway cannot connect to AI Studio">
-
-* Verify the Edge Gateway pod logs:
-
-```bash
-kubectl logs -l app=microgateway
-```
-
-* Check that `CONTROL_ENDPOINT` resolves to the AI Studio service (default: `midsommar:50051`)
-* Verify `edgeAuthToken` matches `grpcAuthToken` exactly
-* Verify `encryptionKey` matches `microgatewayEncryptionKey` exactly
-* Check that `GATEWAY_MODE=control` is set in AI Studio config
-
-</Accordion>
-
-</AccordionGroup>
