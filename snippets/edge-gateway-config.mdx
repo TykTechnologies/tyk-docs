@@ -69,9 +69,9 @@ The type of database to use (`sqlite` or `postgres`).
 ### DATABASE_DSN
 ENV: <b>DATABASE_DSN</b><br />
 Type: `string`<br />
-Default: `file:./data/microgateway.db?cache=shared&mode=rwc`<br />
+Default: `file:./data/microgateway.db?mode=rwc`<br />
 
-The database connection string.
+The database connection string. For a SQLite file, from v2.3.0, the Edge Gateway adds `_journal_mode=WAL`, `_busy_timeout=5000`, `_synchronous=NORMAL`, and `_txlock=immediate` when the string does not set them, and removes `cache=shared`. On a network file system, set `_journal_mode=DELETE`.
 
 ### DB_MAX_OPEN_CONNS
 ENV: <b>DB_MAX_OPEN_CONNS</b><br />
@@ -226,7 +226,7 @@ ENV: <b>ENCRYPTION_KEY</b><br />
 Type: `string`<br />
 Default: `change-me-in-production`<br />
 
-The encryption key.
+The encryption key. Change the default value in production. From v2.3.0, a standalone Edge Gateway uses this key to hash its stored API tokens. An Edge Gateway in edge mode uses it to encrypt its stored configuration snapshot. If you change the key, all API tokens stop working, and the Edge Gateway cannot read the stored snapshot.
 
 ### BCRYPT_COST
 ENV: <b>BCRYPT_COST</b><br />
@@ -310,13 +310,13 @@ ENV: <b>GATEWAY_MODE</b><br />
 Type: `string`<br />
 Default: `standalone`<br />
 
-The gateway mode (`standalone` or `edge`).
+The gateway mode (`standalone` or `edge`). The value `control` is deprecated: register Edge Gateways with AI Studio. In Enterprise builds, a gateway in `control` mode serves only the default namespace.
 
 ### CONTROL_ENDPOINT
 ENV: <b>CONTROL_ENDPOINT</b><br />
 Type: `string`<br />
 
-The gRPC endpoint of the control plane.
+The gRPC endpoint of the control plane. To give the Edge Gateway more than one control plane, use `CONTROL_ENDPOINTS`. Do not set both variables.
 
 ### EDGE_ID
 ENV: <b>EDGE_ID</b><br />
@@ -516,3 +516,269 @@ ENV: <b>GOMEMLIMIT</b><br />
 Type: `string`<br />
 
 The Go soft memory limit. When not set, the Edge Gateway sets it to 90% of the container memory limit. Available from v2.2.0.
+
+### CONTROL_ENDPOINTS
+ENV: <b>CONTROL_ENDPOINTS</b><br />
+Type: `string`<br />
+
+An ordered, comma-separated list of control planes (`host:port`). Put the control plane of the Edge Gateway's own region first. When the connection fails, the Edge Gateway tries the other endpoints in list order. All endpoints must be replicas of one AI Studio deployment. Do not set both `CONTROL_ENDPOINTS` and `CONTROL_ENDPOINT`: the Edge Gateway does not start. For more information, see [Active-active deployment](/ai-management/ai-studio/deployment-active-active). Available from v2.3.0.
+
+### EDGE_CONTROL_FAILBACK_INTERVAL
+ENV: <b>EDGE_CONTROL_FAILBACK_INTERVAL</b><br />
+Type: `duration`<br />
+Default: `0`<br />
+
+When the Edge Gateway is not connected to the first endpoint of `CONTROL_ENDPOINTS`, it tries that endpoint at this interval, for example `5m`. `0` turns this off: the Edge Gateway stays on its current control plane until the connection ends. Available from v2.3.0.
+
+### EDGE_START_FROM_LAST_KNOWN_GOOD
+ENV: <b>EDGE_START_FROM_LAST_KNOWN_GOOD</b><br />
+Type: `boolean`<br />
+Default: `false`<br />
+
+When no control plane answers at startup, the Edge Gateway starts from the configuration snapshot that it applied last. The snapshot is in the database of the Edge Gateway, encrypted with `ENCRYPTION_KEY`. The Edge Gateway can then serve LLMs, Apps, and filters that an administrator removed after the snapshot, until it connects again. Available from v2.3.0.
+
+### EDGE_STARTUP_CONTROL_TIMEOUT
+ENV: <b>EDGE_STARTUP_CONTROL_TIMEOUT</b><br />
+Type: `duration`<br />
+Default: `30s`<br />
+
+How long the Edge Gateway tries its control endpoints at startup before it uses the stored snapshot. Applies when `EDGE_START_FROM_LAST_KNOWN_GOOD` is `true`. Available from v2.3.0.
+
+### EDGE_LAST_KNOWN_GOOD_MAX_AGE
+ENV: <b>EDGE_LAST_KNOWN_GOOD_MAX_AGE</b><br />
+Type: `duration`<br />
+Default: `72h`<br />
+
+The maximum time since the last contact with a control plane for a start from the stored snapshot. When this time is longer, the Edge Gateway does not start. `0` sets no limit. Available from v2.3.0.
+
+### EDGE_CREDENTIAL_SYNC
+ENV: <b>EDGE_CREDENTIAL_SYNC</b><br />
+Type: `string`<br />
+Default: `on_demand`<br />
+
+How the Edge Gateway validates App keys:
+
+- `on_demand`: the Edge Gateway asks the control plane about a key that it has not seen, and caches the answer.
+- `full`: the Edge Gateway keeps keyed hashes of the App keys of its namespace in its database. It validates keys from that list, also when no control plane is available. It asks the control plane about a key that is not on the list. `full` needs Enterprise Edition on the Edge Gateway and on AI Studio v2.3.0 or later. A Community Edition Edge Gateway logs a warning and uses `on_demand`.
+
+Available from v2.3.0.
+
+### EDGE_CREDENTIAL_SYNC_MAX_AGE
+ENV: <b>EDGE_CREDENTIAL_SYNC_MAX_AGE</b><br />
+Type: `duration`<br />
+Default: `24h`<br />
+
+How long the Edge Gateway trusts the synced key list after the last successful sync. After this time, it validates keys on demand until a sync succeeds. `0` sets no limit. Enterprise Edition only. Available from v2.3.0.
+
+### GATEWAY_PUBLIC_URL
+ENV: <b>GATEWAY_PUBLIC_URL</b><br />
+Type: `string`<br />
+
+The absolute base URL at which clients reach the Edge Gateway. Native API operations use it in the URLs they return, for example the `results_url` of an Anthropic batch. When not set, these URLs are relative paths. Available from v2.3.0.
+
+### PLUGINS_ALLOWED_SOURCES
+ENV: <b>PLUGINS_ALLOWED_SOURCES</b><br />
+Type: `string`<br />
+
+A comma-separated list of the plugin deployment types that the Edge Gateway accepts: `oci`, `file`, and `grpc`. When not set, the Edge Gateway accepts all types. The Edge Gateway applies this list to the plugins that AI Studio sends. It does not load a plugin of a type that is not in the list. An unknown type stops startup. For more information, see [Plugin security](/ai-management/ai-studio/plugins/security). Available from v2.3.0.
+
+### OCI_PLUGINS_REQUIRE_SIGNATURE
+ENV: <b>OCI_PLUGINS_REQUIRE_SIGNATURE</b><br />
+Type: `boolean`<br />
+Default: `true`<br />
+
+Requires a valid signature on OCI plugins. The Edge Gateway does not load an unsigned plugin, or a plugin that has a signature from a key that you did not configure. An invalid value stops startup. Enterprise Edition only.
+
+### OCI_PLUGINS_PUBKEY_*
+ENV: <b>OCI_PLUGINS_PUBKEY_*</b><br />
+Type: `string`<br />
+
+Public keys for OCI plugin signatures. `OCI_PLUGINS_PUBKEY_<N>` and `OCI_PLUGINS_PUBKEY_<NAME>` hold a PEM key. `OCI_PLUGINS_PUBKEY_FILE_<NAME>` holds the path to a PEM file. When a plugin command does not name a key with `?pubkey=`, the Edge Gateway accepts the plugin if one of the configured keys verifies it. Configure the same keys on AI Studio and on each Edge Gateway. Enterprise Edition only.
+
+### OCI_PLUGINS_TLOG_POLICY
+ENV: <b>OCI_PLUGINS_TLOG_POLICY</b><br />
+Type: `string`<br />
+Default: `required`<br />
+
+Sets whether an OCI plugin signature needs a transparency log (Rekor) entry. `required` needs an entry. `optional` checks an entry when the signature has one. `disabled` checks the signature against the key only. An invalid value stops startup. Enterprise Edition only. Available from v2.3.0.
+
+### OCI_PLUGINS_TRUSTED_ROOT_FILE
+ENV: <b>OCI_PLUGINS_TRUSTED_ROOT_FILE</b><br />
+Type: `string`<br />
+
+The path to a Sigstore `trusted_root.json` file for a private Sigstore deployment. When not set, the Edge Gateway uses its built-in Sigstore trusted root. Enterprise Edition only. Available from v2.3.0.
+
+### LLM_UPSTREAM_BLOCK_INTERNAL
+ENV: <b>LLM_UPSTREAM_BLOCK_INTERNAL</b><br />
+Type: `boolean`<br />
+Default: `true`<br />
+
+Refuses outbound connections to internal and reserved IP addresses, by IP address or by a hostname that resolves to one. This includes LLMs, tools, data sources, guardrail providers, and plugin registries. Set the same value on AI Studio and on each Edge Gateway. A value that is not a boolean stops startup. From v2.3.0, the default is `true`.
+
+### LLM_UPSTREAM_ALLOWED_HOSTS
+ENV: <b>LLM_UPSTREAM_ALLOWED_HOSTS</b><br />
+Type: `string`<br />
+
+A comma-separated allow list of upstream hostnames. An entry that starts with `.` matches the domain and all its subdomains. When not set, the Edge Gateway allows all hosts.
+
+### LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS
+ENV: <b>LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS</b><br />
+Type: `string`<br />
+
+A comma-separated list of internal hostnames that the Edge Gateway allows when `LLM_UPSTREAM_BLOCK_INTERNAL` is `true`. For example, `.svc.cluster.local` allows all Kubernetes Services. Name internal plugin registries here too.
+
+### ALLOW_INTERNAL_NETWORK_ACCESS
+ENV: <b>ALLOW_INTERNAL_NETWORK_ACCESS</b><br />
+Type: `boolean`<br />
+Default: `false`<br />
+
+Turns off all internal address checks. Use it for development only. The Edge Gateway logs a warning at startup. Plugins do not get this variable unless you add it to `PLUGIN_ENV_PASSTHROUGH`.
+
+### TYK_AI_LICENSE
+ENV: <b>TYK_AI_LICENSE</b><br />
+Type: `string`<br />
+
+The license key of an Enterprise Edge Gateway. An Enterprise Edge Gateway with a missing, expired, or invalid license stops before it opens its database. From v2.3.0, the Edge Gateway does not start with a license issued for v2.2 or earlier. A `-migrate` run also needs the license. {/* TODO: link to license page once merged */}
+
+### PLUGIN_ENV_PASSTHROUGH
+ENV: <b>PLUGIN_ENV_PASSTHROUGH</b><br />
+Type: `string`<br />
+
+A comma-separated list of host environment variables to pass to plugins. Plugins get only a built-in list of process, locale, TLS, proxy, and Go runtime variables, plus the variables in this list. An entry that ends in `*` matches a prefix. Available from v2.3.0.
+
+### PLUGIN_GRPC_MAX_MSG_BYTES
+ENV: <b>PLUGIN_GRPC_MAX_MSG_BYTES</b><br />
+Type: `integer`<br />
+Default: `67108864`<br />
+
+The largest message in bytes between the Edge Gateway and its plugins (64 MiB). A plugin that you build with an SDK earlier than v2.3.0 keeps a limit of 4 MiB. Available from v2.3.0.
+
+### DB_LOG_SQL_PARAMS
+ENV: <b>DB_LOG_SQL_PARAMS</b><br />
+Type: `boolean`<br />
+Default: `false`<br />
+
+Adds the values of SQL parameters to SQL log lines. The values can contain credentials, so use this setting for local debugging only. Available from v2.3.0.
+
+### NATIVE_API_*
+ENV: <b>NATIVE_API_*</b><br />
+Type: `integer` or `duration`<br />
+
+The limits and timings of native API operations, such as Anthropic Message Batches: `NATIVE_API_MAX_BODY_BYTES`, `NATIVE_API_MAX_CONCURRENT_CREATES`, `NATIVE_API_MAX_FILTERED_ITEMS`, `NATIVE_API_MAX_GUARDRAIL_CALLS`, `NATIVE_API_MAX_IN_PROGRESS_PER_APP`, `NATIVE_API_RECONCILE_INTERVAL`, `NATIVE_API_RECONCILE_BATCH`, `NATIVE_API_RECONCILE_WORKERS`, `NATIVE_API_POLL_INTERVAL`, and `NATIVE_API_POLL_MAX_BACKOFF`. The names, defaults, and meanings are the same as on AI Studio. For more information, see the [AI Studio environment variables](/ai-management/ai-studio/ai-studio-env). Available from v2.3.0.
+
+### GUARDRAIL_*
+ENV: <b>GUARDRAIL_*</b><br />
+Type: `integer`, `duration`, or `string`<br />
+
+The guardrail cache, scan, and shadow settings. The names, defaults, and meanings are the same as on AI Studio. For more information, see the [AI Studio environment variables](/ai-management/ai-studio/ai-studio-env). Enterprise Edition only. Available from v2.3.0.
+
+### GODEBUG
+ENV: <b>GODEBUG</b><br />
+Type: `string`<br />
+
+Go runtime settings. A FIPS build of the Edge Gateway starts in FIPS 140-3 mode. `GODEBUG=fips140=off` turns off FIPS mode. `GODEBUG=fips140=only` refuses all algorithms that FIPS does not approve, for tests. {/* TODO: link to fips page once merged */} Available from v2.3.0.
+
+### AGENT_TRACING_ENABLED
+ENV: <b>AGENT_TRACING_ENABLED</b><br />
+Type: `boolean`<br />
+Default: `false`<br />
+
+Turns on capture for Agent Call Tracing on the Edge Gateway. The Edge Gateway sends the captured events to AI Studio. AI Studio sets all other tracing settings. {/* TODO: link to agent-tracing page once merged */} Enterprise Edition only. Available from v2.3.0.
+
+### AGENT_TRACING_QUEUE_MAX_EVENTS
+ENV: <b>AGENT_TRACING_QUEUE_MAX_EVENTS</b><br />
+Type: `integer`<br />
+Default: `10000`<br />
+
+The maximum number of events in the in-memory capture queue. Enterprise Edition only. Available from v2.3.0.
+
+### AGENT_TRACING_QUEUE_MAX_BYTES
+ENV: <b>AGENT_TRACING_QUEUE_MAX_BYTES</b><br />
+Type: `integer`<br />
+Default: `67108864`<br />
+
+The maximum size in bytes of the in-memory capture queue (64 MiB). Enterprise Edition only. Available from v2.3.0.
+
+### AGENT_TRACING_MAX_STREAM_BUFFER_BYTES
+ENV: <b>AGENT_TRACING_MAX_STREAM_BUFFER_BYTES</b><br />
+Type: `integer`<br />
+Default: `1048576`<br />
+
+The maximum size in bytes of the buffer for one streamed response that tracing captures (1 MiB). Enterprise Edition only. Available from v2.3.0.
+
+### AGENT_TRACING_FLUSH_INTERVAL
+ENV: <b>AGENT_TRACING_FLUSH_INTERVAL</b><br />
+Type: `duration`<br />
+Default: `10s`<br />
+
+How often the Edge Gateway sends captured events to AI Studio. Enterprise Edition only. Available from v2.3.0.
+
+### AGENT_TRACING_FLUSH_MAX_EVENTS
+ENV: <b>AGENT_TRACING_FLUSH_MAX_EVENTS</b><br />
+Type: `integer`<br />
+Default: `500`<br />
+
+The maximum number of events in one flush. Enterprise Edition only. Available from v2.3.0.
+
+### AGENT_TRACING_CHUNK_MAX_BYTES
+ENV: <b>AGENT_TRACING_CHUNK_MAX_BYTES</b><br />
+Type: `integer`<br />
+Default: `4194304`<br />
+
+The maximum size in bytes of the captured events in one pulse (4 MiB). A value above 8 MiB uses the default. Enterprise Edition only. Available from v2.3.0.
+
+### AGENT_TRACING_KEEP_LIVE_SPAN
+ENV: <b>AGENT_TRACING_KEEP_LIVE_SPAN</b><br />
+Type: `boolean`<br />
+Default: `false`<br />
+
+Keeps the OpenTelemetry span of the Edge Gateway for captured calls while AI Studio exports the assembled spans. Use it when the OpenTelemetry collector of the Edge Gateway is not the export target of AI Studio. With a shared collector, each call appears two times. Enterprise Edition only. Available from v2.3.0.
+
+### AGENT_TRACING_BAGGAGE_ALLOWLIST
+ENV: <b>AGENT_TRACING_BAGGAGE_ALLOWLIST</b><br />
+Type: `string`<br />
+Default: `session.id`<br />
+
+A comma-separated list of the W3C `baggage` keys that the Edge Gateway forwards to LLM and tool upstreams. The Edge Gateway removes all other keys. `none` forwards no baggage. This setting applies in all editions, also when tracing is off. Available from v2.3.0.
+
+### AGENT_TRACING_COMPAT_HEADERS
+ENV: <b>AGENT_TRACING_COMPAT_HEADERS</b><br />
+Type: `string`<br />
+Default: `helicone,portkey,openrouter,bifrost,agent_router,cloudflare,agentcore,mcp_session`<br />
+
+A comma-separated list of the header families of other gateways that tracing reads as declared context. `none` sets an empty list. Enterprise Edition only. Available from v2.3.0.
+
+### AGENT_TRACING_HARNESS_SESSION_HEADERS
+ENV: <b>AGENT_TRACING_HARNESS_SESSION_HEADERS</b><br />
+Type: `string`<br />
+Default: `claude_code,codex_cli,opencode`<br />
+
+A comma-separated list of the coding tools whose session headers tracing reads. Other entries are header names that tracing reads as a session ID. `none` sets an empty list. Enterprise Edition only. Available from v2.3.0.
+
+### AGENT_TRACING_PROPAGATE_LLM_PROVIDERS
+ENV: <b>AGENT_TRACING_PROPAGATE_LLM_PROVIDERS</b><br />
+Type: `boolean`<br />
+Default: `true`<br />
+
+Sends trace context to LLM providers. Enterprise Edition only. Available from v2.3.0.
+
+### AGENT_TRACING_PROPAGATE_HTTP_UPSTREAMS
+ENV: <b>AGENT_TRACING_PROPAGATE_HTTP_UPSTREAMS</b><br />
+Type: `boolean`<br />
+Default: `true`<br />
+
+Sends trace context to HTTP upstreams, such as tools. Enterprise Edition only. Available from v2.3.0.
+
+### AGENT_TRACING_PROPAGATE_MCP
+ENV: <b>AGENT_TRACING_PROPAGATE_MCP</b><br />
+Type: `boolean`<br />
+Default: `true`<br />
+
+Sends trace context to MCP servers. Enterprise Edition only. Available from v2.3.0.
+
+### AGENT_TRACING_OPENAI_CLIENT_REQUEST_ID
+ENV: <b>AGENT_TRACING_OPENAI_CLIENT_REQUEST_ID</b><br />
+Type: `boolean`<br />
+Default: `true`<br />
+
+Sends the span ID to OpenAI upstreams in the `X-Client-Request-Id` header. Enterprise Edition only. Available from v2.3.0.
