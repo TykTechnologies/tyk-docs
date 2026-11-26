@@ -26,7 +26,7 @@ The gateway groups the calls into three levels:
 
 You read each session as a transcript or a timeline in the admin console. You can export a session as JSON or Markdown. You can also send finished turns to an OpenTelemetry (OTLP) backend, such as Langfuse or Datadog LLM Observability.
 
-Tracing is off by default. When you turn it on, AI Studio captures metadata only: timing, tokens, cost, models, tool names, and gateway decisions. Capture of prompt and response content is a separate setting.
+Tracing is off by default. When you turn it on, AI Studio captures timing, tokens, cost, models, tool names, and gateway decisions. It captures no prompt or response content until you set a content mode. Refer to [Content Capture](#content-capture).
 
 ## How Agent Call Tracing Works
 
@@ -34,7 +34,7 @@ AI Studio builds the traces in four stages.
 
 ### Capture
 
-For each call, the gateway records one event. The event contains these items:
+The gateway records one event for each call. Each event contains:
 
 - The timing, the App, and the user
 - The model or the tool
@@ -54,7 +54,7 @@ One AI Studio replica turns the staged events into sessions, turns, and spans. I
 
 ### Read and Export
 
-Administrators read the sessions in **Agent sessions** in the admin console. Optionally, AI Studio exports finished turns over OTLP.
+Administrators read the sessions in **Agent sessions** in the admin console. If you configure exporters, AI Studio also exports finished turns over OTLP. Refer to [OpenTelemetry Export](#opentelemetry-export).
 
 ## What the Gateway Can See
 
@@ -88,7 +88,13 @@ The gateway sees only the traffic that goes through it. Coverage depends on wher
 
 AI Studio derives two keys from the root key. One key creates the fingerprints and the correlation index. The other key encrypts the captured content with AES-256-GCM.
 
-To rotate the root key, set the new value in `AGENT_TRACING_KEY` and move the old value to `AGENT_TRACING_KEY_PREVIOUS`. AI Studio can read data that either key encrypted. It does not encrypt old content again. Keep the previous key until the content retention period ends. AI Studio supports one previous key only.
+To rotate the root key:
+
+1. Set the new value in `AGENT_TRACING_KEY`.
+2. Move the old value to `AGENT_TRACING_KEY_PREVIOUS`. AI Studio supports one previous key only.
+3. Restart AI Studio.
+
+AI Studio reads content that either key encrypted. It does not encrypt old content again, so keep the previous key until the content retention period ends.
 
 ### Configure Edge Gateways
 
@@ -102,7 +108,7 @@ An Edge Gateway captures traffic only when all these conditions are true:
 
 If one condition is false, the Edge Gateway logs a warning and does not capture.
 
-An Edge Gateway sends captured content only over a verified TLS connection to AI Studio. If `EDGE_TLS_ENABLED=false` or `EDGE_SKIP_TLS_VERIFY=true`, the Edge Gateway sends metadata only, and logs a warning at start. Its spans have the attribute `tyk.content.withheld=edge_link_unverified_tls`. To capture content from Edge Gateways, use verified TLS. Refer to [TLS](/ai-management/ai-studio/manage-edge-gateway#tls).
+An Edge Gateway sends captured content only over a verified TLS connection to AI Studio. If `EDGE_TLS_ENABLED=false` or `EDGE_SKIP_TLS_VERIFY=true`, the Edge Gateway sends metadata only and logs a warning at start. Its spans then have the attribute `tyk.content.withheld=edge_link_unverified_tls`. Refer to [TLS](/ai-management/ai-studio/manage-edge-gateway#tls).
 
 ### Turn Tracing Off for One App
 
@@ -110,7 +116,9 @@ An Edge Gateway sends captured content only over a verified TLS connection to AI
 2. Set **Tracing** to **Off**.
 3. Save the App.
 
-AI Studio then records nothing of the traffic of this App. To change the **Tracing** section of an App, a user needs the `traces:write` permission. Refer to [App Settings](#app-settings).
+{/* TODO: Add screenshot: the Tracing section of an App, with Tracing set to Off. */}
+
+AI Studio then records nothing of the traffic of this App. For the other App settings, refer to [App Settings](#app-settings).
 
 ## Permissions
 
@@ -122,15 +130,16 @@ AI Studio then records nothing of the traffic of this App. To change the **Traci
 | `traces:delete` | Purge sessions and erase the data of an end user. |
 | `traces:write` | Change the tracing settings of Apps, LLMs, tools, and datasources. |
 
-`trace-content:read` is a sensitive permission. The built-in Viewer, Editor, and Auditor roles have `traces:read`, but they do not have `trace-content:read`. The Editor role cannot export or purge sessions, and cannot change tracing settings. Grant `trace-content:read` only to the users that must read captured content. Refer to [Role-Based Access Control](/ai-management/ai-studio/rbac#built-in-roles).
+The built-in Viewer, Editor, and Auditor roles have `traces:read`, but not `trace-content:read`. The Editor role also cannot export or purge sessions, or change tracing settings. `trace-content:read` is sensitive. Grant it only to the users that must read captured content. Refer to [Role-Based Access Control](/ai-management/ai-studio/rbac#built-in-roles).
 
 ### Pseudonyms for End Users
 
-The client declares the end user and the external session id of a session. These values can be personal data, such as an email address. A user without `trace-content:read` sees each value as a pseudonym. A pseudonym is 32 hex characters. It is always the same for the same value. The pseudonyms show in the session list, the session details, the search results, and the exports.
+The client declares the end user and the external session id of a session. These values can be personal data, such as an email address. A user without `trace-content:read` sees each value as a pseudonym:
 
-A user without `trace-content:read` can still filter by the real end user id or session id. The results show pseudonyms. A pseudonym is not a valid filter value.
-
-The names of AI Studio users are not pseudonyms. AI Studio shows them as they are.
+- A pseudonym is 32 hex characters. It is always the same for the same value.
+- Pseudonyms show in the session list, the session details, the search results, and the exports.
+- The user can still filter by the real end user id or session id. The results show pseudonyms. A pseudonym is not a valid filter value.
+- The names of AI Studio users are not pseudonyms. AI Studio shows them as they are.
 
 ### Content Access and the Audit Trail
 
@@ -159,7 +168,10 @@ AI Studio replaces binary content with a reference, unless `AGENT_TRACING_PAYLOA
 AI Studio selects the content mode of each call in these steps:
 
 1. **The base mode**: The **Content mode** of the App. If the App does not set one, AI Studio uses `AGENT_TRACING_CONTENT_DEFAULT_MODE`. The global ceiling, `AGENT_TRACING_CONTENT_CEILING`, limits the base mode.
-2. **The request header**: A client can send the `X-Tyk-Trace-Capture` header to ask for a different mode. The header can always lower the mode. It can raise the mode only to the request ceiling. The request ceiling is `AGENT_TRACING_CONTENT_MAX_REQUEST_OVERRIDE`, or the **Highest mode a request may ask for** of the App if that is lower. The header can never go above the global ceiling.
+2. **The request header**: A client can send the `X-Tyk-Trace-Capture` header to ask for a different mode.
+   - The header can always lower the mode.
+   - The header can raise the mode up to the request ceiling. The request ceiling is `AGENT_TRACING_CONTENT_MAX_REQUEST_OVERRIDE`, or the **Highest mode a request may ask for** of the App if that is lower.
+   - The header can never go above the global ceiling.
 3. **The resource maximum**: The **Maximum content mode** of the LLM, tool, or datasource limits the result. This also applies to a header that raises the mode.
 4. **The store cap**: `AGENT_TRACING_STORE_CONTENT_MODE_CAP` is the highest mode that AI Studio ever stores.
 
@@ -168,6 +180,8 @@ If you do not set `AGENT_TRACING_CONTENT_CEILING`, the global ceiling is the hig
 If AI Studio cannot find the App of a call, or cannot read its settings, it captures no content. A header cannot change this.
 
 To see the global ceiling and the default mode, select **Capture settings** on the **Agent sessions** page.
+
+{/* TODO: Add screenshot: the Capture settings panel on the Agent sessions page. */}
 
 ### Examples
 
@@ -202,7 +216,7 @@ To capture content for some Apps only, set the ceiling, and then set the **Conte
 
 When AI Studio truncates a part, the JSON stays valid. AI Studio marks the cut with `…[truncated N bytes]`.
 
-AI Studio compresses the stored content and encrypts it with AES-256-GCM. Each payload is bound to its App, span, and part. You cannot move a payload to a different App, span, or part.
+AI Studio compresses each payload and binds it to its App, span, and part. You cannot move a payload to a different App, span, or part.
 
 ## Sessions, Turns, and Correlation
 
@@ -215,7 +229,7 @@ A session is declared or inferred:
 
 A session closes after the session idle timeout. A later call opens it again.
 
-An inferred session does not grow forever. When it reaches `AGENT_TRACING_SESSION_MAX_DURATION` or `AGENT_TRACING_SESSION_MAX_SPANS`, it closes at its next turn. The next calls start a new inferred session. AI Studio never splits a turn. The session details show **Continued from** and **Continues in** links between the parts. AI Studio never splits a declared session.
+An inferred session closes at its next turn when it reaches `AGENT_TRACING_SESSION_MAX_DURATION` or `AGENT_TRACING_SESSION_MAX_SPANS`. The next calls start a new inferred session. The session details link the parts with **Continued from** and **Continues in**. AI Studio never splits a turn or a declared session.
 
 ### Turns
 
@@ -247,7 +261,7 @@ Some clients send a tool result without the id of its tool call. For example, Ol
 
 ## Improve Your Traces
 
-Tracing works without changes to the agent. Request headers let the gateway group calls exactly instead of inferring the groups.
+Request headers are optional. They let the gateway group calls exactly, instead of inferring the groups.
 
 ### Tyk Headers
 
@@ -300,17 +314,17 @@ The gateway also reads these sources:
 
 To select which sources the gateway reads, use `AGENT_TRACING_COMPAT_HEADERS` and `AGENT_TRACING_HARNESS_SESSION_HEADERS`.
 
+{/* TODO: Add AGENT_TRACING_COMPAT_HEADERS and AGENT_TRACING_HARNESS_SESSION_HEADERS (defaults, accepted values) to the Configuration Reference for AI Studio and Edge Gateway, and link them here. */}
+
 ### Precedence
 
-When a request sends more than one source, the first source in this table wins:
+When a request sends more than one source, the source with the lowest number wins:
 
 | Value | Order |
 | :--- | :--- |
 | Trace id and parent span | 1. MCP `_meta.traceparent` (MCP calls only)<br/>2. `traceparent`<br/>3. `X-Tyk-Trace-Id` and `X-Tyk-Parent-Span-Id`<br/>4. Portkey headers<br/>5. Cloudflare headers |
 | Session | 1. `X-Tyk-Session-Id`<br/>2. Compatible headers<br/>3. Baggage<br/>4. Body fields<br/>5. Coding agent headers |
 | Session name, end user, agent name, and agent path | 1. `X-Tyk-*` header<br/>2. Compatible header<br/>3. Baggage<br/>4. Body field |
-
-Explicit headers win over baggage. Baggage travels across services, so it must not override the header of a sub-agent.
 
 ## Read Agent Sessions
 
@@ -341,6 +355,8 @@ AI Studio shows captured text as plain Markdown. It does not load images or show
    - **JSON (metadata)**
    - **JSON with content**: Only for users with `trace-content:read`.
    - **Markdown transcript**: A readable transcript, up to 512 KiB. It includes content if you have `trace-content:read`.
+
+{/* TODO: Add screenshot: the Export menu of a session. */}
 
 The JSON export uses the type `application/vnd.tyk.agent-trace+json; v=1`. The `X-Tyk-Export-Content` response header shows `included` or `not-included`. AI Studio refuses exports that are larger than 64 MiB.
 
@@ -408,7 +424,7 @@ If the exporters file is not valid, AI Studio turns off the export. Tracing cont
 - The attributes follow the OpenTelemetry GenAI semantic conventions 1.41 (`genai-1.41`). Tyk attributes use the `tyk.` prefix, such as `tyk.app.id`, `tyk.session.id`, and `tyk.correlation.confidence`.
 - During the export, the gateways do not send their own live proxy span for a captured call. Thus, each call appears in the backend one time.
 
-If an Edge Gateway sends its own OpenTelemetry spans to a different collector than the AI Studio export, set `AGENT_TRACING_KEEP_LIVE_SPAN=true` on that Edge Gateway. The Edge Gateway then keeps its live span. Do not set it if the Edge Gateway and AI Studio send to the same collector. Each call then appears two times.
+If an Edge Gateway sends its own OpenTelemetry spans to a different collector than the AI Studio export, set `AGENT_TRACING_KEEP_LIVE_SPAN=true` on that Edge Gateway to keep its live span. If the Edge Gateway and AI Studio send to the same collector, do not set it: each call then appears two times.
 
 For the OpenTelemetry settings of the gateway, refer to [Observability](/ai-management/ai-studio/observability#tracing).
 
@@ -416,7 +432,7 @@ For the OpenTelemetry settings of the gateway, refer to [Observability](/ai-mana
 
 - **Retention**: AI Studio deletes sessions, turns, and spans after `AGENT_TRACING_METADATA_RETENTION_DAYS`. It deletes captured content after `AGENT_TRACING_PAYLOAD_RETENTION_DAYS`, or after the **Keep captured content (days)** value of the App. Content never stays longer than metadata. The retention job runs every 10 minutes.
 - **Sampling**: `AGENT_TRACING_STORE_SAMPLE_RATE` sets the share of sessions that AI Studio stores. For other sessions, AI Studio keeps only a summary with counts and cost.
-- **Purge a session**: Send `DELETE /api/v1/agent-tracing/sessions/{id}`. AI Studio deletes the spans, links, content, and correlation keys of the session. For a declared session, it also deletes the captures that wait for assembly. A later call can create an inferred session again from its waiting captures.
+- **Purge a session**: Send `DELETE /api/v1/agent-tracing/sessions/{id}`. AI Studio deletes the spans, links, content, and correlation keys of the session. For a declared session, it also deletes the captures that wait for assembly. For an inferred session, these captures stay, and they can create the session again. To erase all data of an end user, use the erase request.
 - **Erase an end user**: Send `POST /api/v1/agent-tracing/purge` with the body `{"end_user": "<id>"}`. AI Studio deletes each session that the client declared for this end user, and their waiting captures. Use this for a data subject erasure request.
 
 A purge needs the `traces:delete` permission. The admin console does not have a purge action.
@@ -433,15 +449,13 @@ The end user goes to each OTLP exporter as `user.id`, including third-party back
 
 A pseudonym is still personal data. A person with the key, or a person who can hash candidate values, can find the end user.
 
-`gen_ai.conversation.id` contains the session id that the client declared, without changes. Thus, clients must not put personal data in session ids.
+`gen_ai.conversation.id` contains the session id that the client declared, without changes.
 
 A purge or an erasure does not delete spans that AI Studio already exported. Send erasure requests to your OTLP backends too.
 
 ## Configuration Reference
 
 AI Studio reads these variables at start. If a value is not valid, AI Studio uses the default and logs a warning. An invalid content mode becomes `off`. A list is comma-separated, and `none` is an empty list.
-
-{/* TODO: Add reference links to each environment variable. */}
 
 ### AI Studio
 
@@ -468,7 +482,7 @@ AI Studio reads these variables at start. If a value is not valid, AI Studio use
 | `AGENT_TRACING_FORWARD_TYK_HEADERS` | `false` | Sends the `X-Tyk-*` tracing headers upstream. |
 | `AGENT_TRACING_BAGGAGE_ALLOWLIST` | `session.id` | The W3C baggage keys that the gateway sends upstream. This also applies in Community Edition. |
 | `AGENT_TRACING_METADATA_RETENTION_DAYS` | `30` | The number of days that AI Studio keeps sessions, turns, and spans. |
-| `AGENT_TRACING_PAYLOAD_RETENTION_DAYS` | `7` | The number of days that AI Studio keeps captured content. It is never more than the metadata retention. |
+| `AGENT_TRACING_PAYLOAD_RETENTION_DAYS` | `7` | The number of days that AI Studio keeps captured content. |
 | `AGENT_TRACING_STORE_SAMPLE_RATE` | `1.0` | The share of sessions that AI Studio stores. |
 | `AGENT_TRACING_EXPORTERS_FILE` | Empty | The path of the exporters file. If empty, AI Studio does not export. |
 | `AGENT_TRACING_EXPORT_SEMCONV_PROFILE` | `genai-1.41` | The attribute mapping profile, or the path of a mapping YAML file. |
@@ -477,11 +491,13 @@ AI Studio reads these variables at start. If a value is not valid, AI Studio use
 | `AGENT_TRACING_EXPORT_CONVERSATION_ID_FALLBACK` | `never` | Set to `inferred` to also put inferred session ids in `gen_ai.conversation.id`. |
 | `AGENT_TRACING_METRICS_INCLUDE_APP_ID` | `true` | Adds `tyk.app.id` to the agent metrics. |
 
+{/* TODO: Add reference links to each environment variable. */}
+
 The size limit variables are in [Size Limits](#size-limits).
 
 ### Edge Gateway
 
-An Edge Gateway reads only these variables. It gets all other settings from AI Studio.
+An Edge Gateway reads these variables. It also reads `AGENT_TRACING_COMPAT_HEADERS` and `AGENT_TRACING_HARNESS_SESSION_HEADERS` from its own environment. It gets the content settings and the fingerprint key from AI Studio.
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
@@ -494,6 +510,8 @@ An Edge Gateway reads only these variables. It gets all other settings from AI S
 | `AGENT_TRACING_BAGGAGE_ALLOWLIST` | `session.id` | The W3C baggage keys that the Edge Gateway sends upstream. |
 | `AGENT_TRACING_KEEP_LIVE_SPAN` | `false` | Keeps the live OpenTelemetry span of the Edge Gateway for captured calls. Refer to [How the Export Runs](#how-the-export-runs). |
 
+{/* TODO: Add reference links to each environment variable. */}
+
 ### App Settings
 
 Open an App and expand **Tracing**. A field that is set to **Inherit** uses the global value.
@@ -502,9 +520,9 @@ Open an App and expand **Tracing**. A field that is set to **Inherit** uses the 
 | :--- | :--- |
 | **Tracing** | **Off** stops all capture for the App. |
 | **Content mode** | The content mode of the App, up to the global ceiling. |
-| **Highest mode a request may ask for** | The request ceiling of the App. It can only be lower than the global request ceiling. |
+| **Highest mode a request may ask for** | The request ceiling of the App. It cannot be higher than the global request ceiling. |
 | **Session idle timeout** | From 1 minute to 168 hours, for example `30m` or `2h`. |
-| **Keep captured content (days)** | From 0 to 365. It is never more than the metadata retention. |
+| **Keep captured content (days)** | From 0 to 365. |
 
 ### LLM, Tool, and Datasource Settings
 
@@ -513,4 +531,4 @@ Each LLM, tool, and datasource has a **Tracing** section:
 - **Maximum content mode**: The highest mode that AI Studio captures of calls to this resource, for all Apps.
 - **Don't send trace context to this provider**: LLMs only. The gateway does not send `traceparent`, `tracestate`, or baggage to this LLM. This setting also works in Community Edition.
 
-To change these settings, a user needs the `traces:write` permission.
+{/* TODO: Add screenshot: the Tracing section of an LLM, with Maximum content mode. */}
