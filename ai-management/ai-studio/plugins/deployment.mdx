@@ -28,11 +28,13 @@ Tyk AI Studio supports three plugin deployment methods: local filesystem (`file:
 | `grpc://` | Production, distributed systems | Remote deployment, scalable | Requires network setup, more complex |
 | `oci://` | Production, containerized | Version control, registry management | Requires OCI registry, packaging overhead |
 
+An administrator can turn off a deployment method. Set `AI_STUDIO_PLUGIN_ALLOWED_SOURCES` on AI Studio and `PLUGINS_ALLOWED_SOURCES` on each Edge Gateway. Refer to [Restrict Plugin Sources](/ai-management/ai-studio/plugins/security#restrict-plugin-sources).
+
 ## file:// - Local Filesystem
 
 Deploy plugins from the local filesystem.
 
-> **Safety settings:** By default, local filesystem plugin loading has safety restrictions that prevent loading from arbitrary paths. For development, you may need to adjust these settings in your configuration to allow local path loading and absolute paths. See the Security Considerations section below for details on `ALLOW_INTERNAL_NETWORK_ACCESS` and `PLUGIN_COMMAND_ALLOWLIST`.
+> **Safety settings:** AI Studio runs local plugin binaries only from allowed directories. Refer to [Security Considerations](#security-considerations).
 
 ### Building Your Plugin
 
@@ -206,17 +208,7 @@ curl -X POST http://localhost:3000/api/v1/plugins \
 
 #### Internal Network Access
 
-By default, plugins cannot access internal networks. For development:
-
-```bash
-export ALLOW_INTERNAL_NETWORK_ACCESS=true
-```
-
-For production, use allowlist:
-
-```bash
-export PLUGIN_COMMAND_ALLOWLIST="grpc://10.0.0.0/8,grpc://172.16.0.0/12"
-```
+From Tyk AI Studio 2.3.0, AI Studio and the Edge Gateway refuse a `grpc://` plugin at an internal address, such as a private IP address or a cluster-internal service name. To allow one host, turn on **Allow internal host** on the plugin, or add the host to `LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS`. Refer to [Internal Registries and Hosts](/ai-management/ai-studio/plugins/security#internal-registries-and-hosts).
 
 #### Load Balancing
 
@@ -316,7 +308,7 @@ Both runtimes use the same `OCI_PLUGINS_REGISTRY_*` environment variables for au
 | Setting | AI Studio | Edge Gateway |
 |---------|-----------|-------------|
 | **Enable OCI** | `AI_STUDIO_OCI_CACHE_DIR=/path` | `OCI_PLUGINS_CACHE_DIR=/path` (default: `/var/lib/microgateway/plugins`) |
-| **Require signatures** | `AI_STUDIO_OCI_REQUIRE_SIGNATURE=true` | `OCI_PLUGINS_REQUIRE_SIGNATURE=true` |
+| **Require signatures** | `AI_STUDIO_OCI_REQUIRE_SIGNATURE` (default `true`) | `OCI_PLUGINS_REQUIRE_SIGNATURE` (default `true`) |
 | **Registry auth** | `OCI_PLUGINS_REGISTRY_*` (shared) | `OCI_PLUGINS_REGISTRY_*` (shared) |
 
 **Important**: `AI_STUDIO_OCI_CACHE_DIR` must be set for OCI plugin support to be enabled in AI Studio. Without it, OCI plugins cannot be installed or loaded, and registry auth configuration is ignored.
@@ -327,33 +319,11 @@ From v2.2.0, AI Studio and the Edge Gateway stream plugin layers directly from t
 
 #### Signature Verification
 
-<Note>
-OCI signature verification is an Enterprise Edition feature. In the Community Edition, `AI_STUDIO_OCI_REQUIRE_SIGNATURE` and `OCI_PLUGINS_REQUIRE_SIGNATURE` have no effect, and AI Studio logs a warning at startup if you set them. The block on internal network addresses for plugin hosts applies in both editions. For local development, set `ALLOW_INTERNAL_NETWORK_ACCESS=true` to turn it off.
-</Note>
+From Tyk AI Studio 2.3.0, AI Studio and the Edge Gateway require a valid signature on each OCI plugin by default (Enterprise Edition). The Helm charts also require signatures by default. An unsigned plugin, or a plugin signed with a key that is not configured, does not load.
 
-When signature verification is enabled (Enterprise Edition), the `cosign` tool verifies plugin signatures against the registry. Cosign uses the standard Docker credential store (`~/.docker/config.json`) for registry authentication — it does **not** use the `OCI_PLUGINS_REGISTRY_*` environment variables.
+The host verifies the signature in its own process, with the registry authentication of the plugin (`OCI_PLUGINS_REGISTRY_*`). You do not need the `cosign` binary or a Docker credential store.
 
-To configure cosign auth in containerized environments:
-
-```bash
-# Create Docker config with registry credentials
-mkdir -p ~/.docker
-echo '{"auths":{"docker.tyk.io":{"auth":"'$(echo -n 'token:YOUR_ENTITLEMENT' | base64)'"}}}' > ~/.docker/config.json
-```
-
-For Kubernetes, mount a Docker config secret:
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: oci-registry-creds
-type: kubernetes.io/dockerconfigjson
-data:
-  .dockerconfigjson: <base64-encoded-docker-config>
-```
-
-Configure public keys for signature verification:
+The host always trusts the Tyk signing key. To trust your own key or the key of a publisher, add it on AI Studio and on each Edge Gateway:
 
 ```bash
 # Public key for verifying plugin signatures (PEM content)
@@ -362,7 +332,9 @@ OCI_PLUGINS_PUBKEY_ACME="-----BEGIN PUBLIC KEY-----..."
 OCI_PLUGINS_PUBKEY_FILE_ACME=/path/to/cosign.pub
 ```
 
-Select the key with `?pubkey=ACME` in the `oci://` reference. Without `pubkey`, AI Studio uses the built-in Tyk signing key. Refer to [Public Keys](/ai-management/ai-studio/plugins/publishing#public-keys).
+To load unsigned plugins while you develop a plugin, set `AI_STUDIO_OCI_REQUIRE_SIGNATURE=false` on AI Studio and `OCI_PLUGINS_REQUIRE_SIGNATURE=false` on the Edge Gateway.
+
+For key selection with `?pubkey=`, the signature formats, the transparency log policy, key settings and Community Edition behavior, refer to [Signature Verification](/ai-management/ai-studio/plugins/security#signature-verification). To sign a plugin, refer to [Sign the Plugin](/ai-management/ai-studio/plugins/publishing#sign-the-plugin).
 
 #### Cloudsmith-Specific Notes
 
@@ -403,47 +375,50 @@ AI_STUDIO_OCI_CACHE_DIR=/var/cache/ai-studio/plugins
 OCI_PLUGINS_CACHE_DIR=/var/cache/microgateway/plugins
 ```
 
+From Tyk AI Studio 2.3.0, the host checks each cached binary against its SHA-256 hash. After an upgrade, the host fetches each OCI plugin again on its first load, so the registry must be available. Refer to [Cached Plugin Binaries](/ai-management/ai-studio/plugins/security#cached-plugin-binaries).
+
 ## Security Considerations
+
+Plugins run as separate processes with the privileges of the host. Install only plugins that you trust. For the complete security model, refer to [Plugin Security](/ai-management/ai-studio/plugins/security).
 
 ### Command Validation
 
-The platform validates plugin commands for security:
+The platform validates plugin commands:
 
 1. **Absolute Paths**: `file://` commands must use absolute paths. The path must be in an allowed directory (`AI_STUDIO_PLUGIN_ALLOWED_DIRS`).
-2. **Internal Network Block**: By default, `grpc://` commands cannot target internal IPs (10.x.x.x, 172.16-31.x.x, 192.168.x.x, 127.x.x.x, localhost)
-3. **Allowlist**: Configure allowed commands via `PLUGIN_COMMAND_ALLOWLIST`
-
-Example warnings:
-
-```
-⚠️  PLUGIN SECURITY WARNING: Plugin command uses absolute path outside standard directories.
-⚠️  PLUGIN SECURITY WARNING: Plugin command targets internal network address
-```
+2. **Internal Hosts**: AI Studio and the Edge Gateway refuse `oci://` registries and `grpc://` hosts at internal addresses. Refer to [Internal Network Access](#internal-network-access). `PLUGIN_BLOCK_INTERNAL_URLS` is deprecated.
+3. **Allowlist**: `PLUGIN_COMMAND_ALLOWLIST` is advisory. The host logs a warning for a command that does not match it, but it still accepts the command. Its entries are comma-separated substrings.
 
 ### Production Security
 
-For production deployments:
+Follow the [Production Checklist](/ai-management/ai-studio/plugins/security#production-checklist). For an example configuration, refer to [Restrict Plugin Sources](/ai-management/ai-studio/plugins/security#restrict-plugin-sources).
 
-1. **Disable Internal Network Access**:
-   ```bash
-   export ALLOW_INTERNAL_NETWORK_ACCESS=false
-   export PLUGIN_BLOCK_INTERNAL_URLS=true
-   ```
+### Plugin Process Environment
 
-2. **Use Allowlist**:
-   ```bash
-   export PLUGIN_COMMAND_ALLOWLIST="/usr/local/plugins/*,grpc://plugins.prod.svc/*"
-   ```
+From Tyk AI Studio 2.3.0, `file://` and `oci://` plugins do not inherit the environment of their host. They get only an allowlist of variables. To pass more host variables, set `PLUGIN_ENV_PASSTHROUGH`. Refer to [Plugin Environment](/ai-management/ai-studio/plugins/security#plugin-environment).
 
-3. **Use OCI with Signed Images**:
-   - Sign images with Cosign or Notary
-   - Verify signatures before deployment
-   - Use content trust
+The GitHub RAG ingest plugin reads `GITHUB_RAG_SECRET_ENCRYPTION_KEY` and `GITHUB_RAG_KNOWN_HOSTS` from its environment. If you set either variable, add `GITHUB_RAG_*` to `PLUGIN_ENV_PASSTHROUGH` before you upgrade. As an alternative, set `secret_encryption_key` and `known_hosts_path` in the plugin configuration. Without the key, repositories with encrypted credentials do not sync, and the plugin stores new credentials unencrypted.
 
-4. **Principle of Least Privilege**:
-   - Run plugins with minimal permissions
-   - Use read-only filesystems where possible
-   - Implement network policies in Kubernetes
+### Plugin Message Size
+
+The host and the plugin exchange each hook call as one gRPC message. The message holds the body, the headers and the context. From Tyk AI Studio 2.3.0, plugins built on the 2.3.0 SDK accept the host limit below.
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `PLUGIN_GRPC_MAX_MSG_BYTES` | `67108864` (64 MiB) | Largest message, in bytes, between the host and its plugins. Set it on the host. The host passes it to each plugin that it starts. |
+
+{/* TODO: Add reference links to each environment variable. */}
+
+On an Edge Gateway LLM with `pre_auth`, `auth` or `post_auth` plugins, the gateway refuses a request body over this limit with `413`.
+
+A plugin built on an SDK before 2.3.0 accepts only 4 MiB. When such a plugin refuses a larger message:
+
+- For `pre_auth`, `auth` and `post_auth` plugins, the gateway returns `413` with `request too large for the gateway's plugins (<bytes> bytes)`. It does not forward the request. The log names the plugin.
+- For response plugins, the gateway sends the response without the changes of that plugin. It logs the plugin name and the size.
+
+Rebuild your request-path plugins on the 2.3.0 SDK. A `grpc://` plugin sets its own server limit.
+
+Calls from a plugin to the [Service API](/ai-management/ai-studio/plugins/service-api) are limited to 8 MiB for each message.
 
 ## Troubleshooting
 
@@ -459,7 +434,24 @@ For production deployments:
 - Check absolute path is correct for `file://`
 - Verify network connectivity for `grpc://`
 - Check registry authentication for `oci://`
+- Check that the plugin is signed and that its key is configured, for `oci://` (Enterprise Edition)
+- Check that `AI_STUDIO_PLUGIN_ALLOWED_SOURCES` or `PLUGINS_ALLOWED_SOURCES` allows the source
+- Look for log lines that start with `plugin host "<host>" is an internal address`
 - Review plugin logs for initialization errors
+
+On an Edge Gateway, requests to an LLM with a plugin that cannot load get `503` with the error code `plugin_load_failed`. Refer to [When a Plugin Cannot Be Loaded](/ai-management/ai-studio/plugins/edge-gateway#when-a-plugin-cannot-be-loaded).
+
+</Accordion>
+
+<Accordion title="Large Requests Return 413">
+
+**Symptoms**: Requests with large bodies, such as screenshots or PDF documents, fail with `413` and `request too large for the gateway's plugins`
+
+**Solutions**:
+
+* Rebuild the plugins of the LLM on the 2.3.0 SDK. The log names the plugin.
+* Upgrade the shipped plugins to their 2.3.0 releases.
+* Check `PLUGIN_GRPC_MAX_MSG_BYTES`. Refer to [Plugin Message Size](#plugin-message-size).
 
 </Accordion>
 
@@ -557,6 +549,9 @@ go build -o plugin main.go
 oras push registry.example.com/plugins/my-plugin:v1.2.3 \
   --artifact-type application/vnd.tyk.plugin.binary.v1 \
   ./plugin:application/vnd.tyk.plugin.layer.v1
+
+# 4. Sign by digest (signatures are required by default)
+cosign sign --key plugin-signing.key registry.example.com/plugins/my-plugin@<digest>
 
 # 5. Deploy to staging
 curl -X POST .../plugins -d '{"command": "oci://registry.../my-plugin:v1.2.3-rc.1", ...}'
