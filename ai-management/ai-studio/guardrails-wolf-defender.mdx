@@ -12,7 +12,7 @@ sidebarTitle: "Wolf Defender Guardrail"
 | :------------- | :---------------------- |
 | [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
 
-The Wolf Defender guardrail is available from v2.3.0. It connects through the [HTTP classifier](/ai-management/ai-studio/guardrails#http-classifier) provider. Guardrails are an Enterprise feature. In the Community Edition, AI Studio does not run guardrails.
+The Wolf Defender guardrail is available from Tyk AI Studio 2.3.0.
 
 ## Overview
 
@@ -27,17 +27,23 @@ The guardrail scores four stages of an agent conversation:
 | `user_message` | The text of the user, or the prompt of a bot runner around untrusted text | Block |
 | `tool_definition` | The description and the schema of a tool, for example a poisoned MCP tool | Remove the tool |
 
-For each stage, the guardrail reports three detector levels: `<stage>.review`, `<stage>.block`, and `<stage>.critical`. The filter selects the levels to act on and the action. A detector at one level also matches the levels above it. For example, a filter with `tool_result.block` acts on block and critical findings. A filter with `tool_result.critical` acts only on critical findings. Thus, you can use two filters. One filter stops the conversation on critical findings. The other filter quarantines block findings.
+For each stage, the guardrail reports three detector levels: `<stage>.review`, `<stage>.block`, and `<stage>.critical`. A detector matches its own level and the levels above it, so `tool_result.block` acts on block and critical findings. To act differently on each level, use two filters. For example, one filter stops the conversation on `tool_result.critical`, and the other quarantines on `tool_result.block`.
 
 The guardrail also does these things in addition to the model:
 
-- It applies rules without the model. Some tool calls are critical immediately, for example a call that reads credentials. A shell command that sends a file over the network is also critical. So is a call that contains a planted canary string. The guardrail also flags hidden text, such as Unicode tag characters and bidirectional controls.
+- It applies rules without the model. For example, a tool call that reads credentials, sends a file over the network, or contains a planted canary string is critical. The guardrail also flags hidden text, such as Unicode tag characters and bidirectional controls.
 - It keeps a verdict store. Agents send the full history again with each request. The guardrail answers known text from its store. A flagged tool result stops each later request in the same conversation.
 - It reads a versioned YAML policy. The policy holds the thresholds and the enforcement mode of each stage. It also holds a description of each app and switches that stop the scoring. The guardrail reloads the policy when the file changes.
 
 The guardrail source, its policy reference, and its API are in the [ai-studio-guardrail-wolf](https://github.com/TykTechnologies/ai-studio-guardrail-wolf) repository.
 
 ## How It Fits
+
+{/* Diagram for the designer.
+Purpose: show where the Wolf Defender guardrail sits.
+Structure: left to right. Client or agent, then the AI Studio gateway or Edge Gateway, then the LLM vendor. The guardrail sits beside the gateway.
+Key elements: a two-way link between the gateway and the guardrail, labelled "Unix socket or HTTPS".
+Design notes: the guardrail is not on the path to the vendor. */}
 
 ```mermaid
 flowchart LR
@@ -129,15 +135,11 @@ Run the CPU image in the same Docker Compose project as AI Studio and the Edge G
 
     The guardrail is healthy when it has loaded the model. This takes 20 to 60 seconds.
 
-Give the guardrail 4 CPUs and 4 GB of memory. With fewer CPUs, scoring is much slower. With less memory, the guardrail can stop while it loads the model.
+With fewer than 4 CPUs, scoring is much slower. With less than 4 GB of memory, the guardrail can stop while it loads the model.
 
 The guardrail creates the socket `/run/wolfguard/wolfguard.sock` with mode `0660` and group `65532`. The AI Studio and Edge Gateway images run with this group, so only they can connect.
 
-AI Studio refuses a socket that is not in `GUARDRAIL_UNIX_SOCKET_ALLOWLIST`. The value `/run/wolfguard/` allows all sockets in that directory. The default value is empty. Set the variable, and mount the socket volume, on AI Studio and on each Edge Gateway that runs the filter.
-
-| Variable | Default | Description |
-| :--- | :--- | :--- |
-| `GUARDRAIL_UNIX_SOCKET_ALLOWLIST` | Empty | A comma-separated list of Unix socket paths, or directories that end in `/`, that an HTTP classifier can use. AI Studio checks the list when you save or test a filter and before each call. |
+Set [`GUARDRAIL_UNIX_SOCKET_ALLOWLIST`](/ai-management/ai-studio/ai-studio-env#guardrail_unix_socket_allowlist), and mount the socket volume, on AI Studio and on each Edge Gateway that runs the filter. The value `/run/wolfguard/` allows all sockets in that directory. AI Studio refuses a socket that is not in the list.
 
 ## Run the Guardrail on a GPU
 
@@ -150,12 +152,14 @@ docker run -d --gpus all -p 127.0.0.1:8000:8000 -v wolfguard-state:/workspace \
   tykio/ai-studio-guardrail-wolf-gpu@sha256:<digest>
 ```
 
-Configure the host as follows:
+Configure the host:
 
 - Put a TLS proxy in front of the guardrail. The HTTP classifier trusts only publicly trusted certificates.
 - In `WOLFGUARD_ALLOW_IPS`, list the outbound addresses or CIDR ranges of AI Studio and of each Edge Gateway. The guardrail refuses other addresses with HTTP 403.
 - A proxy can hide the address of the caller. In this case, set `WOLFGUARD_CLIENT_IP_HEADER` to a header that only the proxy can set. Set `WOLFGUARD_TRUSTED_PROXIES` to the addresses of the proxy.
 - To use your own policy, set `WOLFGUARD_POLICY_YAML_B64` to the policy in base64.
+
+{/* TODO: Link each WOLFGUARD_* variable to the configuration reference in the ai-studio-guardrail-wolf repository. */}
 
 A GPU host has no automatic fallback. When the host is down, each filter that uses it gets an error. Refer to [Operate the Guardrail](#operate-the-guardrail).
 
@@ -178,7 +182,7 @@ Other apps then do not depend on the guardrail. An outage of the guardrail does 
 
 ## Create the Filters in Log-Only Mode
 
-Start in shadow mode with the **Log only** action. In shadow mode, the gateway does not wait for the guardrail and does not change traffic. It records each decision as a [compliance event](/ai-management/ai-studio/compliance-events). The compliance events show what enforcement would do. Run shadow mode on real traffic for approximately two weeks before you enforce.
+Start in shadow mode with the **Log only** action. In shadow mode, the gateway does not wait for the guardrail and does not change traffic. It records each decision as a [compliance event](/ai-management/ai-studio/compliance-events). The compliance events show what enforcement would do. Run shadow mode on real traffic for about two weeks before you enforce.
 
 ### Request Filter
 
@@ -204,9 +208,9 @@ Go to **Context management > Filters**, select **Add filter**, and set these fie
 | **Reuse verdicts for text already scanned** | Off. This setting is under **Advanced: verdict cache and budgets**. |
 | **Max provider pieces per request** | `2000`. This setting is under **Advanced: verdict cache and budgets**. |
 
-{/* Screenshot: filter form with the HTTP classifier (generic) provider, the unix:// endpoint, the request path, and the Wolf Defender detectors */}
+{/* TODO: Add screenshot: filter form with the HTTP classifier (generic) provider, the unix:// endpoint, the request path, and the Wolf Defender detectors */}
 
-The reasons for these values are as follows:
+Why these values:
 
 - **Threshold `0.01`**: The guardrail policy holds the real thresholds, and the guardrail reports only decided findings. The gateway drops a finding below the detector threshold. The default threshold is 0.5, so the gateway would drop review findings.
 - **`?policy=` in the path**: This parameter names the policy version that you expect. Use the `version` value from the policy file. When you change the policy, you also edit the filter, and the guardrail counts calls that name a different version.
@@ -228,68 +232,24 @@ Add a second filter for the tool calls of the model. Use the same provider, endp
 
 ### Read Trusted Prompt Templates
 
-Some apps put untrusted text, such as a pull request or an issue, inside their own instructions. An administrator can approve such instructions as a trusted prompt template for the app. Request guardrails then score only the parts that change.
+An administrator can approve the instructions of an app as a [trusted prompt template](/ai-management/ai-studio/guardrails#trusted-prompt-templates). Request guardrails then score only the parts that change.
 
 The Wolf Defender guardrail can process trusted prompt templates itself, from image version 0.2.0. To turn this on, select **Reads trusted prompt templates** in the connection of the request filter. In the API, this is the connection field `templates: "true"`. The guardrail then scores the variable parts and also scores the full message in the same call as a backstop. Without this setting, the gateway sends only the variable parts and scores the full message in a second call.
 
 ### Create the Filters with the API
 
-You can also create the filters with the AI Studio API. This is the request filter in log-only shadow mode:
-
-```json expandable
-{
-  "data": {
-    "type": "filters",
-    "attributes": {
-      "name": "Wolf Defender (shadow)",
-      "description": "Prompt injection, log only",
-      "kind": "guardrail",
-      "response_filter": false,
-      "config": {
-        "provider": "http",
-        "connection": {
-          "endpoint": "unix:///run/wolfguard/wolfguard.sock",
-          "path": "/v1/classify?policy=<policy-version>",
-          "api_key": "$SECRET/WOLFGUARD_TOKEN",
-          "templates": "true"
-        },
-        "detectors": [
-          {"name": "tool_result.critical", "threshold": 0.01},
-          {"name": "tool_result.block", "threshold": 0.01},
-          {"name": "tool_result.review", "threshold": 0.01},
-          {"name": "user_message.block", "threshold": 0.01},
-          {"name": "user_message.review", "threshold": 0.01},
-          {"name": "tool_call.block", "threshold": 0.01},
-          {"name": "tool_call.review", "threshold": 0.01},
-          {"name": "tool_definition.block", "threshold": 0.01},
-          {"name": "tool_definition.review", "threshold": 0.01}
-        ],
-        "scope": "last_user",
-        "on_detect": "log",
-        "tool_results": {"on_detect": "log"},
-        "tool_calls": {"scan": true},
-        "tool_definitions": {"scan": true},
-        "shadow": true,
-        "cache": false,
-        "budget": {"max_pieces": 2000},
-        "timeout_ms": 30000,
-        "fail_mode": "open"
-      }
-    }
-  }
-}
-```
-
-Send the body to the filters endpoint. For an HTTPS endpoint, put the full URL in `endpoint` and remove `path`. For the endpoint details, refer to the [AI Studio API reference](/ai-management/ai-studio/ai-studio-swagger).
+The API uses the same settings as the form. For the field names and the filters endpoint, refer to the [AI Studio API reference](/ai-management/ai-studio/ai-studio-swagger). The **Reads trusted prompt templates** setting is the connection field `templates: "true"`.
 
 ## Attach and Check the Filters
 
 1. Go to **Model management > Model providers**, open the LLM, and add both filters. Filters run from top to bottom. The first block stops the request.
 2. If you use Edge Gateways, wait until AI Studio pushes the configuration to them.
 3. In the **Test** panel of the request filter, set **Request body format** to the vendor format of your agent. Select **Insert a tool-result sample** and run the test. The result shows a `tool_result` compliance event. The test is a real call, so it also checks the endpoint, the socket allowlist, and the token. Refer to [Test a Guardrail](/ai-management/ai-studio/guardrails#test-a-guardrail).
+
+    {/* TODO: Add screenshot: Test panel of the request filter with a tool_result compliance event */}
 4. Send one real turn from the agent. Go to **Governance > Compliance overview** and select the **Filter Events** tab. The decisions show as shadow events, with the stage, the tool name, and the score.
 
-{/* Screenshot: Governance > Compliance overview, Filter Events tab, with a Wolf Defender shadow event expanded */}
+{/* TODO: Add screenshot: Governance > Compliance overview, Filter Events tab, with a Wolf Defender shadow event expanded */}
 
 ## Tune the Policy
 
@@ -328,7 +288,10 @@ During the shadow period, expect these results:
 
 Enforce one stage at a time. Wait one week between stages and examine the decisions. Replace the shadow request filter with these filters, in this order on the LLM:
 
-1. **Stop the conversation**: Set the detectors to `tool_result.critical` and `user_message.block`. Set **On detection** and **Action on tool results** to **Block**. Set a **Block message**, for example "This conversation was stopped by the security guardrail." Turn off **Shadow (don't wait)**. Keep the other settings from the shadow filter. Start with `tool_result.critical` only, and add `user_message.block` when the user-message decisions are correct.
+1. **Stop the conversation**: Start with the detector `tool_result.critical`. Add `user_message.block` when the user-message decisions are correct.
+    - Set **On detection** and **Action on tool results** to **Block**.
+    - Set a **Block message**, for example "This conversation was stopped by the security guardrail."
+    - Turn off **Shadow (don't wait)**. Keep the other settings from the shadow filter.
 2. **Quarantine the other tool results**: Set the detector to `tool_result.block`. Set **On detection** to **Log only** and **Action on tool results** to **Quarantine**. Set a **Quarantine placeholder**, for example `[content removed by policy: {{tool_name}} returned text that looked like instructions to the AI]`. Turn off **Shadow (don't wait)**.
 3. **Block tool calls**: In the response filter, set the detector to `tool_call.block` and **Action on tool calls** to **Block**. Turn off **Shadow (don't wait)**.
 4. **Remove poisoned tools**: Add `tool_definition.block` to the quarantine filter. Turn on **Scan tool definitions** and set **Action on tool definitions** to **Remove the tool**.
@@ -351,13 +314,13 @@ The model scores the input only. To check the text that the model returns, add a
 
 Use these methods, from the fastest:
 
-- In AI Studio, set the actions of a filter to **Log only**. You can also turn on **Shadow (don't wait)**, or detach the filter from the LLM.
+- In AI Studio, set the actions of the filters to **Log only**.
 - In the policy, `skip` an app, increase a threshold, or change the mode of a stage. The change takes effect within 2 seconds.
 - Detach the filters, then stop the guardrail. If you stop the guardrail first, filters that block tool results also block each request that contains a tool result.
 
 ### Remove a False Flag
 
-A flagged tool result stops its conversation for 7 days. To remove one flag, find the `sha256` value of the text in the compliance event or in the decision log. Then use the admin API of the guardrail, or the store command in the container. Refer to the [guardrail repository](https://github.com/TykTechnologies/ai-studio-guardrail-wolf) for the commands. A change of the policy version removes all flags.
+To remove one flag, find the `sha256` value of the text in the compliance event or in the decision log. Then use the admin API of the guardrail, or the store command in the container. Refer to the [guardrail repository](https://github.com/TykTechnologies/ai-studio-guardrail-wolf) for the commands. A change of the policy version removes all flags.
 
 ### Monitor the Guardrail
 
@@ -387,7 +350,7 @@ Do not rotate or truncate `verdicts.db`. The guardrail removes old rows itself.
 
 ## Data Handling
 
-In a CPU deployment, the guardrail has no network, and the text stays on the host. The decision log keeps hashes and scores only.
+In a CPU deployment, the guardrail has no network, and the text stays on the host. The decision log keeps hashes and scores only. With `WOLFGUARD_PREVIEW=1`, the file `previews.jsonl` also keeps the first 200 characters of each flagged segment.
 
 In a GPU deployment, the gateway sends the scanned text to the GPU host over TLS. Use a host that you control, and keep the allowlist and the token.
 
