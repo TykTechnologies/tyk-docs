@@ -92,6 +92,7 @@ This release changes several defaults, the database, and some API behavior. Chec
 - **The quickstart ships placeholders instead of sample secrets.** AI Studio does not start until you replace the `__REPLACE_WITH_…__` values.
 - **API keys are shown in full only when they are issued.** The users API (`/api/v1/users`) no longer returns `api_key`, also for administrators. It returns `api_key_hint` (the last four characters) and `has_api_key`. To get a key that you can copy, roll the key. Scripts that read keys from the users API must store each key when it is issued.
 - **Data source connection strings show their password as `[redacted]`.** If you change a connection string that still contains `[redacted]`, the API returns `422`. Type the password again when you change the host or user.
+- **Marketplace indexes on an internal address are refused.** Add the host to `LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS`, or the sync of the marketplace fails. If you set `LLM_UPSTREAM_ALLOWED_HOSTS`, also add the host of each marketplace index, including the default index. Sync and validation errors do not give the cause. Look for `Marketplace fetch failed` in the AI Studio log.
 - **Standalone Edge Gateway API tokens are hashed at rest, and this is one-way.** A version before 2.3 accepts none of the tokens afterwards. Changing `ENCRYPTION_KEY` now invalidates every API token.
 
 **Plugins**
@@ -102,8 +103,10 @@ This release changes several defaults, the database, and some API behavior. Chec
 - **Plugins on an internal registry or host are refused**, including installed plugins, unless you list the host in `LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS`. `PLUGIN_BLOCK_INTERNAL_URLS` is deprecated.
 - **Request-path plugins built on an older SDK keep a 4 MiB message limit.** Larger requests get `413`. Rebuild your plugins on the 2.3 SDK, and install the 2.3.0 releases of the shipped plugins.
 - **Plugins and filter scripts on Bedrock LLMs see the Bedrock Converse format** on `/ai/`, `/v1`, routers, and `/anthropic/`. Filter scripts get `input.format == "bedrock"`.
-- **Edge Gateways refuse traffic for an LLM with a plugin that cannot load.** Requests to that LLM get `503` (`plugin_load_failed`) with `Retry-After: 30`. Before 2.3, the Edge Gateway skipped all plugins of the LLM. You cannot turn this off. Other LLMs are not affected.
-- **Plugins no longer see credentials.** System events and object hooks show LLM, tool, data source, and user credentials as `[redacted]`.
+- **Edge Gateways refuse traffic for an LLM with a plugin that cannot load.** Requests to that LLM get `503` (`plugin_load_failed`) with `Retry-After: 30`. Before 2.3, the Edge Gateway skipped all plugins of the LLM. You cannot turn this off. Other LLMs are not affected. The Edge Gateway stays ready: `/ready` returns `200` and lists the plugin under `plugins_not_ready`. Monitor this field or the log, because pod readiness does not show the failure.
+- **Changing the command of a plugin withdraws the approval of its scopes.** This applies to a new file path, `grpc://` address, or OCI reference, in the console or with `PATCH /api/v1/plugins/{id}`. AI Studio stops the old process and loads the new binary. The plugin has no service access in AI Studio until an administrator approves its scopes again. This also applies when the scopes did not change.
+- **Plugins no longer see credentials.** System events and object hooks show LLM, tool, data source, and user credentials as `[redacted]`. An LLM in a `system.llm.*` event or an object hook lists its plugins with `config: null`, and a hook cannot change that configuration. `system.plugin.*` events show the secret fields of the plugin as `[redacted]`.
+- **The plugin UI registries no longer return plugin configuration to most users.** `GET /api/v1/plugins/ui-registry` returns the configuration (with secret fields as `[redacted]`) and the command only to users with `plugins:read`. `GET /common/plugins/portal-ui-registry` never returns them. A plugin page that reads its configuration from the registry must get it from its plugin.
 - **For plugin authors and Go embedders:** `models.LLMVendorProvider` has two new methods, `ProvidesChat()` and `DecisionEndpoint()`. `CallLLM` returns `FailedPrecondition` when the App of the agent has no credential. Request IDs now have the format `tyai_` followed by a UUIDv7.
 
 **Guardrails (Enterprise)**
@@ -128,6 +131,14 @@ This release changes several defaults, the database, and some API behavior. Chec
 - **`/v1/responses` and batch lines must name a `model`.**
 - **`/v1/files` accepts only `purpose=batch` uploads.** On an LLM with request filters, re-upload batch files from before 2.3.
 - **With request filters attached, unreadable input is refused with `400`.**
+- **`/ai/` and `/v1` forward more request parameters to OpenAI.** `user`, `safety_identifier`, `prompt_cache_key`, `store`, `service_tier`, `parallel_tool_calls`, `logprobs`, `top_logprobs`, `top_p`, and a list of `stop` sequences reach OpenAI as the client sent them, as on `/llm/`. Before 2.3, these endpoints dropped them. Check clients that set them. For example, `store: true` stores the completion at OpenAI, and `service_tier: flex` or `priority` is served and billed at that tier. A model that does not accept a parameter returns the `400` of the vendor. For example, `gpt-5.5` refuses a list of `stop` sequences. Anthropic, Google, and Bedrock get only `stop` and `top_p`.
+- **`/ai/` and `/v1` apply `tool_choice` for Anthropic, Google, and Bedrock, and refuse values that they cannot apply.** Before 2.3, these endpoints dropped the value for these vendors. They now return `400` before any vendor call for these values:
+  - A string other than `auto`, `none`, or `required`
+  - An object that is not `{"type":"function","function":{"name":...}}`, such as `allowed_tools` or `custom` from OpenAI
+  - A named function that is not in the `tools` of the request
+  - `required` without `tools`
+
+  OpenAI-compatible vendors are not affected.
 - **Some headers are no longer forwarded:** `OpenAI-Organization`, `OpenAI-Project`, `anthropic-user-profile-id`, and a client's `anthropic-workspace-id`. Use the Anthropic workspace setting of the LLM instead.
 
 **Chat**
@@ -140,6 +151,8 @@ This release changes several defaults, the database, and some API behavior. Chec
 **API and Deployment**
 
 - **Chat and AI Portal agent responses no longer contain credentials or configuration.** The first event of a chat stream lists tools and data sources by ID, name, and description only. `GET /common/agents` returns only `plugin_id` and `app_id` for the plugin and App of an agent. Update integrations that read these values.
+- **Telemetry to Tyk is off by default.** Before 2.3, AI Studio sent usage telemetry, and the Enterprise edition sent license usage reports, unless you turned them off. To send usage telemetry, set `TELEMETRY_ENABLED=true` (Helm: `config.telemetryEnabled`). To send license usage reports (Enterprise), set `LICENSE_DISABLE_TELEMETRY=false` (Helm: `config.licenseTelemetryEnabled`).
+- **Recorded Anthropic spend can increase.** AI Studio now records and bills non-streamed Anthropic responses with a thinking block. This also applies to other blocks that are not text or `tool_use`. Response filters and guardrails also screen the text blocks of these responses.
 - **Tool and LLM names must be unique**, ignoring case, spaces, and punctuation. Duplicates stored before 2.3 stay editable.
 - **AI Studio returns `503 database_unavailable` during a database outage.** Management API requests that returned `500`, and sign-in and session checks that returned `401`, now return `503` with `Retry-After`.
 - **`/ready` no longer fails as soon as PostgreSQL stops answering.** It stays `200` for `DATABASE_READY_GRACE` (30 seconds). Set it to `0` for the 2.2 behavior.
@@ -158,12 +171,12 @@ The upgrade to 2.3 has three stages: prepare, upgrade, and check. Do the steps i
 
 1. **Get a 2.3 license (Enterprise).** Ask your account manager for a license issued for 2.3. Keep your 2.2 license until the upgrade is confirmed. You need it if you roll back. The Community Edition needs no license.
 
-2. **Allow the internal hosts that AI Studio must reach.** Find each object that runs on your own network, such as a local Ollama at `http://localhost:11434` or an in-cluster model server. This applies to LLMs, embedders, tools, data sources, vector stores, guardrail providers, plugin registries, and MCP servers. Then do one of these:
+2. **Allow the internal hosts that AI Studio must reach.** Find each object that runs on your own network, such as a local Ollama at `http://localhost:11434` or an in-cluster model server. This applies to LLMs, embedders, tools, data sources, vector stores, guardrail providers, plugin registries, marketplace indexes, and MCP servers. Then do one of these:
    - Recommended: list the hosts in `LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS` (comma-separated). The value `.svc.cluster.local` matches every Kubernetes Service. With Helm, use `config.allowedInternalHosts`.
    - After the upgrade, an administrator turns on **Allow internal host** on that object. This exempts only its own host.
    - Set `LLM_UPSTREAM_BLOCK_INTERNAL=false` to keep the 2.2 behavior.
 
-   Set the same values on every Edge Gateway, because each process uses its own setting. A value that is not a boolean, such as `yes`, now stops startup.
+   Set the same values on every Edge Gateway, because each process uses its own setting. A value that is not a boolean, such as `yes`, now stops startup. If you set `LLM_UPSTREAM_ALLOWED_HOSTS`, add the host of each marketplace index to it.
 
 3. **Find your `$ENV/` references and allow them.** List the names that your configuration uses:
 
@@ -189,7 +202,7 @@ The upgrade to 2.3 has three stages: prepare, upgrade, and check. Do the steps i
 
 8. **Decide how guardrails treat tool results (Enterprise).** Existing request guardrails start to scan tool results after the upgrade, and remote providers start to receive tool output. If a provider must not see tool output, plan to clear **Scan tool results** on that guardrail (`"tool_results": {"scan": false}`) and use a scope other than `all_messages`. On a 2-CPU host, set `GUARDRAIL_LOCAL_SCAN_SLOTS=1`, or run gateways that scan agent traffic on 4 or more CPUs.
 
-9. **Update clients of the native OpenAI APIs.** Make sure that `/v1/responses` requests and batch lines name a `model`. Plan to re-upload batch files on LLMs with request filters. Replace the `OpenAI-Organization`, `OpenAI-Project`, and `anthropic-workspace-id` headers with the workspace setting of the LLM.
+9. **Update clients of the native OpenAI APIs.** Make sure that `/v1/responses` requests and batch lines name a `model`. Plan to re-upload batch files on LLMs with request filters. Replace the `OpenAI-Organization`, `OpenAI-Project`, and `anthropic-workspace-id` headers with the workspace setting of the LLM. On `/ai/` and `/v1`, check clients that set OpenAI parameters such as `store` or `service_tier`. Also check clients that force a `tool_choice` function that is not in their `tools`.
 
 10. **Update scripts that read credentials.** The users API no longer returns API keys. Store each key when you issue or roll it. Also update integrations that read tool or data source credentials from chat events, or agent configuration from `/common/agents`.
 
@@ -223,7 +236,7 @@ The upgrade to 2.3 has three stages: prepare, upgrade, and check. Do the steps i
     - Upgrade every standalone Edge Gateway that shares a database at the same time. The first 2.3 Edge Gateway hashes the stored API tokens. `./microgateway -migrate` now needs `TYK_AI_LICENSE` on Enterprise.
     - Edge Gateways resync when they reconnect. An Edge Gateway that starts without local configuration shows **Pending** until you push the configuration.
 
-19. **Install the 2.3.0 releases of the shipped plugins.** Approve new plugin scopes when AI Studio asks. For example, advanced-llm-cache now needs `apps.write`.
+19. **Install the 2.3.0 releases of the shipped plugins.** Approve new plugin scopes when AI Studio asks. For example, advanced-llm-cache now needs `apps.write`. When you change the command of a plugin, approve its scopes again. A 2.3 Edge Gateway replaces a plugin whose command changed at the next configuration push, with no restart. If the new binary does not load, the Edge Gateway stops the plugin and refuses requests to its LLMs.
 
 **Check**
 
@@ -231,7 +244,7 @@ The upgrade to 2.3 has three stages: prepare, upgrade, and check. Do the steps i
 
 21. **Check credentials.** Look for LLMs, tools, and data sources that show an unresolved credential, and for `502 LLM credential not usable` responses.
 
-22. **Check Edge Gateways.** Push the configuration, and check that each Edge Gateway shows **In sync**. If a push lists skipped entries, rename the duplicate tool or LLM names that AI Studio logs. Move filters and plugins that an LLM in another namespace needs to the global namespace or to the namespace of the LLM. If an LLM returns `503` (`plugin_load_failed`), find the cause in the Edge Gateway log.
+22. **Check Edge Gateways.** Push the configuration, and check that each Edge Gateway shows **In sync**. If a push lists skipped entries, rename the duplicate tool or LLM names that AI Studio logs. Move filters and plugins that an LLM in another namespace needs to the global namespace or to the namespace of the LLM. If an LLM returns `503` (`plugin_load_failed`), find the cause in the Edge Gateway log. The `plugins_not_ready` field of `/ready` also lists the plugin.
 
 23. **Turn on the new features that you want.** New features are off by default, such as `AGENT_TRACING_ENABLED`, `CONTROL_ENDPOINTS`, `EDGE_START_FROM_LAST_KNOWN_GOOD`, and `EDGE_CREDENTIAL_SYNC=full`. If you turn on Agent Call Tracing, also set `AGENT_TRACING_CONTENT_CEILING`. When it is not set, the ceiling is `metadata`, and it overrides Apps set to Redacted or Full. To use Workspaces (Enterprise), create them after the upgrade. Until then, every object is in the Default Workspace and every role stays global.
 
@@ -276,6 +289,12 @@ To back up a running 2.3 SQLite database later, use `sqlite3 midsommar.db ".back
 - **File store content is readable from every Workspace.** Do not keep secrets in file stores.
 - **Tyk connections are global.** They do not belong to a Workspace.
 - **Unique names are unique across Workspaces.** A name conflict can show the name of a hidden object. Dependency and pending-change counts include hidden objects, but never their names.
+- **Rotating a resource signing key does not revoke IDs on the gateway that created the resource.** After a rotation, that gateway still accepts the old IDs of the App that created the resource. This also applies with a grace period of 0. Every other gateway refuses them, and every gateway refuses them for other Apps. To stop an App from using its resources, deactivate its key or the App.
+- **Gemini 3 tool calls with several turns fail on `/ai/` and `/v1`.** Gemini refuses the second turn with `Function call is missing a thought_signature`. Use the native `/llm/` endpoint for these conversations.
+- **Do not use `claude-haiku-4-5` as the LLM judge.** Its answers are cut off, so it gives no opinion on about a third of flags. The verdict of the filter then stays, which matters most in **Soften blocks** mode.
+- **A Workspace-scoped Editor sees "missing permission" notices on some detail pages (Enterprise).** They show in the plugin, analytics, MCP connection, and tag sections. The forms that the role can use open and save.
+- **Edge Gateways do not enforce scope approval.** An Edge Gateway gives a plugin the scopes that it declares, also while AI Studio shows the approval as pending. Review the declared scopes of a plugin before you change its command or upgrade it.
+- **AI Studio does not show if an Edge Gateway reloaded a changed plugin.** An Edge Gateway shows **In sync** when it stores the pushed configuration. The reload comes after that, and can fail. Look for `Reloading changed plugin` and `Plugin could not be loaded` in the Edge Gateway log.
 - **MCP call records have no retention pruning yet.**
 - **The proxy log API does not return `service_tier` yet.**
 - **MCP proxies created in Tyk Dashboard do not set `stripAuthorizationData`.** AI Studio-minted Tyk keys can reach third-party upstream services. Tyk Gateway connections set it.
@@ -398,7 +417,7 @@ They score tool results, tool calls, user messages, and tool definitions.
 </Accordion>
 
 <Accordion title='Added the Prompt Compressor plugin (Community)'>
-The new Prompt Compressor plugin (`com.tyk.prompt-compressor`, version 1.0.2) makes requests smaller on Edge Gateways before they reach the vendor. It works in the Community and Enterprise editions, and needs AI Studio 2.3.0.
+The new Prompt Compressor plugin (`com.tyk.prompt-compressor`, version 1.0.3) makes requests smaller on Edge Gateways before they reach the vendor. It works in the Community and Enterprise editions, and needs AI Studio 2.3.0.
 
 - The same input always gives the same output, so the prompt cache of the vendor continues to hit.
 - It has three levels:
@@ -675,7 +694,7 @@ The Edge Gateway adds metrics for the analytics backlog (`microgateway_analytics
 <Accordion title='Updated plugins on Bedrock LLMs to run on every endpoint'>
 Before this release, only authentication plugins ran when clients reached a Bedrock LLM through `/ai/`, the unified `/v1` endpoint, routers, or `/anthropic/`. Now every plugin runs there, in the same way as for other vendors. This includes caches, rate limiters, load balancers, firewalls, and the Prompt Compressor.
 
-- Plugin response headers (`X-RateLimit-*`, `X-LB-*`, and `X-Cache*`) now reach clients on these endpoints, for every vendor. With the 2.3 plugin releases, `X-Cache-Status`, `X-LB-Upstream`, and `X-LB-Pool` are on every response, including streams. `X-LB-Latency-Ms`, and on a cache miss `X-Cache-Key` and `X-Cache-Backend`, are only on responses that are buffered end to end.
+- Plugin response headers (`X-RateLimit-*`, `X-LB-*`, and `X-Cache*`) now reach clients on these endpoints, for every vendor. With the 2.3 plugin releases, `X-Cache-Status`, `X-LB-Upstream`, and `X-LB-Pool` are on every response, including streams. Rate-limiter 1.2.2 returns `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` on every allowed response. Earlier versions sent them to the vendor, so clients saw them only on a `429`. `X-LB-Latency-Ms`, and on a cache miss `X-Cache-Key` and `X-Cache-Backend`, are only on responses that are buffered end to end.
 - Load balancer overrides to another AWS region now work.
 - Bedrock inference profiles and ARN model IDs work on every `/llm/` route.
 - When a plugin refuses a Bedrock call, AWS SDK clients get an AWS error with the message of the plugin.
@@ -688,11 +707,11 @@ These plugins are released to the marketplace for 2.3.0. Versions marked † nee
 
 | Plugin | Version | What changed |
 | :--- | :--- | :--- |
-| prompt-compressor (new) | 1.0.2 | New plugin. Needs AI Studio 2.3.0. |
+| prompt-compressor (new) | 1.0.3 | New plugin. Needs AI Studio 2.3.0. Install 1.0.3, which loads its three admin pages in any order. |
 | llm-cache | 1.3.1 † | Works correctly with Bedrock. No longer replays the headers of other plugins on a hit. Sets `X-Cache-Status` on every response. |
 | llm-load-balancer (Enterprise) | 1.2.1 † | Counts Bedrock errors as failures. Client errors (`400`, `413`, `422`) no longer count against an upstream. Sets `X-LB-Upstream` and `X-LB-Pool` on every response. Pools saved from the plugin pages now load on Edge Gateways and after a restart. |
-| advanced-llm-cache (Enterprise) | 1.3.1 † | Works correctly with Bedrock. Cache keys include the LLM, vendor, path, and model, so the cache starts empty. Redis TLS now applies, and the Redis password is masked. Enter the Redis password directly, because a `$SECRET/` reference there is not resolved. Needs the `apps.write` scope. |
-| rate-limiter | 1.2.1 † | Token rules count Bedrock, Google, and streamed usage. Masks the Redis password. Changing a rule no longer reverts the settings saved in the configuration form. |
+| advanced-llm-cache (Enterprise) | 1.3.2 † | Works correctly with Bedrock. Cache keys include the LLM, vendor, path, and model, so the cache starts empty. Redis TLS now applies, and the Redis password is masked. Enter the Redis password directly, because a `$SECRET/` reference there is not resolved. When the plugin cannot use Redis, it uses an in-memory cache and reports `degraded` health with the reason. It goes back to Redis when it can. Needs the `apps.write` scope. |
+| rate-limiter | 1.2.2 † | Token rules count Bedrock, Google, and streamed usage. Returns `X-RateLimit-*` headers to the client on allowed requests, and no longer sends them to the vendor. Rules survive a change of storage backend. Masks the Redis password. Changing a rule no longer reverts the settings saved in the configuration form. |
 | llm-firewall | 1.2.0 † | Model rules match Bedrock model IDs, inference profiles, and ARNs. Inspects all prompt text. Optional `fail_closed`. |
 | llm-price-sync | 1.1.1 | Refuses internal fetch URLs. Reliability fixes. |
 | github-rag-ingest | 1.1.1 | Secret references for credentials. Cancelling a job stops it. Masks `vault_token`. Needs AI Studio 2.3.0 for secret references and `PLUGIN_ENV_PASSTHROUGH`. |
@@ -731,6 +750,10 @@ Before this release, an Edge Gateway kept only its newest 10,000 analytics recor
 
 <Accordion title='Updated Edge Gateways to report a full database'>
 When the volume of an Edge Gateway is full, it continues to serve traffic but cannot apply a configuration push. `/ready` now stays `200` with `"database_full": true` and shows what is not stored. The log has one error when this starts and one line when it ends. Size the volume from the request rate and `ANALYTICS_RETENTION_DAYS` (about 400 bytes for each request). The Helm chart defaults of 2Gi and 90 days are enough for fewer than one request per second.
+</Accordion>
+
+<Accordion title='Turned off telemetry to Tyk by default'>
+AI Studio no longer sends telemetry to Tyk unless you turn it on. Usage telemetry (Community and Enterprise) needs `TELEMETRY_ENABLED=true`. License usage reports (Enterprise) need `LICENSE_DISABLE_TELEMETRY=false`. The variable names do not change, so existing opt-outs keep working. The Helm chart has two new values, `config.telemetryEnabled` and `config.licenseTelemetryEnabled`, both `false`. The quickstart, Docker Compose, and package files also set both to off.
 </Accordion>
 
 <Accordion title='Updated Golang version to 1.26.10'>
@@ -809,7 +832,15 @@ We have resolved an issue where OpenAI `/v1/responses` calls were not recorded. 
 </Accordion>
 
 <Accordion title='Fixed agent loops on the OpenAI-compatible endpoints'>
-We have resolved an issue where agent loops through `/ai/` and `/v1` failed. Tool calls and tool results were dropped or sent in the wrong shape, and multi-part message content was lost. They now reach every vendor complete. OpenAI and Ollama requests with multi-part content (text and images) no longer return `400`.
+We have resolved an issue where agent loops through `/ai/` and `/v1` failed. Tool calls and tool results were dropped or sent in the wrong shape, and multi-part message content was lost. They now reach every vendor complete. OpenAI and Ollama requests with multi-part content (text and images) no longer return `400`. Gemini 3 tool loops still fail (see Known Issues).
+</Accordion>
+
+<Accordion title='Fixed forced tool choice ignored on the OpenAI-compatible endpoints'>
+We have resolved an issue where `/ai/` and `/v1` did not send `tool_choice` to Anthropic, Google, and Bedrock. A forced function, `required`, or `none` had no effect, so the model chose freely. This could break agent frameworks that force a tool. AI Studio now translates `tool_choice` for each vendor, in buffered and streamed calls. On Bedrock, `none` sends no tools. In a conversation that already has tool calls, Bedrock cannot apply `none`, and the tools are sent.
+</Accordion>
+
+<Accordion title='Fixed request parameters dropped on the OpenAI-compatible endpoints'>
+We have resolved an issue where `/ai/` and `/v1` dropped request parameters. A list of `stop` sequences did not reach the vendor. For OpenAI, `top_p`, `service_tier`, `user`, `store`, `parallel_tool_calls`, `logprobs`, `top_logprobs`, `prompt_cache_key`, and `safety_identifier` were also dropped, so `flex` and `priority` worked only on `/llm/`. OpenAI now receives all of them. The response and the usage record show the service tier of the call. Anthropic, Google, and Bedrock get `stop` and `top_p` in their own format.
 </Accordion>
 
 <Accordion title='Fixed Bedrock streaming issues'>
@@ -824,7 +855,9 @@ We have resolved these issues:
 <Accordion title='Fixed cost and usage records'>
 We have resolved these issues:
 
-- Calls to a model alias were recorded at zero cost. They are now priced by the requested model when the reported model has no price.
+- Calls to a model alias were recorded at zero cost. They are now priced by the requested model when the reported model has no price. The cost breakdown of these calls also showed zero, and now adds up to the total.
+- Bedrock calls by inference-profile ARN were recorded at zero cost, so an App could spend more than its budget. AI Studio now prices a Bedrock call by the ID as sent. If that has no price, it uses the profile or model ID in the ARN, then the model of a cross-region profile. Application inference profiles and provisioned or custom models name no model. Price them by their full ARN.
+- Non-streamed Anthropic responses with a thinking block, or another block that is not text or `tool_use`, were not recorded. They wrote no analytics record, proxy log, or budget cost, so agent calls on current Claude models could go unbilled. The raw block was also written to the log. Every block type is now recorded, and blocks are not logged.
 - OpenAI `flex` and `priority` calls are now recorded with their service tier.
 - Anthropic `count_tokens` and batch calls no longer create zero-cost chat records.
 - OpenAI moderations without a `model` are no longer refused.
@@ -854,6 +887,13 @@ We have resolved these issues:
 
 - After a short control-plane fault under load, an Edge Gateway sent its whole buffer as one message. The message could exceed the 16 MB gRPC limit and be refused, and the Edge Gateway then discarded most records. A pulse now carries at most `max_buffer_size` records and 8 MB, and a refused pulse is sent in parts.
 - Analytics and spend could be counted twice. This occurred when the control plane stored a pulse but stopped before it acknowledged it, and the Edge Gateway sent the pulse again. AI Studio now stores each pulse once. AI Studio and the Edge Gateway must both run 2.3.
+</Accordion>
+
+<Accordion title='Fixed plugin loading issues on Edge Gateways'>
+We have resolved these issues:
+
+- One unreachable `grpc://` plugin could stall every request with plugins on an Edge Gateway for minutes, including requests to other LLMs. Now only the LLMs that use the plugin are affected, and they get `503` (`plugin_load_failed`). A connection attempt to a host that drops packets ends after 5 seconds. The LLM serves again without a restart when the host of the plugin is back.
+- After the command of a plugin changed in AI Studio, an Edge Gateway kept the old binary until it restarted. Edge Gateways now reload a plugin whose command changed, with the same checks as a first load. A push that does not change a plugin does not restart it.
 </Accordion>
 
 <Accordion title='Fixed Enterprise plugins failing when an Edge Gateway starts (Enterprise)'>
@@ -956,7 +996,11 @@ The internal-address block now covers outbound calls for LLMs, Studio Chat, embe
 - The API no longer returns guardrail provider keys. Literal secret connection fields, such as the `api_key` of Lakera, Azure, and HTTP providers, and the Bedrock `secret_access_key`, read `[redacted]` for every role. Saving with `[redacted]` keeps the stored key.
 - Guardrail provider credentials reach Edge Gateways encrypted.
 - Guardrail error events no longer include the error message of the provider, which could contain the screened text.
-- Secret fields stay masked in plugin configuration forms, including the Redis passwords of advanced-llm-cache and rate-limiter.
+- Secret plugin configuration fields were masked only in the edit form. Examples are the Redis password of rate-limiter and the `vault_token` of github-rag-ingest. The plugin detail page, the plugin API, and the plugin UI registries showed them to every user who could read plugins. Every field that the plugin schema marks `format: password` or `writeOnly` now reads `[redacted]`. This applies to the API, agent and model provider responses, and `system.plugin.*` events. If you save a form without typing the secret again, AI Studio keeps it.
+</Accordion>
+
+<Accordion title='Fixed marketplace URLs reaching internal services'>
+Before this release, the check of a marketplace URL (`POST /api/v1/admin/marketplaces/validate`) needed only `marketplace:read`, which the Viewer and Auditor roles have. AI Studio also fetched marketplace indexes without the internal-address block. A read-only user could make AI Studio call internal addresses, and find out from the error what answered. The check now needs `marketplace:write`. Marketplace fetches refuse internal addresses, names that resolve to them, and redirects to them. A failed fetch gives one error for every cause, and AI Studio logs the cause.
 </Accordion>
 
 <Accordion title='Fixed API keys readable by users who can view users'>
