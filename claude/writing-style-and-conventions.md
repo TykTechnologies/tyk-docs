@@ -116,6 +116,7 @@ Apply these rules to all content in this repository.
 ### Version Availability
 
 - Mark a new feature with `<Note>Available from Tyk X.Y.Z</Note>`, or an availability table that lists each component and version.
+- On a page with an **Availability** section, add one sentence after the table. For example: "Agent tracing is available from Tyk AI Studio 2.3.0." Do not add a `<Note>` or edition caveats there. Refer to [Reviewing Documentation PRs](docs-review.md#availability).
 
 ### Dollar Signs
 
