@@ -2,7 +2,7 @@
 
 This repository contains technical documentation for Tyk products. The primary audience is developers integrating with or operating Tyk. Documentation is increasingly consumed by AI agents as well as humans, so accuracy and consistency of terminology are essential. Ambiguous or inconsistent language creates errors downstream.
 
-The rules are split into three areas. Read all of them before making non-trivial changes.
+The rules are split into four areas. Read all of them before making non-trivial changes.
 
 ## Writing Style and Repository Conventions
 
@@ -15,6 +15,18 @@ The rules are split into three areas. Read all of them before making non-trivial
 ## Release Notes
 
 [`claude/release-notes.md`](claude/release-notes.md) covers the conventions for release notes, such as the Docker image digests in the **Downloads** section. Read it before you add or update a release note.
+
+## Reviewing Documentation PRs
+
+[`claude/docs-review.md`](claude/docs-review.md) covers how to review a documentation PR and how to apply review suggestions:
+
+- Review order: content first, then placement, TODOs, and code checks
+- Duplication, length, wording, and availability rules
+- Sections to leave out, and features that no release includes
+- TODO comment formats for screenshots and reference links
+- How to apply suggestions, validate, and resolve threads
+
+Read it before you review a PR or apply review suggestions.
 
 ## Information Architecture Policy
 
