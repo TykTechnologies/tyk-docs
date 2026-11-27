@@ -1,0 +1,120 @@
+name: Check Swagger Versions
+
+# PRs to main: check main.
+# Daily and on demand: check main and the latest and LTS release branches with
+# main's script, and open (or update) one fix PR per branch that is out of date.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'swagger/**'
+      - 'snippets/release-data.mdx'
+      - 'developer-support/release-notes/**'
+      - 'scripts/check_swagger_versions.py'
+      - '.github/workflows/check-swagger-versions.yml'
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  main:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Check swagger info.version against the release notes
+        run: python scripts/check_swagger_versions.py . --branch main
+
+  daily:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          app-id: ${{ secrets.PROBE_APP_ID }}
+          private-key: ${{ secrets.PROBE_APP_PRIVATE_KEY }}
+          owner: TykTechnologies
+          repositories: tyk-docs
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Check branches and open fix PRs
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          check="python $PWD/scripts/check_swagger_versions.py"
+          rc=0
+
+          for target in main $($check . --print-branches); do
+            echo "::group::$target"
+            git fetch --depth 1 origin "$target"
+            dir="$RUNNER_TEMP/$target"
+            git worktree add --detach "$dir" FETCH_HEAD
+
+            if $check "$dir" --branch "$target"; then
+              echo "::endgroup::"
+              continue
+            fi
+
+            $check "$dir" --branch "$target" --fix | tee "$RUNNER_TEMP/fix-$target.txt"
+            # Anything --fix cannot repair (for example, no info.version) keeps the run red.
+            $check "$dir" --branch "$target" > /dev/null || rc=1
+
+            fix_branch="auto/swagger-version-$target"
+            (
+              cd "$dir"
+              git add swagger
+              if git diff --cached --quiet; then
+                exit 0
+              fi
+              git commit -q -m "Set swagger info.version from the release notes ($target)"
+              git push --force origin "HEAD:refs/heads/$fix_branch"
+
+              {
+                echo "Swagger \`info.version\` on \`$target\` does not match the release notes."
+                echo "This PR changes only the version line. Opened by the [daily swagger version check]($RUN_URL)."
+                echo
+                echo '```'
+                cat "$RUNNER_TEMP/fix-$target.txt"
+                echo '```'
+              } > "$RUNNER_TEMP/body-$target.md"
+
+              existing=$(gh pr list --repo "$REPO" --head "$fix_branch" --base "$target" --state open --json number --jq '.[0].number')
+              if [ -n "$existing" ]; then
+                gh pr edit "$existing" --repo "$REPO" --body-file "$RUNNER_TEMP/body-$target.md" > /dev/null \
+                  || gh api -X PATCH "repos/$REPO/pulls/$existing" -F "body=@$RUNNER_TEMP/body-$target.md" --silent
+                echo "Updated PR #$existing"
+              else
+                gh pr create --repo "$REPO" --base "$target" --head "$fix_branch" \
+                  --title "Set swagger info.version from the release notes ($target)" \
+                  --body-file "$RUNNER_TEMP/body-$target.md"
+              fi
+            ) || rc=1
+            echo "::endgroup::"
+          done
+
+          exit $rc
