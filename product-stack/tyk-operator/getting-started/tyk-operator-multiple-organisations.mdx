@@ -70,7 +70,7 @@ spec:
     - 1a2b3c4d5f6e7f
 ```
 
-You can provide the following fields through secret as referenced by `secretRef`. The table shows mappings between `.spec.env` properties and secret `.spec.data` keys. If a value is configured in both the secret and OperatorContext `spec.env` field, the value from secret will take precedence.
+You can provide the following fields through secret as referenced by `secretRef`. The table shows mappings between `.spec.env` properties and secret `data` keys. If you set a value in both the secret and the OperatorContext `spec.env` field, the value from `spec.env` takes precedence. Tyk Operator reads a key from the secret only when the matching `spec.env` field is empty.
 
 | Secret key | .spec.env |
 | :------------ | :----------- |
@@ -81,6 +81,71 @@ You can provide the following fields through secret as referenced by `secretRef`
 | TYK_TLS_INSECURE_SKIP_VERIFY | insecureSkipVerify |
 | TYK_USER_OWNERS (comma separated list) | user_owners |
 | TYK_USER_GROUP_OWNERS (comma separated list) | user_group_owners |
+| TYK_PORTAL_URL | portal_url |
+| TYK_PORTAL_AUTH | portal_auth |
+
+## Connect an OperatorContext to the Developer Portal
+
+<Note>Available from Tyk Operator 1.7.0</Note>
+
+The Tyk Developer Portal has its own address and its own admin API token. The Tyk Dashboard token does not work on it. To let Tyk Operator connect to the Developer Portal, set these optional fields in `spec.env`:
+
+| Field | Description |
+| :---- | :---------- |
+| `portal_url` | The address of the Developer Portal admin API. The address must include the `/portal-api` path, for example `http://portal.tyk.svc.cluster.local:3001/portal-api`. If a proxy adds a path prefix, include the prefix too, for example `https://example.com/devportal/portal-api`. |
+| `portal_auth` | The admin API token of a Developer Portal admin user. Tyk Operator can do only what this user can do. Use a Developer Portal admin user, with the `provider-admin` or `super-admin` role. |
+
+If you do not use the Developer Portal, leave both fields empty. An `OperatorContext` without these fields has no Developer Portal connection.
+
+Keep the token in the secret that `secretRef` references, under the `TYK_PORTAL_AUTH` key. Do not write it in the manifest. Tyk Operator does not write the token to the `OperatorContext` status or to its logs.
+
+```yaml
+apiVersion: tyk.tyk.io/v1alpha1
+kind: OperatorContext
+metadata:
+  name: team-alpha
+  namespace: default
+spec:
+  secretRef:
+    name: tyk-operator-conf # Secret containing keys TYK_AUTH, TYK_ORG and TYK_PORTAL_AUTH
+    namespace: alpha
+  env:
+    mode: pro
+    url: http://dashboard.tyk.svc.cluster.local:3000
+    portal_url: http://portal.tyk.svc.cluster.local:3001/portal-api
+```
+
+### Get the Developer Portal Token
+
+1. Log in to the Admin Portal of the Developer Portal as the user that Tyk Operator will act as.
+2. Open your profile page.
+3. Copy the token from **Personal credentials to access portal APIs**.
+
+The token does not expire. It becomes invalid in these cases:
+
+- A user selects **Reset Credential** on the profile page of that user.
+- The Developer Portal JWT signing key changes.
+
+In both cases, get the new token and update the secret.
+
+### Check the Connection
+
+Tyk Operator checks the connection when the `OperatorContext` or its secret changes. While the `OperatorContext` has a Developer Portal address or token, Tyk Operator also checks the connection again every 5 minutes. Tyk Operator writes the result to `status.tyk_portal`:
+
+```bash
+kubectl get operatorcontext team-alpha -o jsonpath='{.status.tyk_portal}'
+```
+
+The `state` field has one of these values. The `reason` field explains any state other than `Connected`.
+
+| State | Meaning | Action |
+| :---- | :------ | :----- |
+| `Connected` | The Developer Portal accepted the token. | None. |
+| `Refused` | The Developer Portal rejected the token. | Replace the token, or make sure the user is a Developer Portal admin. |
+| `Unavailable` | Tyk Operator cannot reach the Developer Portal, the Developer Portal returned an error other than `403`, or the response did not come from the admin API. | Make sure that `portal_url` includes `/portal-api`. Make sure that the Developer Portal is running and its license is valid. |
+| `Misconfigured` | The `OperatorContext` has an address without a token, or a token without an address. Tyk Operator does not contact the Developer Portal. | Add the missing value. |
+
+If you do not configure a Developer Portal, the `status.tyk_portal` field is not present. If a Developer Portal check fails, Tyk Operator continues to manage the Tyk Dashboard resources that use the `OperatorContext`.
 
 ## Using contextRef in API Definitions
 
