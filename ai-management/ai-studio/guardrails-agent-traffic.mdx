@@ -1,0 +1,105 @@
+---
+title: "Guardrails for Agent Traffic in Tyk AI Studio"
+description: "How Tyk AI Studio request guardrails examine tool results, tool calls, and tool definitions to stop indirect prompt injection and tool poisoning, and how quarantine keeps an agent running."
+keywords: "AI Studio, AI Management, Guardrails, Agents, Tool Results, Tool Calls, Tool Definitions, Quarantine, Indirect Prompt Injection, Tool Poisoning"
+type: concept
+sidebarTitle: "Agent Traffic"
+---
+
+## Availability
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
+
+Available from Tyk AI Studio 2.3.0.
+
+## Overview
+
+Agents read web pages, files, and API responses. Any of these can contain hidden instructions for the model. This is indirect prompt injection.
+
+A request guardrail can examine three parts of agent traffic in addition to the messages:
+
+- Tool results: the output of a tool that the client sends back to the model.
+- Tool calls: the arguments of a tool that the model asks to run.
+- Tool definitions: the name, description, and schema of each tool that a request offers the model.
+
+AI Studio reads these parts in all supported vendor formats. These are OpenAI chat completions and the Responses API, Anthropic (including server tools and MCP tools), Google and Vertex AI, Bedrock, and Ollama. It also screens each item of a native batch. Refer to the [LLM Proxy](/ai-management/ai-studio/proxy).
+
+## Tool Results
+
+Tool output, such as a fetched web page, a file, or an MCP or API response, is the main path for indirect prompt injection. Request guardrails scan tool results by default.
+
+| Field | Default | Description |
+| :--- | :--- | :--- |
+| `tool_results.scan` (**Scan tool results**) | `true` | Examines each tool result in the conversation history. |
+| `tool_results.on_detect` (**Action on tool results**) | The filter's action. A **Block** filter quarantines a tool result. | The action for a flagged tool result. Set it to `block` to block the request instead. |
+| `quarantine.placeholder` (**Quarantine placeholder**) | `[content removed by policy: {{detector}} detected in {{source}}]` | The text that replaces quarantined content. Refer to [Quarantine](#quarantine). |
+
+The guardrail examines a tool result as a whole. When the tool result is JSON, it also examines the decoded text, with escapes such as `\n` and `\u` read as the model reads them. It also decodes text documents that a request sends as base64.
+
+<Warning>
+External providers receive tool output. Tool output can contain file contents, database rows, and credentials that an agent read. If a provider must not get this data, turn off **Scan tool results**. Also, do not select **Every message, including assistant turns** in **Messages to inspect**.
+</Warning>
+
+In a chat room, the request guardrails of the chat also screen the tool output. They do this before the model, the user, or the stored conversation sees it. This includes REST tool output, the error text of a failed tool call, and a user's answer to a client tool card.
+
+Guardrails do not examine this content:
+
+- Binary documents, such as PDF and Word files, and images
+- Files that a request refers to by ID, and conversation state that the vendor stores
+- The results of tools that the vendor runs inside one call. The guardrail examines them when the client sends them back on a later turn.
+- In a chat room, the context that a data source adds to the prompt
+
+## Quarantine
+
+Quarantine is for content that a client sends again on each turn, such as a tool result. If a guardrail blocks a request because of a tool result, the agent cannot continue. Its next request contains the same tool result. Quarantine replaces only the flagged tool result or message with the placeholder, and the request continues.
+
+AI Studio keeps the tool call ID, the tool name, and all other fields. If AI Studio cannot replace the content in place, it blocks the request.
+
+You can use these variables in the placeholder:
+
+- `{{detector}}`: the detectors that flagged the text
+- `{{category}}`: the categories of these detectors
+- `{{source}}`: where the text came from, for example `tool result from read_file`
+- `{{tool_name}}`: the name of the tool
+
+The placeholder cannot be empty. Quarantine is not available on response filters. If you select **Is this a Response Filter?**, the form changes a **Quarantine** action to **Block**.
+
+A quarantined tool result stays in the client's history. The client sends it again on later turns, and the guardrail quarantines it again.
+
+## Tool Calls
+
+A tool call is the point where an injection becomes an action, such as an email to an address that a web page chose. Tool-call scanning is off by default.
+
+| Field | Default | Description |
+| :--- | :--- | :--- |
+| `tool_calls.scan` (**Scan tool calls**) | `false` | Examines the arguments of each tool call in the request history and in a buffered or streamed response. |
+| `tool_calls.on_detect` (**Action on tool calls**) | The filter's action if it is `block` or `log`, otherwise `log` | `block` or `log`. AI Studio never rewrites a tool call. |
+| `tool_calls.include_system` (**Include the system prompt in the call**) | `false` | Sends the system prompt with each call, as part of the goal. |
+
+The behavior of **Block** depends on where the call is:
+
+- In a response, the guardrail stops the response. The client never runs the call.
+- In a request, the client already ran the call. The guardrail blocks the request, and each later request of that conversation.
+- In a chat room, the guardrail examines the call before AI Studio runs it. A blocked call never runs, and the turn stops.
+
+When a response guardrail scans tool calls, AI Studio holds a streamed tool call until the provider classifies it. Text before the call streams as usual.
+
+Each tool call has a context: the latest user text and, optionally, the system prompt. Only the HTTP classifier gets this context. Arguments can contain data that the agent read, so turning on this scan sends that data to the provider.
+
+## Tool Definitions
+
+A tool description can contain instructions that the model follows. This is tool poisoning. Tool definitions often come from MCP servers or OpenAPI specifications that a third party wrote. Tool-definition scanning is off by default.
+
+| Field | Default | Description |
+| :--- | :--- | :--- |
+| `tool_definitions.scan` (**Scan tool definitions**) | `false` | Examines each tool that a request offers the model. |
+| `tool_definitions.on_detect` (**Action on tool definitions**) | `remove` for a **Block** or **Quarantine** filter, otherwise `log` | `remove`, `block`, or `log`. |
+
+The **Remove the tool** action (`remove`) deletes the flagged tool from the request, and the request continues. When no tool remains, or the request forces the removed tool, the guardrail blocks the request instead.
+
+The guardrail also examines the tool lists that AI Studio builds itself:
+
+- AI Studio can serve a tool over MCP. The request guardrails of that tool examine its operations when AI Studio builds the server. A removed operation is not in the tool list.
+- In a chat room, the chat's request guardrails examine its tools before each turn.
