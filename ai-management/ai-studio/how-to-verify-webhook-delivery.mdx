@@ -1,0 +1,41 @@
+---
+title: "Verify a Webhook Delivery From Tyk AI Studio"
+description: "Check the HMAC-SHA256 signature of each Tyk AI Studio webhook delivery in your receiver, and rotate the signing secret of a target without downtime."
+keywords: "AI Studio, AI Management, Webhooks, Signature, HMAC-SHA256, Signing Secret, Secret Rotation, Enterprise"
+type: how-to
+sidebarTitle: "Verify a Webhook Delivery"
+---
+
+## Availability
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
+
+For how webhooks work, refer to [Webhooks](/ai-management/ai-studio/webhooks).
+
+Each webhook delivery carries a signature in the `X-Webhook-Signature` header. Check it in your receiver before you process the event.
+
+## Verify the Signature
+
+Each target has a signing secret. You get it when you [create the target](/ai-management/ai-studio/how-to-create-webhook-target).
+
+The signature is an HMAC-SHA256 of the timestamp, a period, and the raw body, with the signing secret as the key. For all delivery headers, refer to [Delivery Headers](/ai-management/ai-studio/webhooks-reference#delivery-headers). To verify a delivery:
+
+1. Read the `X-Webhook-Timestamp` header and the raw request body.
+2. Calculate `HMAC-SHA256(secret, timestamp + "." + body)` and encode it as hexadecimal.
+3. Compare `v1=<your value>` with each comma-separated entry in `X-Webhook-Signature`. Use a constant-time comparison.
+4. Reject the request if no entry matches, or if the timestamp is older than a few minutes.
+5. Send a `2xx` response.
+
+```javascript
+const crypto = require("crypto");
+function verify(header, secret, ts, body) {
+  const want = "v1=" + crypto.createHmac("sha256", secret).update(`${ts}.`).update(body).digest("hex");
+  return header.split(",").some((p) => crypto.timingSafeEqual(Buffer.from(p.trim()), Buffer.from(want)));
+}
+```
+
+## Rotate the Signing Secret
+
+When you select **Rotate signing secret** for a target, AI Studio makes a new secret and shows it one time. For a grace period, each delivery has two signatures: first with the new secret, then with the old secret. Update your receiver during this period. [WEBHOOKS_SECRET_ROTATION_GRACE](/ai-management/ai-studio/ai-studio-env#webhooks_secret_rotation_grace) sets the length of the period.
