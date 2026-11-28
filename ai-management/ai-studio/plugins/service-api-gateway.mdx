@@ -1,0 +1,155 @@
+---
+title: "Tyk AI Studio Plugin Gateway Services"
+description: "Reference for the Gateway Services that plugins call on an Edge Gateway: Apps, LLMs, budget status, model prices, credential validation, and storing an App."
+keywords: "AI Studio, AI Management, Plugin SDK, Edge Gateway, Gateway Services"
+type: reference
+sidebarTitle: "Gateway Services"
+---
+## Availability
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| [Community](/ai-management/ai-studio/overview#community-edition) & [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
+
+Gateway Services are available to plugins that run on an Edge Gateway.
+
+Gateway Services read the local database of the Edge Gateway through `ctx.Services.Gateway()`. They are available when `ctx.Runtime == plugin_sdk.RuntimeGateway`. Each call returns `interface{}`. Type assert the result to the response type in the `microgateway_management` package (`gwmgmt` in the examples). To send data from an edge plugin to AI Studio, refer to [Edge-to-Control Communication](/ai-management/ai-studio/plugins/edge-to-control).
+
+## Get App
+
+```go
+app, err := ctx.Services.Gateway().GetApp(ctx, appID)
+```
+
+Returns the App configuration. Type assert to `*gwmgmt.GetAppResponse`.
+
+Example:
+```go expandable
+if ctx.Runtime == plugin_sdk.RuntimeGateway {
+    app, err := ctx.Services.Gateway().GetApp(ctx, ctx.AppID)
+    if err != nil {
+        ctx.Services.Logger().Error("Failed to get app", "error", err)
+        return &pb.PluginResponse{Modified: false}, nil
+    }
+
+    appResp := app.(*gwmgmt.GetAppResponse)
+    ctx.Services.Logger().Info("Processing request for app",
+        "app_name", appResp.App.Name,
+        "monthly_budget", appResp.App.MonthlyBudget,
+    )
+}
+```
+
+## List Apps
+
+```go
+apps, err := ctx.Services.Gateway().ListApps(ctx, page, limit, isActive)
+```
+
+Returns the Apps in the local database. `isActive` is a `*bool`. Pass `nil` to list active and inactive Apps. Type assert to `*gwmgmt.ListAppsResponse`.
+
+## Get LLM
+
+```go
+llm, err := ctx.Services.Gateway().GetLLM(ctx, llmID)
+```
+
+Returns the LLM configuration. Type assert to `*gwmgmt.GetLLMResponse`.
+
+## List LLMs
+
+```go
+llms, err := ctx.Services.Gateway().ListLLMs(ctx, page, limit, vendor, isActive)
+```
+
+Returns the LLMs in the local database. Pass an empty `vendor` and a `nil` `isActive` to list all LLMs. Type assert to `*gwmgmt.ListLLMsResponse`.
+
+## Get Budget Status
+
+```go
+status, err := ctx.Services.Gateway().GetBudgetStatus(ctx, appID, llmID)
+```
+
+Returns the current budget status of an App. `llmID` is an optional `*uint32`. Set it to get the budget of one LLM, or pass `nil`. Type assert to `*gwmgmt.GetBudgetStatusResponse`.
+
+Example:
+```go Expandable expandable
+if ctx.Runtime == plugin_sdk.RuntimeGateway {
+    status, err := ctx.Services.Gateway().GetBudgetStatus(ctx, ctx.AppID, nil)
+    if err != nil {
+        ctx.Services.Logger().Error("Failed to get budget", "error", err)
+        return &pb.PluginResponse{Modified: false}, nil
+    }
+
+    budgetResp := status.(*gwmgmt.GetBudgetStatusResponse)
+    if budgetResp.IsOverBudget {
+        return &pb.PluginResponse{
+            Block:        true,
+            ErrorMessage: "Budget exceeded",
+        }, nil
+    }
+}
+```
+
+## Get Model Price
+
+```go
+price, err := ctx.Services.Gateway().GetModelPrice(ctx, modelName, vendor)
+```
+
+Returns the price of one model. Type assert to `*gwmgmt.GetModelPriceResponse`.
+
+## List Model Prices
+
+```go
+prices, err := ctx.Services.Gateway().ListModelPrices(ctx, vendor)
+```
+
+Returns the model prices in the local database. Pass an empty `vendor` to list all prices. Type assert to `*gwmgmt.ListModelPricesResponse`.
+
+## Validate Credential
+
+```go
+valid, err := ctx.Services.Gateway().ValidateCredential(ctx, secret)
+```
+
+Validates a credential secret. Type assert to `*gwmgmt.ValidateCredentialResponse`. The response also gives the `AppId` of the credential.
+
+Example:
+```go
+if ctx.Runtime == plugin_sdk.RuntimeGateway {
+    valid, err := ctx.Services.Gateway().ValidateCredential(ctx, req.Headers["Authorization"])
+    if err != nil || !valid.(*gwmgmt.ValidateCredentialResponse).Valid {
+        return &pb.PluginResponse{
+            Block:        true,
+            ErrorMessage: "Invalid credentials",
+        }, nil
+    }
+}
+```
+
+## Store App
+
+From v2.1.0, gateway plugins can write an App into the local Edge Gateway database. Auth plugins use this to provision Apps without waiting for the next configuration sync. For example, the [OAuth2 client-credentials](/ai-management/ai-studio/oauth2-client-credentials) plugin stores an App that AI Studio created for a new client.
+
+Requires: `apps.write` scope. Gateway only. The stored App gets the LLMs, tools, and data sources that the plugin sets, so grant `apps.write` only to plugins that you trust. The Studio runtime returns an error, so multi-runtime plugins must check `ctx.Runtime`.
+
+```go expandable
+if ctx.Runtime == plugin_sdk.RuntimeGateway {
+    err := ctx.Services.Gateway().StoreApp(
+        ctx,
+        appConfig.AppID,
+        appConfig.Name,
+        appConfig.Description,
+        true,                 // isActive
+        appConfig.UserID,
+        appConfig.MetadataJSON,
+        appConfig.Namespace,
+        appConfig.LLMIDs,
+        appConfig.ToolIDs,
+        appConfig.DatasourceIDs,
+    )
+}
+```
+
+`StoreApp` creates the App if it does not exist, and updates it if it exists. On update, it replaces the tool and data source associations in one transaction.
