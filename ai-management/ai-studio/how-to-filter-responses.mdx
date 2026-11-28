@@ -1,0 +1,102 @@
+---
+title: "Filter LLM Responses in Tyk AI Studio"
+description: "Write a response filter that blocks LLM responses in Tyk AI Studio, for streaming and non-streaming responses."
+keywords: "AI Studio, AI Management, Filters, Response Filters, Streaming, Tengo"
+type: how-to
+sidebarTitle: "Filter LLM Responses"
+---
+
+## Availability
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
+
+For how response filters run, refer to [Response Filters](/ai-management/ai-studio/filters#response-filters).
+
+Write a script that blocks an LLM response with forbidden content. Then attach it to an LLM or a chat room.
+
+## Create a Response Filter
+
+1. [Create a script filter](/ai-management/ai-studio/how-to-create-script-filter), and select **Is this a Response Filter?**.
+2. In the script, read the response text. For streaming, use `input.current_buffer`, the accumulated text. Otherwise, use `input.raw_input`. For all fields, refer to [Response Filter Input](/ai-management/ai-studio/filter-scripting-reference#response-filter-input).
+3. For streaming, evaluate only when `len(input.current_buffer)` reaches enough context. The script runs on every chunk, so keep its logic lightweight.
+4. Set `output.block` and `output.message`. The user sees the message, so make it clear. A response filter cannot change the response, so AI Studio ignores `payload` and `messages`.
+5. Attach the filter to an LLM or a chat room.
+
+## Example Scripts
+
+### Block Refund Promises
+
+```tengo expandable
+text := import("text")
+
+// Get response text - use buffer for streaming
+response_text := input.is_chunk ? input.current_buffer : input.raw_input
+
+// Default output
+output := {
+    block: false,
+    message: ""
+}
+
+// For streaming: only evaluate once we have enough context
+if !input.is_chunk || len(response_text) >= 100 {
+    // Check for forbidden patterns
+    forbidden := ["will refund", "issue a refund", "provide a refund", "get a refund"]
+    should_block := false
+
+    for pattern in forbidden {
+        if text.contains(text.to_lower(response_text), pattern) {
+            should_block = true
+            break
+        }
+    }
+
+    output = {
+        block: should_block,
+        message: should_block ? "Response blocked: Cannot promise refunds to customers" : ""
+    }
+}
+```
+
+### Block Harmful Content
+
+```tengo expandable
+text := import("text")
+
+// Get response text (streaming-aware)
+response_text := input.is_chunk ? input.current_buffer : input.raw_input
+
+// Default output
+output := {
+    block: false,
+    message: ""
+}
+
+// For streaming: script controls when to evaluate based on buffer length
+// Wait until we have enough context before checking
+if !input.is_chunk || len(response_text) >= 150 {
+    // Check for harmful instruction patterns
+    harmful := [
+        "instructions for making",
+        "how to build a weapon",
+        "steps to create explosives"
+    ]
+
+    is_harmful := false
+    for pattern in harmful {
+        if text.contains(text.to_lower(response_text), pattern) {
+            is_harmful = true
+            break
+        }
+    }
+
+    output = {
+        block: is_harmful,
+        message: is_harmful ? "Response blocked: Potentially harmful content detected" : ""
+    }
+}
+```
+
+To check the response with a second LLM, start from the [Response Guardrails (LLM Check)](/ai-management/ai-studio/how-to-create-script-filter#response-guardrails-llm-check) template. It blocks the response when the check fails.

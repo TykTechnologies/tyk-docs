@@ -1,0 +1,100 @@
+---
+title: "Export Agent Traces to OpenTelemetry From Tyk AI Studio"
+description: "Send finished agent turns from Tyk AI Studio to OTLP backends such as Langfuse, Datadog LLM Observability, and Tempo, and control which end user data goes to them."
+keywords: "AI Studio, AI Management, Agent Call Tracing, OpenTelemetry, OTLP, Langfuse, Datadog, Exporters"
+type: how-to
+sidebarTitle: "Export Agent Traces"
+---
+
+## Availability
+
+| Edition | Deployment Type |
+| :------------- | :---------------------- |
+| [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
+
+Agent Call Tracing is available from Tyk AI Studio 2.3.0.
+
+AI Studio can send finished turns to OpenTelemetry (OTLP) backends. For how tracing works, refer to [Agent Call Tracing](/ai-management/ai-studio/agent-tracing).
+
+## Configure the Exporters
+
+1. Create a YAML file with an `exporters:` list. For the fields, refer to [Exporter Fields](#exporter-fields).
+
+   ```yaml expandable
+   exporters:
+     - name: tempo
+       protocol: grpc
+       endpoint: tempo.internal:4317
+       tls: { ca_file: /etc/ssl/tempo-ca.pem }
+       signals: [traces, metrics]
+     - name: langfuse
+       preset: langfuse
+       endpoint: https://cloud.langfuse.com
+       auth:
+         basic_user: env:LANGFUSE_PUBLIC_KEY
+         basic_pass: env:LANGFUSE_SECRET_KEY
+     - name: datadog
+       preset: datadog_llmobs
+       endpoint: https://otlp.datadoghq.com
+       auth: { api_key: file:/run/secrets/dd_api_key }
+       sample_rate: 0.25
+   ```
+2. Set [AGENT_TRACING_EXPORTERS_FILE](/ai-management/ai-studio/ai-studio-env#agent_tracing_exporters_file) to the path of the file.
+3. Restart AI Studio.
+
+If the exporters file is not valid, AI Studio turns off the export. Tracing continues.
+
+## Exporter Fields
+
+| Field | Default | Description |
+| :--- | :--- | :--- |
+| `name` | Required | A unique name. The export metrics use it. |
+| `preset` | `generic` | `generic`, `langfuse`, or `datadog_llmobs`. |
+| `protocol` | `grpc` | `grpc` or `http/protobuf`. |
+| `endpoint` | Required | `host:port` for gRPC, or a URL for HTTP. Do not put credentials in the URL. |
+| `tls` | System root certificates | `ca_file`, `cert_file`, `key_file`, and `insecure`. |
+| `headers`, `auth` | None | A value can be `env:NAME` or `file:/path`. |
+| `compression` | `gzip` | `gzip` or `none`. |
+| `timeout` | `10s` | The timeout of each export. |
+| `sample_rate` | `1.0` | The share of sessions to export. AI Studio exports all of a session or none of it. |
+| `batch` | SDK defaults | `max_export_batch_size`, `max_queue_size`, and `schedule_delay`. |
+| `retry` | `1m` | `max_elapsed`. |
+| `signals` | `[traces]` | Add `metrics` to also send the agent metrics. Only for the `generic` preset. |
+| `metrics_endpoint` | Derived from `endpoint` | The endpoint for metrics. |
+| `allow_insecure_credentials` | `false` | Allows credentials over a connection without TLS. |
+
+AI Studio refuses an exporter that sends credentials over `http://` or with `tls.insecure`, unless `allow_insecure_credentials: true` is set. Use `env:` or `file:` references for secrets. Do not put secrets in the file.
+
+## Presets
+
+| Preset | Protocol | Authentication | What the Preset Sets |
+| :--- | :--- | :--- | :--- |
+| `langfuse` | OTLP/HTTP | Basic, from `auth.basic_user` and `auth.basic_pass` | The path `/api/public/otel/v1/traces`, the header `x-langfuse-ingestion-version: 4`, and `session.id` on each span to group the sessions |
+| `datadog_llmobs` | OTLP/HTTP | `auth.api_key`, sent as `dd-api-key` | The header `dd-otlp-source: llmobs` |
+
+## How the Export Runs
+
+- One AI Studio replica exports.
+- AI Studio exports a turn one time, after the turn closes. It stores spans that arrive later, but it does not send them again.
+- AI Studio exports metadata only. It does not export prompts, responses, tool arguments, or tool results.
+- The attributes follow the OpenTelemetry GenAI semantic conventions 1.41 (`genai-1.41`). Tyk attributes use the `tyk.` prefix, such as `tyk.app.id`, `tyk.session.id`, and `tyk.correlation.confidence`.
+- During the export, the gateways do not send their own live proxy span for a captured call. Thus, each call appears in the backend one time.
+- An Edge Gateway can send its own OpenTelemetry spans to a different collector than the AI Studio export. Then set [AGENT_TRACING_KEEP_LIVE_SPAN](/ai-management/ai-studio/edge-gateway-env#agent_tracing_keep_live_span) to `true` on that Edge Gateway to keep its live span. Do not set it if both send to the same collector, or each call appears two times.
+
+For the OpenTelemetry settings of the gateway, refer to [Observability](/ai-management/ai-studio/observability#tracing).
+
+## Privacy and Erasure
+
+The end user goes to each OTLP exporter as `user.id`, including third-party backends such as Langfuse and Datadog. [AGENT_TRACING_EXPORT_USER_ID_MODE](/ai-management/ai-studio/ai-studio-env#agent_tracing_export_user_id_mode) controls the value:
+
+| Value | What AI Studio Sends |
+| :--- | :--- |
+| `hashed` (default) | A pseudonym of 32 hex characters, from a key derived from `AGENT_TRACING_KEY`. It stays the same on all replicas and after a restart, and changes when you rotate the key. |
+| `raw` | The end user id that the client declared. This can be an email address. |
+| `off` | No `user.id`. |
+
+A pseudonym is still personal data. A person with the key, or a person who can hash candidate values, can find the end user.
+
+`gen_ai.conversation.id` contains the session id that the client declared, without changes.
+
+A purge or an erasure does not delete spans that AI Studio already exported. Send erasure requests to your OTLP backends too.
