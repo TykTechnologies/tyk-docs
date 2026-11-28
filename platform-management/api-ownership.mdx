@@ -115,3 +115,31 @@ When working with Tyk Classic APIs, you manage owners for an API by modifying th
 | `PUT`  | `/api/apis/{apiID}` | Update the API definition for the specified API - CRUD API owners in the `user_owners` and `user_group_owners` fields |
 | `GET`  | `/api/apis/{apiID}` | Retrieve the API definition for the specified API - ownership details are included in `user_owners` and `user_group_owners` fields |
 
+
+
+## Troubleshooting Developer List Timeouts and API Ownership Latency
+
+### Symptom
+In large Tyk deployments, loading the Developer List, User Management, or API Catalog in the Tyk Dashboard UI takes 30+ seconds to load or terminates with an HTTP 504 Gateway Timeout:
+```text
+504 Gateway Timeout: The server did not receive a timely response from the upstream server.
+```
+
+### Root Cause
+When `enable_ownership: true` is configured in `tyk_analytics.conf`, the Dashboard calculates granular permission matrices across all developer accounts and API definitions. When listing developers or APIs, the Dashboard executes complex relational aggregation joins across developer subscriptions, organization policies, and API ownership records. In environments managing thousands of keys or APIs, these unindexed joins lead to high database CPU consumption and query timeouts.
+
+### Resolution Steps
+1. **Disable Unused API Ownership:** If your organization does not rely on multi-team developer ownership boundaries within the same Dashboard organization, disable ownership aggregation in `tyk_analytics.conf`:
+```json
+"enable_ownership": false
+```
+2. **Add Database Compound Indexes:** If ownership tracking is required, ensure composite indexes exist on the developer and policy collections:
+   * **MongoDB:**
+```javascript
+db.tyk_developers.createIndex({ "org_id": 1, "api_ownership": 1 });
+```
+   * **PostgreSQL:**
+```sql
+CREATE INDEX CONCURRENTLY idx_developers_org_ownership ON tyk_developers (org_id, api_ownership);
+```
+3. **Restart Dashboard:** Restart the Tyk Dashboard process to apply configuration changes and verify developer list load times.
