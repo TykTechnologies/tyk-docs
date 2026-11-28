@@ -14,15 +14,7 @@ sidebarTitle: "Prompt Compressor"
 
 The Prompt Compressor is available from Tyk AI Studio 2.3.0.
 
-The Prompt Compressor is a community plugin. It makes LLM request bodies smaller on the Edge Gateway, before the requests go to the LLM vendor. Thus, you pay for fewer input tokens. The plugin starts with the content that agents send most often: tool outputs, such as test runs, build logs, directory listings, and large JSON results.
-
-The compressed text depends only on the input text and the policy. Time, load, and earlier requests have no effect on it. Thus, the compressed start of a conversation is identical on each turn. The vendor's prompt cache continues to get hits.
-
-A dashboard shows the tokens and the cost that you save, next to the cache-read share. If compression causes cache misses that cost more than the savings, you can see it there.
-
-The plugin fails open. If an error or a timeout occurs, the plugin forwards the request exactly as the client sent it. It does the same if a check on the compressed body fails.
-
-This page describes version 1.0.2 of the plugin. The marketplace ID is `com.tyk.prompt-compressor`. The plugin requires AI Studio 2.3.0 or later.
+The Prompt Compressor is a community plugin that makes LLM request bodies smaller on the Edge Gateway. Thus, you pay the vendor for fewer input tokens. It compresses the content that agents send most often: tool outputs, such as test runs, build logs, directory listings, and large JSON results.
 
 ## Where the Plugin Runs
 
@@ -63,7 +55,9 @@ By default, the plugin compresses only tool outputs. A policy can add user, assi
 
 Results of the vendor's own tools, such as Anthropic web search or the OpenAI Responses built-in tools, stay as the vendor sent them. A policy with `compress_server_tool_results` set to `true` compresses some of these results. Refer to [Policy Settings](#policy-settings).
 
-A compressed unit is never longer than the original, and it never moves to a different role. Tool calls stay paired with their results. If the compressed body fails one of these checks, the plugin forwards the original body.
+A compressed unit is never longer than the original, and it never moves to a different role. Tool calls stay paired with their results.
+
+The plugin fails open. If an error or a timeout occurs, the plugin forwards the request exactly as the client sent it. It does the same if the compressed body fails one of these checks.
 
 ## Compression Levels
 
@@ -86,7 +80,7 @@ Each level includes all the levels below it.
    - Optionally, replaces old tool results with a placeholder.
    - Optionally, sends the remaining text to an [external engine](#external-engines).
 
-When the plugin removes content, it adds a marker in a fixed format. The marker tells the model that the plugin removed content:
+When the plugin removes content, it adds a marker in a fixed format that tells the model:
 
 ```text
 [tyk-compressed: pytest output, 18,400 → 1,150 tokens; 3 failures kept]
@@ -100,7 +94,7 @@ Some settings protect content from levels 2 and 3:
 
 For more information about these settings, refer to [Policy Settings](#policy-settings).
 
-The plugin does not apply level 3 or an external engine to an LLM that has [request filters](/ai-management/ai-studio/filters). The request filters run after the plugin and check the compressed body. For these LLMs, the plugin uses level 2 at most. To change this behavior, set `lossy_with_request_filters` to `true`. Refer to [Top-Level Settings](#top-level-settings).
+On an LLM that has [request filters](/ai-management/ai-studio/filters), the plugin uses level 2 at most. The request filters run after the plugin and check the compressed body. To also apply level 3 and external engines on these LLMs, set [`lossy_with_request_filters`](#top-level-settings) to `true`.
 
 ## Modes
 
@@ -109,12 +103,14 @@ The mode applies to all the LLMs that the plugin is attached to.
 | Mode | What happens |
 | :--- | :--- |
 | `off` | The plugin does not compress requests. |
-| `audit` | The plugin compresses each request and records the result. It forwards the original body. The dashboard shows the projected savings. This is the default. |
+| `audit` (default) | The plugin compresses each request and records the result, but forwards the original body. The dashboard shows the projected savings. |
 | `enforce` | The plugin forwards the compressed body. The dashboard shows the actual savings. |
 
 ## Set Up the Prompt Compressor
 
 ### Install the Plugin
+
+These steps install version 1.0.2 of the plugin. The marketplace ID is `com.tyk.prompt-compressor`.
 
 1. In the admin console, go to **Plugins > Marketplace**.
 2. Find **Prompt Compressor** and install version 1.0.2.
@@ -209,13 +205,13 @@ The plugin uses the first match in this table:
 | :--- | :--- | :--- |
 | `mode` | `audit` | `off`, `audit`, or `enforce`. Refer to [Modes](#modes). |
 | `default_policy` | `default` | The policy for requests that no binding matches. If you do not define a policy with the name `default`, `default` uses the default policy settings. `off` turns off compression. |
-| `policies` | `{}` | The named policies. A name has lowercase letters, digits, hyphens, and underscores. The name `off` is reserved. Maximum 64 policies. |
+| `policies` | `{}` | The named policies, 64 at most. A name has lowercase letters, digits, hyphens, and underscores. The name `off` is reserved. |
 | `bindings` | `{}` | The policy for each LLM or App. Keys are `llm:<slug>`, `llm_id:<id>`, or `app:<id>`. Values are a policy name or `off`. |
 | `allow_client_bypass` | `false` | When `true`, a client can send the header `X-Tyk-Compression: off` to skip compression for its own requests. The header cannot select a policy or increase a level. |
-| `failure_mode` | `open` | The result when an external engine fails. `open` forwards the unit without compression. `closed` returns a `502` response, in `enforce` mode only. All other failures forward the request unchanged. |
+| `failure_mode` | `open` | The result when an external engine fails. `open` forwards the unit without compression. `closed` returns a `502` response, in `enforce` mode only. |
 | `lossy_with_request_filters` | `false` | When `true`, the plugin applies level 3 and external engines on LLMs that have request filters. |
 | `max_body_bytes` | `4194304` (4 MiB) | Larger bodies go to the vendor without compression. The maximum is 16 MiB. |
-| `max_in_flight_bytes` | `16777216` (16 MiB) | The total body size that the plugin compresses at the same time, for all requests. A request that goes over this limit goes to the vendor without compression. This request can cause a prompt cache miss. The value must be between `max_body_bytes` and 256 MiB. You cannot change it on the **Policies** page. |
+| `max_in_flight_bytes` | `16777216` (16 MiB) | The total body size that the plugin compresses at the same time, for all requests. A request over this limit goes to the vendor without compression, which can cause a prompt cache miss. The value is between `max_body_bytes` and 256 MiB, and you cannot change it on the **Policies** page. |
 | `cache_drop_alert` | `0.25` | The dashboard shows a warning when the cache-read share decreases by more than this fraction in the hour after a policy change. `0` turns off the warning. |
 | `engine_<name>_url`, `engine_<name>_token` | None | The URL and the token of an external engine. You can use a `$SECRET/` reference. Refer to [External Engines](#external-engines). |
 
@@ -292,7 +288,12 @@ The plugin always keeps a request valid:
 When you change the list, each session of each App that uses the policy gets one prompt cache miss. To change the tools for only one App, bind a separate policy to that App.
 
 <Warning>
-`drop_tools` reduces token cost. It does not control access to tools. The client can keep a tool in the request. For example, the client can name the tool in the conversation history or in `tool_choice`. Also, some requests go to the vendor without compression. Examples are requests in `audit` mode and bodies that are larger than `max_body_bytes`. To keep a tool away from a model, do not give the App access to the tool. You can also block the tool calls with a [filter](/ai-management/ai-studio/filters) or a [guardrail](/ai-management/ai-studio/guardrails).
+`drop_tools` reduces token cost. It does not control access to tools. A tool can stay in the request in these cases:
+
+- The client names the tool in the conversation history or in `tool_choice`.
+- The request goes to the vendor without compression, for example in `audit` mode or when the body is larger than `max_body_bytes`.
+
+To keep a tool away from a model, do not give the App access to the tool. You can also block the tool calls with a [filter](/ai-management/ai-studio/filters) or a [guardrail](/ai-management/ai-studio/guardrails).
 </Warning>
 
 ## External Engines
@@ -316,7 +317,9 @@ To use an engine, set the URL and the token as top-level settings, and name the 
 
 The plugin does not send system prompts, tool definitions, protected turns, or masked results to the engine.
 
-The plugin keeps each engine answer, by the text, the policy, and the engine. Thus, a unit compresses to the same text on each later turn. This is also true when the engine is not available or is not deterministic. The plugin stores the answers in the key-value store of the Edge Gateway for 7 days. It stores the compressed text only when the Edge Gateway keeps request bodies for the LLM.
+The plugin keeps each engine answer, by the text, the policy, and the engine. Thus, a unit compresses to the same text on each later turn. This is also true when the engine is not available or is not deterministic.
+
+The plugin stores the answers in the key-value store of the Edge Gateway for 7 days. It stores the compressed text only when the Edge Gateway keeps request bodies for the LLM.
 
 The plugin applies these security rules to engines:
 
@@ -332,6 +335,8 @@ You cannot change engine URLs or tokens on the **Policies** page. Edit them in t
 ## Prompt Caching
 
 LLM vendors charge less for cached prompt tokens. A compressor that causes cache misses can cost more than it saves.
+
+The compressed text depends only on the input text and the policy. Time, load, and earlier requests have no effect on it. Thus, the compressed start of a conversation is identical on each turn. The vendor's prompt cache continues to get hits.
 
 - **Policy changes.** A policy change changes the start of each affected conversation one time. Each affected session gets one cache miss. Change policies when traffic is low, and look at the cache-read share on the dashboard after the change.
 - **Breakpoints.** For clients that set cache breakpoints, `cache_mode: skip_cached` compresses only the content after the last breakpoint.
