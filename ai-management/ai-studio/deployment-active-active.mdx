@@ -16,9 +16,7 @@ Active-active deployment is available from Tyk AI Studio 2.3.0.
 
 ## Overview
 
-In an active-active deployment, AI Studio runs simultaneously in two regions. If you lose one region, the other region continues to operate.
-
-Edge Gateways continue to serve traffic when their control plane is not available. Each Edge Gateway moves to the control plane of the other region without help. You can also let an Edge Gateway start when no control plane answers.
+In an active-active deployment, AI Studio runs in two regions at the same time. When you lose one region, the other region continues to operate. Edge Gateways continue to serve traffic and move to the control plane of the other region without help.
 
 ## Topology
 
@@ -49,11 +47,11 @@ flowchart TB
 The deployment has these parts:
 
 - **AI Studio replicas in both regions.** All replicas write to the PostgreSQL node that is the primary at that time. The replicas coordinate through the database in the same way as several replicas in one region. One replica is the leader for the work that must run only once.
-- **One primary and one hot standby.** The primary is in one region and the standby is in the other region. AI Studio does not read from the standby. The standby is there so that your failover manager can promote it.
+- **One primary and one hot standby.** The primary is in one region and the standby is in the other region. AI Studio does not read from the standby. Your failover manager promotes it.
 - **A witness in a third location.** The witness lets the failover manager decide on a failover safely. Refer to [Add a Witness in a Third Location](#add-a-witness-in-a-third-location).
 - **Edge Gateways with two control endpoints.** Each Edge Gateway lists the control plane of its own region first and the other region second.
 
-AI Studio follows a database failover without a restart. AI Studio does not start a failover and never promotes a node. The database layer is responsible for failover.
+AI Studio follows a database failover without a restart. The database layer starts the failover and promotes the node. AI Studio never does.
 
 <Warning>
 Multi-primary PostgreSQL is not supported. This includes BDR, bidirectional logical replication, and other setups that accept writes on two nodes. AI Studio uses sequences for IDs and advisory locks for migrations and leader election. With two primaries, two replicas can get the same IDs, and two replicas can each act as the leader.
@@ -63,13 +61,17 @@ Multi-primary PostgreSQL is not supported. This includes BDR, bidirectional logi
 
 - PostgreSQL 14 or later. The failover behavior on this page is tested with PostgreSQL 16.
 - PostgreSQL with physical streaming replication. Put the primary in one region and a hot standby in the other region (`hot_standby = on`).
-- Synchronous replication between the regions (recommended). On the primary, set `synchronous_commit = on` and set `synchronous_standby_names` to the standby of the other region. A commit then completes only after the standby has it. If you lose the region of the primary, you lose no committed data.
+- Synchronous replication between the regions (recommended). On the primary, set `synchronous_commit = on` and set `synchronous_standby_names` to the standby of the other region.
+    - A commit then completes only after the standby has it.
+    - If you lose the region of the primary, you lose no committed data.
 - Automatic failover. Use a managed PostgreSQL service with cross-zone or cross-region high availability.
 - NTP on the database nodes and on the AI Studio replicas. The leader lease of AI Studio allows for a clock difference of up to 30 seconds after a failover. Larger differences are not supported.
 
 ### Add a Witness in a Third Location
 
-Two regions cannot decide on a failover safely by themselves. When region A loses contact with region B, region A cannot tell if region B is down or if only the link is down. If each region promotes its own node, both nodes accept writes. This is split brain, and you lose the writes of one side when the regions join again.
+Two regions cannot decide on a failover safely by themselves. When region A loses contact with region B, region A cannot tell if region B is down or if only the link is down.
+
+If each region promotes its own node, both nodes accept writes. This is split brain, and you lose the writes of one side when the regions join again.
 
 A witness in a third location breaks the tie. Use one of these:
 
@@ -77,7 +79,7 @@ A witness in a third location breaks the tie. Use one of these:
 - A Kubernetes API server, or a CloudNativePG or Patroni quorum, across three zones
 - A witness node in a third region, such as an etcd, Consul, or ZooKeeper member
 
-Without a third location, failover is manual. An administrator must decide that a region is lost and promote the standby. Refer to [Promote the Standby Manually](#promote-the-standby-manually). Until the promotion, there is no primary and AI Studio cannot save changes.
+Without a third location, an administrator must decide that a region is lost and [promote the standby manually](#promote-the-standby-manually). Until the promotion, there is no primary and AI Studio cannot save changes.
 
 ## Configure AI Studio
 
@@ -95,16 +97,16 @@ DATABASE_URL=postgres://studio:secret@pg-a.example.internal:5432,pg-b.example.in
 
 ### Failover and Cluster Settings
 
-| Variable | Default | Description |
-| :--- | :--- | :--- |
-| [DATABASE_WRITE_RETRY_WINDOW](/ai-management/ai-studio/ai-studio-env#database_write_retry_window) | `15s` | How long AI Studio holds a database statement while no node accepts writes. AI Studio tries the statement again until a writable node answers. After this time, the request gets `503`. Set it longer than the detection time plus the promotion time of your failover manager. |
-| [DATABASE_READY_GRACE](/ai-management/ai-studio/ai-studio-env#database_ready_grace) | `30s` | How long `/ready` stays `200` after the database stops accepting writes. Keep it longer than `DATABASE_WRITE_RETRY_WINDOW`. AI Studio logs a warning at startup if it is not longer. |
-| [DATABASE_CONNECT_TIMEOUT](/ai-management/ai-studio/ai-studio-env#database_connect_timeout) | `10s` | The connect timeout for each database host. |
-| [DATABASE_STARTUP_TIMEOUT](/ai-management/ai-studio/ai-studio-env#database_startup_timeout) | `60s` | How long a replica waits at startup for a writable database. |
-| [CLUSTER_NODE_LABEL](/ai-management/ai-studio/ai-studio-env#cluster_node_label) | Empty | A label for the replica, such as `region-a` or `region-b`. Set a different value in each region. |
-| [QUEUE_TYPE](/ai-management/ai-studio/ai-studio-env#queue_type) | `inmemory` | Set `postgres`, or set `nats` with a NATS server that both regions can reach. The in-memory queue works only on one replica, so chat sessions break when a request goes to another replica. |
+| Variable | Description |
+| :--- | :--- |
+| [DATABASE_WRITE_RETRY_WINDOW](/ai-management/ai-studio/ai-studio-env#database_write_retry_window) | How long AI Studio holds and retries a database statement while no node accepts writes. After this time, the request gets `503`. Set it longer than the detection time plus the promotion time of your failover manager. |
+| [DATABASE_READY_GRACE](/ai-management/ai-studio/ai-studio-env#database_ready_grace) | How long `/ready` stays `200` after the database stops accepting writes. Keep it longer than `DATABASE_WRITE_RETRY_WINDOW`, or AI Studio logs a warning at startup. |
+| [DATABASE_CONNECT_TIMEOUT](/ai-management/ai-studio/ai-studio-env#database_connect_timeout) | The connect timeout for each database host. |
+| [DATABASE_STARTUP_TIMEOUT](/ai-management/ai-studio/ai-studio-env#database_startup_timeout) | How long a replica waits at startup for a writable database. |
+| [CLUSTER_NODE_LABEL](/ai-management/ai-studio/ai-studio-env#cluster_node_label) | A label for the replica, such as `region-a` or `region-b`. Set a different value in each region. When not set, the replica has no label. |
+| [QUEUE_TYPE](/ai-management/ai-studio/ai-studio-env#queue_type) | Set `postgres`, or `nats` with a NATS server that both regions can reach. The default in-memory queue works only on one replica, so chat sessions break when a request goes to another replica. |
 
-The **Edge Gateways** page in AI Studio shows the label of the replica that holds each Edge Gateway in the **Held by** column. The column shows when the Edge Gateways are held by more than one replica.
+The **Held by** column of the **Edge Gateways** page shows the label of the replica that holds each Edge Gateway. The column shows when more than one replica holds Edge Gateways.
 
 {/* Screenshot: Edge Gateways list with the Held by column, with edges held by region-a and region-b replicas. */}
 
@@ -124,16 +126,21 @@ For all AI Studio variables, refer to [AI Studio Environment Variables](/ai-mana
 | TLS certificates for gRPC port `50051` | The certificates must be valid for the control endpoints of both regions, from a CA that your Edge Gateways trust. |
 | Plugins | Install plugins from the marketplace or an OCI registry. A plugin from a file (`file://`) must exist at the same path on every replica in both regions. |
 
-AI Studio compares the first four secrets across the live replicas. The cluster status shows a warning when replicas have different values. A replica with a different value still starts, so that you can roll a rotation through the replicas. You cannot rotate `TYK_AI_SECRET_KEY` or `MICROGATEWAY_ENCRYPTION_KEY` on a running deployment. Refer to [Secrets Management](/ai-management/ai-studio/secrets) and [Shared Secrets Reference](/ai-management/ai-studio/deployment-k8s#shared-secrets-reference).
+AI Studio compares the first four secrets across the live replicas, and the cluster status shows a warning when they differ. A replica with a different value still starts, so that you can roll a rotation through the replicas.
+
+You cannot rotate `TYK_AI_SECRET_KEY` or `MICROGATEWAY_ENCRYPTION_KEY` on a running deployment. Refer to [Secrets Management](/ai-management/ai-studio/secrets) and [Shared Secrets Reference](/ai-management/ai-studio/deployment-k8s#shared-secrets-reference).
 
 ### Load Balancers and Health Checks
 
-- Put the UI and API of both regions behind one name with session affinity. Chat sessions, agent conversations, and MCP connections over SSE stay on the replica that started them. Sign-in sessions are in the database, so they continue on the other region.
+- Put the UI and API of both regions behind one name with session affinity.
+    - Chat sessions, agent conversations, and MCP connections over SSE stay on the replica that started them.
+    - Sign-in sessions are in the database, so they continue on the other region.
 - Use `GET /health` for liveness. It does not check the database.
-- Use `GET /ready` for readiness. The response body reports the database state as `writable`, `read_only`, or `unreachable`. `/ready` stays `200` during a database failover that is shorter than `DATABASE_READY_GRACE`. A failover then does not remove all replicas from the load balancer.
+- Use `GET /ready` for readiness. The response body reports the database state as `writable`, `read_only`, or `unreachable`.
+    - `/ready` stays `200` during a database failover that is shorter than `DATABASE_READY_GRACE`. Thus, a failover does not remove all replicas from the load balancer.
 - Use `GET /ready?require=write` if the load balancer must send traffic only to replicas that can save changes. It returns `200` only while the database accepts writes, with the same grace period.
 - Give the gRPC port (`50051`) of each region its own address. A load balancer in front of this port must support HTTP/2. It must keep idle streams open for at least one minute.
-- Keep DNS available inside each region. Some regions can reach their DNS server only across the link between the regions. In such a region, a link failure stops name resolution. On Kubernetes, run a DNS replica in each zone and route lookups to the replica in the same zone.
+- Keep DNS available inside each region. If a region reaches its DNS server only across the link between the regions, a link failure stops name resolution. On Kubernetes, run a DNS replica in each zone and route lookups to the replica in the same zone.
 
 ## Configure Edge Gateways
 
@@ -149,11 +156,9 @@ CONTROL_ENDPOINTS=cp-a.example.com:50051,cp-b.example.com:50051
 CONTROL_ENDPOINTS=cp-b.example.com:50051,cp-a.example.com:50051
 ```
 
-The Edge Gateway connects to the first endpoint that accepts it. When the connection fails, it tries the other endpoints immediately, in list order. It waits between attempts only after all endpoints fail. The wait starts at `EDGE_RECONNECT_INTERVAL` and doubles up to 30 seconds. The Edge Gateway continues to serve traffic while it reconnects.
+The Edge Gateway connects to the first endpoint that accepts it. When the connection fails, it tries the other endpoints immediately, in list order. It waits only after all endpoints fail, and continues to serve traffic while it reconnects.
 
 Do not set `CONTROL_ENDPOINT` and `CONTROL_ENDPOINTS` together. The Edge Gateway does not start if you set both.
-
-As an alternative, you can set `CONTROL_ENDPOINT` to one DNS name or global load balancer in front of both regions. The list is better when Edge Gateways must prefer their own region and move without waiting for DNS or health checks.
 
 ### Edge Gateway Settings
 
@@ -173,9 +178,9 @@ By default, an Edge Gateway that starts while no control plane answers exits. To
 
 With `EDGE_CREDENTIAL_SYNC=full`, an Edge Gateway validates App keys from a hashed list, with or without a control plane. Refer to [Full Credential Sync](/ai-management/ai-studio/manage-edge-gateway#full-credential-sync-enterprise).
 
-### Size Edge Gateways for One Region
+### Size Edge Gateways for the Loss of a Region
 
-After you lose a region, the Edge Gateways of the other region can carry all traffic. Size the Edge Gateways of each region for the load of both regions. During a control-plane outage, each Edge Gateway also holds its undelivered analytics in memory. For sizing guidance, refer to [Scaling Edge Gateways](https://github.com/TykTechnologies/ai-studio/blob/main/docs/site/docs/deployment-helm-k8s.md#scaling-edge-gateways).
+After you lose a region, the Edge Gateways of the other region carry all traffic. Size the Edge Gateways of each region for the load of both regions. During a control-plane outage, each Edge Gateway also holds its undelivered analytics in memory. For sizing guidance, refer to [Scaling Edge Gateways](https://github.com/TykTechnologies/ai-studio/blob/main/docs/site/docs/deployment-helm-k8s.md#scaling-edge-gateways).
 
 ## What Happens During a Failover
 
@@ -186,7 +191,7 @@ Between the loss of the primary and the promotion of the standby, no node accept
 - If the promotion completes inside the window, the request waits a few seconds and then succeeds once. AI Studio creates an App or a key only once during an automatic failover.
 - If no promotion completes inside the window, the request gets `503` with `Retry-After` and the error code `database_unavailable`.
 - Sign-in requests and requests with a session or an API key also get `503`, and never `401`. Clients then retry and keep their credentials.
-- AI Studio does not queue a request after the window. The client must send the request again.
+- AI Studio does not queue a request after the window. The client sends the request again.
 
 Some statements fail immediately and are not held:
 
@@ -199,14 +204,31 @@ A running Edge Gateway continues to serve from its loaded configuration during a
 
 ### Failure Scenarios
 
-| Situation | What happens | What you need |
-| :--- | :--- | :--- |
-| You lose a whole region (AI Studio and its PostgreSQL node) | The Edge Gateways of that region move to the control plane of the other region. If the lost node was the primary, the failover manager promotes the standby. The AI Studio replicas in the other region then write to it without a restart. A surviving replica becomes the leader within about 30 seconds. | A witness for automatic failover. Capacity in each region for all traffic. |
-| You lose the PostgreSQL primary, and both AI Studio regions are up | Requests are held for up to `DATABASE_WRITE_RETRY_WINDOW`. They complete after the promotion, or they get `503`. `/ready` stays `200` for `DATABASE_READY_GRACE`. | A promotion time shorter than `DATABASE_WRITE_RETRY_WINDOW`, and `DATABASE_READY_GRACE` longer than both. |
-| A primary is demoted but continues to run (a switchover) | Writes on the old primary fail. AI Studio detects this at the first refused write, or within 5 seconds when idle, and reconnects to the new primary. | No action. |
-| You lose AI Studio in one region, and its database node is up | The Edge Gateways of that region move to the other region. The load balancer stops sending traffic there. Users on that region can lose an open chat session. | Session affinity that fails over. `EDGE_CONTROL_FAILBACK_INTERVAL` if Edge Gateways must return when the region is back. |
-| You lose the link between the regions | The region without the primary cannot write. After `DATABASE_READY_GRACE`, its `/ready` returns `503` and the load balancer stops sending traffic there. Its Edge Gateways continue to serve traffic. The failover manager must not promote the standby unless a witness confirms that the region of the primary is lost. | A witness. Alerts on `aistudio_db_writable`. DNS that answers inside each region. |
-| An Edge Gateway restarts during a control-plane outage | It exits, unless `EDGE_START_FROM_LAST_KNOWN_GOOD=true` and its database is on a persistent volume. It validates keys only with full credential sync. | A decision on last-known-good, and persistent volumes. |
+1. **You lose a whole region (AI Studio and its PostgreSQL node).**
+    - The Edge Gateways of that region move to the control plane of the other region.
+    - If the lost node was the primary, the failover manager promotes the standby. The AI Studio replicas in the other region then write to it without a restart.
+    - A surviving replica becomes the leader within about 30 seconds.
+    - You need a witness for automatic failover, and capacity in each region for all traffic.
+2. **You lose the PostgreSQL primary, and both AI Studio regions are up.**
+    - AI Studio holds requests for up to `DATABASE_WRITE_RETRY_WINDOW`. They complete after the promotion, or they get `503`.
+    - `/ready` stays `200` for `DATABASE_READY_GRACE`.
+    - You need a promotion time shorter than `DATABASE_WRITE_RETRY_WINDOW`, and `DATABASE_READY_GRACE` longer than both.
+3. **A primary is demoted but continues to run (a switchover).**
+    - Writes on the old primary fail. AI Studio detects this at the first refused write, or within 5 seconds when idle. It then reconnects to the new primary.
+    - You need no action.
+4. **You lose AI Studio in one region, and its database node is up.**
+    - The Edge Gateways of that region move to the other region. The load balancer stops sending traffic there.
+    - Users on that region can lose an open chat session.
+    - You need session affinity that fails over. Set `EDGE_CONTROL_FAILBACK_INTERVAL` if Edge Gateways must return when the region is back.
+5. **You lose the link between the regions.**
+    - The region without the primary cannot write. After `DATABASE_READY_GRACE`, its `/ready` returns `503` and the load balancer stops sending traffic there.
+    - Its Edge Gateways continue to serve traffic.
+    - The failover manager must not promote the standby unless a witness confirms that the region of the primary is lost.
+    - You need a witness, alerts on `aistudio_db_writable`, and DNS that answers inside each region.
+6. **An Edge Gateway restarts during a control-plane outage.**
+    - It exits, unless `EDGE_START_FROM_LAST_KNOWN_GOOD=true` and its database is on a persistent volume.
+    - It validates keys only with full credential sync.
+    - You need a decision on last-known-good, and persistent volumes.
 
 ## Promote the Standby Manually
 
@@ -217,7 +239,7 @@ Use this procedure when you have no witness and an administrator decides that th
 3. Clear `synchronous_standby_names` on the new primary. Otherwise every commit waits for a standby that is not there.
 4. Check that the AI Studio replicas write to the new primary. The `aistudio_db_writable` metric is `1` on each replica, and the cluster status shows all replicas.
 
-AI Studio replicas connect to the new primary without a restart. Writes that were held for longer than `DATABASE_WRITE_RETRY_WINDOW` before the promotion got `503`. Users must make these changes again.
+AI Studio replicas connect to the new primary without a restart. Writes that were held for longer than `DATABASE_WRITE_RETRY_WINDOW` before the promotion got `503`, and users must make these changes again.
 
 ### Bring the Old Primary Back as a Standby
 

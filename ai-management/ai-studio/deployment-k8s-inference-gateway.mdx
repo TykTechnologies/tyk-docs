@@ -1,7 +1,7 @@
 ---
 title: "Run Tyk AI Studio With the Kubernetes Inference Gateway"
 description: "Put the Tyk AI Studio Edge Gateway in front of a Gateway API Inference Extension deployment to add authentication, budgets, filters, and analytics to self-hosted models."
-keywords: "AI Studio, AI Management, Kubernetes, Helm, Gateway API, Inference Extension, InferencePool, vLLM"
+keywords: "AI Studio, AI Management, Kubernetes, Helm, Kubernetes Gateway API, Inference Extension, InferencePool, vLLM"
 sidebarTitle: "Kubernetes Inference Gateway"
 ---
 
@@ -11,21 +11,23 @@ sidebarTitle: "Kubernetes Inference Gateway"
 | :------------- | :---------------------- |
 | [Community](/ai-management/ai-studio/overview#community-edition) & [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed, Hybrid |
 
+The Edge Gateway works with the Kubernetes Inference Gateway in both editions.
+
 ## Overview
 
-The [Gateway API Inference Extension](https://gateway-api-inference-extension.sigs.k8s.io/) routes inference requests to self-hosted model servers, such as vLLM, SGLang, or TGI. Its Endpoint Picker selects a model server pod of an `InferencePool` for each request. The Tyk AI Studio Edge Gateway in front of it adds App authentication, LLM access, budgets, filters, and token and cost analytics.
+The [Gateway API Inference Extension](https://gateway-api-inference-extension.sigs.k8s.io/) routes inference requests to self-hosted model servers, such as vLLM, SGLang, or TGI. Put the Tyk AI Studio Edge Gateway in front of it. The Edge Gateway adds App authentication, LLM access, budgets, filters, and token and cost analytics.
 
-The InferencePool serves an OpenAI-compatible API. In AI Studio, you add it as an LLM provider with the OpenAI vendor. Neither side needs a change.
+The Endpoint Picker of the extension selects a model server pod of an `InferencePool` for each request. The InferencePool serves an OpenAI-compatible API, so you add it to AI Studio as an LLM provider with the OpenAI vendor.
 
 {/* Diagram for the designer.
 Purpose: show where the Edge Gateway sits in front of the InferencePool.
-Structure: a top-to-bottom flow. Client, then the Gateway API Gateway, then the Edge Gateway, then the InferencePool route with the Endpoint Picker, then the model server pods. AI Studio sends configuration to the Edge Gateway.
+Structure: a top-to-bottom flow. Client, then the Kubernetes Gateway, then the Edge Gateway, then the InferencePool route with the Endpoint Picker, then the model server pods. AI Studio sends configuration to the Edge Gateway.
 Key elements: the Edge Gateway does authentication, budgets, filters, and analytics. The Endpoint Picker selects the pod.
 Design notes: show the configuration link from AI Studio as a dashed line. */}
 
 ```mermaid
 flowchart TB
-    C[Client with an App credential] --> GW[Gateway API Gateway and HTTPRoute]
+    C[Client with an App credential] --> GW[Kubernetes Gateway and HTTPRoute]
     GW --> EG["Tyk AI Studio Edge Gateway<br/>authentication, budgets, filters, analytics"]
     EG --> IR["Route to the InferencePool<br/>Endpoint Picker selects the pod"]
     IR --> P[vLLM, SGLang, or TGI pods]
@@ -34,14 +36,12 @@ flowchart TB
 
 ### What AI Studio Does Not Do
 
-The Edge Gateway is not a Gateway API Inference Extension implementation. It does not watch `InferencePool` resources, implement the Endpoint Picker protocol, or select model server pods.
-
-For pod selection, put the Edge Gateway in front of a Gateway API implementation that supports the Inference Extension.
+The Edge Gateway is not a Gateway API Inference Extension implementation. It does not watch `InferencePool` resources, implement the Endpoint Picker protocol, or select model server pods. For pod selection, put the Edge Gateway in front of a Kubernetes Gateway API implementation that supports the Inference Extension.
 
 ## Before You Start
 
 - Tyk AI Studio installed with Helm. Refer to [Install Tyk AI Studio on Kubernetes](/ai-management/ai-studio/deployment-k8s).
-- A Gateway API implementation with Inference Extension support, and an `InferencePool` that serves your models.
+- A Kubernetes Gateway API implementation with Inference Extension support, and an `InferencePool` that serves your models.
 - The Prometheus Operator, if you turn on the `ServiceMonitor`. Without its CRDs, the install fails.
 - An OpenTelemetry collector, if you turn on tracing.
 
@@ -69,19 +69,21 @@ Before you install, check these values:
 
 | Value | What to Set |
 | :--- | :--- |
-| `microgateway.config.controlEndpoint` | Sets [CONTROL_ENDPOINT](/ai-management/ai-studio/edge-gateway-env#control_endpoint). The AI Studio Service and its gRPC port, for example `midsommar:50051`. The Service name is the release name if it contains `midsommar`, else `<release>-midsommar` (release `ai-studio` gives `ai-studio-midsommar:50051`). |
-| `microgateway.config.edgeNamespace` | Sets [EDGE_NAMESPACE](/ai-management/ai-studio/edge-gateway-env#edge_namespace). The edge namespace of these Edge Gateways. The file uses `inference`. |
+| `microgateway.config.controlEndpoint` | Sets [CONTROL_ENDPOINT](/ai-management/ai-studio/edge-gateway-env#control_endpoint): the AI Studio Service and its gRPC port, for example `midsommar:50051`. |
+| `microgateway.config.edgeNamespace` | Sets [EDGE_NAMESPACE](/ai-management/ai-studio/edge-gateway-env#edge_namespace). The file uses `inference`. |
 | `microgateway.secrets.existingSecret` | The name of a Secret that you create. It must contain the keys [EDGE_AUTH_TOKEN](/ai-management/ai-studio/edge-gateway-env#edge_auth_token), [ENCRYPTION_KEY](/ai-management/ai-studio/edge-gateway-env#encryption_key), and [TYK_AI_LICENSE](/ai-management/ai-studio/edge-gateway-env#tyk_ai_license), with the same values as AI Studio. |
+
+The AI Studio Service name is the release name if it contains `midsommar`, else `<release>-midsommar`. For example, the release `ai-studio` gives `ai-studio-midsommar:50051`.
 
 For all chart values, refer to the [values file of the chart](https://github.com/TykTechnologies/ai-studio/blob/main/helm/values.yaml).
 
-Each Edge Gateway pod registers with AI Studio under its pod name. To check the Edge Gateways, go to **AI Portal > Edge Gateways**.
+Each Edge Gateway pod registers with AI Studio under its pod name. To check the Edge Gateways, go to **Portal administration > Edge Gateways**.
 
 <img src="/img/ai-management/ai-studio-k8s-inference-edge-gateways.png" alt="Edge Gateways page with a connected Edge Gateway, its namespace, and its sync status" />
 
 ## Allow the Edge Gateway to Reach the InferencePool
 
-From v2.3.0, the Edge Gateway blocks internal addresses by default ([LLM_UPSTREAM_BLOCK_INTERNAL](/ai-management/ai-studio/edge-gateway-env#llm_upstream_block_internal)). The block also applies to the InferencePool, because the InferencePool has a cluster address. To keep the block and allow the cluster, set both values:
+From v2.3.0, the Edge Gateway blocks internal addresses by default ([LLM_UPSTREAM_BLOCK_INTERNAL](/ai-management/ai-studio/edge-gateway-env#llm_upstream_block_internal)). This also blocks the cluster address of the InferencePool. To keep the block and allow the cluster, set both values:
 
 ```yaml
 microgateway:
@@ -97,9 +99,7 @@ microgateway:
 - A host in this list is permitted, even when [LLM_UPSTREAM_ALLOWED_HOSTS](/ai-management/ai-studio/edge-gateway-env#llm_upstream_allowed_hosts) is set. The gateway checks this list first.
 - The gateway applies the list when it checks the upstream URL and again when it connects.
 
-For the settings of internal upstreams on the Edge Gateway, refer to [LLM_UPSTREAM_BLOCK_INTERNAL](/ai-management/ai-studio/edge-gateway-env#llm_upstream_block_internal), [LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS](/ai-management/ai-studio/edge-gateway-env#llm_upstream_allowed_internal_hosts), [LLM_UPSTREAM_ALLOWED_HOSTS](/ai-management/ai-studio/edge-gateway-env#llm_upstream_allowed_hosts), and [ALLOW_INTERNAL_NETWORK_ACCESS](/ai-management/ai-studio/edge-gateway-env#allow_internal_network_access).
-
-Do not use `LLM_UPSTREAM_ALLOWED_HOSTS` for in-cluster hosts. When it is set, the gateway refuses every upstream host that is not in the list, including the hosted vendors.
+Do not use `LLM_UPSTREAM_ALLOWED_HOSTS` for in-cluster hosts. When it is set, the gateway refuses every upstream host that is not in the list, including the hosted vendors. For the related setting, refer to [ALLOW_INTERNAL_NETWORK_ACCESS](/ai-management/ai-studio/edge-gateway-env#allow_internal_network_access).
 
 ## Create the LLM Provider
 
@@ -110,11 +110,11 @@ In AI Studio, create an LLM provider for the InferencePool. Refer to [How to Cre
 | **Vendor** | **OpenAI**. The InferencePool serves the OpenAI-compatible API. |
 | **API Endpoint** | The in-cluster URL that sends requests to the InferencePool, with `/v1`. |
 | **API Key** | The key that the model server expects. If it needs no key, enter a placeholder. |
-| **Allowed Models** | The models that the InferencePool serves, for example `^meta-llama/Llama-3\.1-8B-Instruct$`. The patterns are regular expressions that match anywhere in the model name. |
+| **Allowed Models** | Regular expressions for the models that the InferencePool serves, for example `^meta-llama/Llama-3\.1-8B-Instruct$`. A pattern matches anywhere in the model name. |
 | **Edge Availability** (Enterprise) | The edge namespace of the Edge Gateways, for example `inference`. Leave it empty to send the LLM to all Edge Gateways. In the Community Edition, every Edge Gateway receives all LLMs. |
 
 <Note>
-The Endpoint Picker selects a pod only for requests that pass through a Gateway route to the InferencePool. If the API endpoint is the Service of the model server pods, the requests do not go through the Endpoint Picker.
+The Endpoint Picker selects a pod only for requests that pass through a Kubernetes Gateway route to the InferencePool. If the API endpoint is the Service of the model server pods, the requests do not go through the Endpoint Picker.
 </Note>
 
 <img src="/img/ai-management/ai-studio-k8s-inference-llm-endpoint.png" alt="Edit LLM provider form with the OpenAI vendor, an in-cluster API endpoint, and the Restricted privacy level" />
@@ -151,7 +151,7 @@ spec:
           port: 8080
 ```
 
-The same Gateway can also have the route to the InferencePool. In that case, use a different hostname or listener for each route. Then the two routes do not match the same requests.
+The same Kubernetes Gateway can also have the route to the InferencePool. Then use a different hostname or listener for each route. The two routes then do not match the same requests.
 
 Clients authenticate with an App credential and call the Edge Gateway:
 
@@ -171,4 +171,4 @@ The reference values turn on metrics and tracing for the Edge Gateways:
 | `microgateway.metrics.legacyNames` | `METRICS_LEGACY_NAMES` | Also sends the older `aistudio_*` metric names. Set it to `false` after your dashboards use the OpenTelemetry GenAI names. |
 | `microgateway.tracing.endpoint` | [TRACING_ENDPOINT](/ai-management/ai-studio/edge-gateway-env#tracing_endpoint) | The OTLP/gRPC collector, for example `otel-collector.observability:4317`. |
 
-The Edge Gateway continues the trace of an incoming `traceparent` header, and sends it to the upstream. Thus, one trace can show the request from the Gateway, through the Edge Gateway, to the model server.
+The Edge Gateway continues the trace of an incoming `traceparent` header, and sends it to the upstream. Thus, one trace can show the request from the Kubernetes Gateway, through the Edge Gateway, to the model server.
