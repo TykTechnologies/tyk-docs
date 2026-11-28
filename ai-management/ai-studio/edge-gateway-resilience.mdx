@@ -1,0 +1,130 @@
+---
+title: "Edge Gateway Connection and Resilience"
+description: "How Edge Gateways connect to Tyk AI Studio over gRPC, how to secure that connection, and how an edge keeps serving traffic while no control plane answers."
+keywords: "AI Studio, AI Management, Edge Gateway, gRPC, TLS, Failover, Last Known Good, Credential Sync, Resilience"
+sidebarTitle: "Connection and Resilience"
+type: concept
+---
+
+## Availability
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| [Community](/ai-management/ai-studio/overview#community-edition) & [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
+
+Edge Gateway management is available in both editions, and this page marks each Enterprise Edition feature.
+
+Each Edge Gateway holds a gRPC connection to AI Studio. The edge keeps serving traffic while no control plane answers.
+
+## Connection Settings
+
+Edges connect to the gRPC port of AI Studio ([GRPC_PORT](/ai-management/ai-studio/ai-studio-env#grpc_port)). Make sure that firewall rules allow this traffic.
+
+### Several Control Planes
+
+From v2.3.0, you can give an edge an ordered list of control planes in [CONTROL_ENDPOINTS](/ai-management/ai-studio/edge-gateway-env#control_endpoints), for example one for each region. All endpoints must be replicas of one AI Studio deployment, with the same [GRPC_AUTH_TOKEN](/ai-management/ai-studio/ai-studio-env#grpc_auth_token) and [MICROGATEWAY_ENCRYPTION_KEY](/ai-management/ai-studio/ai-studio-env#microgateway_encryption_key).
+
+The edge shows the endpoint in use in its log (`Connected to control plane`), in the `control_endpoint` field of `/ready`, and in the metric `microgateway_control_connected`. For the failover order, the failback behavior, and the settings, refer to [Configure Edge Gateways](/ai-management/ai-studio/deployment-active-active#configure-edge-gateways).
+
+### TLS
+
+AI Studio serves the control connection with TLS, unless [GRPC_TLS_INSECURE=true](/ai-management/ai-studio/ai-studio-env#grpc_tls_insecure). It uses [GRPC_TLS_CERT_PATH](/ai-management/ai-studio/ai-studio-env#grpc_tls_cert_path) and [GRPC_TLS_KEY_PATH](/ai-management/ai-studio/ai-studio-env#grpc_tls_key_path). The edge verifies the certificate with these settings:
+
+| Edge setting | Purpose |
+| :--- | :--- |
+| [EDGE_TLS_CA_PATH](/ai-management/ai-studio/edge-gateway-env#edge_tls_ca_path) | A PEM file with the CA certificates of a private CA. When set, it replaces the system root certificates. |
+| [EDGE_TLS_SERVER_NAME](/ai-management/ai-studio/edge-gateway-env#edge_tls_server_name) | The name to verify on the certificate, when it is different from the host of the control endpoint, for example for an IP address. With [CONTROL_ENDPOINTS](/ai-management/ai-studio/edge-gateway-env#control_endpoints), this setting applies to all endpoints. Without it, the edge verifies each certificate against the host of its own endpoint. |
+| [EDGE_TLS_CERT_PATH](/ai-management/ai-studio/edge-gateway-env#edge_tls_cert_path), [EDGE_TLS_KEY_PATH](/ai-management/ai-studio/edge-gateway-env#edge_tls_key_path) | A client certificate for mutual TLS. |
+| [EDGE_SKIP_TLS_VERIFY](/ai-management/ai-studio/edge-gateway-env#edge_skip_tls_verify) | Turns off verification. Use it for development only. |
+
+The edge requires TLS 1.2 or later. If the edge cannot read `EDGE_TLS_CA_PATH`, or the file has no PEM certificates, the connection stops with an error that names the setting.
+
+### Keepalive and Message Size
+
+Keepalive pings find connections that are half open behind a load balancer or NAT:
+
+- Edges ping AI Studio every 30 seconds, also when no stream is open. An edge drops a connection if a ping gets no answer in 5 seconds.
+- AI Studio accepts pings as often as every 10 seconds, and pings idle edges on the same schedule.
+
+| AI Studio setting | Purpose |
+| :--- | :--- |
+| [GRPC_MAX_MESSAGE_SIZE](/ai-management/ai-studio/ai-studio-env#grpc_max_message_size) | The largest message in each direction: configuration snapshots to edges, and analytics pulses and plugin data from edges. Set it to the same value as `GRPC_MAX_MESSAGE_SIZE` on the edges. |
+
+### Shared Edge Credentials
+
+All edges authenticate to AI Studio with the same token: [EDGE_AUTH_TOKEN](/ai-management/ai-studio/edge-gateway-env#edge_auth_token) on the edge, which matches [GRPC_AUTH_TOKEN](/ai-management/ai-studio/ai-studio-env#grpc_auth_token) on AI Studio. The token is not bound to an edge or a namespace. A holder of the token can register as any edge, in any namespace, and get the configuration snapshot of that namespace.
+
+The snapshot contains the secrets of the namespace, encrypted with [MICROGATEWAY_ENCRYPTION_KEY](/ai-management/ai-studio/ai-studio-env#microgateway_encryption_key), which every edge also has. From v2.3.0, this includes the credentials in LLM metadata, such as the AWS keys of a Bedrock LLM, and guardrail provider credentials.
+
+Plugin configuration is not encrypted in the snapshot. Do not put a literal credential in plugin configuration. Use a `$SECRET/` reference. Refer to [Plugin Configuration and Secrets](/ai-management/ai-studio/plugins/security#plugin-configuration-and-secrets).
+
+Keep the token and `MICROGATEWAY_ENCRYPTION_KEY` as secrets of the whole deployment. If an attacker gets access to an edge host, do these steps:
+
+1. Rotate the edge token (with [GRPC_AUTH_TOKEN_NEXT](/ai-management/ai-studio/ai-studio-env#grpc_auth_token_next)) and `MICROGATEWAY_ENCRYPTION_KEY`.
+2. In each namespace that the edge served, rotate the LLM provider keys and the secrets in plugin configuration. Also rotate the tool, data source, embedder, and guardrail provider credentials.
+3. Revoke the OAuth access tokens issued to MCP clients in those namespaces.
+
+App keys do not need rotation. An edge holds only hashes of App keys.
+
+## Outage Settings
+
+An edge continues to serve traffic while no control plane answers. It reconnects in the background with exponential backoff, from [EDGE_RECONNECT_INTERVAL](/ai-management/ai-studio/edge-gateway-env#edge_reconnect_interval) to a maximum of 30 seconds.
+
+| Edge setting | Purpose |
+| :--- | :--- |
+| [OVERLOAD_SHEDDING_ENABLED](/ai-management/ai-studio/edge-gateway-env#overload_shedding_enabled) | Refuses new requests with `503` and `Retry-After` when memory use is near the limit. The edge recovers when memory use falls. |
+| [OVERLOAD_MEMORY_LIMIT](/ai-management/ai-studio/edge-gateway-env#overload_memory_limit) | The memory limit for load shedding. If not set, the edge uses `GOMEMLIMIT`, and then the container limit. If no limit is known, load shedding is off. |
+| [OVERLOAD_MEMORY_THRESHOLD](/ai-management/ai-studio/edge-gateway-env#overload_memory_threshold) | The fraction of the memory limit at which load shedding starts. |
+| [MAX_INFLIGHT_REQUESTS](/ai-management/ai-studio/edge-gateway-env#max_inflight_requests) | An optional limit on the number of proxy requests at the same time. |
+| [EDGE_TOKEN_CACHE_STALE_GRACE](/ai-management/ai-studio/edge-gateway-env#edge_token_cache_stale_grace) | Lets the edge use a token validation that just expired, but only while AI Studio cannot be reached. During an outage, a revoked token works for the grace period. |
+| [ANALYTICS_RETENTION_DAYS](/ai-management/ai-studio/edge-gateway-env#analytics_retention_days) | The edge deletes older analytics. After an upgrade, the first cleanup deletes old rows in small batches. |
+| [CONTROL_ENDPOINTS](/ai-management/ai-studio/edge-gateway-env#control_endpoints) | From v2.3.0. An ordered, comma-separated list of control planes. Refer to [Several Control Planes](#several-control-planes). |
+| [EDGE_CONTROL_FAILBACK_INTERVAL](/ai-management/ai-studio/edge-gateway-env#edge_control_failback_interval) | From v2.3.0. How often an edge that is not on its first control plane tries to go back to it. |
+| [EDGE_START_FROM_LAST_KNOWN_GOOD](/ai-management/ai-studio/edge-gateway-env#edge_start_from_last_known_good) | From v2.3.0. Lets the edge start from the configuration it last applied when no control plane answers at startup. |
+| [EDGE_STARTUP_CONTROL_TIMEOUT](/ai-management/ai-studio/edge-gateway-env#edge_startup_control_timeout) | From v2.3.0. How long the edge tries its control planes at startup before it uses the stored configuration. |
+| [EDGE_LAST_KNOWN_GOOD_MAX_AGE](/ai-management/ai-studio/edge-gateway-env#edge_last_known_good_max_age) | From v2.3.0. The longest time an edge can be without a control plane and still start from the stored configuration. |
+| [EDGE_CREDENTIAL_SYNC](/ai-management/ai-studio/edge-gateway-env#edge_credential_sync) | From v2.3.0. Set `full` (Enterprise) to validate App keys from a synced, hashed list. |
+| [EDGE_CREDENTIAL_SYNC_MAX_AGE](/ai-management/ai-studio/edge-gateway-env#edge_credential_sync_max_age) | From v2.3.0. How long the edge trusts the synced list after the last successful sync. |
+
+## Start Without a Control Plane
+
+From v2.3.0, every edge stores the configuration it last applied in its own database, encrypted with a key derived from its [ENCRYPTION_KEY](/ai-management/ai-studio/edge-gateway-env#encryption_key). The stored configuration can be as large as a snapshot, up to [GRPC_MAX_MESSAGE_SIZE](#keepalive-and-message-size).
+
+With `EDGE_START_FROM_LAST_KNOWN_GOOD=true`, an edge that starts while no control plane answers waits for `EDGE_STARTUP_CONTROL_TIMEOUT`. It then starts from the stored configuration, and reports `config_source: last_known_good` on `/ready`. When a control plane accepts it, the edge applies the live configuration.
+
+- The edge serves the configuration it last knew. An LLM, App, or filter that you removed in AI Studio works on the edge until it reconnects. For this reason, the option is off by default.
+- The edge exits when it has no stored configuration, or when the configuration is for another namespace or another `ENCRYPTION_KEY`. It also exits when it was without a control plane for longer than `EDGE_LAST_KNOWN_GOOD_MAX_AGE`.
+- Without full credential sync, the restarted edge cannot validate any App key until a control plane answers. Each request gets `503` with `Retry-After` and the code `credential_check_unavailable`. `EDGE_TOKEN_CACHE_STALE_GRACE` does not help, because the cache is empty after a restart.
+- The edge database must survive a restart. On Kubernetes, set `kind: StatefulSet` and `persistence.enabled: true` in the Edge Gateway chart.
+    - An `emptyDir` volume covers only a container restart.
+    - The chart prints a warning when you set the option without persistence. Refer to [Scaling Edge Gateways](https://github.com/TykTechnologies/ai-studio/blob/main/docs/site/docs/deployment-helm-k8s.md#scaling-edge-gateways).
+
+## Full Credential Sync (Enterprise)
+
+By default, an edge asks a control plane about a key that it has not seen, and caches the answer for `EDGE_TOKEN_CACHE_TTL`. While no control plane answers, a key that is not in the cache gets `503` with the code `credential_check_unavailable`.
+
+From v2.3.0, with `EDGE_CREDENTIAL_SYNC=full`, AI Studio sends the edge a keyed hash of every App key of its namespace, and of global Apps. AI Studio never sends the keys. The edge stores the list in its database and validates keys from it, also while no control plane answers:
+
+- The edge accepts an active key on the list if its App is active.
+- The edge refuses a listed key that is inactive or deleted, or whose App is inactive.
+- The edge asks a control plane about a key that is not on the list, as in on-demand mode. An example is a key that a user created a moment ago.
+
+The edge syncs the list at each registration and heartbeat:
+
+- It also syncs about one second after AI Studio reports a change to a key on the list.
+- It gets the full list at least every 15 minutes, and only the changes between those syncs.
+- While no control plane answers, a revoked key can work on the edge until the list is older than `EDGE_CREDENTIAL_SYNC_MAX_AGE`.
+- Keep the clocks of the control planes and the database within 30 seconds of each other.
+
+Full credential sync needs an Enterprise Edition AI Studio and Edge Gateway, both on v2.3.0 or later. With a Community Edition edge or control plane, the edge validates keys on demand. A Community Edition edge with `full` also logs a warning. Use a persistent volume for the edge database, as for last-known-good.
+
+## Analytics During a Control-Plane Outage
+
+Edges send analytics and spend to AI Studio in the analytics pulse. They load the pulse configuration from `PLUGINS_CONFIG_PATH`. If AI Studio shows no data for an edge that serves traffic, make sure that `PLUGINS_CONFIG_PATH` points to an existing analytics pulse configuration. Search the edge logs for `startup path` and for `Failed to send analytics pulse`.
+
+From v2.3.0, an edge keeps the analytics that it cannot deliver in a backlog in memory. When a control plane answers, the edge sends the backlog to AI Studio, oldest first. AI Studio stores each pulse once, so it does not count a pulse twice after a failover.
+
+- `max_backlog_bytes` in the [analytics pulse configuration](/ai-management/ai-studio/quickstart#5-create-confs%2Fanalytics-pulse-yaml) sets the size of the backlog. The default is 256 MiB, about 900,000 requests. The Helm chart sets 64 MiB (`analyticsPulse.maxBacklogBytes`). `0` turns off the backlog.
+- When the backlog is full, the edge discards the oldest records and counts them in `microgateway_analytics_pulse_dropped_records_total{reason="over_backlog"}`.
+- The edge loses the whole backlog if it restarts during the outage. Do not restart edges during a control-plane outage.
+- Size the memory of the edge for its working set, plus `max_backlog_bytes`, plus about 50 MB.
