@@ -69,7 +69,10 @@ Tyk publishes two images. Both images and the model are under the MIT License.
 
 The CPU figures come from a container with 4 CPUs. The GPU figures come from an NVIDIA A40. Your figures can be different.
 
-On a CPU, a long tool result takes several seconds. The guardrail can score it in **deferred** mode: it lets new content through immediately and scores it in the background. The agent sends its history again, so the guardrail stops the next request that contains the same content. On a GPU, use **inline** mode for all stages. In inline mode, a flagged tool result never gets to the model. You set the mode in the guardrail policy. Refer to [Tune the Policy](#tune-the-policy).
+On a CPU, a long tool result takes several seconds. You set the scoring mode of each stage in the [guardrail policy](#tune-the-policy):
+
+- **Deferred**: the guardrail lets new content through immediately and scores it in the background. The agent sends its history again, so the guardrail stops the next request that contains the same content. Use it for long content on a CPU.
+- **Inline**: a flagged tool result never gets to the model. On a GPU, use inline mode for all stages.
 
 Pin each image by its digest (`image@sha256:...`). Do not use a tag that can move.
 
@@ -77,7 +80,9 @@ Pin each image by its digest (`image@sha256:...`). Do not use a tag that can mov
 
 Run the CPU image in the same Docker Compose project as AI Studio and the Edge Gateways. The guardrail has no network. AI Studio and the Edge Gateways connect to it through a Unix socket on a shared volume.
 
-1. Create a token and write it to `wolfguard.env` as `WOLFGUARD_TOKEN=<token>`. Set the file mode to `0600`. Do not commit the file. The guardrail does not start without a token.
+1. Create a token and write it to `wolfguard.env` as `WOLFGUARD_TOKEN=<token>`. The guardrail does not start without a token.
+    - Set the file mode to `0600`.
+    - Do not commit the file.
 
     ```bash
     openssl rand -base64 32
@@ -182,7 +187,9 @@ Other apps then do not depend on the guardrail. An outage of the guardrail does 
 
 ## Create the Filters in Log-Only Mode
 
-Start in shadow mode with the **Log only** action. In shadow mode, the gateway does not wait for the guardrail and does not change traffic. It records each decision as a [compliance event](/ai-management/ai-studio/compliance-events). The compliance events show what enforcement would do. Run shadow mode on real traffic for about two weeks before you enforce.
+Start in shadow mode with the **Log only** action. In shadow mode, the gateway does not wait for the guardrail and does not change traffic. It records each decision as a [compliance event](/ai-management/ai-studio/compliance-events) that shows what enforcement would do.
+
+Run shadow mode on real traffic for about two weeks before you enforce.
 
 ### Request Filter
 
@@ -234,7 +241,9 @@ Add a second filter for the tool calls of the model. Use the same provider, endp
 
 An administrator can approve the instructions of an app as a [trusted prompt template](/ai-management/ai-studio/guardrails#trusted-prompt-templates). Request guardrails then score only the parts that change.
 
-The Wolf Defender guardrail can process trusted prompt templates itself, from image version 0.2.0. To turn this on, select **Reads trusted prompt templates** in the connection of the request filter. In the API, this is the connection field `templates: "true"`. The guardrail then scores the variable parts and also scores the full message in the same call as a backstop. Without this setting, the gateway sends only the variable parts and scores the full message in a second call.
+From image version 0.2.0, the Wolf Defender guardrail can process trusted prompt templates itself. To turn this on, select **Reads trusted prompt templates** in the connection of the request filter.
+
+The guardrail then scores the variable parts and also scores the full message in the same call as a backstop. Without this setting, the gateway sends only the variable parts and scores the full message in a second call.
 
 ### Create the Filters with the API
 
@@ -244,7 +253,9 @@ The API uses the same settings as the form. For the field names and the filters 
 
 1. Go to **Model management > Model providers**, open the LLM, and add both filters. Filters run from top to bottom. The first block stops the request.
 2. If you use Edge Gateways, wait until AI Studio pushes the configuration to them.
-3. In the **Test** panel of the request filter, set **Request body format** to the vendor format of your agent. Select **Insert a tool-result sample** and run the test. The result shows a `tool_result` compliance event. The test is a real call, so it also checks the endpoint, the socket allowlist, and the token. Refer to [Test a Guardrail](/ai-management/ai-studio/guardrails#test-a-guardrail).
+3. In the **Test** panel of the request filter, set **Request body format** to the vendor format of your agent. Then select **Insert a tool-result sample** and run the [test](/ai-management/ai-studio/guardrails#test-a-guardrail).
+    - The result shows a `tool_result` compliance event.
+    - The test is a real call, so it also checks the endpoint, the socket allowlist, and the token.
 
     <img src="/img/ai-management/ai-studio-guardrails-wolf-test.png" alt="Test panel of the Wolf Defender filter with a tool_result.critical compliance event" />
 4. Send one real turn from the agent. Go to **Governance > Compliance overview** and select the **Filter Events** tab. The decisions show as shadow events, with the stage, the tool name, and the score.
@@ -256,10 +267,14 @@ The API uses the same settings as the form. For the field names and the filters 
 Examine the shadow decisions each week before you enforce. Use these sources:
 
 - **Compliance events in AI Studio**: What the guardrail flagged, by stage, app, and tool.
-- **The decision log of the guardrail**: The file `decisions.jsonl` in the state directory has one line for each scored segment. The line has the scores, the stage, the app, and the tool. It also has the policy version and the SHA-256 hash of the text. It does not contain the text. With `WOLFGUARD_PREVIEW=1`, the file `previews.jsonl` keeps the first 200 characters of each flagged segment, with secrets masked.
+- **The decision log of the guardrail**: The file `decisions.jsonl` in the state directory has one line for each scored segment.
+    - Each line has the scores, the stage, the app, and the tool. It also has the policy version and the SHA-256 hash of the text, but not the text.
+    - With `WOLFGUARD_PREVIEW=1`, the file `previews.jsonl` keeps the first 200 characters of each flagged segment, with secrets masked.
 - **Metrics**: The guardrail serves Prometheus metrics on `/metrics`, with the bearer token.
 
-The policy is the YAML file `/etc/wolfguard/policy.yaml` in the image. To use your own policy, mount a file at that path, or set `WOLFGUARD_POLICY_YAML_B64` on a GPU host. The guardrail reloads the file within 2 seconds. If the new file is not valid, the guardrail keeps the last valid policy. Increase the `version` value for each change, and update `?policy=` in the filters.
+The policy is the YAML file `/etc/wolfguard/policy.yaml` in the image. To use your own policy, mount a file at that path, or set `WOLFGUARD_POLICY_YAML_B64` on a GPU host. Increase the `version` value for each change, and update `?policy=` in the filters.
+
+The guardrail reloads the file within 2 seconds. If the new file is not valid, the guardrail keeps the last valid policy.
 
 These policy settings are the most useful to tune:
 
@@ -280,7 +295,7 @@ During the shadow period, expect these results:
 
 | Result | Cause and solution |
 | :--- | :--- |
-| Security text scores as an attack | Documentation about prompt injection and test fixtures can look like attacks. For this reason, the default policy stops a conversation only at the critical level and quarantines at the block level. |
+| Security text scores as an attack | Documentation about prompt injection and test fixtures are similar to attacks. For this reason, the default policy stops a conversation only at the critical level and quarantines at the block level. |
 | Issues or comments are flagged as user messages | The runner of the app puts them inside its own instruction. Set `user_messages: untrusted` for that app. If the instruction of the runner is flagged, approve it as a trusted prompt template for the app. |
 | Decisions arrive one turn late | The stage uses deferred mode. Use inline mode where the latency is acceptable, for example on a GPU. |
 
@@ -292,7 +307,10 @@ Enforce one stage at a time. Wait one week between stages and examine the decisi
     - Set **On detection** and **Action on tool results** to **Block**.
     - Set a **Block message**, for example "This conversation was stopped by the security guardrail."
     - Turn off **Shadow (don't wait)**. Keep the other settings from the shadow filter.
-2. **Quarantine the other tool results**: Set the detector to `tool_result.block`. Set **On detection** to **Log only** and **Action on tool results** to **Quarantine**. Set a **Quarantine placeholder**, for example `[content removed by policy: {{tool_name}} returned text that looked like instructions to the AI]`. Turn off **Shadow (don't wait)**.
+2. **Quarantine the other tool results**: Set the detector to `tool_result.block`.
+    - Set **On detection** to **Log only** and **Action on tool results** to **Quarantine**.
+    - Set a **Quarantine placeholder**, for example `[content removed by policy: {{tool_name}} returned text that looked like instructions to the AI]`.
+    - Turn off **Shadow (don't wait)**.
 3. **Block tool calls**: In the response filter, set the detector to `tool_call.block` and **Action on tool calls** to **Block**. Turn off **Shadow (don't wait)**.
 4. **Remove poisoned tools**: Add `tool_definition.block` to the quarantine filter. Turn on **Scan tool definitions** and set **Action on tool definitions** to **Remove the tool**.
 
