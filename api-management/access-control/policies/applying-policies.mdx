@@ -187,3 +187,22 @@ This makes it incredibly easy to implement a "kill switch" Policy. You can creat
 <Note>
 If a Session has **any** policies linked to it, the Gateway ignores the Session's own `is_inactive` flag. You cannot disable a session by setting `is_inactive: true` directly on the Session object if it has policies applied; you **must** use a policy to disable it.
 </Note>
+
+## Updating Policy Quota Windows and Active Key Quota Redis TTL Behavior
+
+### Redis Quota Counter Lifecycle
+Tyk Gateway tracks API key usage and quotas using sliding window keys in Redis (e.g. `quota-{key_hash}`). The lifetime and reset schedule of these keys depend on the quota window configured in the assigned security policy:
+
+* **Dynamic Policy Inheritance:** When an API key is partitioned to a policy, the key inherits rate limit and quota definitions from that policy.
+* **Window Persistence:** If an administrator updates a policy to change the quota allowance (e.g. from 1,000 requests/day to 5,000 requests/day) or modifies the window duration, the Gateway updates the policy definition in memory. However, **existing active quota keys in Redis retain their active TTL and current count** until the ongoing quota window elapses.
+* **Delayed Policy Propagation:** As a result, active consumers may continue to experience the previous quota limits until their current window naturally resets.
+
+### Immediately Enforcing Updated Quota Limits
+To force active keys to immediately reflect new quota allowances:
+
+1. **Flush Target Key Quotas in Redis:** Delete the active quota counter key in Redis for affected client keys:
+```text
+DEL quota-{key_hash}
+```
+Upon the next request, Tyk Gateway initializes a new quota counter reflecting the updated policy limits.
+2. **Key Session Reload:** Trigger a key reload via the Gateway administrative API (`GET /tyk/keys/{key_hash}/reload`) or Dashboard API to re-synchronize key metadata with the latest policy values.
