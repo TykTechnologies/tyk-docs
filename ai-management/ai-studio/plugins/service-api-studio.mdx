@@ -1,0 +1,845 @@
+---
+title: "Tyk AI Studio Plugin Studio Services"
+description: "Reference for the Studio Services that Tyk AI Studio plugins call: LLMs, tools, plugins, Apps, notifications, resource types, permissions, Team access, governed metadata, governance reads, and schedules."
+keywords: "AI Studio, AI Management, Plugin SDK, Studio Services, Service API"
+type: reference
+sidebarTitle: "Studio Services"
+---
+## Availability
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| [Community](/ai-management/ai-studio/overview#community-edition) & [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
+
+Studio Services are available to plugins that run in AI Studio.
+
+Studio Services give a plugin access to the management API of AI Studio. They are available when `ctx.Runtime == plugin_sdk.RuntimeStudio`. Call them through `ctx.Services.Studio()`, or call the functions of the `ai_studio_sdk` package. Each call needs a scope in the plugin manifest. Refer to [Scopes](/ai-management/ai-studio/plugins/service-api#scopes). For RAG and datasource calls, refer to [RAG and Datasource Services](/ai-management/ai-studio/plugins/service-api-rag).
+
+## LLM Operations
+
+Requires: `llms.read` scope to list and get LLMs. `llms.proxy` scope to call an LLM.
+
+### List LLMs
+
+```go
+llms, err := ctx.Services.Studio().ListLLMs(ctx, page, limit)
+```
+
+**Alternative** (direct SDK call):
+```go
+llmsResp, err := ai_studio_sdk.ListLLMs(ctx, 1, 10)
+```
+
+Example:
+```go Expandable expandable
+if ctx.Runtime == plugin_sdk.RuntimeStudio {
+    llms, err := ctx.Services.Studio().ListLLMs(ctx, 1, 10)
+    if err != nil {
+        return err
+    }
+
+    // Type assert the response
+    llmsResp := llms.(*studiomgmt.ListLLMsResponse)
+    for _, llm := range llmsResp.Llms {
+        ctx.Services.Logger().Info("LLM found",
+            "name", llm.Name,
+            "vendor", llm.Vendor,
+            "model", llm.DefaultModel,
+        )
+    }
+}
+```
+
+### Get LLM
+
+```go
+llm, err := ctx.Services.Studio().GetLLM(ctx, llmID)
+```
+
+**Alternative** (direct SDK call):
+```go
+llm, err := ai_studio_sdk.GetLLM(ctx, 1)
+```
+
+### Call LLM (Streaming)
+
+Requires: `llms.proxy` scope
+
+```go
+func CallLLM(
+    ctx context.Context,
+    llmID uint32,
+    model string,
+    messages []*mgmtpb.LLMMessage,
+    temperature float64,
+    maxTokens int32,
+    tools []*mgmtpb.LLMTool,
+    stream bool,
+) (mgmtpb.AIStudioManagementService_CallLLMClient, error)
+```
+
+Example:
+```go Expandable expandable
+messages := []*mgmtpb.LLMMessage{
+    {Role: "user", Content: "What is the capital of France?"},
+}
+
+llmStream, err := ai_studio_sdk.CallLLM(ctx, 1, "gpt-4", messages, 0.7, 1000, nil, false)
+if err != nil {
+    return err
+}
+
+var response string
+for {
+    resp, err := llmStream.Recv()
+    if err == io.EOF {
+        break
+    }
+    if err != nil {
+        return err
+    }
+
+    response += resp.Content
+
+    if resp.Done {
+        break
+    }
+}
+
+log.Printf("LLM response: %s", response)
+```
+
+### Call LLM (Simple)
+
+Convenience method for a non-streaming call. It returns the content of the response.
+
+```go
+func CallLLMSimple(ctx context.Context, llmID uint32, model string, messages []*mgmtpb.LLMMessage, temperature float64, maxTokens int32) (string, error)
+```
+
+Example:
+```go
+messages := []*mgmtpb.LLMMessage{{Role: "user", Content: "Hello, world!"}}
+response, err := ai_studio_sdk.CallLLMSimple(ctx, 1, "gpt-4", messages, 0.7, 1000)
+if err != nil {
+    return err
+}
+
+log.Printf("Response: %s", response)
+```
+
+### Get LLMs Count
+
+```go
+func GetLLMsCount(ctx context.Context) (int, error)
+```
+
+Example:
+```go
+count, err := ai_studio_sdk.GetLLMsCount(ctx)
+if err != nil {
+    return err
+}
+
+log.Printf("Total LLMs: %d", count)
+```
+
+### Model Prices
+
+Studio plugins can list model prices from the control plane.
+
+Requires: `pricing.read` scope.
+
+```go expandable
+import "github.com/TykTechnologies/midsommar/v2/pkg/ai_studio_sdk"
+
+// All prices, with an optional vendor filter and pagination
+resp, err := ai_studio_sdk.ListModelPrices(ctx, "", 1, 100)
+if err != nil {
+    return fmt.Errorf("list model prices: %w", err)
+}
+for _, p := range resp.ModelPrices {
+    log.Printf("%s/%s", p.Vendor, p.Model)
+}
+
+// All prices for one vendor
+byVendor, err := ai_studio_sdk.GetModelPricesByVendor(ctx, "anthropic")
+```
+
+## Tool Operations
+
+Requires: `tools.read` scope to list and get tools.
+
+### List Tools
+
+```go
+func ListTools(ctx context.Context, page, limit int32) (*mgmtpb.ListToolsResponse, error)
+```
+
+Example:
+```go expandable
+toolsResp, err := ai_studio_sdk.ListTools(ctx, 1, 50)
+if err != nil {
+    return err
+}
+
+for _, tool := range toolsResp.Tools {
+    log.Printf("Tool: %s (%s) - %s", tool.Name, tool.Slug, tool.Description)
+    for _, op := range tool.Operations {
+        log.Printf("  Operation: %s", op)
+    }
+}
+```
+
+### Get Tool by ID
+
+```go
+func GetTool(ctx context.Context, toolID uint32) (*mgmtpb.GetToolResponse, error)
+```
+
+Example:
+```go
+tool, err := ai_studio_sdk.GetTool(ctx, 1)
+if err != nil {
+    return err
+}
+
+log.Printf("Tool: %s - Type: %s", tool.Tool.Name, tool.Tool.ToolType)
+```
+
+### Execute Tool
+
+Requires: `tools.call` scope.
+
+`ExecuteTool` runs an operation of a tool for an agent plugin. AI Studio adds the authentication of the tool to the call. The tool must belong to the App in the agent configuration of the plugin. Otherwise the call returns `PermissionDenied`.
+
+The `ai_studio_sdk` package has no wrapper function for this call. Call the `ExecuteTool` RPC of the management service with an `ExecuteToolRequest`:
+
+| Field | Description |
+| :--- | :--- |
+| `ToolId` | The ID of the tool. |
+| `OperationId` | The ID of the tool operation. |
+| `ParamsJson` | The operation parameters, as a JSON string. |
+| `PayloadJson` | The request body, as a JSON string. |
+| `HeadersJson` | The request headers, as a JSON string. |
+
+The `ExecuteToolResponse` has `Success`, `ResultJson`, `ErrorMessage`, and the HTTP `StatusCode` of the upstream call.
+
+## Plugin Operations
+
+Requires: `plugins.read` scope, except for calls on the own plugin ID of the caller. Refer to [Plugin Scopes](/ai-management/ai-studio/plugins/manifests#plugin-scopes).
+
+### List Plugins
+
+```go
+func ListPlugins(ctx context.Context, page, limit int32) (*mgmtpb.ListPluginsResponse, error)
+```
+
+Example:
+```go
+pluginsResp, err := ai_studio_sdk.ListPlugins(ctx, 1, 10)
+if err != nil {
+    return err
+}
+
+for _, plugin := range pluginsResp.Plugins {
+    log.Printf("Plugin: %s - Hook: %s, Active: %t",
+        plugin.Name, plugin.HookType, plugin.IsActive)
+}
+```
+
+### Get Plugin by ID
+
+```go
+func GetPlugin(ctx context.Context, pluginID uint32) (*mgmtpb.GetPluginResponse, error)
+```
+
+Example:
+```go
+plugin, err := ai_studio_sdk.GetPlugin(ctx, 1)
+if err != nil {
+    return err
+}
+
+log.Printf("Plugin: %s - Hook: %s", plugin.Plugin.Name, plugin.Plugin.HookType)
+```
+
+### Get Plugins Count
+
+`GetPluginsCount` calls `ListPlugins` for one row. A plugin without the `plugins.read` scope still gets the count, with no plugin rows. To warm up the broker connection, use `GetLicenseInfo`, which needs no scope.
+
+```go
+func GetPluginsCount(ctx context.Context) (int, error)
+```
+
+Example:
+```go
+count, err := ai_studio_sdk.GetPluginsCount(ctx)
+if err != nil {
+    return err
+}
+
+log.Printf("Total plugins: %d", count)
+```
+
+## App Operations
+
+Requires: `apps.read` scope to list and get Apps. `apps.write` scope to change App metadata.
+
+### List Apps
+
+```go
+func ListApps(ctx context.Context, page, limit int32) (*mgmtpb.ListAppsResponse, error)
+```
+
+Example:
+```go
+appsResp, err := ai_studio_sdk.ListApps(ctx, 1, 10)
+if err != nil {
+    return err
+}
+
+for _, app := range appsResp.Apps {
+    log.Printf("App: %s - LLMs: %d, Tools: %d",
+        app.Name, len(app.LlmIds), len(app.ToolIds))
+}
+```
+
+### List Apps with Filters
+
+```go
+func ListAppsWithFilters(ctx context.Context, page, limit int32, opts *ListAppsOptions) (*mgmtpb.ListAppsResponse, error)
+```
+
+`ListAppsOptions` supports filtering by:
+- `IsActive *bool`: Filter by active/inactive status
+- `Namespace string`: Filter by namespace (empty = all namespaces)
+- `UserID *uint32`: Filter by owner user ID
+
+Example: list only the current user's apps:
+```go expandable
+userID := uint32(ctx.UserID)
+appsResp, err := ai_studio_sdk.ListAppsWithFilters(ctx, 1, 10, &ai_studio_sdk.ListAppsOptions{
+    UserID: &userID,
+})
+if err != nil {
+    return err
+}
+
+for _, app := range appsResp.Apps {
+    log.Printf("My app: %s (namespace: %s)", app.Name, app.Namespace)
+}
+```
+
+Example: list active apps in a namespace:
+```go
+active := true
+appsResp, err := ai_studio_sdk.ListAppsWithFilters(ctx, 1, 20, &ai_studio_sdk.ListAppsOptions{
+    IsActive:  &active,
+    Namespace: "production",
+})
+```
+
+The original `ListApps(ctx, page, limit)` function is still available for backward compatibility and returns all apps without filtering.
+
+### Get App by ID
+
+```go
+func GetApp(ctx context.Context, appID uint32) (*mgmtpb.GetAppResponse, error)
+```
+
+Example:
+```go
+app, err := ai_studio_sdk.GetApp(ctx, 1)
+if err != nil {
+    return err
+}
+
+log.Printf("App: %s - Description: %s", app.App.Name, app.App.Description)
+```
+
+### Patch App Metadata
+
+```go
+func PatchAppMetadata(ctx context.Context, appID uint32, key, value string, deleteKey bool) (*mgmtpb.PatchAppMetadataResponse, error)
+```
+
+Atomically updates a single metadata key on an app without requiring a full app update. This is safer than `UpdateAppWithMetadata` for concurrent modifications since it uses database-level transactions with row locking.
+
+Requires: `apps.write` scope. The key `governance_flags` is reserved and returns `InvalidArgument`.
+
+**Set a metadata key** (value must be JSON-encoded):
+```go
+resp, err := ai_studio_sdk.PatchAppMetadata(ctx, appID, "cache_enabled", `true`, false)
+if err != nil {
+    return err
+}
+log.Printf("Updated metadata: %s", resp.Metadata) // Full metadata JSON
+```
+
+**Set complex values:**
+```go
+// String value
+ai_studio_sdk.PatchAppMetadata(ctx, appID, "tier", `"premium"`, false)
+
+// Numeric value
+ai_studio_sdk.PatchAppMetadata(ctx, appID, "max_requests", `1000`, false)
+
+// Object value
+ai_studio_sdk.PatchAppMetadata(ctx, appID, "settings", `{"timeout": 30, "retries": 3}`, false)
+```
+
+**Delete a metadata key:**
+```go
+resp, err := ai_studio_sdk.PatchAppMetadata(ctx, appID, "deprecated_field", "", true)
+```
+
+**Via the plugin_sdk interface:**
+```go
+// Returns the full metadata JSON string after the operation
+metadataJSON, err := ctx.Services.Studio().PatchAppMetadata(ctx, appID, "tier", `"premium"`, false)
+```
+
+## Notifications
+
+Plugins can create in-app notifications. AI Studio shows them in the notification bell, and also sends them by email when SMTP is configured. A notification can go to all administrators, to one user, or to both.
+
+Requires: `notifications.write` scope. Studio only.
+
+```go expandable
+err := ctx.Services.Studio().CreateNotification(ctx.Context, plugin_sdk.Notification{
+    ID:           "req_" + request.ID,          // optional dedupe key, scoped to your plugin
+    Type:         "asset_access_request",       // free-form label stored on the notification
+    Title:        "Access request: Triage Agent",
+    Content:      "**alice@acme.com** asked for access.\n\n[Review](/admin/enterprise/asset-catalog/requests)",
+    NotifyAdmins: true,                         // every admin with notifications enabled
+    UserID:       0,                            // or a specific user ID (both may be set)
+    Links: map[string]string{                   // what clicking the bell entry opens
+        "admin":  "/admin/enterprise/asset-catalog/requests#req_" + request.ID,
+        "portal": "/portal/plugins/asset-catalog#/assets/" + asset.ID,
+    },
+})
+```
+
+| Field | Notes |
+| :--- | :--- |
+| `ID` | Optional. AI Studio adds the prefix `plugin_<id>_`. Two calls with the same ID create one notification for each recipient. If the ID is empty, every call creates a new notification. |
+| `Title` | Required. Maximum 255 characters. |
+| `Content` | Markdown. Maximum 10000 characters. AI Studio removes raw HTML tags and disables links with the `javascript:`, `vbscript:`, `data:`, or `file:` scheme before it stores the content. |
+| `NotifyAdmins` / `UserID` | Set at least one of these fields. |
+| `Link` | Optional. The page that opens when the user clicks the notification. Use a same-origin path (`/admin/...`, `/portal/...`) or an `http(s)` URL. AI Studio drops other values, such as `javascript:` or protocol-relative URLs. Without a link, the notification is for information only. |
+| `Links` | Optional. Overrides `Link` for each audience: `"admin"` for administrators, and `"portal"` for the user in `UserID`. Each value falls back to the other, then to `Link`. |
+
+## Resource Type Registration (Runtime)
+
+AI Studio registers the resource types in the manifest when the plugin loads. If the plugin defines its types at runtime (for example, administrators define them inside the plugin), register the types with `SyncResourceTypes`.
+
+Requires: `resource-types.manage` scope. Studio only.
+
+```go
+// Registers the given types for this plugin and deactivates any of its
+// previously registered types that are missing from the list.
+err := plugin_sdk.SyncResourceTypes(ctx, []*plugin_sdk.ResourceTypeRegistration{
+    {Slug: "agent", Name: "Agent", SupportsSubmissions: true, SubmissionSchema: agentSchemaJSON},
+})
+
+// Lower level: keep missing types active
+registered, deactivated, err := ctx.Services.Studio().RegisterResourceTypes(ctx.Context, regs, false)
+```
+
+AI Studio takes the plugin ID from the authenticated connection, so a plugin can manage only its own types. During the call, AI Studio calls your `ListResourceInstances` method for each type. Do not hold locks that this method needs. For more information, refer to [Resource Provider Plugins](/ai-management/ai-studio/plugins/resource-types).
+
+## Permission Resources (Runtime)
+
+Every plugin with an admin UI has a row in the role editor: `plugin:<manifest id>`, with `read`, `write`, and `execute`. Declare sub-resources that you know in advance in the `rbac` block of the manifest. Refer to [Permissions (RBAC) Block](/ai-management/ai-studio/plugins/manifests#permissions-rbac-block). Register resources that exist only at runtime with `RegisterPermissionResources`.
+
+Requires: `rbac.register` scope. Studio only.
+
+```go
+registered, removed, pluginKey, err := ctx.Services.Studio().RegisterPermissionResources(ctx.Context, []plugin_sdk.PermissionResource{
+    {
+        Key:     "assets-agent",              // becomes "plugin:<manifest id>:assets-agent"
+        Label:   "Assets: Agent",
+        Actions: []plugin_sdk.PermissionAction{plugin_sdk.PermissionRead, plugin_sdk.PermissionWrite, plugin_sdk.PermissionDelete, plugin_sdk.PermissionPublish},
+    },
+}, true) // removeMissing: drop runtime resources absent from the list (manifest ones are never touched)
+```
+
+The new rows appear under the plugin in the role editor immediately. AI Studio also updates the computed system roles (Editor, Viewer, and Auditor). Administrators and users with `plugins:execute` have every plugin permission. Grants for each plugin limit access further.
+
+To check a permission in an RPC handler, implement `UserAwareRPCHandler` and use the user context:
+
+```go
+func (p *MyPlugin) HandleRPCWithUser(method string, payload []byte, user *plugin_sdk.PortalUserContext) ([]byte, error) {
+    if !user.Can("assets-agent:publish") {          // plugin-relative: "<key>:<action>" or a bare action ("write")
+        return forbidden("assets-agent:publish")
+    }
+    ...
+}
+```
+
+`Can` also accepts platform permissions, for example `user.Can("llms:read")`. AI Studio gives the plugin the permissions of the caller, with the plugin's own grants included. For this reason, users with `plugins:execute` and full administrators pass the check. On a host that does not support permissions for each plugin, `Can` uses `IsAdmin`. AI Studio checks the admin RPC methods in the `rbac.rpc_methods` block of the manifest before the call reaches the plugin. Methods that are not in the list need the base `write` permission of the plugin.
+
+## Team Access to Resource Instances (Runtime)
+
+A plugin can control which Teams see its resource instances. By default, AI Studio grants every active instance of a plugin resource type to the **Default** Team. Every user is a member of this Team, so every user sees the instance in the AI Portal.
+
+For a type whose instances must reach only specific Teams, register the type with `DefaultAccess: plugin_sdk.DefaultAccessExplicit` (manifest: `"default_access": "explicit"`). The plugin then manages the grants itself.
+
+Requires: `resource-access.manage` scope. Studio only. Each call works only for resource types that this plugin registered. Other calls return `PermissionDenied`.
+
+```go
+studio := ctx.Services.Studio()
+
+teams, err := studio.ListGroups(ctx)                           // [{ID, Name, IsDefault}]
+granted, err := studio.GetResourceInstanceGroups(ctx, "agent", "ast_1")
+// Add teams (replace=false) or set exactly these teams (replace=true; empty revokes all)
+granted, err = studio.SetResourceInstanceGroups(ctx, "agent", "ast_1", []uint32{defaultTeamID}, false)
+
+// Which instances may this portal user see? The platform's own rule: team
+// managers (groups:write) see everything, everyone else what their teams hold.
+seeAll, ids, err := studio.ListAccessibleResourceInstances(ctx, "agent", userID)
+```
+
+- These grants are the same grants that the Teams page edits. The calls read the changes that an administrator makes on the Teams page.
+- An instance must be active (`ResourceInstance.IsActive`) to appear anywhere.
+- The Community Edition has no Team segmentation. It ignores `explicit`, and instances always join the Default Team.
+- Active instances of `auto` types (the default) join the Default Team at registration. They also join it when the plugin reports a change with `NotifyResourceInstanceChanged`.
+
+## Governed Metadata (Enterprise)
+
+Studio plugins can read, validate, write, and delete the governed metadata of LLMs, tools, data sources, and plugin resource types that support metadata. For schemas, enforcement, and the compliance report, refer to [Governed Metadata](/ai-management/ai-studio/governed-metadata).
+
+- Object types are `llm`, `tool`, `datasource`, or `plugin_resource:<plugin_id>:<slug>`. For its own resource types, a plugin can use `plugin_resource:self:<slug>` (`plugin_sdk.SelfResourceObjectType`), and AI Studio resolves it.
+- Object IDs are the numeric ID as a string, or the resource instance ID.
+- Scopes: `metadata.read` (get, resolve schema, validate, and read the change history) and `metadata.write` (set and delete). Declare them under `permissions.services` in the manifest.
+- In the Community Edition, writes fail with `FailedPrecondition`.
+
+```go expandable
+studio := ctx.Services.Studio()
+objectType := plugin_sdk.SelfResourceObjectType("prompts") // or "llm", "tool", "datasource"
+
+// Which fields apply, is the schema enforced, and which vocabulary terms do the fields use?
+schema, err := studio.GetResolvedMetadataSchema(ctx, objectType)
+if schema.HasFields() && schema.IsEnforced() { /* saves must pass validation */ }
+
+// Read what is stored (every field)
+valuesJSON, found, err := studio.GetObjectMetadata(ctx, objectType, "ast_1")
+
+// Read for an audience: only portal-visible fields, plus a display-ready list
+valuesJSON, displayJSON, found, err := studio.GetObjectMetadataForAudience(ctx, objectType, "ast_1", plugin_sdk.MetadataVisibilityPortal)
+
+// Validate without saving
+valid, enforced, resultJSON, err := studio.ValidateObjectMetadata(ctx, objectType, `{"risk_tier":"high"}`)
+
+// Write (merge=true keeps keys not present in the payload)
+ok, storedJSON, resultJSON, err := studio.SetObjectMetadata(ctx, objectType, "ast_1", `{"risk_tier":"high"}`, true)
+if err == nil && !ok {
+    // an enforced schema rejected the values; resultJSON holds {errors[], warnings[]}
+}
+
+// Remove when the object itself is deleted (absent records succeed)
+err = studio.DeleteObjectMetadata(ctx, objectType, "ast_1")
+
+// Change history, newest first (limit 0 means 100, maximum 500)
+entries, err := studio.ListObjectMetadataAudit(ctx, objectType, "ast_1", 50)
+```
+
+- If the `governed_metadata` object hook of another plugin rejects a write, the call returns `PermissionDenied`.
+- AI Studio audits every successful write or delete with the source `plugin:<id>`, and emits `system.governed_metadata.updated` or `system.governed_metadata.deleted`.
+- If you use `plugin_resource:self:` without a plugin context, the call returns `InvalidArgument`.
+- In the Community Edition, `ListObjectMetadataAudit` returns an empty list.
+
+## Governance Reads (Enterprise)
+
+Governance plugins can read the parts of AI Studio objects and their audit records. For example, an asset catalog can map which agents depend on which LLMs, tools, and MCP servers. Studio only.
+
+```go expandable
+studio := ctx.Services.Studio()
+
+// Audit trail of one resource (audit.read): newest first, never request or
+// response bodies; diffs are redacted at storage. mutationsOnly drops reads.
+records, err := studio.ListAuditRecords(ctx, "llm", "42", 50, true)
+
+// MCP servers (mcp-servers.read): never upstream URLs, auth details or definitions
+servers, total, err := studio.ListMCPServers(ctx, 1, 50)
+server, err := studio.GetMCPServer(ctx, 7)
+
+// Routers (routers.read), with what they can route to
+routers, total, err := studio.ListModelRouters(ctx, 1, 50)      // RouterSummary.LLMIDs
+semantic, total, err := studio.ListSemanticRouters(ctx, 1, 50)  // LLMIDs (targets + judge), ModelRouterIDs
+```
+
+- `ListAuditRecords` uses the resource type names of the [audit trail](/ai-management/ai-studio/audit-trail): `llm`, `tool`, `datasource`, `mcp_server`, `model_router`, `semantic_router`, and `app`.
+- The Community Edition returns `Unimplemented` for the audit trail and routers. A node that does not store audit records in the database returns `FailedPrecondition`.
+- `GetApp` and `ListApps` (`apps.read`) return every binding of the App: `LlmIds`, `ToolIds`, `DatasourceIds`, `McpServerIds`, `ModelRouterIds`, `SemanticRouterIds`, and `PluginResources` (`{PluginId, ResourceTypeSlug, InstanceId}`).
+
+### App Lifecycle Control
+
+A governance plugin can suspend or reactivate an App, and set flags on it. For example, an asset catalog can suspend the App of an agent when its review lapses. The plugin cannot change what the App can access. Bindings, credentials, and budgets need `apps.write`, and a governance plugin must not ask for that scope.
+
+Requires: `apps.lifecycle` scope. Studio only.
+
+```go
+inactive := false
+changed, err := studio.SetAppGovernanceState(ctx, appID, &inactive,
+    map[string]string{"review_lapsed": "2026-09-01"}, // "" clears a flag
+    "review of asset \"Claims agent\" lapsed")
+```
+
+- If `isActive` is `nil`, the App state does not change. You can send only flags.
+- AI Studio stores flags on the App under `metadata.governance_flags.<name>`, as `{value, reason, set_by: "plugin:<id>", at}`. The App details page shows them.
+- A call can set a maximum of 16 flags. Flag names can have a maximum of 64 characters, without spaces. Values can have a maximum of 256 characters.
+- The `governance_flags` key is reserved. App edits keep the stored flags, App creation drops a supplied `governance_flags`, and `PatchAppMetadata` refuses the key with `InvalidArgument`.
+- AI Studio writes each change to the audit trail as `Plugin Update App Governance State`, with the reason.
+- A state change emits `system.app.updated`. A plugin that subscribes to this topic also receives its own changes, so its handler must be idempotent.
+
+## Schedule Management
+
+**Scope Required**: `scheduler.manage`
+**Available in**: AI Studio only
+
+Plugins can programmatically manage their scheduled tasks using the Schedule Management API. This complements manifest-based schedule declarations.
+
+### Schedule Types
+
+Schedules can be created in two ways:
+1. **Manifest Schedules**: Declared in `plugin.manifest.json`, auto-registered when plugin loads
+2. **API Schedules**: Created programmatically via SDK during `Initialize()` or at runtime
+
+Both types execute via the `ExecuteScheduledTask()` capability method.
+
+### CreateSchedule
+
+Create a new schedule for your plugin:
+
+```go expandable
+schedule, err := ai_studio_sdk.CreateSchedule(
+    ctx,
+    "hourly-sync",              // Schedule ID (unique per plugin)
+    "Hourly Data Sync",         // Human-readable name
+    "0 * * * *",                // Cron expression (5-field format)
+    "UTC",                      // Timezone
+    120,                        // Timeout in seconds
+    map[string]interface{}{     // Config passed to ExecuteScheduledTask
+        "batch_size": 100,
+    },
+    true,                       // Enabled
+)
+```
+
+**Returns**: `*mgmtpb.ScheduleInfo` with schedule details
+**Errors**: `AlreadyExists` if schedule_id already exists for this plugin
+
+### GetSchedule
+
+Retrieve schedule details by manifest schedule ID:
+
+```go
+schedule, err := ai_studio_sdk.GetSchedule(ctx, "hourly-sync")
+```
+
+**Returns**: `*mgmtpb.ScheduleInfo`
+**Errors**: `NotFound` if schedule doesn't exist
+
+### ListSchedules
+
+Get all schedules for your plugin:
+
+```go
+schedules, err := ai_studio_sdk.ListSchedules(ctx)
+```
+
+**Returns**: `[]*mgmtpb.ScheduleInfo` array
+
+### UpdateSchedule
+
+Update schedule fields (all fields optional):
+
+```go expandable
+enabled := false
+timeout := int32(180)
+
+schedule, err := ai_studio_sdk.UpdateSchedule(ctx, "hourly-sync", ai_studio_sdk.UpdateScheduleOptions{
+    Name:           stringPtr("Updated Sync Task"),
+    CronExpr:       stringPtr("30 * * * *"),  // Every hour at :30
+    Timezone:       stringPtr("America/New_York"),
+    TimeoutSeconds: &timeout,
+    Enabled:        &enabled,
+    Config: map[string]interface{}{
+        "batch_size": 200,
+    },
+})
+```
+
+**Returns**: `*mgmtpb.ScheduleInfo` with updated schedule
+**Errors**: `NotFound` if schedule doesn't exist
+
+### DeleteSchedule
+
+Remove a schedule:
+
+```go
+err := ai_studio_sdk.DeleteSchedule(ctx, "hourly-sync")
+```
+
+**Errors**: `NotFound` if schedule doesn't exist
+
+### Complete Example
+
+```go Expandable expandable
+package main
+
+import (
+    "context"
+    "github.com/TykTechnologies/midsommar/v2/pkg/ai_studio_sdk"
+    "github.com/TykTechnologies/midsommar/v2/pkg/plugin_sdk"
+)
+
+type MyPlugin struct {
+    plugin_sdk.BasePlugin
+}
+
+// Initialize creates API-managed schedules
+func (p *MyPlugin) Initialize(ctx plugin_sdk.Context, config map[string]string) error {
+    if ctx.Runtime != plugin_sdk.RuntimeStudio {
+        return nil
+    }
+
+    apiCtx := context.Background()
+
+    // Check if schedule exists (idempotent)
+    if _, err := ai_studio_sdk.GetSchedule(apiCtx, "data-refresh"); err != nil {
+        // Create new schedule
+        _, err := ai_studio_sdk.CreateSchedule(
+            apiCtx,
+            "data-refresh",
+            "Refresh External Data",
+            "*/15 * * * *",  // Every 15 minutes
+            "UTC",
+            300,  // 5 minute timeout
+            map[string]interface{}{
+                "api_endpoint": "https://api.example.com/data",
+            },
+            true,
+        )
+        if err != nil {
+            return fmt.Errorf("failed to create schedule: %w", err)
+        }
+    }
+
+    return nil
+}
+
+// ExecuteScheduledTask handles all scheduled executions
+func (p *MyPlugin) ExecuteScheduledTask(ctx plugin_sdk.Context, schedule *plugin_sdk.Schedule) error {
+    switch schedule.ID {
+    case "data-refresh":
+        return p.refreshData(ctx, schedule)
+    default:
+        return fmt.Errorf("unknown schedule: %s", schedule.ID)
+    }
+}
+
+func (p *MyPlugin) refreshData(ctx plugin_sdk.Context, schedule *plugin_sdk.Schedule) error {
+    // Access config from schedule
+    endpoint := schedule.Config["api_endpoint"].(string)
+
+    // Perform sync logic...
+    ctx.Services.Logger().Info("Refreshing data", "endpoint", endpoint)
+
+    return nil
+}
+```
+
+### Manifest vs API Schedules
+
+**Use Manifest When**:
+- Schedule is core to plugin functionality
+- Configuration is static
+- Want schedules registered automatically
+
+**Use API When**:
+- Schedules are dynamic (based on external data)
+- Need runtime modification
+- Want conditional schedule creation
+- Building schedule management UI
+
+**Example**: Plugin manifest declares one immutable daily report, creates hourly syncs via API based on configured data sources.
+
+## Data Types
+
+The `ai_studio_sdk` functions return the protobuf types of the `ai_studio_management` package (`mgmtpb` in the examples). The main fields are:
+
+### LLMMessage
+
+```go
+type LLMMessage struct {
+    Role       string  // "system", "user", "assistant", "tool"
+    Content    string  // Message content
+    Name       string  // Optional name, for tool responses
+    ToolCallId string  // Optional tool call ID, for tool responses
+}
+```
+
+### LLMTool (for Tool Calling)
+
+```go
+type LLMTool struct {
+    Type     string  // "function"
+    Function *LLMFunction
+}
+
+type LLMFunction struct {
+    Name           string
+    Description    string
+    ParametersJson string  // JSON Schema of the parameters
+}
+```
+
+### ToolInfo
+
+```go
+type ToolInfo struct {
+    Id           uint32
+    Name         string
+    Slug         string
+    Description  string
+    ToolType     string    // "rest", "graphql", "grpc", etc.
+    Operations   []string  // Allowed operation IDs
+    IsActive     bool
+    Namespace    string
+    PrivacyScore int32
+}
+```
+
+### PluginInfo
+
+```go
+type PluginInfo struct {
+    Id         uint32
+    Name       string
+    Command    string    // file://, grpc://, oci://
+    HookType   string
+    HookTypes  []string
+    IsActive   bool
+    Namespace  string
+}
+```
+
+### AppInfo
+
+```go
+type AppInfo struct {
+    Id            uint32
+    Name          string
+    Description   string
+    IsActive      bool
+    Namespace     string
+    UserId        uint32
+    Metadata      string    // JSON string
+    LlmIds        []uint32
+    ToolIds       []uint32
+    DatasourceIds []uint32
+}
+```
