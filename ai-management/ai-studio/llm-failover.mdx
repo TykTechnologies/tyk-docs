@@ -1,0 +1,66 @@
+---
+title: "LLM Failover in Tyk AI Studio"
+description: "How the failover waterfall of a Tyk AI Studio LLM provider sends a failed request to fallback LLMs: access, costs, triggers, response headers, scope, and analytics."
+keywords: "AI Studio, AI Management, LLM Management, Failover, Fallback, Waterfall, Resilience"
+type: concept
+sidebarTitle: "LLM Failover"
+---
+
+## Availability
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| [Community](/ai-management/ai-studio/overview#community-edition) & [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
+
+For what an LLM provider holds, refer to [LLM Management](/ai-management/ai-studio/llm-management).
+
+Each LLM provider can have a **failover waterfall**. This is an ordered list of fallback LLM providers, each with the model to use on that provider. When the upstream of the provider fails, the gateway sends the same request to each fallback in turn before it returns an error. An outage at one vendor then does not become an outage for your Apps.
+
+To set up a waterfall, refer to [Add a Failover Waterfall](/ai-management/ai-studio/how-to-configure-llm-provider#add-a-failover-waterfall).
+
+## Access to Fallbacks
+
+Apps that have a grant for a provider can use its fallbacks when the provider fails. They do not need a grant for the fallbacks. The gateway still applies the budget of the fallback provider.
+
+<Note>
+Each fallback attempt goes through the gateway again. AI Studio calculates its cost from the model prices of the fallback. The cost counts against the App budget and the budget of the fallback LLM. Before you add a fallback, compare its model prices and its budget with the primary. A more expensive fallback increases costs during an outage. A fallback with a low budget can refuse requests when the primary fails.
+</Note>
+
+## When Failover Occurs
+
+By default, the gateway tries the next fallback when one of these conditions occurs:
+
+- The upstream returns `408`, `429`, `500`, `502`, `503`, or `504`.
+- The attempt times out.
+- The gateway cannot connect to the upstream.
+
+To change these triggers or to set a per-attempt timeout, use **Failover Triggers (advanced)** on the LLM provider. Refer to [Add a Failover Waterfall](/ai-management/ai-studio/how-to-configure-llm-provider#add-a-failover-waterfall).
+
+A `401` or `403` from the upstream never causes failover. These codes show that the credentials or configuration of the provider are wrong. The gateway returns the error to the caller.
+
+## Response Headers
+
+| Header | Value |
+| :--- | :--- |
+| `X-Tyk-Served-LLM` | The slug of the LLM that answered |
+| `X-Tyk-Served-Model` | The model that answered |
+| `X-Tyk-Failover` | `true` when a fallback answered |
+
+The `model` field in the response body is the model that answered. If all the fallbacks fail, the gateway returns the error from the last fallback.
+
+## Scope and Limits
+
+- Failover applies to the OpenAI-compatible chat endpoints: `/ai/{llmSlug}/v1/chat/completions`, the Main Ingress `/v1/chat/completions`, and [Model Routers](/ai-management/ai-studio/model-router). It does not apply to the vendor-native endpoints, the Anthropic Messages endpoint, or chat sessions. Refer to [Endpoints](/ai-management/ai-studio/proxy).
+- A streamed response can fail over only before the gateway sends the first token. After that, the request stays with the provider that started the stream.
+- The gateway uses only the waterfall of the provider that the request was sent to. It does not use the waterfall of a fallback.
+- Edge Gateways receive the waterfall with their configuration, and fail over in the same way.
+- From v2.3.0, decision calls and chat calls fail over only to compatible fallbacks. Refer to [Decision Models](/ai-management/ai-studio/decision-models#failover).
+
+## Failover in Analytics
+
+The proxy logs record every attempt that gets an answer from its upstream. For example, a request can fail over because of a status code. Then the logs have one failed row for the provider and one row for the fallback that answered. An attempt that the gateway cancels because of the per-attempt timeout or a connection error has no row. Only the row of the fallback appears.
+
+- The LLM and App detail pages show a **Failover** column in the proxy logs.
+- The proxy-log endpoints (`/analytics/proxy-logs-for-llm` and `/analytics/proxy-logs-for-app`) return `failover_attempt` and `failover_from_llm_id`. `failover_attempt` is `0` for the primary attempt, and `1` or more for each fallback. `failover_from_llm_id` is the provider that the request failed over from. It is not present on primary rows.
+- To count requests, filter on `failover_attempt = 0`, because each fallback attempt is a row of its own.
+- The `aistudio_llm_failover_total` metric counts each failover by source, target, and reason.
