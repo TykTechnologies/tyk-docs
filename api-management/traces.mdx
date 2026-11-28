@@ -461,3 +461,54 @@ Tyk automatically propagates tracing headers to upstream APIs when tracing is en
     ```
   </Tab>
 </Tabs>
+
+
+## OpenTelemetry Trace Buffering, Collector Downtime, and Reconnection
+
+### Overview
+
+When OpenTelemetry tracing is enabled, Tyk Gateway uses the official OpenTelemetry Go SDK to collect and export trace spans to an OpenTelemetry Collector. This section clarifies memory management, queue overflow behavior, and recovery during collector outages.
+
+### Span Storage and Memory Architecture
+
+Tyk Gateway manages trace spans entirely in volatile memory:
+
+- **In-Memory Buffering:** Spans are held in an in-memory Go buffered channel managed by the BatchSpanProcessor.
+- **No External Broker or Disk Persistence:** Tyk does not write spans to disk or intermediate caches such as Redis. Spans exist in memory until they are dispatched to the collector or discarded.
+- **Default Queue Sizing:** By default, the batch processor holds up to 2048 spans in memory and dispatches batches of up to 512 spans every 5 seconds.
+
+### Collector Latency and Queue Saturation
+
+When high traffic volumes or downstream collector delays cause spans to accumulate faster than they can be exported, Tyk Gateway protects proxy performance:
+
+- **Non-Blocking Drops:** If the buffer reaches maximum capacity, incoming spans are dropped immediately without blocking.
+- **Proxy Latency Isolation:** Telemetry collection is decoupled from request execution, ensuring API proxy throughput and response times are never degraded by telemetry export bottlenecks.
+
+### Collector Downtime and Automatic Reconnection
+
+If the OpenTelemetry Collector becomes unreachable or experiences downtime:
+
+- **Automatic Reconnection:** Tyk Gateway automatically reconnects once the collector is reachable again. No gateway restart or hot reload is required.
+- **gRPC Transport:** When using gRPC, the underlying transport executes connection retries with exponential backoff in the background.
+- **HTTP Transport:** When using HTTP, outbound trace export requests resume succeeding as soon as the collector endpoint responds.
+- **Outage Handling:** Export attempts that time out during collector unavailability are discarded. Once the in-memory queue fills, subsequent spans are dropped until the connection is re-established.
+
+### Configuration Example
+
+```
+{
+  "opentelemetry": {
+    "traces": {
+      "enabled": true,
+      "exporter": "grpc",
+      "endpoint": "otel-collector:4317",
+      "span_processor_type": "batch",
+      "span_batch_config": {
+        "max_queue_size": 2048,
+        "max_export_batch_size": 512,
+        "batch_timeout": 5
+      }
+    }
+  }
+}
+```
