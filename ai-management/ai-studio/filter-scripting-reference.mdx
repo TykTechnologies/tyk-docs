@@ -1,0 +1,598 @@
+---
+title: "Filter Scripting Reference for Tyk AI Studio"
+description: "Script input and output objects, helper functions, Tengo modules, compliance events, and runtime limits for Tyk AI Studio filter scripts."
+keywords: "AI Studio, AI Management, Filters, Tengo, Filter Script, Script API, Compliance Events, Runtime Limits"
+type: reference
+sidebarTitle: "Filter Scripting Reference"
+---
+
+## Availability
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
+
+For how filters work, refer to [Filters](/ai-management/ai-studio/filters).
+
+## Script Input
+
+Each script gets an `input` object with the request context:
+
+```javascript expandable
+input := {
+    raw_input: "...",      // Full JSON request payload
+    messages: [            // Normalized message array with roles
+        {role: "system", content: "You are helpful"},
+        {role: "user", content: "Hello"}
+    ],
+    vendor_name: "openai", // LLM vendor (openai, anthropic, google_ai, etc.)
+    model_name: "gpt-4",   // Model being called
+    is_chat: false,        // Context: chat session (true) or proxy (false)
+    context: {             // Additional metadata
+        llm_id: 123,
+        app_id: 456,
+        user_id: 789
+    }
+}
+```
+
+### Response Filter Input
+
+Response filters use the same `ScriptInput`/`ScriptOutput` structure as request filters, with additional response-specific fields:
+
+```tengo expandable
+input := {
+    raw_input: "The LLM's complete response text",
+    is_response: true,
+    is_chunk: false,
+    vendor_name: "openai",
+    model_name: "gpt-4",
+    is_chat: true,  // or false for proxy
+    context: {
+        llm_id: 123,
+        session_id: "abc-123",  // Only in chat context
+        user_id: 789,
+        chat_id: 456,
+        status_code: 200
+    }
+}
+```
+
+**Input Object (Streaming):**
+```tengo expandable
+input := {
+    raw_input: "current chunk text",
+    is_response: true,
+    is_chunk: true,
+    is_final: false,        // true on the extra run after the last chunk
+    chunk_index: 5,
+    current_buffer: "accumulated response text so far",
+    vendor_name: "openai",
+    model_name: "gpt-4",
+    is_chat: false,
+    context: {
+        llm_id: 123,
+        app_id: 456
+    }
+}
+```
+
+**Output Object:**
+```tengo
+output := {
+    block: false,   // Set true to block/interrupt response
+    message: ""     // Block reason (shown to user)
+}
+```
+
+**Note**: The `payload` and `messages` fields in output are **ignored** for response filters.
+
+### Tool Filter Input
+
+A tool request filter gets the tool call arguments in `input.raw_input`. The arguments have the same format on every transport:
+
+```json
+{
+  "operation_id": "getExchangeRate",
+  "parameters": {"currency": ["EUR"]},
+  "payload": {},
+  "headers": {}
+}
+```
+
+A request filter can change `parameters`, `payload`, and `headers`, and return them in `output.payload`. It cannot change `operation_id`. If it tries, AI Studio ignores the change and logs a warning. `input.context` contains `tool_id`, `tool_name`, `app_id`, and `user_id`, and also `session_id` and `call_id` when they are available.
+
+A tool response filter gets the tool response body as a plain string. The `tyk.redact_pattern()` helper is designed for LLM message structures (JSON format) and does not work with tool responses. Use the `text` module instead.
+
+## Script Output
+
+Every script must set the `output` variable. If it does not, the script fails.
+
+```javascript
+output := {
+    block: false,           // Set true to block the request
+    payload: "",            // Modified JSON payload (or empty for no change)
+    messages: [],           // Alternative: modified message array
+    message: ""             // Optional reason/log message
+}
+```
+
+### Example: Blocking Filter (PII Detection)
+
+This script blocks requests containing PII patterns:
+
+```tengo expandable
+text := import("text")
+
+// Check all user messages for email addresses
+should_block := false
+block_reason := ""
+
+for msg in input.messages {
+    if msg.role == "user" {
+        if text.contains(msg.content, "@") {
+            should_block = true
+            block_reason = "Email addresses not allowed"
+            break
+        }
+    }
+}
+
+output := {
+    block: should_block,
+    payload: input.raw_input,
+    message: block_reason
+}
+```
+
+### Example: Modification Filter (Email Redaction)
+
+This script redacts emails while allowing the request to proceed:
+
+```tengo expandable
+tyk := import("tyk")
+
+// Use helper to redact email addresses across all messages
+modified_payload := tyk.redact_pattern(
+    input,
+    "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}",
+    "[EMAIL_REDACTED]"
+)
+
+output := {
+    block: false,
+    payload: modified_payload,
+    message: "Emails redacted"
+}
+```
+
+### Example: Advanced Modification (Messages Array)
+
+This script shows complex message modification using the messages array approach:
+
+```tengo expandable
+text := import("text")
+
+// Modify messages based on role
+modified := []
+
+for msg in input.messages {
+    new_msg := {
+        role: msg.role,
+        content: msg.content
+    }
+
+    // Add safety prefix to system prompts
+    if msg.role == "system" {
+        new_msg.content = "[SAFETY MODE] " + msg.content
+    }
+
+    // Redact emails from user messages
+    if msg.role == "user" {
+        new_msg.content = text.replace(msg.content, "@", "[AT]", -1)
+    }
+
+    modified = append(modified, new_msg)
+}
+
+output := {
+    block: false,
+    messages: modified,  // System handles vendor-specific JSON reconstruction
+    message: "Content modified"
+}
+```
+
+### Example: Combined Blocking and Modification
+
+This script redacts emails but blocks if SSN is detected:
+
+```tengo expandable
+text := import("text")
+tyk := import("tyk")
+
+// First check for SSN (hard block)
+ssn_pattern := "\\d{3}-\\d{2}-\\d{4}"
+has_ssn := false
+
+for msg in input.messages {
+    if text.re_match(ssn_pattern, msg.content) {
+        has_ssn = true
+        break
+    }
+}
+
+if has_ssn {
+    output := {
+        block: true,
+        payload: "",
+        message: "Blocked: SSN detected"
+    }
+} else {
+    // No SSN - redact emails and continue
+    modified_payload := tyk.redact_pattern(
+        input,
+        "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}",
+        "[EMAIL]"
+    )
+
+    output := {
+        block: false,
+        payload: modified_payload,
+        message: "Emails redacted"
+    }
+}
+```
+
+## Helper Functions
+
+The `tyk` module provides helper functions for common message modification tasks:
+
+1. **`redact_pattern(input, pattern, replacement)`**:
+   - Redacts a regex pattern from all messages (system, user, assistant)
+   - Parameters:
+     - `input` - The input object provided to your script
+     - `pattern` - Regular expression pattern (string)
+     - `replacement` - Replacement string
+   - Returns: Modified payload as string
+   - Example: `tyk.redact_pattern(input, "\\d{3}-\\d{2}-\\d{4}", "[SSN]")`
+
+**Vendor-Agnostic**: Helper functions automatically handle differences between OpenAI, Anthropic, Google AI, and other vendor formats.
+
+On Amazon Bedrock requests, `redact_pattern` and `tyk.redact` rewrite the text in the request body in place. Bedrock still accepts the request, because system and content blocks, tool calls, tool results, images, and documents stay as they are. AI Studio never rewrites the model settings in `additionalModelRequestFields`.
+
+For `tyk.detect` and `tyk.redact`, refer to [Guardrails](/ai-management/ai-studio/guardrails).
+
+## Message Modification Approaches
+
+**Approach 1: Helper Functions** (Simple, recommended for pattern-based redaction)
+```tengo
+tyk := import("tyk")
+modified := tyk.redact_pattern(input, "@\\S+", "[EMAIL]")
+output := {block: false, payload: modified, message: ""}
+```
+
+**Approach 2: Messages Array** (Flexible, recommended for complex logic)
+```tengo
+modified := []
+for msg in input.messages {
+    new_msg := {role: msg.role, content: msg.content}
+    if msg.role == "user" {
+        // Apply custom modification logic
+        new_msg.content = transform(msg.content)
+    }
+    modified = append(modified, new_msg)
+}
+output := {block: false, messages: modified, message: ""}
+```
+
+<Warning>
+When a script returns `messages`, AI Studio rebuilds the request body from them as plain `{role, content}` messages. Tool calls, tool results, images, and `cache_control` are lost. On requests that use tools, return a `payload` instead. Guardrail filters are not affected, because they rewrite only the redacted strings.
+</Warning>
+
+## Tool Results and Segments
+
+Available from Tyk AI Studio 2.3.0.
+
+`input.messages` is a simplified view of the request. For Anthropic and Google requests, it does not contain tool results.
+
+On LLM requests, a script can read `input.segments` instead. It lists each message text and each tool result, as a guardrail reads them. Each segment has these fields:
+
+- `index`: the position of the segment
+- `role`: `system`, `user`, `assistant`, or `tool`
+- `kind`: `text` or `tool_result`
+- `tool_name`: the name of the tool, for a tool result
+- `text`: the text of the segment
+
+`input.segments` is a copy. To change the request, call `tyk.quarantine_segment(input, index, placeholder)` and set the result as the output `payload`. The function returns the request body with that segment replaced and all other fields kept. An empty placeholder uses `[content removed by policy]`.
+
+AI Studio fills `input.segments` only for scripts that use it, because it must parse the body. It is empty outside LLM requests.
+
+A script that screens tool results must block the request in these cases:
+
+- `input.segments_readable` is `false`, because AI Studio cannot read the body.
+- `tyk.quarantine_segment` returns an error for a flagged segment.
+
+```tengo
+tyk := import("tyk")
+body := input.raw_input
+failed := input.format != "" && !input.segments_readable
+for seg in input.segments {
+    if seg.kind == "tool_result" && len(tyk.detect(seg.text, ["injection"])) > 0 {
+        out := tyk.quarantine_segment({raw_input: body, format: input.format}, seg.index, "")
+        if is_error(out) { failed = true } else { body = out }
+    }
+}
+output := {block: failed, payload: body}
+```
+
+Use [guardrail filters](/ai-management/ai-studio/guardrails#tool-results) to screen tool results where you can. Guardrails also read the JSON escapes in tool output. A script sees the tool results as the client sent them.
+
+To test a script on `input.segments`, refer to [Test the Script](/ai-management/ai-studio/how-to-create-script-filter#test-the-script).
+
+In a chat room, request filters also get the answer of a user to a client tool card. They get it in the same way as a typed message.
+
+## Message Context
+
+Scripts can access rich contextual information:
+
+```tengo expandable
+// Access vendor and model information
+if input.vendor_name == "anthropic" {
+    // Anthropic-specific logic
+}
+
+// Count messages by role
+user_count := 0
+for msg in input.messages {
+    if msg.role == "user" {
+        user_count = user_count + 1
+    }
+}
+
+// Check if this is a chat session or proxy request
+if input.is_chat {
+    // Chat-specific logic
+}
+
+// Access metadata
+app_id := input.context.app_id
+user_id := input.context.user_id
+```
+
+## Available Tengo Modules
+
+Scripts can import the Tengo standard library modules. The `os` module needs `FILTER_SCRIPT_ALLOW_OS`. Refer to [Runtime Limits and Outbound Calls](#runtime-limits-and-outbound-calls). The main modules are:
+
+### `text` Module
+```tengo expandable
+text := import("text")
+
+// Common functions:
+text.contains(str, substr)           // Check if substring exists
+text.replace(str, old, new, n)       // Replace occurrences
+text.to_upper(str)                   // Convert to uppercase
+text.to_lower(str)                   // Convert to lowercase
+text.split(str, sep)                 // Split string
+text.trim_space(str)                 // Remove whitespace
+text.re_match(pattern, str)          // Regex match
+text.re_replace(pattern, str, repl)  // Regex replace
+```
+
+### `json` Module
+```tengo
+json := import("json")
+
+parsed := json.decode(json_string)   // Parse JSON
+encoded := json.encode(object)       // Encode to JSON
+```
+
+### `fmt` Module
+```tengo
+fmt := import("fmt")
+
+fmt.println("Debug:", variable)      // Print for debugging
+formatted := fmt.sprintf("Value: %v", val)  // Format strings
+```
+
+### `tyk` Module
+```tengo expandable
+tyk := import("tyk")
+
+// Redact regex patterns from all messages (vendor-agnostic)
+modified := tyk.redact_pattern(input, pattern, replacement)
+// Returns: Modified payload as string
+
+// Make HTTP requests from within filters
+result := tyk.makeHTTPRequest(method, url, headers, body)
+// Returns: {status: 200, response: "..."}
+
+// Call other LLMs for analysis/enrichment
+response := tyk.llm(llm_id, settings_object, prompt)
+// Parameters:
+//   - llm_id: ID of the managed LLM to use
+//   - settings_object: Map with model settings (model_name, temperature, max_tokens, etc.)
+//   - prompt: The prompt text to send
+// Returns: LLM response as string
+```
+
+When a `tyk.llm` call fails, the script stops by default. A request filter whose script stops blocks the request, but a response filter lets the response through. From 2.3.0, set `return_errors: true` in the settings to get an error value instead. The script then decides what to do:
+
+```tengo
+result := tyk.llm(1, {model_name: "gpt-4o-mini", max_tokens: 5, return_errors: true}, prompt)
+if is_error(result) {
+    // The checker is not available: block the response
+}
+```
+
+The error value can contain provider details. Put it in a compliance event. Do not put it in `output.message`, because the end user sees the message.
+
+**Example - Use LLM for PII Detection:**
+```tengo expandable
+tyk := import("tyk")
+
+// Get user message
+user_msg := ""
+for msg in input.messages {
+    if msg.role == "user" {
+        user_msg = msg.content
+        break
+    }
+}
+
+// Use another LLM to detect PII
+// Define settings for the LLM call
+settings := {
+    model_name: "gpt-3.5-turbo",
+    temperature: 0.0,
+    max_tokens: 10,
+    system_prompt: "You are a PII detection assistant. Answer only 'yes' or 'no'."
+}
+
+pii_check_prompt := "Does this text contain PII?: " + user_msg
+pii_result := tyk.llm(1, settings, pii_check_prompt)
+
+output := {
+    block: pii_result == "yes",
+    payload: input.raw_input,
+    message: pii_result == "yes" ? "PII detected by LLM" : ""
+}
+```
+
+**Example - Call External Service:**
+```tengo expandable
+tyk := import("tyk")
+json := import("json")
+
+// Get user message
+user_msg := ""
+for msg in input.messages {
+    if msg.role == "user" {
+        user_msg = msg.content
+    }
+}
+
+// Call external PII detection API
+headers := {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer YOUR_TOKEN"
+}
+body := json.encode({text: user_msg})
+
+result := tyk.makeHTTPRequest("POST", "https://pii-api.example.com/detect", headers, body)
+
+// Parse response
+response := json.decode(result.response)
+has_pii := response.has_pii
+
+output := {
+    block: has_pii,
+    payload: input.raw_input,
+    message: has_pii ? "External PII service detected sensitive data" : ""
+}
+```
+
+## Compliance Event Reporting
+
+Filter scripts can emit structured [Compliance Events](/ai-management/ai-studio/compliance-events) to record governance-relevant activity, such as PII redactions, content rewrites, or guardrail triggers, without affecting the block/allow decision. Events flow through the analytics pipeline into the Compliance dashboard, where they appear in the Filter Events tab with severity filters, drill-down, and CSV export.
+
+To emit events, set the optional `compliance_events` field on the script output:
+
+```tengo expandable
+tyk := import("tyk")
+
+modified_payload := tyk.redact_pattern(
+    input,
+    "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}",
+    "[EMAIL_REDACTED]"
+)
+
+output := {
+    block: false,
+    payload: modified_payload,
+    message: "",
+    compliance_events: [
+        {
+            event_type: "pii_redacted",
+            severity: "info",
+            description: "Email addresses redacted from request",
+            metadata: { "redacted_types": ["email"] }
+        }
+    ]
+}
+```
+
+For the event fields, refer to [Event Schema](/ai-management/ai-studio/compliance-events#event-schema).
+
+**Conditional Emission.** Most filters should only emit events when a condition actually fires. Build the list dynamically:
+
+```tengo expandable
+events := []
+if redaction_count > 0 {
+    events = append(events, {
+        event_type: "pii_redacted",
+        severity: "info",
+        description: fmt.sprintf("%d PII values redacted", redaction_count),
+        metadata: { "redacted_types": redacted_types }
+    })
+}
+
+output := {
+    block: false,
+    payload: modified_payload,
+    message: "",
+    compliance_events: events
+}
+```
+
+Events work in every filter scope. For the recording behavior, the fields that AI Studio adds, and events from Edge Gateways, refer to [Compliance Events](/ai-management/ai-studio/compliance-events#behavior).
+
+## Runtime Limits and Outbound Calls
+
+Filter scripts run on the goroutine that serves the request. For this reason, AI Studio limits every script execution. Each limit is an environment variable. For defaults and formats, refer to the [AI Studio environment variables](/ai-management/ai-studio/ai-studio-env). A change takes effect on the next execution, without a restart.
+
+| Variable | Limit |
+| :--- | :--- |
+| [FILTER_SCRIPT_TIMEOUT](/ai-management/ai-studio/ai-studio-env#filter_script_timeout) | The maximum time for one script execution. When the time ends, AI Studio stops the script and the filter reports `script timed out`. A request filter then blocks the request. A response filter lets the response through. |
+| [FILTER_SCRIPT_MAX_ALLOCS](/ai-management/ai-studio/ai-studio-env#filter_script_max_allocs) | The maximum number of objects that one execution can allocate in the script VM. |
+| [FILTER_SCRIPT_ALLOW_OS](/ai-management/ai-studio/ai-studio-env#filter_script_allow_os) | Gives scripts access to the Tengo `os` module (environment variables, file system, and process execution). Keep it off. Refer to the warning below. |
+| [FILTER_HTTP_TIMEOUT](/ai-management/ai-studio/ai-studio-env#filter_http_timeout) | The maximum time for one `tyk.makeHTTPRequest` call. |
+| [FILTER_HTTP_MAX_RESPONSE_BYTES](/ai-management/ai-studio/ai-studio-env#filter_http_max_response_bytes) | The largest response body that `tyk.makeHTTPRequest` returns. A larger body is an error. AI Studio does not truncate it. |
+| [FILTER_LLM_TIMEOUT](/ai-management/ai-studio/ai-studio-env#filter_llm_timeout) | The maximum time for one `tyk.llm` call. |
+
+`tyk.makeHTTPRequest` accepts only `http` and `https` URLs. It follows the [outbound network policy](/ai-management/ai-studio/outbound-network-policy), also for redirects. To allow an internal classifier, add it to `LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS`.
+
+`tyk.llm` gets the credential of the target LLM in the same way as the gateway. An LLM with a key stored as a `$SECRET/...` reference works from a script. From 2.3.0, an `$ENV/...` reference works only when [AI_STUDIO_ENV_REF_ALLOWLIST](/ai-management/ai-studio/ai-studio-env#ai_studio_env_ref_allowlist) lists the variable.
+
+Because response filters let the response through when they time out, a slow response filter does not block. If a response filter removes sensitive data, such as PII, a timeout sends the response to the user without that change. Keep response filter scripts fast, and test them with large responses.
+
+AI Studio compiles each script one time and caches it. Each execution runs on its own copy, so executions do not share state. When the caller of a request or chat session disconnects, AI Studio stops the script.
+
+<Warning>
+Scripts cannot use the Tengo `os` module unless you set `FILTER_SCRIPT_ALLOW_OS=true`.
+
+With `FILTER_SCRIPT_ALLOW_OS=true`, each filter script can read the environment of the process, including `TYK_AI_SECRET_KEY` and the database credentials. It can also read and write files, and run programs on AI Studio and on each Edge Gateway that runs the filter. A user who can create or edit a filter then controls the host. From 2.3.0, AI Studio and the Edge Gateway log a `SECURITY WARNING` at startup when this setting is on.
+</Warning>
+
+## Legacy Script API
+
+{/* TODO: v2.3.0-rc7 declares only the `input` global and requires an `output` map (ai-studio-enterprise scripting/scripting.go: compiledTemplate, extractOutput). A script in this legacy form fails to compile. Confirm with engineering, then remove this section. */}
+
+**Old API** (still supported for backward compatibility):
+```tengo
+filter := func(payload) {
+    // Returns true/false for blocking only
+    return true
+}
+result := filter(payload)
+```
+
+**New Unified API** (recommended):
+```tengo
+// Rich input with messages, vendor info, context
+output := {
+    block: false,       // Blocking capability
+    payload: "",        // Modification capability
+    messages: [],       // Alternative modification approach
+    message: ""         // Optional message
+}
+```
