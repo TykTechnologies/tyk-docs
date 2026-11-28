@@ -1,0 +1,31 @@
+---
+title: "MDCB Data Plane Local Policy Backup and Emergency Mode Mechanics"
+description: "Ticket 27171 clarifies the mechanics of MDCB policy backups in Tyk Gateway: policy backups are stored in the local Data Plane Redis under 'rpc:node-policy-backup:', encrypted using the Gateway secret, and only restored during Emergency Mode when MDCB is unreachable. It also highlights that a successful empty response ('[]') from MDCB does not trigger fallback and instead overwrites the local backup."
+---
+
+## Overview
+
+In Multi-Data Centre Bridge (MDCB) architectures, Tyk Data Plane Gateways synchronize security policies and API definitions from the Control Plane via RPC. To ensure high availability during Control Plane or network failures, Gateways store local fallback copies in the Data Plane Redis and enter emergency mode when MDCB is unreachable.
+
+## Local Redis Backup Storage
+
+Whenever a Data Plane Gateway successfully retrieves configurations from MDCB, it writes an encrypted copy directly to the local Data Plane Redis:
+
+- **Policies:** Stored under the key prefix `rpc:node-policy-backup:` (or `rpc:node-policy-backup:<tags>` when node segmentation tags are configured).
+- **API Definitions:** Stored under the key prefix `rpc:node-definition-backup:` (or `rpc:node-definition-backup:<tags>`).
+
+**Encryption Requirement:** Backup payloads are encrypted using AES with the Gateway configured **secret** from **tyk.conf**. In clustered Data Plane environments sharing a single Redis instance, all Gateway nodes must share the identical secret in order to decrypt and restore from the backup.
+
+**Redis Persistence:** The Data Plane Redis should be configured with persistence (RDB snapshots or AOF) so that fallback configurations survive Redis restarts during an extended Control Plane outage.
+
+## Emergency Mode Fallback vs Empty Responses
+
+Understanding how Data Plane Gateways handle MDCB responses is critical for operational troubleshooting:
+
+- **Connection Failures and Outages:** If the Gateway cannot connect to MDCB or RPC calls fail after retries (due to network partitions, MDCB downtime, or database errors), the Gateway triggers emergency mode. In emergency mode, the Gateway loads and decrypts policies and API definitions from the local Redis backup, ensuring uninterrupted API traffic.
+- **Empty Policy Response:** If the Gateway connects successfully to MDCB and MDCB returns an empty list, this is treated as a valid response indicating zero active policies for the organization. The Gateway does **not** trigger emergency mode; instead, it clears active policies from memory and overwrites the local Redis backup with the empty list.
+
+## Applies To
+
+- Tyk Gateway in Hybrid and MDCB distributed deployments
+- Tyk Multi-Data Centre Bridge (MDCB) 2.2.0 and later
