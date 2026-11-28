@@ -22,13 +22,13 @@ A filter is one of two types. You select the type in **Filter type** on the filt
 | Type | What it does |
 | :--- | :--- |
 | **Script** | Runs Tengo code that you write against the request or the response. Most of this page describes script filters. |
-| **Guardrail** (Enterprise Edition) | Runs a detection provider and blocks, redacts, quarantines, or logs the content when the provider finds a match. From 2.3.0, it also examines tool results, tool calls, and tool definitions. You do not write code. The providers are a built-in pattern library, Lakera, Microsoft Presidio, Azure AI Content Safety, Azure AI Language PII, Amazon Bedrock Guardrails, and a generic HTTP classifier. |
+| **Guardrail** (Enterprise Edition) | Runs a detection [provider](/ai-management/ai-studio/guardrails#providers) and blocks, redacts, quarantines, or logs the content when the provider finds a match. You do not write code. From 2.3.0, it also examines tool results, tool calls, and tool definitions. |
 
 Both types attach, run, and record compliance events in the same way. In the API, the type is the `kind` field of a filter (`script` or `guardrail`). New Enterprise installations include five [default guardrails](/ai-management/ai-studio/guardrails#default-guardrails).
 
 For guardrail providers, detectors, and actions, refer to [Guardrails](/ai-management/ai-studio/guardrails).
 
-The **Filters List View** allows administrators to manage filters and middleware applied to prompts or data sent to Large Language Models (LLMs) via the AI Gateway or Chat Rooms. Filters and middleware ensure data governance, compliance, and security by processing or controlling the flow of information. Below is an enhanced description with the distinction between **Filters** and **Middleware**:
+The **Filters List View** lets administrators manage filters and middleware. They process the prompts and data that go to LLMs through the AI Gateway or Chat Rooms.
 
 ---
 
@@ -56,15 +56,15 @@ Filters in Tyk AI Studio provide comprehensive request/response processing with 
    - Example: Redact emails from user messages, but block if SSN is detected.
 
 **Key Capabilities**:
-- ✅ **Request Filters**: Modify/block requests before reaching LLM
+- **Request Filters**: Modify/block requests before reaching LLM
   - LLM Proxy Requests (before reaching LLM)
   - Chat Session Messages (before RAG search and LLM)
   - File Content (before RAG indexing)
   - Tool Responses (after tool execution)
-- ✅ **Response Filters**: Block LLM responses based on content
+- **Response Filters**: Block LLM responses based on content
   - LLM Proxy Responses (REST and streaming)
   - Chat Session Responses (regular and streaming)
-- ✅ **Tool Filters**: Run on the arguments sent to a tool and on the response from the tool. Refer to [Tool Filters](#tool-filters).
+- **Tool Filters**: Run on the arguments sent to a tool and on the response from the tool. Refer to [Tool Filters](#tool-filters).
 
 When you attach several filters to an LLM, they run from top to bottom in the order on the LLM form. Use the arrows on the form to change the order. The first filter that blocks stops the request. AI Studio stores the order and sends it to Edge Gateways.
 
@@ -666,7 +666,9 @@ When a script returns `messages`, AI Studio rebuilds the request body from them 
 
 Available from Tyk AI Studio 2.3.0.
 
-`input.messages` is a simplified view of the request. For Anthropic and Google requests, it does not contain tool results. On LLM requests, a script can read `input.segments` instead. It lists each message text and each tool result in the same way as a guardrail reads them. Each segment has these fields:
+`input.messages` is a simplified view of the request. For Anthropic and Google requests, it does not contain tool results.
+
+On LLM requests, a script can read `input.segments` instead. It lists each message text and each tool result, as a guardrail reads them. Each segment has these fields:
 
 - `index`: the position of the segment
 - `role`: `system`, `user`, `assistant`, or `tool`
@@ -674,20 +676,26 @@ Available from Tyk AI Studio 2.3.0.
 - `tool_name`: the name of the tool, for a tool result
 - `text`: the text of the segment
 
-`input.segments` is a copy. To change the request, call `tyk.quarantine_segment(input, index, placeholder)`. It returns the request body with that segment replaced and all other fields kept. Set the result as the output `payload`. An empty placeholder uses `[content removed by policy]`.
+`input.segments` is a copy. To change the request, call `tyk.quarantine_segment(input, index, placeholder)` and set the result as the output `payload`. The function returns the request body with that segment replaced and all other fields kept. An empty placeholder uses `[content removed by policy]`.
 
-AI Studio fills `input.segments` only for scripts that use it, because it must parse the body. It is empty outside LLM requests. When AI Studio cannot read the body, `input.segments_readable` is `false`. A script that screens tool results must then block the request. It must also block when `tyk.quarantine_segment` returns an error for a flagged segment.
+AI Studio fills `input.segments` only for scripts that use it, because it must parse the body. It is empty outside LLM requests.
+
+A script that screens tool results must block the request in these cases:
+
+- `input.segments_readable` is `false`, because AI Studio cannot read the body.
+- `tyk.quarantine_segment` returns an error for a flagged segment.
 
 ```tengo
 tyk := import("tyk")
 body := input.raw_input
+failed := input.format != "" && !input.segments_readable
 for seg in input.segments {
     if seg.kind == "tool_result" && len(tyk.detect(seg.text, ["injection"])) > 0 {
         out := tyk.quarantine_segment({raw_input: body, format: input.format}, seg.index, "")
-        if !is_error(out) { body = out }
+        if is_error(out) { failed = true } else { body = out }
     }
 }
-output := {block: false, payload: body}
+output := {block: failed, payload: body}
 ```
 
 Use [guardrail filters](/ai-management/ai-studio/guardrails#tool-results) to screen tool results where you can. Guardrails also read the JSON escapes in tool output. A script sees the tool results as the client sent them.
@@ -1120,7 +1128,9 @@ The arguments that a request filter gets have the same format on every transport
 
 A request filter can change `parameters`, `payload`, and `headers`, and return them in `output.payload`. It cannot change `operation_id`. If it tries, AI Studio ignores the change and logs a warning. `input.context` contains `tool_id`, `tool_name`, `app_id`, and `user_id`, and also `session_id` and `call_id` when they are available.
 
-Tool filters fail closed in both directions. If a filter blocks the call, or the script fails, the caller gets a generic refusal: HTTP `403` with `blocked by policy`, or the MCP equivalent. The refusal is the same for input and output blocks. It does not contain the filter name or the reason, so a caller cannot use it to learn your filter configuration. AI Studio writes the reason to the logs and records a [compliance event](/ai-management/ai-studio/compliance-events) for every block.
+Tool filters fail closed in both directions. If a filter blocks the call, or the script fails, the caller gets a generic refusal: HTTP `403` with `blocked by policy`, or the MCP equivalent.
+
+The refusal is the same for input and output blocks. It does not contain the filter name or the reason, so a caller cannot use it to learn your filter configuration. AI Studio writes the reason to the logs and records a [compliance event](/ai-management/ai-studio/compliance-events) for every block.
 
 ### Tool Response Filter Examples
 
@@ -1229,9 +1239,9 @@ output := {
 ```
 
 **Impact**: The filtered/modified message is used for:
-- ✅ RAG vector similarity search
-- ✅ Subsequent LLM processing
-- ✅ Chat history storage
+- RAG vector similarity search
+- Subsequent LLM processing
+- Chat history storage
 
 ### **2. File Content Filters** (Before RAG)
 **When**: When files are attached to messages

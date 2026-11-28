@@ -11,15 +11,15 @@ sidebarTitle: "Compliance Events"
 | :------------- | :---------------------- |
 | [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
 
-Compliance Events are structured audit records that filter scripts can emit to flag governance-relevant activity, such as PII redactions, content rewrites, policy violations, or silent failures, without affecting whether the request is blocked or allowed. They flow through the same analytics pipeline as proxy logs and chat records, are stored centrally on the control plane, and surface in the Compliance dashboard for review, drill-down, and CSV export.
+## Overview
 
-This page is the end-to-end reference. For filter script syntax, see [Filters](/ai-management/ai-studio/filters#compliance-event-reporting). For a record of the actions on the management API, refer to [Audit Trail](/ai-management/ai-studio/audit-trail).
+A compliance event is a structured audit record that a filter emits. It flags governance activity, such as a PII redaction, a content rewrite, a policy violation, or a silent failure. It does not change whether the request is blocked or allowed.
 
-## Why Compliance Events
+Without compliance events, the Compliance dashboard counts only the requests that the gateway blocked (4xx proxy logs). A filter that redacts an email address or flags text and lets the request through leaves no trace beyond a debug log line.
 
-Without compliance events, the only thing the compliance dashboard can count is 4xx proxy logs, that is, requests the gateway blocked. That misses the most common governance activity in practice: a filter quietly redacts an email address, rewrites a passage of text, or flags something suspicious while still allowing the request through. Those interventions are exactly what compliance teams need visibility into, and without compliance events they leave no trace beyond a debug log line.
+Compliance events go through the same analytics pipeline as proxy logs and chat records. AI Studio stores them on the control plane, shows them in the Compliance dashboard for review and CSV export, and counts them in Prometheus.
 
-Compliance events fix that. Any filter script can attach a list of structured events to its output. The platform persists them, propagates them from edge gateways back to the control plane, exposes them via API and dashboard, and counts them in Prometheus, all without changing the filter's block/allow decision.
+For filter script syntax, refer to [Filters](/ai-management/ai-studio/filters#compliance-event-reporting). For a record of the actions on the management API, refer to [Audit Trail](/ai-management/ai-studio/audit-trail).
 
 ## Event Schema
 
@@ -34,11 +34,11 @@ A compliance event has the following shape (`ComplianceEventOutput` in the scrip
 
 **Validation:**
 
-- Events without an `event_type` are silently skipped. This avoids polluting the table with empty records when a script branch builds the event partially.
+- AI Studio skips an event without an `event_type`, without an error.
 - `severity` values outside `info|warning|critical` are coerced to `info`.
 - `event_type` on the API query side is limited to 100 characters; any longer is a 400.
 - `severity` on the API query side is validated against the same whitelist; an invalid value is a 400.
-- All API queries use GORM parameterized queries, so SQL injection attempts in `event_type` or `severity` are treated as literal string matches and return empty results.
+- API queries are parameterized. SQL in `event_type` or `severity` is matched as a literal string and returns no results.
 
 ### Server-Side Enrichment
 
@@ -79,7 +79,7 @@ In a Tengo filter script, set `compliance_events` on the output object. For exam
 
 - Recording is **asynchronous**. Events are queued and written by the analytics pipeline, so filter latency is unaffected.
 - Compliance events **never** affect the block/allow decision. Setting `block: false` with critical events is legitimate (the filter chose to redact rather than block); setting `block: true` with no events is also legitimate.
-- The list can be empty or omitted. Most filters won't emit events on every invocation; typically only when a condition fires.
+- The list can be empty or omitted. Most filters emit events only when a condition fires.
 - Events are recorded **per filter, per invocation**. A single request can produce multiple events from multiple filters.
 
 ## Events That AI Studio Records
@@ -105,7 +105,9 @@ Each hit of a [guardrail](/ai-management/ai-studio/guardrails) records an event:
 *   `severity` comes from the provider. If the provider does not set one, it is `warning`. When the guardrail action is `block`, the severity is `critical`.
 *   `metadata` contains `provider`, `detector`, `category`, `count`, `max_score`, `action`, `roles`, and `latency_ms`.
 
-The event does not contain the matched text, unless the filter adds a masked excerpt. When the guardrail provider times out or returns an error, AI Studio records a `guardrail.error` event, whatever the fail mode is. For the other guardrail event types, such as `guardrail.unscanned` and `guardrail.judge`, refer to [Guardrails](/ai-management/ai-studio/guardrails#compliance-events-and-metrics).
+The event does not contain the matched text, unless the filter adds a masked excerpt.
+
+When the guardrail provider times out or returns an error, AI Studio records a `guardrail.error` event, whatever the fail mode is. For the other guardrail event types, such as `guardrail.unscanned` and `guardrail.judge`, refer to [Guardrails](/ai-management/ai-studio/guardrails#compliance-events-and-metrics).
 
 From 2.3.0, guardrail events also have these metadata keys:
 
@@ -132,9 +134,9 @@ In a hub-spoke deployment, filter scripts run on the [Edge Gateway](/ai-manageme
 3. On the next analytics pulse (every 30 seconds by default), events are batched into the gRPC `AnalyticsPulse` message as `ComplianceEventProto` entries.
 4. The control server's `SendAnalyticsPulse` handler reconstructs the compliance event from each entry, preserving `LLMID`, `AppID`, `UserID`, severity, type, description, metadata, vendor, and model name, and persists it.
 
-This means there is no functional difference between an event recorded by the embedded gateway and one recorded by an Edge Gateway: both end up in the same table with the same enrichment.
+An event from an Edge Gateway goes into the same table, with the same enrichment, as an event from the embedded gateway.
 
-If you need to verify that edge events are arriving, check the `aistudio_compliance_events_total` counter on the control-plane `/metrics` endpoint and group by source.
+To check that edge events arrive, watch the `aistudio_compliance_events_total` counter on the control-plane `/metrics` endpoint.
 
 ## Querying Compliance Events
 
@@ -217,20 +219,20 @@ The Compliance dashboard (`/admin/compliance`) shows compliance events alongside
 
 ### Summary Cards
 
-Two new cards next to the blocked-request total:
+Two cards are next to the blocked-request total. Each shows the count over the selected window, with a trend arrow:
 
-- **Critical Events**: count over the selected window, with trend arrow. Escalates the card style above `COMPLIANCE_EVENTS_CRITICAL_ESCALATE_AT` (default 1, since a single critical event already warrants attention).
-- **Warning Events**: count over the selected window, with trend arrow. Escalates above `COMPLIANCE_EVENTS_WARNING_ESCALATE_AT` (default 20, since warnings are advisory and need to accumulate before they matter).
+- **Critical Events**: the card shows an error style when there is at least one critical event.
+- **Warning Events**: the card shows a warning style when there are more than 20 warning events.
 
 ### Policy Violations Tab
 
 The summary is split into three counters:
 
-- **Blocked**: 4xx proxy logs (existing).
-- **Flagged**: warning and critical compliance events that passed through (new).
+- **Blocked**: 4xx proxy logs.
+- **Flagged**: warning and critical compliance events that passed through.
 - **Affected Apps**: distinct apps appearing in either source.
 
-The timeline chart merges both streams. The per-app violation list unions events into the aggregation, so apps that only ever flag (and never block) appear in the drill-down.
+The timeline chart merges both streams. The per-app violation list includes the events, so an App that only flags requests shows in the drill-down.
 
 ### Filter Events Tab
 
@@ -250,25 +252,25 @@ From 2.3.0, a link to `/admin/compliance?event=<id>` opens the **Filter Events**
 
 ### App Risk Modal
 
-Per-app risk score now includes event counts, with `warningEventWeight = 1` and `criticalEventWeight = 3`, so a single critical event contributes the same to the score as three warning events. Recent Violations interleaves blocked requests and compliance events sorted by timestamp, with severity-aware row rendering.
+The risk score of an App includes the event counts. A critical event counts three times as much as a warning event.
+
+**Recent Violations** lists blocked requests and compliance events together, sorted by timestamp and styled by severity.
 
 ## Metrics
 
 A Prometheus / OpenTelemetry counter is exposed on the `/metrics` endpoint:
 
 ```
-aistudio_compliance_events_total{filter_scope, severity, event_type}
+aistudio_compliance_events_total{event_type, severity, filter_name}
 ```
 
-For metrics, traces, and health checks, refer to [Observability](/ai-management/ai-studio/observability).
+Use it to alert on bursts of critical events. A sudden drop in redactions can show a misconfigured filter. To get a rate for each request, divide by `aistudio_llm_requests_total`.
 
-Use this to alert on critical-event bursts, or to watch for a sudden drop in expected redaction activity (which can indicate a misconfigured filter). Combine with `aistudio_llm_requests_total` to get a per-request rate.
-
-See [Analytics & Monitoring](/ai-management/ai-studio/analytics#prometheus-and-opentelemetry-metrics) for the full metric catalog.
+For the full metric catalog, refer to [Analytics & Monitoring](/ai-management/ai-studio/analytics#prometheus-and-opentelemetry-metrics). For metrics, traces, and health checks, refer to [Observability](/ai-management/ai-studio/observability).
 
 ## Suggested Event-Type Conventions
 
-`event_type` is free-form, but consistency across filters makes dashboards and queries much more useful. Conventions used by the bundled filter scripts:
+`event_type` is free-form. Use the same types across filters, so that dashboards and queries group them. The bundled filter scripts use these types:
 
 | Event type | When to emit |
 |---|---|
@@ -277,7 +279,7 @@ See [Analytics & Monitoring](/ai-management/ai-studio/analytics#prometheus-and-o
 | `sensitive_content_detected` | Filter found content matching a sensitive pattern. Pair with `block: true` for hard blocks; pair with `block: false` to record the detection without blocking. |
 | `harmful_content_detected` | Response filter detected harmful output. Set `metadata.matched_pattern` to the trigger. |
 | `policy_violation` | Filter detected a policy breach that may or may not be blocked. |
-| `silent_failure` | Filter encountered an error path it chose to swallow (for example an unreachable classifier service, falling back to allow). Use `severity: warning` so it shows up in the dashboard without paging anyone. |
+| `silent_failure` | Filter ignored an error and allowed the request, for example when a classifier service is not available. Use `severity: warning`. |
 
 For `metadata` keys, prefer:
 
@@ -290,11 +292,4 @@ These keys are what the bundled filter scripts and the dashboard expect.
 
 - **Filter scripts**: The `compliance_events` field is optional. AI Studio ignores it if it is absent.
 - **Bundled filter library**: The bundled scripts (PII redaction, content blocking, response guardrails) emit compliance events with the conventions above.
-- **Custom analytics handlers**: the `AnalyticsHandler` interface now takes `context.Context` on its recording methods, including the new `RecordComplianceEvents`. Custom implementations need to update their signatures; `RecordComplianceEvents` can be a no-op if you do not consume compliance events.
-
-## See Also
-
-- [Filters](/ai-management/ai-studio/filters#compliance-event-reporting): script-level syntax and examples.
-- [Analytics & Monitoring](/ai-management/ai-studio/analytics): the surrounding analytics pipeline and the full metric catalog.
-- [Edge Gateway](/ai-management/ai-studio/proxy): hub-spoke architecture and the analytics pulse that carries edge events to control.
-- [Tyk AI Studio release notes](/developer-support/release-notes/ai-studio): the `AnalyticsHandler` context change and related SDK updates.
+- **Custom analytics handlers**: the `AnalyticsHandler` interface takes `context.Context` on its recording methods, including `RecordComplianceEvents`. Update the signatures of custom implementations. If you do not use compliance events, `RecordComplianceEvents` can do nothing. Refer to the [Tyk AI Studio release notes](/developer-support/release-notes/ai-studio).
