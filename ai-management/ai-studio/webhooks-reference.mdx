@@ -1,0 +1,168 @@
+---
+title: "Webhooks Reference for Tyk AI Studio"
+description: "Topics, topic filters, payload presets and template fields, redaction, delivery headers, permissions, and environment variables for Tyk AI Studio webhooks."
+keywords: "AI Studio, AI Management, Webhooks, Topics, Payload Template, Redaction, Webhook Headers, Permissions, Enterprise"
+type: reference
+sidebarTitle: "Webhooks Reference"
+---
+
+## Availability
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
+
+For how webhooks work, refer to [Webhooks](/ai-management/ai-studio/webhooks).
+
+## Topics
+
+Each event has a topic. The topics for configuration changes have the format `system.<object>.<action>`, for example `system.llm.created`.
+
+AI Studio publishes these topics:
+
+| Object | Topics |
+| :--- | :--- |
+| LLMs | `system.llm.created`, `system.llm.updated`, `system.llm.deleted` |
+| Apps | `system.app.created`, `system.app.updated`, `system.app.deleted`, `system.app.approved`, `system.app.plugin_resources.changed` |
+| Data sources | `system.datasource.created`, `system.datasource.updated`, `system.datasource.deleted` |
+| Users | `system.user.created`, `system.user.updated`, `system.user.deleted` |
+| Teams | `system.group.created`, `system.group.updated`, `system.group.deleted` |
+| Tools | `system.tool.created`, `system.tool.updated`, `system.tool.deleted` |
+| Filters | `system.filter.created`, `system.filter.updated`, `system.filter.deleted` |
+| Plugins | `system.plugin.created`, `system.plugin.updated`, `system.plugin.deleted`, `system.plugin_resource.instance_changed` |
+| Model prices | `system.model_price.created`, `system.model_price.updated`, `system.model_price.deleted` |
+| Model Routers | `system.model_router.created`, `system.model_router.updated`, `system.model_router.deleted` |
+| Semantic Routers | `system.semantic_router.created`, `system.semantic_router.updated`, `system.semantic_router.deleted` |
+| Embedders | `system.embedder.created`, `system.embedder.updated`, `system.embedder.deleted` |
+| Governed Metadata | `system.governed_metadata.updated`, `system.governed_metadata.deleted` |
+| Team budgets | `budget.team.threshold` (a team reaches 80% or 100% of its budget), `budget.team.over_allocated` |
+| Guardrail alerts | `guardrail.alert.<name>`, for each alert name that a guardrail filter or exception sets. Available from Tyk AI Studio 2.3.0. |
+| Guardrail outcomes | `guardrail.outcome.blocked`, `guardrail.outcome.quarantined`, `guardrail.outcome.judge_softened`. Available from Tyk AI Studio 2.3.0. |
+
+Enterprise plugins can publish more topics, for example the [Asset Catalog](/ai-management/ai-studio/asset-catalog) plugin. The target editor shows the topics in the list above and the guardrail alert topics that filters and exceptions set. It also shows all other topics that AI Studio received in the last 30 days.
+
+### Guardrail Events
+
+A [guardrail](/ai-management/ai-studio/guardrails-reference#alerts) with the **Log and raise event** action raises a `guardrail.alert.<name>` event. A guardrail block, a quarantine, or a softening by the LLM judge raises a [`guardrail.outcome.*` event](/ai-management/ai-studio/guardrails-reference#outcome-events). In the guardrail form, the **Create a webhook for this event** link opens a new target for the alert.
+
+A guardrail alert has the object type `guardrail_alert` and the action `raised`. Its object contains these fields:
+
+- `name` and `alert`: the alert name
+- `topic`, `filter_id`, `filter_name`, `app_id`, and `app_name`
+- `detector`, `kinds`, `roles`, `tool_names`, and `max_score`
+- `action`: the action on the traffic
+- `exception_id`: the exception that raised the alert, if any
+- `request_id`, `compliance_event_id`, and `timestamp`
+- `link` and `url`: the link to the compliance event
+- `excerpts`: masked excerpts of the flagged text, only when the filter's alert includes them
+
+A guardrail outcome event has the object type `guardrail` and the outcome as its action. Its object contains the same filter, App, detector, and request fields, and also `outcome`, `event_type`, `severity`, `reason_code`, and `exception_ids`. A judge softening adds `judge`, with the verdict, reason, model, prompt version, coverage, and the actions before and after. An outcome event never contains the flagged text.
+
+`link` is the path of the Compliance page that opens the event, for example `/admin/compliance?event=1234`. `url` is the full link. AI Studio builds it from [SITE_URL](/ai-management/ai-studio/ai-studio-env#site_url), and leaves it out when `SITE_URL` is not set.
+
+Only AI Studio raises `guardrail.alert.*` and `guardrail.outcome.*` events. Plugins cannot publish these topics. For Edge Gateway traffic, AI Studio raises them when the analytics pulse arrives.
+
+### Topic Filters
+
+A target subscribes to topics with one or more filters. A filter is a topic name or a glob pattern:
+
+| Filter | Matches |
+| :--- | :--- |
+| `system.llm.deleted` | Only this topic. |
+| `system.llm.*` | `system.llm.created`, `system.llm.updated`, and `system.llm.deleted`. |
+| `system.*.deleted` | Each deletion. |
+| `budget.team.*` | All team budget events. |
+| `guardrail.alert.*` | All guardrail alerts. |
+| `guardrail.outcome.*` | All guardrail outcome events. |
+| `*` | All topics. |
+
+A target can have a maximum of 50 filters.
+
+## Payloads
+
+Each target uses a payload template. Select one of these presets, or write your own template:
+
+| Preset | Content |
+| :--- | :--- |
+| `standard` | The full event: the event ID, topic, and time, the object type and action, the ID of the user who did the action, the object, delivery information, and the AI Studio edition and version. This is the default. |
+| `slack` | A message for a Slack incoming webhook that summarizes the event. For a guardrail alert or outcome event, it adds an **Open in AI Studio** link to the compliance event. |
+| `minimal` | Identifiers only: the event ID, topic, object type, action, object ID, and time. |
+| `custom` | A Go `text/template` that you write. The output must be valid JSON. |
+
+To see the output of a template, select **Preview** in the target editor. AI Studio renders the template with a sample event. It also checks the template when you save the target, and it rejects a template that does not produce valid JSON. A custom template can be a maximum of 64 KB. AI Studio stops a render after 2 seconds or 1 MB of output.
+
+A custom template can use the event data, for example `.Event.ID`, `.Event.Topic`, `.ObjectType`, `.Action`, `.ObjectID`, `.ActorUserID`, `.Object`, and `.Target.Name`. It can also use helper functions such as `toJson`, `jsonStr`, `default`, `get`, and `date`. The functions cannot read environment variables or files, and they cannot make network calls.
+
+This custom template sends the object type, the action, and the name of the object:
+
+```text
+{
+  "text": {{ jsonStr (printf "%s %s: %s" (title .ObjectType) .Action (default "-" (get .Object "name"))) }},
+  "event_id": {{ jsonStr .Event.ID }}
+}
+```
+
+From 2.3.0, a custom template can use `.StudioLink`. It is the AI Studio page that the event links to. AI Studio sets it only for guardrail alerts and outcome events, and only when it is an `http` or `https` URL. For example, in a Slack message:
+
+```text
+{{ with .StudioLink }}<{{ . }}|Open in AI Studio>{{ end }}
+```
+
+### Redaction
+
+Before AI Studio stores an event, it replaces secret values with `[REDACTED]`. It also redacts each value that a template reads. AI Studio does not store the original object.
+
+AI Studio redacts a JSON key when its name contains one of these fragments: `password`, `secret`, `api_key`, `apikey`, `token`, `auth_key`, `authkey`, `conn_string`, `connstring`, `private_key`, `privatekey`, `passphrase`, `credential`, `client_key`, `access_key`, `authorization`, `cookie`, or `bearer`. The match is not case-sensitive. For example, the API key of an LLM is always redacted.
+
+To redact more keys, add fragments to [WEBHOOKS_REDACT_KEYS](/ai-management/ai-studio/ai-studio-env#webhooks_redact_keys).
+
+## Delivery Headers
+
+AI Studio sends each delivery as an HTTP `POST` with a JSON body and these headers:
+
+| Header | Value |
+| :--- | :--- |
+| `X-Webhook-Id` | The delivery ID. It stays the same on each retry. |
+| `X-Webhook-Event-Id` | The event ID. A replay of a delivery keeps the same event ID. |
+| `X-Webhook-Topic` | The topic of the event. |
+| `X-Webhook-Timestamp` | The time of the attempt, in Unix seconds. |
+| `X-Webhook-Attempt` | The number of the attempt, from `1`. |
+| `X-Webhook-Signature` | The signature, in the format `v1=<hex>`. |
+| `User-Agent` | `tyk-ai-studio-webhooks/<version>` |
+
+AI Studio also sends the custom headers of the target, for example an `Authorization` header that your receiver expects. A custom header cannot replace an `X-Webhook-*` header, `Content-Type`, `Content-Length`, or `Host`.
+
+## Permissions
+
+Webhooks use the `webhooks` resource in the **Governance** group. Refer to [Role-Based Access Control](/ai-management/ai-studio/rbac).
+
+| Permission | Allows |
+| :--- | :--- |
+| `read` | View targets, topics, presets, template previews, and the delivery log. Export deliveries. |
+| `write` | Create and edit targets. Pause and resume targets. Rotate signing secrets. |
+| `delete` | Delete targets. |
+| `execute` | Approve, reject, and revoke targets. Send test events. Replay and cancel deliveries. |
+
+These actions send platform data to an external URL, so the `webhooks` resource is sensitive and privileged.
+
+## Configuration Variables
+
+Set these environment variables on the AI Studio server. For defaults and formats, refer to the [AI Studio environment variables](/ai-management/ai-studio/ai-studio-env). For the variables of the URL policy, refer to [URL Policy](/ai-management/ai-studio/webhooks#url-policy).
+
+| Variable | Description |
+| :--- | :--- |
+| [WEBHOOKS_ENABLED](/ai-management/ai-studio/ai-studio-env#webhooks_enabled) | Turns the feature on or off. |
+| [WEBHOOKS_WORKER_ENABLED](/ai-management/ai-studio/ai-studio-env#webhooks_worker_enabled) | Runs the delivery worker on this node. Set to `false` on nodes that only manage targets. |
+| [WEBHOOKS_WORKER_COUNT](/ai-management/ai-studio/ai-studio-env#webhooks_worker_count) | The number of delivery workers on each node. |
+| [WEBHOOKS_MAX_ATTEMPTS](/ai-management/ai-studio/ai-studio-env#webhooks_max_attempts) | The number of attempts before AI Studio dead-letters a delivery. |
+| [WEBHOOKS_BASE_BACKOFF](/ai-management/ai-studio/ai-studio-env#webhooks_base_backoff) | The time before the first retry. |
+| [WEBHOOKS_MAX_BACKOFF](/ai-management/ai-studio/ai-studio-env#webhooks_max_backoff) | The maximum time between retries. |
+| [WEBHOOKS_REQUEST_TIMEOUT](/ai-management/ai-studio/ai-studio-env#webhooks_request_timeout) | The timeout of each attempt. |
+| [WEBHOOKS_RETENTION_DAYS](/ai-management/ai-studio/ai-studio-env#webhooks_retention_days) | How long AI Studio keeps succeeded and cancelled deliveries. |
+| [WEBHOOKS_DEAD_LETTER_RETENTION_DAYS](/ai-management/ai-studio/ai-studio-env#webhooks_dead_letter_retention_days) | How long AI Studio keeps dead-lettered deliveries. |
+| [WEBHOOKS_MAX_RESPONSE_SNIPPET_BYTES](/ai-management/ai-studio/ai-studio-env#webhooks_max_response_snippet_bytes) | The maximum size of the response body that AI Studio stores for each attempt. |
+| [WEBHOOKS_REQUIRE_DIFFERENT_APPROVER](/ai-management/ai-studio/ai-studio-env#webhooks_require_different_approver) | Stops the administrator who created a target from approving it. |
+| [WEBHOOKS_SECRET_ROTATION_GRACE](/ai-management/ai-studio/ai-studio-env#webhooks_secret_rotation_grace) | How long AI Studio also signs with the old secret after a rotation. |
+| [WEBHOOKS_REDACT_KEYS](/ai-management/ai-studio/ai-studio-env#webhooks_redact_keys) | More key fragments to redact. |
+| [WEBHOOKS_AUDIT_DELIVERIES](/ai-management/ai-studio/ai-studio-env#webhooks_audit_deliveries) | Also records successful deliveries in the audit trail. Dead letters are always recorded. |
+| [WEBHOOKS_SHUTDOWN_DRAIN_TIMEOUT](/ai-management/ai-studio/ai-studio-env#webhooks_shutdown_drain_timeout) | How long AI Studio waits for deliveries in progress when it stops. |

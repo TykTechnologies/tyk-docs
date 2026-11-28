@@ -12,10 +12,10 @@ sidebarTitle: "Kubernetes"
 | [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
 
 <Note>
-This guide focuses on the Enterprise Edition of Tyk AI Studio. For the Community Edition, please refer to the [Tyk AI Studio GitHub repository](https://github.com/TykTechnologies/ai-studio/blob/main/docs/site/docs/deployment-helm-k8s.md). The Community Edition uses different Docker images (`tykio/tyk-ai-studio` and `tykio/tyk-microgateway`) and does not require a license key.
+This guide covers the Enterprise Edition of Tyk AI Studio. For the Community Edition, refer to the [Tyk AI Studio GitHub repository](https://github.com/TykTechnologies/ai-studio/blob/main/docs/site/docs/deployment-helm-k8s.md). The Community Edition uses different Docker images (`tykio/tyk-ai-studio` and `tykio/tyk-microgateway`) and does not require a license key.
 </Note>
 
-This guide explains how to deploy Tyk AI Studio (control plane), an Edge Gateway (data plane), and PostgreSQL on Kubernetes using Helm. AI Studio manages configuration centrally and the Edge Gateway processes AI requests, receiving configuration via gRPC.
+Use Helm to deploy Tyk AI Studio (control plane), an Edge Gateway (data plane), and PostgreSQL on Kubernetes. The Edge Gateway gets its configuration from AI Studio over gRPC and processes AI requests.
 
 <Note>
 The Helm chart uses the older name `microgateway` for the Edge Gateway component. Examples are the `microgateway:` values block and the `tykio/tyk-microgateway-ent` image. This guide uses "Edge Gateway" in prose for the same component.
@@ -26,7 +26,7 @@ The Helm chart uses the older name `microgateway` for the Edge Gateway component
 - Kubernetes 1.16+
 - Helm 3.0+
 - `kubectl` configured with access to your cluster
-- A Tyk AI License key (contact support@tyk.io or your account manager to obtain)
+- A Tyk AI license key, from support@tyk.io or your account manager
 - For production with TLS: cert-manager installed in your cluster
 
 <Note>
@@ -35,31 +35,29 @@ Running on Podman, containerd, or another container runtime? See [Container Runt
 
 ## Generate Secrets
 
-The Helm chart leaves these secrets empty. Set them with the keys that you generate here. See [Tyk AI Studio](/deployment/default-secrets-reference#tyk-ai-studio) in the Default Secrets Configuration Reference.
-
-Before installing, generate three secret keys to secure communication and encrypt data:
+The Helm chart leaves three secrets empty. Generate a key for each before you install. Refer to [Tyk AI Studio](/deployment/default-secrets-reference#tyk-ai-studio) in the Default Secrets Configuration Reference.
 
 ```bash expandable
 # Secret key for encryption (used for secrets management and SSO)
 openssl rand -hex 16
-# Example output: a35b3f7b0fb4dd3a048ba4fc6e9fe0a8
+# Example output (sample only, generate your own): xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 # Encryption key for Edge Gateway communication (must be exactly 32 hex chars)
 openssl rand -hex 16
-# Example output: 822d3d1e0e2d849263e45fc7bb842364
+# Example output (sample only, generate your own): yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
 
 # gRPC auth token (for hub-spoke communication)
 openssl rand -hex 16
-# Example output: 9f2c4a6b8d0e1f3a5c7d9e1b3a5c7d9e
+# Example output (sample only, generate your own): zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz
 ```
 
-Save these values — you will substitute them into the values file below.
+Save these values for the values file.
 
 ---
 
 ## Option 1: Testing / Quickstart
 
-For local development or test clusters. Uses NodePort services, internal PostgreSQL, and no ingress.
+Use this option for local development or test clusters. It uses NodePort services, internal PostgreSQL, and no ingress.
 
 ### 1. Add the Helm Chart
 
@@ -73,13 +71,13 @@ helm dependency update .
 
 ### 2. Create `values-testing.yaml`
 
-Replace the placeholder secrets with your generated values. The `grpcAuthToken` / `edgeAuthToken` and `microgatewayEncryptionKey` / `encryptionKey` pairs **must match**.
+Replace the placeholder secrets with your generated values. The values in each pair must match: `grpcAuthToken` and `edgeAuthToken`, `microgatewayEncryptionKey` and `encryptionKey`.
 
 ```yaml Expandable expandable
 midsommar:
   image:
     repository: tykio/tyk-ai-studio-ent
-    tag: v2.2.2
+    tag: v2.3.0
   service:
     type: NodePort
     ports:
@@ -104,14 +102,14 @@ config:
   tykAiSecretKey: "CHANGE-ME-first-secret"
   tykAiLicense: "your-license-key"
   ociCacheDir: "./data/cache/plugins"
-  ociRequireSignature: "false"
+  ociRequireSignature: "false"                          # Development only: loads unsigned plugins (default "true")
   gatewayMode: "control"
   grpcPort: "50051"
   grpcHost: "0.0.0.0"
   grpcTlsInsecure: "true"
   grpcAuthToken: "CHANGE-ME-third-secret"
   microgatewayEncryptionKey: "CHANGE-ME-second-secret"
-  # proxyUrl auto-resolves to the Edge Gateway k8s service — no need to set it
+  # proxyUrl auto-resolves to the Edge Gateway k8s service
 
 database:
   internal: true
@@ -128,7 +126,7 @@ microgateway:
   enabled: true
   image:
     repository: tykio/tyk-microgateway-ent
-    tag: v2.2.2
+    tag: v2.3.0
   service:
     type: NodePort
     port: 8080
@@ -149,7 +147,7 @@ helm install midsommar . -f values-testing.yaml
 
 ### 4. Set External Gateway URL
 
-The Edge Gateway's internal service URL is used for routing by default, but the AI Portal needs to display the correct external URL for tools and datasources. After install, patch the config with your cluster's node IP:
+AI Studio routes to the internal service URL of the Edge Gateway. The AI Portal shows the external URL for tools and data sources. After install, patch the configuration with the node IP of your cluster:
 
 ```bash
 # Get the node IP and set the gateway URL
@@ -164,7 +162,7 @@ kubectl rollout restart deployment midsommar
 ```
 
 <Note>
-**Tip:** If you know your cluster's external IP or hostname upfront, you can skip this step by setting `config.toolDisplayUrl` and `config.datasourceDisplayUrl` in your values file instead.
+If you know the external IP or hostname of your cluster before you install, set `config.toolDisplayUrl` and `config.datasourceDisplayUrl` in your values file instead.
 </Note>
 
 ### 5. Verify
@@ -202,17 +200,17 @@ Then open `http://localhost:8080`. In step 4, set `SITE_URL` to `http://localhos
 
 ## Option 2: Production with TLS
 
-For production deployments with Ingress, TLS via cert-manager, and an external database.
+Use this option for production deployments with Ingress, TLS through cert-manager, and an external database.
 
 ### 1. Create `values-production.yaml`
 
-Replace all placeholder values with your actual configuration.
+Replace all placeholder values with your configuration.
 
 ```yaml Expandable expandable
 midsommar:
   image:
     repository: tykio/tyk-ai-studio-ent
-    tag: v2.2.2
+    tag: v2.3.0
   ingress:
     enabled: true
     certificateEnabled: true
@@ -250,7 +248,7 @@ config:
   tykAiSecretKey: "CHANGE-ME-first-secret"
   tykAiLicense: "your-license-key"
   ociCacheDir: "./data/cache/plugins"
-  ociRequireSignature: "false"
+  ociRequireSignature: "true"
   gatewayMode: "control"
   grpcPort: "50051"
   grpcHost: "0.0.0.0"
@@ -267,7 +265,7 @@ microgateway:
   enabled: true
   image:
     repository: tykio/tyk-microgateway-ent
-    tag: v2.2.2
+    tag: v2.3.0
   ingress:
     enabled: true
     certificateEnabled: true
@@ -329,28 +327,26 @@ The first user who registers becomes the administrator. You can use any email ad
 
 ### Add Your API Keys
 
-AI Studio pre-populates OpenAI and Anthropic LLM configurations on first startup with placeholder secrets (`OPENAI_KEY` and `ANTHROPIC_KEY`). To start using them:
+At first startup, AI Studio creates OpenAI and Anthropic LLM configurations with the placeholder secrets `OPENAI_KEY` and `ANTHROPIC_KEY`. To use them:
 
-1. Open AI Studio at the `siteUrl` you configured and log in with your admin account
-2. Navigate to **Settings → Secrets** in the sidebar
-3. Click on **`OPENAI_KEY`** and edit it to add your OpenAI API key
-4. Click on **`ANTHROPIC_KEY`** and edit it to add your Anthropic API key
+1. Open AI Studio at your `siteUrl` and log in with your admin account.
+2. In the sidebar, go to **Settings > Secrets**.
+3. Click **OPENAI_KEY** and add your OpenAI API key.
+4. Click **ANTHROPIC_KEY** and add your Anthropic API key.
 
 ### Push Configuration to the Edge Gateway
 
-1. Navigate to **AI Portal → Edge Gateways** in the sidebar
-2. Verify that your Edge Gateway shows as **Connected**. Its Edge ID is the pod name, for example `midsommar-microgateway-64b5f9879d-mf5p2`.
-3. Click **Push Configuration** to sync the latest settings to the Edge Gateway
+1. In the sidebar, go to **Portal administration > Edge Gateways**.
+2. Make sure that your Edge Gateway shows as **Connected**. Its Edge ID is the pod name, for example `midsommar-microgateway-64b5f9879d-mf5p2`.
+3. Click **Push Configuration**.
 
-Once the sync status shows **Synced**, the Edge Gateway is ready to proxy LLM requests.
-
-For further setup (additional LLMs, users, applications), see the **[Initial Configuration](/ai-management/ai-studio/configuration)** guide.
+When the sync status shows **Synced**, the Edge Gateway is ready to proxy LLM requests. To add more LLMs, users, and Apps, refer to [Initial Configuration](/ai-management/ai-studio/configuration).
 
 ---
 
 ## Shared Secrets Reference
 
-These values **must match** between AI Studio and Edge Gateway configuration:
+These values must match between the AI Studio and Edge Gateway configuration:
 
 | AI Studio Config | Edge Gateway Config | Purpose |
 |---|---|---|
@@ -369,185 +365,3 @@ These values **must match** between AI Studio and Edge Gateway configuration:
 | 5432 | PostgreSQL | Database |
 
 ---
-
-## Advanced Configuration
-
-### Message Queue (NATS)
-
-For distributed deployments with message persistence, add NATS configuration to your values file:
-
-```yaml
-config:
-  queueType: "nats"
-  natsUrl: "nats://nats-server:4222"
-  natsStorageType: "file"
-  natsRetentionPolicy: "interest"
-  natsMaxAge: "4h"
-  natsTlsEnabled: true
-  natsCredentialsFile: "/etc/nats/user.creds"
-```
-
-### Optional Components
-
-#### Reranker Service
-
-Improves RAG result relevance:
-
-```yaml
-reranker:
-  enabled: true
-  image:
-    repository: tykio/reranker_cpu
-    tag: latest
-  resources:
-    requests:
-      cpu: 500m
-      memory: 1Gi
-```
-
-#### Transformer Server
-
-Handles embedding generation:
-
-```yaml
-transformer-server:
-  enabled: true
-  image:
-    repository: tykio/transformer_server_cpu
-    tag: latest
-  resources:
-    requests:
-      cpu: 500m
-      memory: 1Gi
-```
-
-### Scaling Edge Gateways
-
-Each Edge Gateway pod registers with AI Studio under its own pod name as its Edge ID. To deploy Edge Gateways for different regions, deploy a separate Helm release for each region and set a different `edgeNamespace`:
-
-```yaml
-microgateway:
-  config:
-    edgeNamespace: "eu-west"
-```
-
-Each Edge Gateway receives only the configuration assigned to its namespace.
-
-<Note>
-A Deployment gives each pod a new name after a restart, and AI Studio removes the stale entries. For stable Edge IDs (for example, `midsommar-microgateway-0`), set `microgateway.kind: StatefulSet`.
-</Note>
-
-### Database Options
-
-**Internal PostgreSQL** (testing/small deployments):
-
-```yaml expandable
-database:
-  internal: true
-  user: "tyk"
-  password: "secure-password"
-  name: "tyk_ai_studio"
-
-postgres:
-  persistence:
-    enabled: true
-    size: 10Gi
-    storageClass: "standard"
-```
-
-**External Database** (production):
-
-```yaml
-database:
-  internal: false
-  url: "postgres://user:password@your-db-host:5432/tyk_ai_studio?sslmode=require"
-```
-
----
-
-
-## Maintenance
-
-### Upgrading
-
-```bash
-helm upgrade midsommar . -f your-values.yaml
-```
-
-From v2.2.1, the AI Studio Deployment uses the `Recreate` strategy (`midsommar.strategy`). Kubernetes stops the old AI Studio pod before it starts the new one, so two AI Studio instances never run at the same time. During an upgrade, AI Studio is not available for a short time. Edge Gateways continue to serve traffic.
-
-### Uninstalling
-
-```bash
-helm uninstall midsommar
-```
-
-### Viewing Logs
-
-```bash
-# AI Studio logs
-kubectl logs -l app.kubernetes.io/name=midsommar
-
-# Edge Gateway logs
-kubectl logs -l app=microgateway
-
-# Database logs (internal postgres)
-kubectl logs -l app=postgres
-```
-
-## Troubleshooting
-
-<AccordionGroup>
-
-<Accordion title="Check pod and ingress status">
-
-```bash
-kubectl get pods
-kubectl get ingress
-kubectl describe pod <pod-name>
-````
-
-</Accordion>
-
-<Accordion title="Common Issues">
-
-* **Database connection failures**: Check credentials and network access
-* **Ingress not working**: Verify DNS records and TLS configuration
-* **Login fails on HTTP**: Set `devMode: "true"` — session cookies require this when not using HTTPS
-* **Marketplace page is empty**: Set `ociCacheDir: "./data/cache/plugins"` in your config values — the marketplace service will not start without it
-* **Plugin signature verification**: Docker images use distroless bases without cosign. Set `ociRequireSignature: "false"` to disable signature verification
-
-</Accordion>
-
-<Accordion title="Pods restart during the first install">
-
-On the first install, the AI Studio pod can restart until PostgreSQL is ready. The Edge Gateway pod can restart until the AI Studio gRPC server is ready. These restarts are normal. The pods recover without action. Check that all pods show `Running` and `READY 1/1`:
-
-```bash
-kubectl get pods
-```
-
-</Accordion>
-
-<Accordion title="Registration fails with an unexpected error">
-
-In AI Studio v2.1.x, over plain HTTP, the CSRF check accepts browser requests only from `localhost:3000`. Registration from any other address fails with `403 Forbidden - origin invalid`. Upgrade to v2.2.0 or later. From v2.2.0, AI Studio also accepts requests from the host in `SITE_URL`.
-
-</Accordion>
-
-<Accordion title="Edge Gateway cannot connect to AI Studio">
-
-* Verify the Edge Gateway pod logs:
-
-```bash
-kubectl logs -l app=microgateway
-```
-
-* Check that `CONTROL_ENDPOINT` resolves to the AI Studio service (default: `midsommar:50051`)
-* Verify `edgeAuthToken` matches `grpcAuthToken` exactly
-* Verify `encryptionKey` matches `microgatewayEncryptionKey` exactly
-* Check that `GATEWAY_MODE=control` is set in AI Studio config
-
-</Accordion>
-
-</AccordionGroup>

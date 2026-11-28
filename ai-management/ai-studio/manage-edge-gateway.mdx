@@ -1,8 +1,9 @@
 ---
 title: "Manage Edge Gateway for Tyk AI Studio"
-description: "Understand how to manage and monitor Edge Gateways in Tyk AI Studio, including configuration synchronization and admin actions."
+description: "Understand how to manage and monitor Edge Gateways in Tyk AI Studio, including how configuration sync works, the properties of each edge, licensed namespaces, and how an edge applies a snapshot."
 keywords: "AI Studio, AI Management, Edge Gateway, Configuration Sync"
 sidebarTitle: "Manage Edge Gateway"
+type: concept
 ---
 
 ## Availability
@@ -11,19 +12,17 @@ sidebarTitle: "Manage Edge Gateway"
 | :------------- | :---------------------- |
 | [Community](/ai-management/ai-studio/overview#community-edition) & [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
 
-The Community Edition uses one namespace, `default`. Many namespaces are an Enterprise Edition feature.
+Edge Gateway management is available in both editions, and this page marks each Enterprise Edition feature.
 
-## What is Edge Gateway Management?
+## What Is Edge Gateway Management?
 
-In a hub-and-spoke architecture, Tyk AI Studio acts as the central control plane (Hub), while distributed gateway proxy instances act as Edge Gateways (Spokes). Edge Gateway management provides administrators with the tools to monitor the health, connection status, and configuration synchronization of these distributed instances from a single interface.
+Tyk AI Studio is the control plane (hub) for distributed Edge Gateways (spokes). From one interface, administrators monitor the connection and the configuration sync of each edge, and [push configuration](/ai-management/ai-studio/how-to-push-edge-configuration) to it. The [Edge Gateway Properties](#edge-gateway-properties) section lists the properties that AI Studio shows for each edge.
 
-This centralized management ensures that all edge instances are running the correct policies, routing rules, and configurations, while allowing data processing to remain local to the edge.
+Requests stay on the edge. An edge continues to serve traffic while no control plane answers. Refer to [Edge Gateway Connection and Resilience](/ai-management/ai-studio/edge-gateway-resilience). For the data plane, refer to [Edge Gateway (Data Plane) Component](/ai-management/ai-studio/proxy).
 
-For more details on the data plane architecture and request processing, see the [Edge Gateway (Data Plane) Component](/ai-management/ai-studio/proxy) documentation.
+## How It Works
 
-## How it works
-
-Tyk AI Studio uses a robust, checksum-based synchronization system to manage configurations across all connected Edge Gateways.
+AI Studio uses checksums to track the configuration of each connected Edge Gateway.
 
 ```mermaid
 sequenceDiagram
@@ -31,7 +30,7 @@ sequenceDiagram
     participant CP as "Control Plane (Hub)"
     participant Edge as "Edge Gateway (Spoke)"
 
-    Admin->>CP: Modifies Configuration (e.g., LLM, Filter)
+    Admin->>CP: Modifies Configuration (for example, an LLM)
     CP->>CP: Generates new SHA-256 Checksum
     Edge->>CP: Sends Heartbeat (with old checksum)
     CP-->>Edge: Acknowledges (Status: Out of Sync)
@@ -40,136 +39,95 @@ sequenceDiagram
     Edge->>CP: Fetches New Configuration Snapshot
     Edge->>Edge: Updates Local SQLite & Reloads Cache
     Edge->>CP: Sends Heartbeat (with new checksum)
-    CP-->>Admin: Updates UI Status to "In Sync"
+    CP-->>Admin: Updates UI Status to "Synced"
 ```
 
-1. **Checksum Generation:** Whenever a configuration change occurs on the control plane (e.g., updating an LLM configuration, modifying a filter, or changing a tool), a SHA-256 checksum is computed from the serialized configuration snapshot.
-2. **Heartbeat Reporting:** Edge gateways periodically send heartbeats to the control plane via gRPC. Each heartbeat includes the checksum of the configuration currently loaded on that edge.
-3. **Status Comparison:** The control plane compares the reported checksum against the expected checksum for that edge's namespace to determine its synchronization status.
-4. **Pull-on-miss for Credentials:** To balance performance and security, access tokens are not pushed in the initial snapshot. Instead, edges use a pull-on-miss strategy: they request validation for unknown tokens on-demand and cache them locally. This allows admins to revoke access instantly without waiting for a full configuration push.
+1. **Checksum generation:** A change to an LLM, a filter, a tool, or other configuration gives a new snapshot. AI Studio computes a SHA-256 checksum of the snapshot.
+2. **Heartbeat reporting:** Each edge sends heartbeats to the control plane over gRPC. A heartbeat contains the checksum of the configuration that the edge loaded.
+3. **Status comparison:** The control plane compares the reported checksum with the expected checksum for the namespace of the edge. The result is the sync status of the edge.
+4. **Pull-on-miss for credentials:** The snapshot does not contain access tokens. An edge asks the control plane to validate a token that it does not know, and caches the answer. Thus, administrators can revoke access without a configuration push.
 
-## Edge Gateway Properties
+From v2.3.0, AI Studio tells every connected edge about each change to an App key or to the status of its App. The edge then drops its cached validation for that key. A revoked key stops working on a connected edge in about one second.
 
-When viewing the Edge Gateways list (**AI Portal > Edge Gateways**), administrators can monitor several key properties for each instance:
-
-| Property | Description |
-|--------|-------------|
-| **Edge ID** | A unique identifier for the edge gateway instance. |
-| **Namespace** | The isolated environment the edge belongs to (Enterprise feature). |
-| **Connection** | The current network status based on heartbeats (`Connected`, `Disconnected`, or `Stale`). |
-| **Config Sync** | Indicates if the edge has the latest configuration (`In Sync`, `Pending`, `Stale`, or `Unknown`). |
-| **Version** | The software version and build hash of the running Edge Gateway. |
-| **Last Heartbeat** | The time elapsed since the control plane last received a heartbeat from this edge. |
-
-Clicking on an individual Edge Gateway reveals additional details, such as the exact loaded and expected configuration checksums, session IDs, and custom metadata reported by the edge (e.g., region or environment).
-
-The list and the detail page also show **Last pushed** with the time of the last push to the namespace.
+An edge that is offline at that time learns about the change at the next pull-on-miss, or when its cache entry expires ([EDGE_TOKEN_CACHE_TTL](/ai-management/ai-studio/edge-gateway-env#edge_token_cache_ttl)). To validate keys without a control plane, refer to [Full Credential Sync](/ai-management/ai-studio/edge-gateway-resilience#full-credential-sync-enterprise).
 
 ### Checksum Behavior
 
-*   **Stable checksum:** The snapshot encrypts secrets, such as LLM API keys, tool auth keys, and data source credentials, for the Edge Gateways. This encryption is different from the encryption of [secrets at rest](/ai-management/ai-studio/secrets), which uses a random salt for each value. An unchanged configuration always gives the same encrypted snapshot and the same checksum.
-*   **Change detection:** A recalculation can give the same checksum. In that case, AI Studio does not change the sync status of the namespace or the edges. Only a change to the snapshot marks edges as pending.
+- **Stable checksum:** The snapshot encrypts secrets. Examples are LLM API keys, tool auth keys, data source credentials, and plugin and guardrail credentials.
+    - From v2.3.0, AI Studio encrypts each secret with a new random nonce for each snapshot. The checksum uses a keyed digest of each secret instead of its encrypted value.
+    - An unchanged configuration always gives the same checksum. A changed secret, for example a rotated API key, changes the checksum.
+- **Change detection:** Only a change to the snapshot marks edges **Pending**. A recalculation that gives the same checksum does not change the sync status.
 
 ### Sync Status Banner
 
-When an edge is out of sync, a banner shows at the top of the admin UI. The banner shows what is waiting, for example "3 changes not yet pushed to 1 edge gateway in namespace default". Click the banner to open the **Push Configuration** dialog. After a push, the banner refreshes every 3 seconds, for a maximum of 30 seconds, until the edges confirm the new configuration.
+When an edge is out of sync, a banner at the top of the admin UI shows what is waiting. An example is "3 changes not yet pushed to 1 edge gateway in namespace default". Click the banner to open the **Push Configuration** dialog. Refer to [Push Configuration to Edge Gateways](/ai-management/ai-studio/how-to-push-edge-configuration).
 
-## Admin Actions
+After a push, the banner refreshes every 3 seconds, for a maximum of 30 seconds, until the edges confirm the new configuration.
 
-Administrators have full control over the lifecycle and configuration of Edge Gateways through the AI Studio UI.
+### Push Reminder
 
-### Pushing Configuration
+From v2.3.0, the message **Saved, not live on edge gateways yet** can show at the bottom right after you save. It shows when edges use the object and an edge is out of date. Click **Push Configuration** in the message to open the push dialog.
 
-Configuration changes are not applied automatically. Administrators must explicitly push configurations to ensure they maintain control over deployment rollouts.
+<img src="/img/ai-management/ai-studio-edge-push-reminder.png" alt="Saved, not live on edge gateways yet message with its Push Configuration button" />
 
-<Note>
-AI Studio 2.2 supports one active instance, with an optional cold standby. Do not run more than one active AI Studio instance.
-</Note>
+## Edge Gateway Properties
 
-To push configuration:
+The Edge Gateways list (**Portal administration > Edge Gateways**) shows these properties for each edge:
 
-1. Click **Push Configuration**.
-2. Select the target scope: **All Namespaces** or a **Specific Namespace** (Enterprise).
-3. Read the list of changes. The dialog shows each object that was created, updated, or deleted since the last push to the namespace, grouped by type. Each object links to its admin page. A summary line shows the number of changes, for example "12 changes since the last push at 13:12". With **All Namespaces**, each namespace has its own section.
-4. Click **Push**. If nothing has changed, the button is **Push anyway**. A push can still be useful, for example after an edge registers again.
+| Property | Description |
+|--------|-------------|
+| **Edge ID** | The unique identifier of the edge. |
+| **Namespace** | The isolated environment of the edge (Enterprise). The Community Edition uses one namespace, `default`, and does not show this column. |
+| **Connection** | The status from the last heartbeat: **Connected** (less than 5 minutes ago), **Stale** (5 to 15 minutes ago), or **Disconnected**. |
+| **Config Sync** | **Synced**, **Pending**, or **Unknown**. |
+| **Version** | The version and build hash of the edge. From v2.3.0, the FIPS 140-3 status of the edge shows under the version. |
+| **Held by** | The AI Studio replica that holds the connection of the edge, by its [CLUSTER_NODE_LABEL](/ai-management/ai-studio/deployment-active-active#failover-and-cluster-settings) or its node ID. The column shows only when the listed edges connect to more than one replica. |
+| **Last Heartbeat** | The time since the last heartbeat from the edge. |
 
-AI Studio then does these steps:
+The detail page of an edge also shows the loaded and expected checksums and the session IDs. It also shows the metadata that the edge reports, for example its region. The list and the detail page show **Last pushed**, the time of the last push to the namespace.
 
-1. It records the push, with one entry for each target edge and a deadline of 5 minutes. The dialog shows which edges are connected, and shows a warning for the others.
-2. It sends a reload request to each edge.
-3. Each edge gets the current configuration, applies it, and reports **ready** or **failed** with the reason.
-4. The dialog shows the result of each edge:
-    - **Updated**: The edge loaded the configuration.
-    - **Updated, with a warning**: The edge loaded a configuration that changed again after the push. Push again.
-    - **Failed**: The edge could not apply the configuration (the dialog shows the error), or three delivery attempts in sequence did not complete.
-    - **Timed out**: The edge did not connect, or did not finish, before the deadline.
+## Licensed Namespaces (Enterprise)
 
-You can close the dialog at any time. The push continues. An edge that is offline receives the push when it reconnects, until the deadline. If an edge disconnects during a reload, AI Studio sends the push again when the edge reconnects. A push to a namespace or to all namespaces does not include edges that are offline for more than 5 minutes. The dialog lists these edges. If no edge can receive the push, the dialog shows a message and disables **Push**.
+From v2.3.0, the Enterprise license sets how many edge namespaces a deployment can use. The default namespace (`default`, `global`, or an empty [EDGE_NAMESPACE](/ai-management/ai-studio/edge-gateway-env#edge_namespace)) does not count. Each other namespace uses one slot while it is in use.
 
-The Community Edition shows the overall result of a push. The result for each edge is an Enterprise Edition feature.
+- An edge in a namespace without a slot registers and stays connected. It gets no new configuration, and keeps any configuration that it already has. The Edge Gateways list marks it **Unlicensed namespace**.
+- Namespaces without a slot wait in a queue. When a slot becomes free, the namespace that waited longest and has a connected edge gets the slot. AI Studio then pushes the configuration to its edges. The edges do not need a restart.
+- A namespace with no connected edge for 24 hours loses its slot.
+- A license with fewer namespaces than are in use does not remove slots. The namespaces keep their slots until they become idle.
+- An Owner can see the slots and the queue on the license page. An Owner can also release a slot that has no connected edge.
 
-### How an Edge Applies a Snapshot
+<img src="/img/ai-management/ai-studio-license-namespaces.png" alt="License page with the limits and the licensed namespaces" />
 
-- **In one transaction:** If a snapshot fails to apply, the edge keeps the previous configuration.
+## How an Edge Applies a Snapshot
+
+- **In one transaction:** If a snapshot fails to apply, the edge keeps the previous configuration. Look in the edge log for the load error.
+- **Full database:** An edge whose volume is full continues to serve, but cannot apply a push. Its `/ready` response shows `"database_full": true`, and the metric `microgateway_database_full` is `1`. Free space or increase the volume.
 - **Apps and LLMs are retired, not deleted:** A snapshot can remove an App or an LLM. The edge then stops serving it, but keeps the row. Its analytics and budget data stay valid. If the App comes back, the edge serves it again.
 - **Newer Apps are kept:** An edge can learn about an App from token validation after AI Studio took the snapshot. The snapshot does not remove that App.
 - **Spend is never lowered:** The snapshot contains the spend of each App as AI Studio knows it. This value can be older than the edge's own value. The edge uses the higher of the two.
+- **Templates and exceptions:** From v2.3.0, the snapshot contains the [trusted prompt templates and guardrail exceptions](/ai-management/ai-studio/guardrails) of Apps. It contains only the approved ones. A change to them marks the edges **Pending**. An edge uses its old set until the next push.
+- **Duplicate slugs are left out:** An edge needs unique LLM and tool slugs.
+    - A version before v2.3.0 can have stored a duplicate slug. From v2.3.0, AI Studio refuses a new tool or LLM name whose slug is in use.
+    - The snapshot keeps the entry with the lowest ID and leaves out each duplicate. The edge applies the rest of the configuration and shows as **Pending**.
+    - Find the entries in the push warning, the AI Studio log, or the edge log (`Configuration entry not applied`). Rename them, then push again.
+- **Attachments from another namespace:** An edge gets the filters and plugins of its own namespace and of the global namespace. From v2.3.0, the edge leaves out an LLM or tool that uses a filter or plugin from another namespace. Move the filter or plugin to the global namespace or to the namespace of the LLM.
+- **Applied configuration in heartbeats:** From v2.3.0, an edge reports the configuration it applied, and not the last one it received. A snapshot that the edge did not apply does not show as in sync.
 
-### Removing Edge Gateways
+## Plugins on Edge Gateways
 
-If an edge gateway is decommissioned or needs to be reset, administrators can remove it from the control plane:
-1. Open the three-dot menu (⋮) on the edge row or navigate to its detail view.
-2. Select **Remove Entry**.
-3. Confirm the removal.
+For plugin load failures, retries, and the plugin order on an edge, refer to [When a Plugin Cannot Be Loaded](/ai-management/ai-studio/plugins/edge-gateway#when-a-plugin-cannot-be-loaded).
 
-> **Note:** This action only removes the entry from the control plane database. If the edge gateway process is still running, it will automatically re-register on its next connection attempt.
+- **Plugin updates.** From v2.3.0, an edge reloads a plugin when a configuration push changes its command. Examples are a new file path, `grpc://` address, or OCI reference. The edge runs the same checks as for a first load. If the new plugin cannot load, the edge does not keep the old one, and requests to its LLMs get `503`. A push that does not change a plugin does not restart it.
+- **Plugin sources.** Each edge accepts only the plugin deployment types that its own `PLUGINS_ALLOWED_SOURCES` allows, whatever AI Studio pushes. Refer to [Restrict Plugin Sources](/ai-management/ai-studio/plugins/security#restrict-plugin-sources).
+- **Enterprise plugins at startup.** From v2.3.0, an edge answers the license check of Enterprise plugins before any plugin starts. Before v2.3.0, Enterprise plugins on a new edge sometimes exited at startup, and their LLMs returned `500` for about 30 seconds.
 
+## Management API on Edge Gateways
 
-## Connection Settings
+An Edge Gateway ([GATEWAY_MODE](/ai-management/ai-studio/edge-gateway-env#gateway_mode)`=edge`) does not serve the management API. Every `/api/v1` path returns `404`. The edge gets its LLMs, Apps, credentials, filters, and plugins only from AI Studio.
 
-### TLS
+- The `mgw` CLI uses the management API, so it works only with a standalone Edge Gateway.
+- The edge still serves the AI gateway endpoints, custom plugin endpoints under `/plugins/`, `/health`, `/ready`, and, when enabled, `/metrics`.
+- This change is also in v2.2.2. Before v2.2.2, an unauthenticated route of the management API issued admin tokens. Upgrade every edge, and let only the clients that need the gateway reach the edge ports.
 
-AI Studio serves the control connection with TLS, unless `GRPC_TLS_INSECURE=true`. It uses `GRPC_TLS_CERT_PATH` and `GRPC_TLS_KEY_PATH`. The edge verifies the certificate with these settings:
+The control mode of the Edge Gateway binary (`GATEWAY_MODE=control` on the Edge Gateway) is deprecated. A future release removes it. Register edges with AI Studio.
 
-| Edge setting | Purpose |
-| :--- | :--- |
-| `EDGE_TLS_CA_PATH` | A PEM file with the CA certificates that issued the AI Studio certificate, for a private CA. When set, it replaces the system root certificates. When not set, the edge uses the system root certificates. |
-| `EDGE_TLS_SERVER_NAME` | The name to verify on the certificate, when it is different from the host in `CONTROL_ENDPOINT`. For example, an IP address or the internal name of a load balancer. From v2.2.1. |
-| `EDGE_TLS_CERT_PATH`, `EDGE_TLS_KEY_PATH` | A client certificate for mutual TLS. |
-| `EDGE_SKIP_TLS_VERIFY` | Turns off verification. Use it for development only. |
-
-The edge requires TLS 1.2 or later. If the edge cannot read `EDGE_TLS_CA_PATH`, or the file has no PEM certificates, the connection stops with an error that names the setting.
-
-<Warning>
-Before v2.2.1, the edge checked that `EDGE_TLS_CA_PATH` existed, but did not use it. If you set this variable, make sure that it points to the issuer of the AI Studio certificate before you upgrade.
-</Warning>
-
-### Keepalive and Message Size
-
-Edges ping AI Studio every 30 seconds, also when no stream is open. An edge drops a connection if a ping gets no answer in 5 seconds. AI Studio accepts pings as often as every 10 seconds, and pings idle edges on the same schedule. This finds connections that are half open behind a load balancer or NAT.
-
-| AI Studio setting | Default | Purpose |
-| :--- | :--- | :--- |
-| `GRPC_MAX_MESSAGE_SIZE` | 16 MB | The largest message in each direction: configuration snapshots to edges, and analytics pulses and plugin data from edges. Set it to the same value as `GRPC_MAX_MESSAGE_SIZE` on the edges. From v2.2.1. |
-
-## Edge Gateway Resilience
-
-| Edge setting | Default | Purpose |
-| :--- | :--- | :--- |
-| `OVERLOAD_SHEDDING_ENABLED` | `true` | Refuses new requests with `503` and `Retry-After` when memory use is near the limit. The edge recovers when memory use falls. |
-| `OVERLOAD_MEMORY_LIMIT` | automatic | The memory limit for load shedding. If not set, the edge uses `GOMEMLIMIT`, and then the container limit. If no limit is known, load shedding is off. |
-| `OVERLOAD_MEMORY_THRESHOLD` | `0.85` | The fraction of the memory limit at which load shedding starts. |
-| `MAX_INFLIGHT_REQUESTS` | `0` (off) | An optional limit on the number of proxy requests at the same time. |
-| `EDGE_TOKEN_CACHE_STALE_GRACE` | `0` | Lets the edge use a token validation that just expired, but only while AI Studio cannot be reached. `0` fails closed. Any grace period lets a token that was revoked in AI Studio work on the edge for that time during an outage. |
-| `ANALYTICS_RETENTION_DAYS` | `7` with the analytics pulse, `90` without | The edge deletes older analytics. After an upgrade, the first cleanup deletes old rows in small batches. |
-
-Edge SQLite databases use WAL mode, unless the DSN sets a different mode. Make sure that the database directory is writable, because SQLite creates `-wal` and `-shm` files next to the database.
-
-## Troubleshooting Synchronization
-
-If an Edge Gateway shows a `Pending` or `Stale` sync status, or if a checksum mismatch persists:
-- **Check Connectivity:** Ensure the edge gateway is running and firewall rules allow gRPC traffic (default port 50051) to the control plane.
-- **Wait for Heartbeat:** After a push, it may take a few seconds for the heartbeat cycle to complete and the UI to update.
-- **Review Logs:** Check the edge gateway logs for configuration load errors or permission issues preventing it from fetching the latest snapshot.
-- **Reconnect After an Outage:** After AI Studio restarts or has an outage, edges reconnect automatically. They retry with exponential backoff, from `EDGE_RECONNECT_INTERVAL` (default 5 seconds) to a maximum of 30 seconds.
-- **Analytics Missing in AI Studio:** Edges send analytics and spend to AI Studio in the analytics pulse. They load the pulse from `PLUGINS_CONFIG_PATH`. If AI Studio shows no data for an edge that serves traffic, make sure that `PLUGINS_CONFIG_PATH` points to an existing analytics pulse configuration. Search the edge logs for `startup path` and for `Failed to send analytics pulse`.

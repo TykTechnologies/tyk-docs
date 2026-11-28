@@ -1,0 +1,100 @@
+---
+title: "Filter Tool Calls in Tyk AI Studio"
+description: "Write a script filter that checks or changes the arguments sent to a tool, or the response from the tool, in Tyk AI Studio."
+keywords: "AI Studio, AI Management, Filters, Tool Filters, Tools, MCP, Tengo"
+type: how-to
+sidebarTitle: "Filter Tool Calls"
+---
+
+## Availability
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
+
+For how tool filters run and what the caller sees when a filter blocks, refer to [Tool Filters](/ai-management/ai-studio/filters#tool-filters).
+
+Write a script filter for the tool arguments or the tool response, then attach it to the [tool](/ai-management/ai-studio/tools).
+
+## Create a Tool Filter
+
+1. [Create a script filter](/ai-management/ai-studio/how-to-create-script-filter).
+   - To check the tool call arguments, clear **Is this a Response Filter?**. The script gets the arguments as JSON. For the format, refer to [Tool Filter Input](/ai-management/ai-studio/filter-scripting-reference#tool-filter-input).
+   - To check the tool response, select **Is this a Response Filter?**. The script gets the response body as a plain string. Use the `text` module, because `tyk.redact_pattern()` does not work with tool responses.
+2. Attach the filter to the tool.
+
+## Example Scripts
+
+### Block Tool Responses Containing Errors
+
+```tengo expandable
+text := import("text")
+
+// Access tool response from messages array
+tool_output := ""
+if len(input.messages) > 0 {
+    tool_output = input.messages[0].content
+}
+
+// Block if response indicates an error
+should_block := text.contains(tool_output, "error") || text.contains(tool_output, "failed")
+
+output := {
+    block: should_block,
+    payload: input.raw_input,
+    message: should_block ? "Tool returned error response" : ""
+}
+```
+
+### Redact PII from Tool Responses
+
+```tengo expandable
+text := import("text")
+
+// Tool responses are plain strings - use direct string manipulation
+modified := input.raw_input
+
+// Get tool content
+if len(input.messages) > 0 {
+    content := input.messages[0].content
+
+    // Redact email addresses
+    modified = text.re_replace("[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}", content, "[EMAIL]")
+
+    // Redact phone numbers
+    modified = text.re_replace("\\(?\\d{3}\\)?[\\s.-]?\\d{3}[\\s.-]?\\d{4}", modified, "[PHONE]")
+}
+
+output := {
+    block: false,
+    payload: modified,
+    message: "PII redacted from tool response"
+}
+```
+
+### Filter Based on Tool Name
+
+```tengo expandable
+// Access tool metadata from context
+tool_name := ""
+if input.context && input.context.tool_name {
+    tool_name = input.context.tool_name
+}
+
+// Only allow specific tools to return data
+allowed_tools := ["weather_api", "stock_prices"]
+is_allowed := false
+
+for allowed in allowed_tools {
+    if tool_name == allowed {
+        is_allowed = true
+        break
+    }
+}
+
+output := {
+    block: !is_allowed,
+    payload: input.raw_input,
+    message: is_allowed ? "" : "Tool '" + tool_name + "' is not allowed"
+}
+```

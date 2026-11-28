@@ -1,0 +1,207 @@
+---
+title: "Prompt Compressor in Tyk AI Studio"
+description: "How the Prompt Compressor plugin sends fewer input tokens to LLM vendors, how compression levels, modes, and policies work, and how it keeps the vendor's prompt cache working."
+keywords: "AI Studio, AI Management, Prompt Compressor, Token Savings, Prompt Caching, Tool Output, Headroom, LLMLingua-2"
+type: concept
+sidebarTitle: "Overview"
+---
+
+## Availability
+
+| Edition | Deployment Type |
+| :------------- | :---------------------- |
+| [Community](/ai-management/ai-studio/overview#community-edition) and [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
+
+The Prompt Compressor is available from Tyk AI Studio 2.3.0.
+
+The Prompt Compressor is a community plugin that makes LLM request bodies smaller on the Edge Gateway. Thus, you pay the vendor for fewer input tokens. It compresses the content that agents send most often: tool outputs, such as test runs, build logs, directory listings, and large JSON results.
+
+To install the plugin and turn on compression, refer to [Set Up the Prompt Compressor](/ai-management/ai-studio/how-to-set-up-prompt-compressor).
+
+## Where the Plugin Runs
+
+The plugin compresses requests only on [Edge Gateways](/ai-management/ai-studio/manage-edge-gateway).
+
+On the Edge Gateway, the plugin runs as a post-authentication plugin on the `/llm/` endpoints. The other LLM endpoints send each request through an internal `/llm/call/` step, so the plugin compresses that traffic too. Request filters and guardrails run after the plugin. They check the compressed body.
+
+| Traffic through an Edge Gateway | Compressed |
+| :--- | :--- |
+| `/llm/rest`, `/llm/stream`, and `/llm/call` | Yes |
+| `/ai/`, the Main Ingress (`/v1`), and Model Router (`/router/`) requests to an LLM that does not use Bedrock | Yes, on the internal `/llm/call/` step |
+| `/ai/`, the Main Ingress (`/v1`), Model Router (`/router/`), and `/anthropic/` requests to a Bedrock LLM | Yes, on the internal `/llm/call/` step, with the Bedrock Converse body |
+| Chat in AI Studio | No |
+| Traffic through the embedded gateway of AI Studio | No |
+
+For more information about these endpoints, refer to [Endpoints](/ai-management/ai-studio/proxy#endpoints).
+
+### Supported Request Formats
+
+The plugin compresses requests in these formats:
+
+- OpenAI Chat Completions, also for vendors with an OpenAI-compatible API
+- OpenAI Responses
+- Anthropic Messages
+- Google AI and Vertex AI (Gemini)
+- Amazon Bedrock Converse
+- Ollama
+
+A body in a different format goes to the vendor unchanged.
+
+### What the Plugin Does Not Change
+
+By default, the plugin compresses only tool outputs. A policy can add user, assistant, or system messages with the `roles` setting. The plugin never changes these items:
+
+- Tool call IDs, images, thinking and reasoning blocks, and signatures
+- Prompt cache markers, such as `cache_control` and `cachePoint`
+- The structure of the body. The plugin changes only string values, in the same location.
+
+Results of the vendor's own tools, such as Anthropic web search or the OpenAI Responses built-in tools, stay as the vendor sent them. A policy with `compress_server_tool_results` set to `true` compresses some of these results. Refer to [Policy Settings](/ai-management/ai-studio/prompt-compressor-reference#policy-settings).
+
+A compressed unit is never longer than the original, and it never moves to a different role. Tool calls stay paired with their results.
+
+The plugin fails open. If an error or a timeout occurs, the plugin forwards the request exactly as the client sent it. It does the same if the compressed body fails one of these checks.
+
+## Compression Levels
+
+Each level includes all the levels below it.
+
+0. **Off**
+   - The plugin does not change the request.
+1. **Lossless**
+   - Makes JSON compact, but keeps the key order, duplicate keys, number format, and escapes.
+   - Removes ANSI escape codes, progress lines that a terminal overwrites, trailing spaces, and repeated blank lines from text.
+   - When a request uses the vendor's own context management, the plugin uses level 1 for that request.
+2. **Noise reduction**
+   - Shortens output that has a known format.
+   - Test runner output keeps each failure with its message and location, and the totals. Supported runners are pytest, jest, go test, cargo test, Maven Surefire, and Gradle.
+   - Logs and listings keep each line that mentions an error. Examples are terraform plan, kubectl, git diff, grep, directory listings, build logs, and stack traces.
+   - Long JSON arrays keep the first 5 and the last 5 items. They also keep each item that shows a failure or an unusual value.
+   - Other text, such as prose or code, gets level 1 only.
+3. **Aggressive**
+   - Cuts each tool output that is still larger than `max_unit_tokens` to its start and its end.
+   - Optionally, replaces old tool results with a placeholder.
+   - Optionally, sends the remaining text to an [external engine](/ai-management/ai-studio/prompt-compressor-reference#external-engines).
+
+When the plugin removes content, it adds a marker in a fixed format that tells the model:
+
+```text
+[tyk-compressed: pytest output, 18,400 → 1,150 tokens; 3 failures kept]
+[tyk-compressed: 12 lines]
+```
+
+Some settings protect content from levels 2 and 3:
+
+- Lines that match a regular expression in `protect_patterns`, such as ticket IDs, stay in the output.
+- The newest turns stay at level 1 at most. The `protect_recent_turns` setting sets the number of turns. Thus, the model reads its latest tool output in full.
+
+For more information about these settings, refer to [Policy Settings](/ai-management/ai-studio/prompt-compressor-reference#policy-settings).
+
+On an LLM that has [request filters](/ai-management/ai-studio/filters), the plugin uses level 2 at most. The request filters run after the plugin and check the compressed body. To also apply level 3 and external engines on these LLMs, set [lossy_with_request_filters](/ai-management/ai-studio/prompt-compressor-reference#top-level-settings) to `true`.
+
+## Modes
+
+The mode applies to all the LLMs that the plugin is attached to.
+
+| Mode | What happens |
+| :--- | :--- |
+| `off` | The plugin does not compress requests. |
+| `audit` (default) | The plugin compresses each request and records the result, but forwards the original body. The dashboard shows the projected savings. |
+| `enforce` | The plugin forwards the compressed body. The dashboard shows the actual savings. |
+
+## Policies and Bindings
+
+The plugin has one configuration for all the LLMs that it is attached to. The configuration contains named policies and bindings:
+
+- A policy holds the compression settings. Each policy starts from the default settings and lists only the settings that it changes.
+- A binding selects a policy for an LLM or an App.
+
+To edit the policies and the bindings, refer to [Configure Policies](/ai-management/ai-studio/how-to-set-up-prompt-compressor#configure-policies). For each setting, refer to [Prompt Compressor Reference](/ai-management/ai-studio/prompt-compressor-reference).
+
+### Which Policy Applies
+
+The plugin uses the first match in this table:
+
+| Order | Source | Example |
+| :--- | :--- | :--- |
+| 1 | The App metadata key `prompt_compressor.policy` | `"prompt_compressor.policy": "off"` |
+| 2 | An `app:` binding | `"app:42": "agents"` |
+| 3 | An `llm_id:` binding | `"llm_id:3": "agents"` |
+| 4 | An `llm:` binding, with the LLM slug | `"llm:claude-prod": "agents"` |
+| 5 | `default_policy` | `"default_policy": "safe"` |
+
+- To read App metadata, the plugin needs the `apps.read` scope. It reads the metadata of each App again after 30 seconds.
+- If App metadata names a policy that does not exist, the plugin uses the bindings.
+- Until the plugin knows the metadata of an App, it forwards the requests of that App unchanged. The App can turn off compression in its metadata.
+- Do not use the per-LLM plugin configuration override for bindings. The gateway applies the override only when the plugin is attached to exactly one LLM.
+
+## Savings Dashboard
+
+Each Edge Gateway sends hourly totals per App, LLM, policy, and outcome to AI Studio, approximately one time each minute. The records contain counts and IDs only. No prompt text or tool output leaves the Edge Gateway. AI Studio keeps the records for 90 days.
+
+The **Prompt Compressor > Dashboard** page shows the savings for a time range from 24 hours to 90 days. You can filter by App or by LLM. The page shows:
+
+- **Tokens saved (estimate)** in `enforce` mode, and **Projected tokens saved** in `audit` mode.
+- **Cost saved at input price**: the saved tokens at the input price of the model. This is the maximum saving, because some saved tokens were cache reads, which cost less.
+- **Cost saved, cache-adjusted**: the saved tokens at the cache-read price, in proportion to the cache-read share. The real saving is between the two cost values.
+- **Cache-read share**: the cache reads as a share of the prompt tokens, over time. A marker shows each policy change. When the share decreases by more than `cache_drop_alert` in the hour after a policy change, the page shows a warning.
+- **Tool definitions**: the tokens that the tool definitions of each App use. The panel also shows the tools that the App offered but did not call. It also shows the estimated saving if you remove them.
+- The savings by strategy, and the latency that the plugin added.
+- The requests that the plugin did not compress, by reason.
+
+To price the savings, the plugin uses the model prices in AI Studio, including the cache-read price.
+
+<img src="/img/ai-management/ai-studio-prompt-compressor-dashboard.png" alt="Compression savings dashboard with the savings tiles and the charts" />
+
+## Remove Unused Tool Definitions
+
+Agents often send the definitions of many tools in each request, but they call only some of them. The `drop_tools` policy setting removes the tool definitions that you name, for example `["legacy_*", "browser_screenshot"]`. It applies at all levels, to OpenAI Chat Completions, OpenAI Responses, Anthropic, Google, and Bedrock Converse requests.
+
+To find the tools to remove, look at the **Tool definitions** panel on the dashboard. It shows the tools that each App offered but did not call. The **Policies** page suggests these tools.
+
+<img src="/img/ai-management/ai-studio-prompt-compressor-tool-definitions.png" alt="Tool definitions panel on the Compression savings dashboard" />
+
+The plugin always keeps a request valid:
+
+- It keeps a tool that a tool call in the conversation names, or that `tool_choice` names.
+- If the list removes all the tools and the conversation has tool calls, the plugin ignores the list.
+- It sends the kept definitions and the remainder of the body without changes.
+
+When you change the list, each session of each App that uses the policy gets one prompt cache miss. To change the tools for only one App, bind a separate policy to that App.
+
+<Warning>
+`drop_tools` reduces token cost. It does not control access to tools. A tool can stay in the request in these cases:
+
+- The client names the tool in the conversation history or in `tool_choice`.
+- The request goes to the vendor without compression, for example in `audit` mode or when the body is larger than `max_body_bytes`.
+
+To keep a tool away from a model, do not give the App access to the tool. You can also block the tool calls with a [filter](/ai-management/ai-studio/filters) or a [guardrail](/ai-management/ai-studio/guardrails).
+</Warning>
+
+## Prompt Caching
+
+LLM vendors charge less for cached prompt tokens. A compressor that causes cache misses can cost more than it saves.
+
+The compressed text depends only on the input text and the policy. Time, load, and earlier requests have no effect on it. Thus, the compressed start of a conversation is identical on each turn. The vendor's prompt cache continues to get hits.
+
+- **Policy changes.** A policy change changes the start of each affected conversation one time. Each affected session gets one cache miss. Change policies when traffic is low, and look at the cache-read share on the dashboard after the change.
+- **Breakpoints.** For clients that set cache breakpoints, `cache_mode: skip_cached` compresses only the content after the last breakpoint.
+- **Masking.** `mask_after_turns` is off by default. Each masking step changes the cached start of the conversation. Masking saves money when cached input costs approximately half of the input price, such as for OpenAI chat models. For vendors with very cheap cache reads, such as Anthropic and GPT-5, masking costs more than it saves.
+- **Several Edge Gateways.** Each Edge Gateway keeps its own engine answers. The requests of one session can go to several Edge Gateways. If the engine is not deterministic, these Edge Gateways can compress a unit in different ways.
+
+## Plugin Order
+
+The plugins of an LLM run in the order that you set on the LLM. Each post-authentication plugin gets the body from the plugin before it. A plugin that answers the request, for example with a cache hit, stops the plugins after it.
+
+Use this order:
+
+1. LLM Firewall, when it runs after authentication
+2. The cache plugins
+3. Rate Limiter
+4. Prompt Compressor
+5. LLM Load Balancer
+
+- **Cache plugins before the Prompt Compressor.** A cache hit does not need compression. The cache keys come from the body that the client sent. Thus, a policy change does not cause response cache misses. For more information about the cache plugins, refer to [Semantic Caching](/ai-management/ai-studio/semantic-caching).
+- **Rate Limiter before the Prompt Compressor.** The Rate Limiter can refuse a request before the plugin compresses it.
+- **LLM Load Balancer last.** Its token-aware routing then measures the body that the vendor gets.
+
+Requests that a cache plugin answers do not get to the Prompt Compressor, so the dashboard does not include them.

@@ -25,24 +25,28 @@ The primary goal is to enhance LLM interactions by:
 
 *   **Data Source:** A configuration in Tyk AI Studio that connects to a knowledge base, typically a vector store. It also names the Embedder that populates the store.
 *   **Vector Store Abstraction:** Tyk AI Studio provides a unified interface to interact with various vector database types. Supported stores: **Pinecone**, **PGVector**, **Chroma**, **Redis**, **Qdrant**, and **Weaviate**. Administrators configure the connection details for their chosen store.
-*   **Embedder:** Text must be converted into numerical vector embeddings before it is stored and searched. From v2.2.0, a data source uses an **Embedder** for this. An Embedder is a saved embedding configuration that many data sources can share. A linked Embedder uses the connection and credentials of an LLM provider. A standalone Embedder has its own API compatibility, URL, model, and API key. You manage Embedders in **LLM management > Embedders**. Credentials can use [Secrets Management](/ai-management/ai-studio/secrets). For more information, refer to [Embedders](/ai-management/ai-studio/embedders).
+*   **Embedder:** Text must be converted into numerical vector embeddings before it is stored and searched. A data source uses an **Embedder** for this. An Embedder is a saved embedding configuration that many data sources can share. A linked Embedder uses the connection and credentials of an LLM provider. A standalone Embedder has its own API compatibility, URL, model, and API key. You manage Embedders in **LLM management > Embedders**. Credentials can use [Secrets Management](/ai-management/ai-studio/secrets). For more information, refer to [Embedders](/ai-management/ai-studio/embedders).
 *   **File Processing:** Administrators upload documents (e.g., PDF, TXT, DOCX) to a Data Source configuration. Tyk AI Studio automatically:
     *   Chunks the documents into smaller, manageable pieces.
     *   Uses the Embedder of the data source to convert each chunk into a vector embedding.
     *   Stores the text chunk and its corresponding embedding in the configured Vector Store.
+
+    **PDF Text Extraction:** AI Studio extracts PDF text with a built-in Go parser. If `pdftotext` (from `poppler-utils`) is on the `PATH`, AI Studio uses it instead. Its output keeps tables and columns better. The release images are distroless, so you cannot install a package into them. To use `pdftotext`, build your own image on a Debian base with `poppler-utils`, or copy `pdftotext` and its shared libraries in with a multi-stage build. `pdftotext` parses uploaded files, so it adds attack surface and you must keep it patched. The log shows the extractor in use at the first PDF upload.
 *   **RAG (Retrieval-Augmented Generation):** The core process where:
     1.  A user's query in the [Chat Interface](/ai-management/ai-studio/chat-interface) is embedded using the same Embedder.
-    2.  This query embedding is used to search the relevant vector store(s) for the most similar text chunks (based on vector similarity).
+    2.  AI Studio searches the relevant vector stores with this query embedding. It finds the most similar text chunks by vector similarity.
     3.  The retrieved text chunks are added as context to the prompt sent to the LLM.
     4.  The LLM uses this context to generate a more informed and relevant response.
-*   **Data Source Catalogues:** Similar to Tools, Data Sources are grouped into Catalogues for easier management and assignment to teams.
-*   **Privacy Levels:** Each Data Source has a privacy level. It can only be used in RAG if its level is less than or equal to the privacy level of the [LLM Configuration](/ai-management/ai-studio/llm-management) being used, ensuring data governance.
+*   **Data Source Catalogs:** Similar to Tools, Data Sources are grouped into Catalogs for easier management and assignment to teams.
+*   **Privacy Levels:** Each Data Source has a privacy level. RAG uses a Data Source only if its level is not higher than the level of the [LLM Configuration](/ai-management/ai-studio/llm-management). This enforces data governance.
 
     Privacy levels define how data is protected by controlling LLM access based on its sensitivity. See [Privacy Levels](/ai-management/ai-studio/privacy-levels) for the full score mapping and how the comparison works.
 
-## Availability
+    From v2.3.0, the form warns you when no active LLM provider has a level high enough for the data source. Refer to [Privacy Level Warnings](/ai-management/ai-studio/privacy-levels#privacy-level-warnings).
 
-Data Sources are available on both **AI Studio** (embedded gateway) and **Edge Gateway**. Datasource configurations including vector store connection strings, API keys, and embedder credentials are synced to edge gateways via the hub-spoke configuration system with encryption in transit. Datasources support namespace filtering for enterprise multi-tenant deployments. All four proxy endpoints (search, vector search, metadata query, and embedding generation) are functional on edge gateways.
+## Data Sources on Edge Gateways
+
+Data Sources are available on both **AI Studio** (embedded gateway) and **Edge Gateway**. The hub-spoke configuration system syncs datasource configurations to edge gateways, with encryption in transit. These configurations include vector store connection strings, API keys, and embedder credentials. Datasources support namespace filtering for enterprise multi-tenant deployments. All four proxy endpoints (search, vector search, metadata query, and embedding generation) are functional on edge gateways.
 
 ## How RAG Works in the Chat Interface
 
@@ -139,6 +143,9 @@ Administrators configure Data Sources via the UI or API:
     *   Select the database type (e.g., `pinecone`).
     *   Provide connection details (e.g., endpoint/connection string, namespace/index name).
     *   Reference a [Secret](/ai-management/ai-studio/secrets) containing the API key/credentials.
+    *   From v2.3.0, AI Studio shows stored credentials as `[redacted]`: the API key, and the password in a connection string, for example `postgres://user:[redacted]@host/db`. References show as written. If you save without a change, AI Studio keeps the stored values. If you change a connection string, type the password again, or AI Studio returns `422`. To avoid this, keep the password in a Secret and use a `$SECRET/` reference.
+    *   From v2.3.0, AI Studio does not fill an empty key or endpoint from environment variables such as `PINECONE_API_KEY`. Refer to [Environment Variable References](/ai-management/ai-studio/secrets#environment-variable-references).
+    *   Turn on **Allow internal host** if the vector store is on your own network. Refer to [Allow Internal Host](/ai-management/ai-studio/outbound-network-policy#allow-internal-host).
 3.  **Choose an Embedder:** In **Embedder**, select the Embedder that embeds the documents and queries of this data source. To create one from the form, click **New embedder**.
     *   The Embedder receives the text. For this reason, its privacy level must be equal to or higher than the privacy level of the data source.
     *   You cannot change the model of an Embedder while data sources use it. The stored vectors come from that model. To use a different model, create a new Embedder, select it on the data source, and process the embeddings again.
@@ -150,20 +157,16 @@ Administrators configure Data Sources via the UI or API:
 
 Data source responses contain `embedder_id`. When you create or update a data source, send `embedder_id`. The earlier fields `embed_vendor`, `embed_url`, `embed_api_key`, and `embed_model` still work. If you send them, AI Studio links the data source to an Embedder with exactly that configuration, and creates one if necessary. It never changes an Embedder that other data sources share.
 
-<Note>
-When you upgrade to v2.2.0 or later, AI Studio moves the embedding settings of existing data sources into shared Embedders at startup. Data sources with the same settings share one Embedder. No action is necessary.
-</Note>
-
 ### Authentication Plugins
 
-From v2.2.1, a data source can have an ordered list of authentication plugins. You set the list in the **Authentication plugins** section of the data source detail page, or with `GET` and `PUT /api/v1/datasources/{id}/auth-plugins`. When the list is not empty, only these plugins authenticate requests to the data source on Edge Gateways, and the Edge Gateways refuse App keys. The embedded gateway in AI Studio does not run authentication plugins. For more information, refer to [Edge Gateway Plugins](/ai-management/ai-studio/plugins/edge-gateway).
+A data source can have an ordered list of authentication plugins. You set the list in the **Authentication plugins** section of the data source detail page, or with `GET` and `PUT /api/v1/datasources/{id}/auth-plugins`. When the list is not empty, only these plugins authenticate requests to the data source on Edge Gateways, and the Edge Gateways refuse App keys. The embedded gateway in AI Studio does not run authentication plugins. For more information, refer to [Edge Gateway Plugins](/ai-management/ai-studio/plugins/edge-gateway).
 
 ## Organizing & Assigning Data Sources (Admin)
 
-*   **Create Catalogues:** Group related Data Sources into Catalogues (e.g., "Product Docs", "Support KB").
-*   **Assign to Teams:** Assign Data Source Catalogues to specific [teams](/ai-management/ai-studio/user-management).
+*   **Create Catalogs:** Group related Data Sources into Catalogs (e.g., "Product Docs", "Support KB").
+*   **Assign to Teams:** Assign Data Source Catalogs to specific [teams](/ai-management/ai-studio/user-management).
 
-    <img src="/img/ai-management/data-sources-catalog-config.png" alt="Catalogue Config" />
+    <img src="/img/ai-management/data-sources-catalog-config.png" alt="Catalog Config" />
 
 ## Using Data Sources (User)
 
@@ -171,8 +174,8 @@ Data Sources are primarily used implicitly via RAG within the [Chat Interface](/
 
 A Data Source will be used for RAG if:
 
-1.  The specific Chat Experience configuration includes the relevant Data Source Catalogue.
-2.  The user belongs to a Team that has been assigned that Data Source Catalogue.
+1.  The specific Chat Experience configuration includes the relevant Data Source Catalog.
+2.  The user belongs to a Team that has been assigned that Data Source Catalog.
 3.  The Data Source's privacy level is compatible with the LLM being used.
 
 ## Programmatic Access via API
@@ -280,11 +283,11 @@ async function queryDatasource() {
 
 3. **404 Not Found:** Verify that the datasource slug is correct and that the datasource exists and is properly configured.
 
-4. **403 Forbidden:** Check that your user account has been granted access to the datasource catalogue containing this datasource.
+4. **403 Forbidden:** Check that your user account has been granted access to the datasource catalog containing this datasource.
 
-5. **Empty Results:** If you receive an empty documents array, try:
+5. **Empty Results:** If you receive an empty documents array, try these steps.
    - Reformulating your query to better match the content
    - Increasing the value of `n` to get more results
    - Verifying that the datasource has been properly populated with documents
 
-This API endpoint allows developers to build custom applications that leverage the semantic search capabilities of configured vector stores without needing to implement the full RAG pipeline.
+With this API endpoint, developers can build custom applications that use the semantic search of configured vector stores. They do not need to implement the full RAG pipeline.

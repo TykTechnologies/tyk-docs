@@ -1,8 +1,9 @@
 ---
 title: "Guardrails in Tyk AI Studio"
-description: "Use guardrail filters to detect credentials, personal data, and prompt attacks in LLM traffic, and block, redact, or log them without writing code."
-keywords: "AI Studio, AI Management, Guardrails, Filters, PII, Prompt Injection, Lakera, Presidio, Azure Content Safety, Bedrock Guardrails"
-sidebarTitle: "Guardrails"
+description: "How Tyk AI Studio guardrails send LLM and agent traffic to a detection provider, the actions they take on a match, and how they handle provider failures, streamed responses, scan budgets, and blocked requests."
+keywords: "AI Studio, AI Management, Guardrails, Filters, PII, Prompt Injection, Tool Results, Quarantine, Guardrail Exceptions, LLM Judge, Lakera, Presidio, Azure Content Safety, Bedrock Guardrails"
+type: concept
+sidebarTitle: "Overview"
 ---
 
 ## Availability
@@ -11,157 +12,48 @@ sidebarTitle: "Guardrails"
 | :------------- | :---------------------- |
 | [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
 
-Guardrails are available from v2.2.0. In the Community Edition, you can create a guardrail and attach it, but AI Studio does not run it. The guardrail lets all content through and AI Studio logs a warning, the same as for a script filter.
+Guardrails for agent traffic are available from Tyk AI Studio 2.3.0.
 
 ## Overview
 
-A guardrail is a [filter](/ai-management/ai-studio/filters) that sends text to a detection provider. A script filter runs a script instead. You select a provider, the detectors to turn on, and the action to take when the provider finds a match. The action is block, redact, or log. You do not write code.
+A guardrail is a [filter](/ai-management/ai-studio/filters) that sends text to a detection provider instead of running a script. You select a [provider](/ai-management/ai-studio/guardrails-reference#providers), the detectors, and the action to take on a match. You do not write code.
 
-A guardrail is a filter type, so it attaches and runs in the same way as a script filter:
+A guardrail attaches and runs in the same way as a script filter:
 
 - You attach it to LLMs, chat rooms, and tools. Refer to [Filters](/ai-management/ai-studio/filters).
 - It runs on requests, on responses, and on tool arguments and tool results. Streamed responses are also included.
 - It runs in AI Studio and on each [Edge Gateway](/ai-management/ai-studio/manage-edge-gateway).
 - Each match records a [compliance event](/ai-management/ai-studio/compliance-events).
 
-To see your guardrails, go to **Context management > Filters**. The **Kind** column shows **Guardrail** and the provider name in brackets.
-
-<img src="/img/ai-management/ai-studio-guardrails-list.png" alt="Filters list with the four default guardrails and two custom guardrails" />
-
-## Create a Guardrail
-
-1. Go to **Context management > Filters** and select **Add filter**.
-2. In **Filter type**, select **Guardrail**.
-3. To check the LLM response instead of the request, select **Is this a Response Filter?**.
-4. Select a **Provider** and an **On detection** action.
-5. Select one or more **Detectors**.
-6. Set the other fields. The table below describes them.
-7. Use the **Test** panel to check the guardrail. Refer to [Test a Guardrail](#test-a-guardrail).
-8. Save the filter. Then attach it to an LLM, a chat room, or a tool.
-
-<img src="/img/ai-management/ai-studio-guardrails-builtin-form.png" alt="Guardrail form with the built-in pattern library, the Personal data detector, and the Redact action" />
-
-| Field | Description |
-| :--- | :--- |
-| Provider | The service that examines the text. Refer to [Providers](#providers). |
-| On detection | **Block**, **Redact**, or **Log only**. Refer to [Actions](#actions). |
-| Connection | The endpoint, key, and other settings of an external provider. Refer to [Provider Credentials](#provider-credentials). |
-| Detectors | What the provider looks for. Some detectors have a **Threshold**. For providers that define their own detector names, type the name in **Add detector**. |
-| Exclude patterns | Built-in pattern library only. A comma-separated list of pattern IDs to leave out of a category that you turned on, for example `pii.ipv4, pii.ipv6`. |
-| Redaction style and Placeholder | Shown when the action is **Redact** on a request filter. Refer to [Redaction](#redaction). |
-| Messages to inspect | Request filters only. Refer to [Messages to Inspect](#messages-to-inspect). |
-| If the provider fails | What happens when the provider returns an error or does not reply in time. Refer to [Provider Failures](#provider-failures). |
-| Timeout (ms) | The time limit for one provider call. The default is 2000. |
-| Streaming: evaluate every N characters | Response filters only. Refer to [Streamed Responses](#streamed-responses). |
-| Block message | The message that the caller gets when the guardrail blocks. The default is `Request blocked by policy` or `Response blocked by policy`. The message never contains the findings. |
-
-AI Studio validates the configuration when you save it. For example, it rejects an unknown detector, a **Redact** action on a provider that cannot redact, or a missing required connection field. The error message gives the cause.
-
-## Providers
-
-| Provider | What it detects | Can redact | Where it runs |
-| :--- | :--- | :--- | :--- |
-| Built-in pattern library | Credentials, personal data, prompt injection heuristics, and response leakage | Yes | In AI Studio and the Edge Gateway, with no network call |
-| HTTP classifier (generic) | The detectors that your service defines | Yes | Your service |
-| Microsoft Presidio (NER) | Presidio entity types, such as `PERSON`, `EMAIL_ADDRESS`, and `CREDIT_CARD` | Yes | Your Presidio deployment |
-| Lakera Guard | Prompt attacks, PII, moderated content, unknown links, and custom detectors | Yes, for PII findings | Lakera SaaS or a self-hosted Guard |
-| Azure AI Content Safety | Prompt attacks (Prompt Shields), and the categories Hate, Sexual, Self-harm, and Violence | No | Your Azure resource |
-| Azure AI Language PII | Azure PII categories, such as `Person`, `PhoneNumber`, and `CreditCardNumber` | Yes | Azure, or the Text PII container |
-| Amazon Bedrock Guardrails | The policies of a guardrail that you define in Amazon Bedrock | Yes, for sensitive information | Amazon Bedrock |
-
-External providers use the same outbound rules as LLM upstreams and the `tyk.makeHTTPRequest` script function. For example, when `LLM_UPSTREAM_BLOCK_INTERNAL=true`, a provider endpoint on an internal address is blocked. Refer to [Runtime Limits and Outbound Calls](/ai-management/ai-studio/filters#runtime-limits-and-outbound-calls-enterprise).
-
-### Built-in Pattern Library
-
-The built-in pattern library runs in the AI Studio process. It does not need an external service. It uses checks in addition to regular expressions, to reduce false positives:
-
-- Payment card numbers must pass the Luhn check.
-- IBANs must pass the mod-97 check.
-- US Social Security numbers must be in an issued range.
-- UK National Insurance numbers must use a valid prefix.
-- NHS numbers must have a correct check digit.
-- Generic secrets must have the entropy of a secret.
-
-The credential patterns come from the gitleaks default ruleset (MIT license).
-
-You turn on whole categories. To leave out one pattern, add its ID to **Exclude patterns**.
-
-| Category | Label in the form | Pattern IDs |
-| :--- | :--- | :--- |
-| `secrets` | Credentials and API keys | `secrets.aws_access_key`, `secrets.aws_secret_key`, `secrets.github_pat`, `secrets.github_fine_grained_pat`, `secrets.github_oauth`, `secrets.github_app_token`, `secrets.gitlab_pat`, `secrets.slack_bot_token`, `secrets.slack_user_token`, `secrets.slack_app_token`, `secrets.slack_webhook`, `secrets.stripe_key`, `secrets.openai_key`, `secrets.anthropic_key`, `secrets.google_api_key`, `secrets.gcp_service_account`, `secrets.azure_client_secret`, `secrets.azure_storage_key`, `secrets.private_key`, `secrets.jwt`, `secrets.twilio_key`, `secrets.sendgrid_key`, `secrets.huggingface_token`, `secrets.databricks_token`, `secrets.npm_token`, `secrets.pypi_token`, `secrets.mailchimp_key`, `secrets.mailgun_key`, `secrets.digitalocean_token`, `secrets.postman_key`, `secrets.telegram_bot_token`, `secrets.vault_token`, `secrets.age_secret_key`, `secrets.connection_string`, `secrets.basic_auth_url`, `secrets.bearer_token`, `secrets.generic_api_key` |
-| `pii` | Personal data | `pii.email`, `pii.phone_international`, `pii.phone_us`, `pii.us_ssn`, `pii.payment_card`, `pii.iban`, `pii.uk_nino`, `pii.uk_nhs`, `pii.ipv4`, `pii.ipv6`, `pii.mac_address`, `pii.date_of_birth`, `pii.passport`, `pii.drivers_license`, `pii.medical_record`, `pii.street_address`, `pii.eu_vat` |
-| `injection` | Prompt injection heuristics | `injection.instruction_override`, `injection.role_hijack`, `injection.system_prompt_exfil`, `injection.pseudo_tags`, `injection.markdown_exfil`, `injection.zero_width`, `injection.base64_blob`, `injection.indirect_marker` |
-| `leak` | Response leakage | `leak.system_prompt_disclosure`, `leak.markdown_exfil` |
+A request guardrail can also examine the tool results, tool calls, and tool definitions of agent traffic. Refer to [Guardrails for Agent Traffic](/ai-management/ai-studio/guardrails-agent-traffic).
 
 <Note>
-The `injection` category is a set of heuristics, not a classifier. It finds well-known phrases and encoding tricks. Use it as a baseline, for example in an air-gapped deployment. For real prompt-injection detection, add a classifier provider, such as Lakera Guard or Azure AI Content Safety.
+In the Community Edition, AI Studio does not run a guardrail that you create and attach. The guardrail lets all content through, and AI Studio logs a warning, the same as for a script filter. App capabilities, exceptions, and prompt templates have no effect.
 </Note>
 
-The same pattern library is available to filter scripts through the `tyk.detect` and `tyk.redact` functions. The script templates **Built-in library: block credentials** and **Built-in library: redact personal data** show how to use them.
+To see your guardrails, go to **Context management > Filters**. The **Kind** column shows **Guardrail** and the provider name in brackets.
 
-### HTTP Classifier
+<img src="/img/ai-management/ai-studio-guardrails-list.png" alt="Filters list with the five default guardrails" />
 
-Use the HTTP classifier to connect your own classifier or NER service. Examples are a self-hosted Llama Prompt Guard 2 or LLM Guard model. Set these connection fields:
+To create a guardrail, refer to [Create a Guardrail](/ai-management/ai-studio/how-to-create-guardrail).
 
-- **Endpoint URL** (required): AI Studio sends a `POST` request to this URL.
-- **API key**: AI Studio sends it in the `Authorization: Bearer` header.
-- **Auth header**: a different header name for the key, for example `X-API-Key`.
+## Default Guardrails
 
-The request body contains the direction (`request` or `response`), the detector names, a `redact` flag, and the text segments. Each segment has an index, a role, and the text. The request also contains metadata, such as the request ID, the vendor, and the model. It never contains credentials.
+A new Enterprise installation includes five guardrails that use the built-in pattern library:
 
-Your service must return a `flagged` value and a list of `findings`. Each finding has a detector name, a category, a score, a segment index, and an optional span. When AI Studio asks for redaction, the service can also return the rewritten text for each segment in `rewritten`. AI Studio drops a finding when its score is below the detector threshold. The default threshold is 0.5. A finding without a score always counts.
+| Name | Detectors | Action | Type |
+| :--- | :--- | :--- | :--- |
+| Credentials in prompts (block) | `secrets` | Block | Request |
+| Personal data before the vendor (redact) | `pii` | Redact | Request |
+| Prompt injection heuristics (log) | `injection` | Log only | Request |
+| Prompt injection in tool results (quarantine) | `injection` | Log only. Quarantine on tool results. | Request |
+| Credential leakage in responses (block) | `secrets`, `leak` | Block | Response |
 
-### Microsoft Presidio
+They have no effect until you attach them.
 
-Detectors are Presidio entity types. The threshold is the recognizer score from 0 to 1. The default is 0.5. Connection fields:
-
-- **Analyzer URL** (required): the base URL of `presidio-analyzer`.
-- **Anonymizer URL**: the base URL of `presidio-anonymizer`. If you do not set it, AI Studio redacts the text from the analyzer spans.
-- **Language**: the ISO 639-1 language code. The default is `en`.
-
-The standard Presidio `PHONE_NUMBER` recognizer finds North American numbers best. It can miss international formats, such as `+44 7700 900123`. If you must detect international numbers, add a custom recognizer in Presidio, or add a built-in pattern library guardrail with `pii.phone_international`.
-
-### Lakera Guard
-
-This provider uses Lakera Guard v2. The detectors are `prompt_attack`, `pii`, `moderated_content`, `unknown_links`, and `custom`. To select one subtype only, type its name in **Add detector**, for example `pii/email`. The policy of your Lakera project decides which detectors run.
-
-Connection fields:
-
-- **API key**: the Lakera Guard API key. A self-hosted Guard does not need it.
-- **Endpoint**: the default is `https://api.lakera.ai/v2/guard`. Use it to set the EU or Asia host, or a self-hosted Guard.
-- **Project ID**: the Lakera project whose policy applies.
-
-Set the API key for the Lakera SaaS service, or the endpoint for a self-hosted Guard.
-
-<img src="/img/ai-management/ai-studio-guardrails-lakera-form.png" alt="Guardrail form with Lakera Guard, a secret reference for the API key, and the Prompt attack detector" />
-
-### Azure AI Content Safety
-
-The detectors are `prompt_attack` (Prompt Shields) and the moderation categories `Hate`, `Sexual`, `SelfHarm`, and `Violence`. Each moderation category has a severity threshold from 0 to 6. The default is 4. AI Studio flags the text when the severity is at or above the threshold. AI Studio splits text that is longer than 10,000 characters.
-
-Connection fields are **Endpoint** (required), **Subscription key** (required), and **Blocklists**. Blocklists is a comma-separated list of blocklist names. This provider cannot redact, so use **Block** or **Log only**.
-
-### Azure AI Language PII
-
-The detectors are Azure PII categories, such as `Person`, `PhoneNumber`, `Email`, and `CreditCardNumber`, or `all`. The threshold is the confidence from 0 to 1. The default is 0.5.
-
-<Warning>
-The `all` detector also includes `PersonType`, `Organization`, and `DateTime`. These categories match ordinary text, such as job titles and dates. For a guardrail that blocks, select the categories by name.
-</Warning>
-
-Connection fields are **Endpoint** (required), **Subscription key** (required), **Language** (default `en`), and **Domain**. Set **Domain** to `phi` to detect protected health information.
-
-### Amazon Bedrock Guardrails
-
-This provider calls the Bedrock `ApplyGuardrail` operation for a guardrail that you define in Amazon Bedrock. It works with all LLMs, not only with models that Bedrock hosts. The detectors select which assessments count:
-
-- `content`: content filters, including prompt attacks
-- `topic`: denied topics
-- `word`: word filters
-- `sensitive_information`: PII entities and custom regular expressions. This detector supports redaction.
-- `grounding`: contextual grounding
-
-Connection fields are **Guardrail ID**, **Guardrail version** (a number or `DRAFT`), **AWS region**, **Access key ID**, and **Secret access key**. You must set the first three. If you do not set the access keys, the gateway uses its own AWS credentials from the environment.
+- AI Studio creates each one by name only if it does not exist. It does not change a default guardrail that you edited, and it does not create a deleted guardrail again.
+- An upgraded installation gets **Prompt injection in tool results (quarantine)** on its next start.
+- To skip them on a new installation, set [SKIP_FILTER_DEFAULTS=true](/ai-management/ai-studio/ai-studio-env#skip_filter_defaults).
 
 ## Actions
 
@@ -169,16 +61,18 @@ Connection fields are **Guardrail ID**, **Guardrail version** (a number or `DRAF
 | :--- | :--- | :--- |
 | Block | AI Studio rejects the request and returns the block message. | AI Studio stops the response. |
 | Redact | AI Studio replaces the matched text before the request goes to the vendor. | AI Studio records the finding and lets the response through. |
+| Quarantine | AI Studio replaces the flagged message or tool result with a placeholder. The request continues. | Not available. |
 | Log only | AI Studio lets the request through. | AI Studio lets the response through. |
+| Log and raise event | AI Studio lets the request through and raises an alert. | AI Studio lets the response through and raises an alert. |
 
-All three actions record a compliance event for each detector that matches.
+All actions record a compliance event for each detector that matches. **Quarantine** and **Log and raise event** are available from Tyk AI Studio 2.3.0. Refer to [Quarantine](/ai-management/ai-studio/guardrails-agent-traffic#quarantine) and [Alerts](/ai-management/ai-studio/guardrails-reference#alerts).
 
 ### Redaction
 
 Redaction applies to request-side filters only: LLM requests, chat messages, and tool arguments.
 
 <Warning>
-On a response filter, **Redact** does not change the content. It records the finding and lets the content through to the client. This applies to LLM responses and to tool results.
+On a response filter, **Redact** does not change the content. It records the finding and lets the content through to the client. This applies to LLM responses and to the output of a tool that has the filter attached. The form shows the action as **Redact (logs only on responses)**.
 
 The same is true on a request filter when the provider finds a match but cannot rewrite it. For example, Lakera Guard can rewrite PII findings, but not a prompt attack.
 
@@ -187,20 +81,33 @@ If you must stop the content, use **Block**.
 
 | Redaction style | Result |
 | :--- | :--- |
-| Placeholder (default) | The matched text becomes the placeholder. The default placeholder is `[REDACTED:{{type}}]`. `{{type}}` is the detector name in upper case, such as `EMAIL` or `AWS_ACCESS_KEY`. `{{category}}` is the category, such as `PII` or `SECRETS`. |
+| Placeholder (default) | The matched text becomes the placeholder. The default placeholder is `[REDACTED:{{type}}]`. |
 | Mask (same length) | Each character of the matched text becomes `*`. |
 | Hash | The matched text becomes the type and a short SHA-256 prefix, such as `[EMAIL:1a2b3c4d]`. The same value always gives the same token. |
+
+You can use these variables in the placeholder:
+
+- `{{type}}`: the detector name in upper case, such as `EMAIL` or `AWS_ACCESS_KEY`
+- `{{category}}`: the category, such as `PII` or `SECRETS`
+
+On OpenAI, Ollama, Anthropic, Google, Vertex AI, and Bedrock requests, a redaction replaces only the matched strings. Tool calls, tool results, images, and all other fields go to the vendor unchanged. Sometimes AI Studio cannot write a redaction into the body, for example when the match crosses two content blocks. Then it quarantines the tool result, or blocks the request.
+
+<Warning>
+A guardrail protects the content that goes to the vendor. It does not change what AI Studio stores. The proxy log keeps a blocked request as the caller sent it, with the flagged text. Refer to [Filters and Proxy Logs](/ai-management/ai-studio/filters#filters-and-proxy-logs).
+</Warning>
 
 ## Messages to Inspect
 
 On an LLM request, **Messages to inspect** selects the messages that the provider gets:
 
 - **All user messages** (default)
-- **Last user message only**
+- **User text of the current turn**: the user text since the model last replied
 - **System and user messages**
-- **Every message, including assistant and tool turns**
+- **Every message, including assistant turns**
 
-Chat messages and tool calls have one text only, so the guardrail always examines all of it.
+When [tool-result scanning](/ai-management/ai-studio/guardrails-agent-traffic#tool-results) is on, the guardrail examines all tool results in the conversation history, whatever this setting is. A client sends its tool results again on each turn. Tool calls and tool definitions are also examined in the full request when their scan is on.
+
+Chat messages always have one text only, so the guardrail always examines all of it.
 
 ## Provider Failures
 
@@ -215,6 +122,16 @@ In both cases, AI Studio records a `guardrail.error` compliance event.
 With fail closed, the guardrail blocks all requests while the provider is not available. With fail open, the guardrail does not examine any content while the provider is not available, so sensitive content can get through. Set a timeout that matches the latency of your provider.
 </Warning>
 
+From 2.3.0, the fail mode applies only to an ordinary request. A request is ordinary when it has at most `budget.single_call_chars` characters to scan and needs few provider calls. For a per-message provider, such as Lakera Guard or Bedrock Guardrails, this means at most four messages and four tool results.
+
+On a larger request, a provider failure leaves the affected text unscanned. AI Studio then applies the filter's action to the unscanned text, the same as to a finding. For this reason, a fail-open filter can block a large request during a provider outage.
+
+To bring more requests under the fail mode, raise `budget.single_call_chars`. Refer to [Budgets and the Verdict Cache](#budgets-and-the-verdict-cache).
+
+Sometimes only the call for the tool results fails on an ordinary request. With fail closed, AI Studio then quarantines the tool results, and the request continues.
+
+When a provider call does not return 100 ms after its timeout, AI Studio stops waiting and counts it as a timeout. If an external provider does this often, AI Studio suspends calls to it for 10 seconds. A suspended call fails at once and the fail mode applies.
+
 ## Streamed Responses
 
 On a streamed response, a guardrail does not examine each chunk. It examines the accumulated response each time the response gets longer by N characters. The default N is 250 for the built-in pattern library and 1000 for external providers. To change it, set **Streaming: evaluate every N characters**.
@@ -223,53 +140,76 @@ The guardrail also examines the full response once when the stream ends. This ma
 
 If the guardrail blocks during the stream, AI Studio stops the stream. If it blocks at the end of the stream, AI Studio ends the stream with an error and records the block. But the client already has the chunks that AI Studio sent before.
 
-## Default Guardrails
+From 2.3.0, response guardrails screen all stream formats: OpenAI chat completions and the Responses API, Anthropic, Google, Ollama, and Bedrock through the bridges. A block ends the stream with the error event of the vendor, so the vendor SDK raises an error.
 
-A new Enterprise installation includes four guardrails that use the built-in pattern library:
+## Budgets and the Verdict Cache
 
-| Name | Detectors | Action | Type |
-| :--- | :--- | :--- | :--- |
-| Credentials in prompts (block) | `secrets` | Block | Request |
-| Personal data before the vendor (redact) | `pii` | Redact | Request |
-| Prompt injection heuristics (log) | `injection` | Log only | Request |
-| Credential leakage in responses (block) | `secrets`, `leak` | Block | Response |
+A sender controls the size of a request. A tool result can have any length, and an agent sends its full history on each turn. Two mechanisms keep the cost of scanning under control.
 
-They are not attached, so they have no effect until you attach them. AI Studio creates each one by name only if it does not exist. It does not change a default guardrail that you edited, and it does not create a deleted guardrail again. To skip them on a new installation, set `SKIP_FILTER_DEFAULTS=true`.
+The verdict cache keeps each provider verdict on a request segment, such as one message or one tool result. AI Studio answers the history that an agent sends again from the cache, so the provider examines each segment one time.
 
-## Test a Guardrail
+- AI Studio reuses a verdict only for the same filter version, provider version, kind of segment, text, and App.
+- It caches only the verdicts of successful calls.
+- It does not cache responses or **Test** panel results.
+- To turn off the cache for one filter, clear **Reuse verdicts for text already scanned** (`cache: false`). Do this for a provider whose verdict depends on more than the text.
 
-The **Test** panel on the filter form runs the guardrail against sample text before you save it. The result shows the compliance events and the output. In this example, the built-in pattern library finds a payment card, an email address, and a phone number. It masks all three.
+With an external provider, the `budget` settings limit the scan of one request:
 
-<img src="/img/ai-management/ai-studio-guardrails-test.png" alt="Test panel result with three guardrail compliance events for a payment card, an email address, and a phone number" />
+| Field | Default | Description |
+| :--- | :--- | :--- |
+| `budget.max_scan_chars` (**Max characters per segment**) | `262144` | The longest segment that AI Studio sends, in characters. The maximum is 16 MiB. A longer segment is unscanned. |
+| `budget.max_pieces` (**Max provider pieces per request**) | `256` | The maximum number of segments, or parts of segments, that AI Studio sends for one request. Cached verdicts do not count. |
+| `budget.time_ms` (**Time budget (ms)**) | 4 × `timeout_ms` | The total time for all provider calls of the request. AI Studio runs four calls at a time. |
+| `budget.single_call_chars` (**Fail mode applies up to (characters)**) | `32768` | The largest request for which the fail mode decides a provider failure. It cannot be more than `max_scan_chars`. |
 
-For an external provider, the test sends a real call with the connection settings. Use it to check the credentials. If a connection field uses a `$SECRET/` or `$ENV/` reference, save the filter first. AI Studio resolves references in a test only when the provider and the connection settings are the same as the saved filter.
+AI Studio never treats text outside a budget as clean. It marks the text as unscanned and applies the filter's action:
 
-## Provider Credentials
+- **Block** blocks the request. For a tool result, it quarantines the tool result.
+- **Redact** also blocks, or quarantines a tool result, because AI Studio cannot redact unscanned text.
+- **Quarantine** replaces the segment.
+- **Log only** records it.
 
-For a connection field that holds a credential, such as an API key, use a reference instead of the value:
+AI Studio also marks text as unscanned when the provider rejects it with `400`, `413`, or `422`.
 
-- `$SECRET/name` refers to a [secret](/ai-management/ai-studio/secrets).
-- `$ENV/NAME` refers to an environment variable.
+The built-in pattern library is not subject to these budgets. It scans each segment in full, up to `GUARDRAIL_LOCAL_MAX_SCAN_BYTES`. Response filters use no cache and no budgets, and the fail mode decides each provider failure.
 
-AI Studio resolves the reference when the guardrail runs. Edge Gateways do not have access to the secret store, so AI Studio resolves the references before it pushes the configuration to them. This is the same as for LLM API keys.
-
-AI Studio keeps a resolved configuration for 30 seconds. A rotated secret takes effect within 30 seconds. A change to the filter takes effect immediately.
+For the environment variables that size the verdict cache and the built-in library scans, refer to [Environment Variables](/ai-management/ai-studio/guardrails-reference#environment-variables).
 
 <Warning>
-A user who can edit filters can put any `$SECRET/` reference in a connection field and set the endpoint. The gateway then sends the secret value to that endpoint. Give write access to filters only to users that you trust with your stored secrets. Apply the same rule to write access to LLMs.
+On a host with 2 CPUs, many large tool results can keep both cores busy. Run gateways that scan agent traffic with the built-in library on 4 or more CPUs, or set `GUARDRAIL_LOCAL_SCAN_SLOTS=1`.
 </Warning>
 
-## Compliance Events and Metrics
+## When a Guardrail Blocks a Request
 
-Each match records one compliance event for each detector. The event type is `guardrail.` and the detector name, for example `guardrail.pii.email`, `guardrail.secrets.aws_access_key`, or `guardrail.prompt_attack`. The event never contains the matched text. For the event fields, refer to [Compliance Events](/ai-management/ai-studio/compliance-events#guardrail-hits-enterprise).
+From 2.3.0, the caller gets HTTP `400` with the filter name, the block message, the reason, and the request ID. For example, for a filter named `Prompt attacks`:
 
-A block increments `aistudio_policy_blocks_total`, the same as a block from a script filter. Guardrails also export these metrics:
+```text
+Policy error: Prompt attacks - Request blocked by policy. Reason: a tool result from fetch_results of 321,097 characters is longer than this guardrail scans (262,144 characters, budget.max_scan_chars), so it was not checked (guardrail_too_large_to_scan). Request ID: tyai_0192d8a4f6b37c1e9a5b2d4c6e8f0a1b.
+```
 
-| Metric | Labels | Description |
-| :--- | :--- | :--- |
-| `aistudio_guardrail_latency_seconds` | `provider`, `outcome` (`clean`, `flagged`, or `error`), `action` | The latency of provider calls |
-| `aistudio_guardrail_errors_total` | `provider`, `fail_mode` | Provider calls that failed or timed out |
+The reason never contains the matched text, a score, or the detector. On the `/llm/` endpoints, the JSON body also contains `reason_code`, `reason`, `filter`, and `request_id`. The `X-Tyk-AI-Guardrail-Reason` response header contains the reason code. Match on the reason code instead of the message text.
+
+| Reason code | Cause |
+| :--- | :--- |
+| `guardrail_detected` | The provider flagged the text. |
+| `guardrail_too_large_to_scan` | A message or tool result is longer than `budget.max_scan_chars`. |
+| `guardrail_scan_budget_exceeded` | The request needs more than `budget.max_pieces` or `budget.time_ms`. |
+| `guardrail_unavailable` | The provider failed and the filter fails closed. |
+| `guardrail_unscanned` | The provider rejected the text, or AI Studio could not decode it. |
+| `guardrail_unreadable_request` | The JSON body has a repeated key, or keys that differ only in case. |
+
+The message of a script filter block does not change.
+
+In **Compliance > Filter Events**, the details of a guardrail event start with a summary of what happened. **Why** gives the causes, and **Fix** gives up to two actions.
+
+If a guardrail blocks legitimate traffic, refer to [Tune Guardrails](/ai-management/ai-studio/how-to-tune-guardrails).
 
 ## Edge Gateways
 
 Guardrails go to Edge Gateways in the configuration snapshot, together with the script filters. After you change a guardrail, push the configuration. Each Edge Gateway runs the same filter chain as AI Studio, so a guardrail gives the same result in both places. The Edge Gateway sends the compliance events to AI Studio with its analytics data.
+
+Approved [exceptions](/ai-management/ai-studio/how-to-tune-guardrails#guardrail-exceptions) and [trusted prompt templates](/ai-management/ai-studio/how-to-tune-guardrails#trusted-prompt-templates) also go to Edge Gateways in the snapshot. A change marks the Edge Gateways as pending until the next push. AI Studio raises [alerts](/ai-management/ai-studio/guardrails-reference#alerts) and [outcome events](/ai-management/ai-studio/guardrails-reference#outcome-events) for Edge Gateway traffic when the analytics pulse arrives.
+
+<Warning>
+Upgrade Edge Gateways together with AI Studio. An Edge Gateway older than 2.3.0 blocks all traffic that a guardrail examines, even with fail open, because guardrail credentials reach it encrypted. It also does not scan tool results.
+</Warning>

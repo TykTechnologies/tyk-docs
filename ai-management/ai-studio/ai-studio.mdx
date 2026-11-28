@@ -11,7 +11,7 @@ sidebarTitle: "AI Studio"
 | :------------- | :---------------------- |
 | [Community](/ai-management/ai-studio/overview#community-edition) & [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
 
-AI Studio is the **central management hub** of the Tyk AI platform. It is the brain of the system — where administrators configure LLM providers, manage users, monitor usage, and extend the platform with plugins. When deployed in a hub-and-spoke topology, it also acts as the **control plane** that governs all connected Edge Gateways.
+AI Studio is the **central management hub** of the Tyk AI platform. In AI Studio, administrators configure LLM providers, manage users, monitor usage, and extend the platform with plugins. When deployed in a hub-and-spoke topology, it also acts as the **control plane** that governs all connected Edge Gateways.
 
 ## High-Level Architecture
 
@@ -64,7 +64,7 @@ AI Studio provides the following capabilities out of the box:
 | **Embedded Gateway** | Built-in LLM proxy (standalone mode) |
 | **Edge Gateway Management** | Register, monitor, and reload Edge Gateways (control mode) |
 | **Plugin Marketplace** | Discover and install community plugins |
-| **Documentation Server** | Built-in docs site served at port 8989 |
+| **Documentation Server** | Built-in documentation served at port 8989 |
 
 ### Configuration Management
 
@@ -100,7 +100,7 @@ Each LLM configuration gets a **slug** (auto-generated from its name) used in pr
 |---|---|---|
 | OpenAI | `openai` | GPT-4, GPT-3.5, etc. |
 | Anthropic | `anthropic` | Claude models |
-| Google Vertex AI | `vertex` | Gemini via gcloud |
+| Gemini Platform (Vertex) | `vertex` | Gemini on Google Cloud. Refer to [Gemini Platform (Vertex) Credentials](/ai-management/ai-studio/how-to-configure-llm-provider#gemini-platform-vertex-credentials). |
 | Google AI | `google_ai` | Gemini via API key |
 | Hugging Face | `huggingface` | Open-source models |
 | Ollama | `ollama` | Self-hosted models |
@@ -109,17 +109,11 @@ Each LLM configuration gets a **slug** (auto-generated from its name) used in pr
 
 To enable cost tracking, administrators define per-token prices for each model:
 
-{/* TODO: Add correct diagram and more text */}
-{/* ```mermaid
 graph LR
-    MODEL_PRICE["Model Price Record"] --> VENDOR_FIELD["Vendor"]
-    MODEL_PRICE --> MODEL_NAME["Model Name\n(e.g. gpt-4-turbo)"]
-    MODEL_PRICE --> INPUT_PRICE["Input Token Price\n(CPIT)"]
-    MODEL_PRICE --> OUTPUT_PRICE["Output Token Price\n(CPT)"]
-    MODEL_PRICE --> CACHE_WRITE["Cache Write Token Price"]
-    MODEL_PRICE --> CACHE_READ["Cache Read Token Price"]
-    MODEL_PRICE --> CURRENCY["Currency\n(e.g. USD)"]
-``` */}
+
+Each model price applies to one model name from one vendor. For the price fields and the units in the API, refer to [Model Prices](/ai-management/ai-studio/model-prices).
+
+If a request uses a model that has no price, AI Studio creates a price for that model. All its costs are `0` and its currency is `USD`. Set the costs to track the spend on that model. For OpenAI and Google AI, a cache price of `0` means that the price is not set. AI Studio then charges cache tokens at the input token price.
 
 The Analytics Engine uses these prices to calculate the cost of every LLM interaction automatically.
 
@@ -127,18 +121,20 @@ The Analytics Engine uses these prices to calculate the cost of every LLM intera
 
 Applications are the **access credentials** that developers and systems use to interact with LLMs through the proxy:
 
-{/* TODO: Add correct diagram and more text */}
-
-{/* ```mermaid
+```mermaid
 graph TD
-    APP["Application"] --> CRED["API Credentials\n(token for proxy auth)"]
-    APP --> LLM_ACCESS["LLM Access\n(which LLMs this app can use)"]
-    APP --> APP_BUDGET["Monthly Budget\n(per-app spending cap)"]
-    APP --> TOOLS["Tool Access\n(which tools are available)"]
-    APP --> DATASOURCES["Data Source Access\n(RAG sources)"]
-    APP --> OWNER["Owner User"]
-    APP --> NAMESPACE["Namespace\n(CE: default / ENT: custom)"]
-``` */}
+    APP["App"] --> CRED["Credential<br/>(Key ID and secret)"]
+    APP --> OWNER["Owner user<br/>and Workspace"]
+    APP --> LLMS["Model providers<br/>and routers"]
+    APP --> TOOLS["Tools"]
+    APP --> DATA["Data sources"]
+    APP --> BUDGET["Monthly budget<br/>(Enterprise)"]
+    APP --> NS["Namespace"]
+```
+
+Each App has one credential. Clients use this credential to send requests through the proxy. The proxy accepts the credential only while it is active. The App can use only the model providers, model routers, tools and data sources that you assign to it. The monthly budget limits the spend of the App, and Workspaces group Apps with other objects. Both are Enterprise Edition features. The namespace selects the Edge Gateways that receive the App.
+
+An App also holds guardrail and tracing settings. Plugins can add more resource types to an App.
 
 #### Secrets Management
 
@@ -156,7 +152,7 @@ Filters are rules attached to LLMs that can block or modify requests/responses. 
 
 ### User Management & RBAC
 
-AI Studio uses a **group-based access control** model. Access to resources is granted through group membership, not individual user permissions.
+Roles control what a user can do in the admin console. Teams and their catalogs control what a user can use in the AI Portal and Chat. Refer to [User Management](/ai-management/ai-studio/user-management).
 
 {/* #### Role Hierarchy
 
@@ -166,13 +162,6 @@ graph TD
     A --> D["💻 Developer\n(ShowPortal=true)\nAccess to AI Portal UI\nCan create Apps"]
     D --> CU["💬 Chat User\n(Default)\nAccess to Chat UI only"]
 ``` */}
-
-| Role | `IsAdmin` | `ShowPortal` | Capabilities |
-|---|---|---|---|
-| **Super Admin** | ✅ (ID=1) | ✅ | Full access, manages admins, SSO config, audit logs |
-| **Admin** | ✅ | ✅ | Manages users, groups, LLMs, plugins |
-| **Developer** | ❌ | ✅ | Portal access, creates apps, uses tools |
-| **Chat User** | ❌ | ❌ | Chat interface access only |
 
 {/* #### Authentication Methods
 
@@ -359,13 +348,7 @@ sequenceDiagram
 
 #### Plugin Distribution
 
-Plugins can be distributed in three ways:
-
-| Method | Description | Example |
-|---|---|---|
-| **Local Binary** | Path to executable on disk | `/usr/local/bin/my-plugin` |
-| **Remote Binary** | URL to download | `https://example.com/plugin` |
-| **OCI Artifact** | Container registry reference | `oci://ghcr.io/org/plugin:v1.0.0` |
+Plugins run from a local file (`file://`), a remote gRPC server (`grpc://`), or an OCI registry (`oci://`). Refer to [Deployment Options](/ai-management/ai-studio/plugins/deployment).
 
 #### Plugin Marketplace
 
@@ -400,32 +383,25 @@ graph LR
 
 This enables use cases like: aggregating analytics from multiple edges, centralising audit data, or streaming events from distributed deployments back to a single dashboard. */}
 
-## How Configuration Synchronization Works?
+## How Configuration Synchronization Works
 
-Tyk AI Studio uses a checksum-based system to track configuration synchronization between the control plane and edge gateways.
-
-### How It Works
-
-1. **Checksum Generation:** When configuration changes occur on the control plane, a SHA-256 checksum is computed from the serialized configuration snapshot
-2. **Heartbeat Reporting:** Edge gateways report their loaded configuration checksum in each heartbeat
-3. **Status Comparison:** The control plane compares reported checksums to determine sync status
-4. **UI Notifications:** The admin UI displays sync status and notifies administrators when edges are out of sync
-5. **On configuration change**, an admin pushes a reload signal. This can target all gateways or a specific namespace. Each gateway then pulls the latest snapshot.
-6. **Namespaces** control what gets loaded onto each gateway. LLMs, Apps, Filters, and Plugins can all be namespaced.
-7. **If the hub is unreachable**, gateways continue operating from their last-known snapshot stored in a local database (SQLite or PostgreSQL).
+Tyk AI Studio uses a checksum-based system to track configuration synchronization between the control plane and edge gateways. An administrator pushes each change to the Edge Gateways. Namespaces control what each gateway loads. For the sync process, the push, and edge behavior when the control plane is not available, refer to [Manage Edge Gateways](/ai-management/ai-studio/manage-edge-gateway).
 
 ### What Gets Synced to Gateways
 
 | Synced (part of config snapshot) | NOT synced (Studio-only) |
 |---|---|
-| LLM Configurations | Tools |
-| Apps | Data Sources |
-| Filters | Chat configurations |
-| Plugins | User management |
+| LLM Configurations | Chat configurations |
+| Apps | User management |
+| Filters | |
+| Plugins | |
 | Model Prices | |
+| Tools | |
+| Data Sources | |
 | Model Routers (Enterprise) | |
+| Semantic Routers (Enterprise) | |
 
-> **Note:** Apps are included in the sync but are **not** part of the checksum calculation because they change frequently. Credentials are **not** pulled until a gateway actually needs them — this is a pull-on-miss caching strategy that ensures the admin retains ongoing control over access tokens.
+> **Note:** Apps are included in the sync but are **not** part of the checksum calculation because they change frequently.
 
 ### Sync Status Values
 
@@ -438,31 +414,14 @@ Tyk AI Studio uses a checksum-based system to track configuration synchronizatio
 
 ### Pushing Configuration
 
-Configuration changes are pushed to edge gateways on-demand (not automatically) to ensure administrators maintain control over when changes are deployed.
-
-#### Push Configuration Modal
-
-Click the **Push Configuration** button to open the push modal. You can choose to:
-
-1. **Push to All Namespaces:** Sends configuration to all connected edge gateways
-2. **Push to Specific Namespace:** Sends configuration only to edges in a selected namespace (Enterprise)
-
-#### Push Process
-
-When you push configuration:
-
-1. The control plane generates a new configuration snapshot for the target namespace(s)
-2. Edge gateways receive a reload signal via gRPC
-3. Each edge fetches the new configuration and applies it
-4. Edges report the new checksum in their next heartbeat
-5. The sync status updates to reflect the new state
+Configuration changes are not pushed automatically. Refer to [Push Configuration to Edge Gateways](/ai-management/ai-studio/how-to-push-edge-configuration).
 
 {/* 
 ### Analytics Flow
 
 Both the Edge Gateway and AI Studio record analytics for all client interactions. In the Edge Gateway, analytics are batched and sent back to AI Studio every few seconds (configurable).
 
-> **Important:** Analytics must be **explicitly enabled** in the Edge Gateway configuration for data to appear in Studio dashboards. This is a common stumbling block — see the [Analytics](/ai-management/ai-studio/analytics) docs for configuration details.
+> **Important:** Analytics must be **explicitly enabled** in the Edge Gateway configuration for data to appear in Studio dashboards. This is a common stumbling block. For configuration details, refer to [Analytics](/ai-management/ai-studio/analytics).
 
 ### Distributed Budget Control
 

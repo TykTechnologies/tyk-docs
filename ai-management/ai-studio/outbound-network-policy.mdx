@@ -1,0 +1,67 @@
+---
+title: "Outbound Network Policy in Tyk AI Studio"
+description: "How AI Studio and the Edge Gateway refuse outbound connections to internal network addresses, how to allow internal hosts, and what the policy covers."
+keywords: "AI Studio, AI Management, Outbound Network Policy, Internal Addresses, SSRF, Allow Internal Host, LLM_UPSTREAM_BLOCK_INTERNAL"
+type: reference
+sidebarTitle: "Outbound Network Policy"
+---
+
+## Availability
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| [Community](/ai-management/ai-studio/overview#community-edition) & [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
+
+The outbound network policy is available from Tyk AI Studio 2.3.0.
+
+## Overview
+
+AI Studio and the Edge Gateway refuse outbound connections to internal network addresses by default. Internal addresses include:
+
+*   Loopback (`localhost`, `127.0.0.0/8`, `::1`)
+*   Private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`)
+*   Shared address space (`100.64.0.0/10`)
+*   Link-local and cloud metadata addresses (`169.254.0.0/16`, `fe80::/10`)
+*   Multicast, reserved, and benchmarking ranges
+*   IPv6 prefixes that contain an IPv4 address (NAT64, 6to4)
+
+The check runs on the address that the gateway connects to, after DNS resolution. A hostname that resolves to an internal address is refused. A redirect to an internal address is also refused.
+
+| Variable | Use |
+| :--- | :--- |
+| [LLM_UPSTREAM_BLOCK_INTERNAL](/ai-management/ai-studio/ai-studio-env#llm_upstream_block_internal) | Turns the policy on or off. |
+| [LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS](/ai-management/ai-studio/ai-studio-env#llm_upstream_allowed_internal_hosts) | Allows named internal hosts. Blocking stays on for all other hosts. Use it for a local Ollama, an in-cluster model server, or a classifier. |
+| [LLM_UPSTREAM_ALLOWED_HOSTS](/ai-management/ai-studio/ai-studio-env#llm_upstream_allowed_hosts) | A global allowlist. When set, the gateway refuses all other hosts. |
+| [ALLOW_INTERNAL_NETWORK_ACCESS](/ai-management/ai-studio/ai-studio-env#allow_internal_network_access) | Removes all internal-address checks in the process, including plugin hosts. Use it for development only. |
+
+For the Edge Gateway, refer to the same variables in [Edge Gateway Environment Variables](/ai-management/ai-studio/edge-gateway-env#llm_upstream_block_internal).
+
+AI Studio and the Edge Gateway log a warning at startup when internal addresses are allowed. Each process applies its own setting. When blocking is on at an edge, the edge refuses an internal upstream, whatever the setting of AI Studio is.
+
+The policy covers these outbound calls:
+
+*   LLM upstreams on all gateway routes (`/llm/`, `/ai/`, `/anthropic/`, `/v1`, native and Bedrock routes), on the embedded gateway and the Edge Gateway
+*   The LLM calls of AI Studio Chat and semantic routing, and embedders
+*   Guardrail providers (Enterprise)
+*   `tyk.makeHTTPRequest` in filter scripts (Enterprise). Only the environment variables can exempt a script host.
+*   Tool calls from chat, from the tool and MCP endpoints of the gateway, and from edges
+*   Data source and vector store connections
+*   The tool discovery call of AI Studio to a remote MCP server in the registration wizard (Enterprise)
+
+Plugin registries, `grpc://` plugin hosts, and marketplace index URLs follow the plugin host rule. This rule refuses internal addresses whatever the value of `LLM_UPSTREAM_BLOCK_INTERNAL` is. Refer to [Plugin Security](/ai-management/ai-studio/plugins/security).
+
+For a marketplace index on an internal address, add its host to `LLM_UPSTREAM_ALLOWED_INTERNAL_HOSTS`. The rule applies to the index, manifest, and changelog fetches, when you validate, add, or sync a marketplace source.
+
+The policy does not cover SSO and identity providers, SMTP, or the gRPC connection between AI Studio and edges. To restrict these connections, use network controls such as a Kubernetes `NetworkPolicy`, firewall rules, or an egress proxy.
+
+The gateway answers a refused upstream with `502`. The message gives the reason and the setting, for example: `upstream endpoint not permitted: upstream host "10.0.0.5" is an internal address — blocked by LLM_UPSTREAM_BLOCK_INTERNAL`.
+
+## Allow Internal Host
+
+LLMs, embedders, tools, data sources, guardrails, plugins, and MCP servers have an **Allow internal host** switch (`allow_internal_host` in the API). The switch is off by default. When it is on, the host of that asset can be an internal address. Blocking stays on for all other hosts, also for another asset on the same host.
+
+*   Only an administrator can change the switch. Other users get `403`. An update without the field keeps the stored value. Community submissions do not carry the switch.
+*   The switch of an LLM covers its endpoint and its linked embedders. It applies on gateway routes, routers, AI Studio Chat, and semantic routing.
+*   The switch removes only the internal-address check. `LLM_UPSTREAM_ALLOWED_HOSTS` still applies when set.
+*   When you turn the switch off, the change applies without a restart.
+*   Edge Gateways apply the switch for the assets that AI Studio pushes. Edges older than v2.3.0 ignore the switch and keep blocking.

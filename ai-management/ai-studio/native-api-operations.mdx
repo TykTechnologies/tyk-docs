@@ -1,0 +1,150 @@
+---
+title: "Native API Operations in Tyk AI Studio"
+description: "Use Anthropic Message Batches and token counting, and the OpenAI Responses, Conversations, Batches, and Files APIs through the AI Studio gateway, with the same model checks, filters, budgets, and analytics as other calls."
+keywords: "AI Studio, AI Management, Native API, Message Batches, count_tokens, OpenAI Responses, OpenAI Conversations, OpenAI Batches, Files API"
+type: reference
+sidebarTitle: "Native API Operations"
+---
+
+## Availability
+
+| Edition   | Deployment Type |
+| :------------- | :---------------------- |
+| [Community](/ai-management/ai-studio/overview#community-edition) & [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
+
+Native API operations are available from Tyk AI Studio 2.3.0.
+
+## Overview
+
+The [vendor-native endpoint](/ai-management/ai-studio/proxy#vendor-native-endpoint) serves SDK features that are not a single `POST` request with a `model` field. The gateway applies the same model checks, filters, budgets, and analytics to these operations as to a synchronous call.
+
+| Vendor | Operations |
+| :--- | :--- |
+| Anthropic | Message Batches, `count_tokens` |
+| OpenAI | Responses, Conversations, Batches, Files |
+
+Each App owns the resources that it creates. The gateway signs batch, file, response, and conversation IDs for the App and the LLM, for example `msgbatch_01Hk….t1k3f2a9c1d.9b…`. Use an ID exactly as the gateway returns it.
+
+Another App, another LLM, or a changed ID gets `404`, and the request does not go to the vendor. Lists show only the resources of the calling App.
+
+## Anthropic Message Batches
+
+The SDK methods `client.messages.batches.create`, `retrieve`, `list`, `cancel`, `results`, and `delete` of the [Message Batches API](https://docs.anthropic.com/en/api/creating-message-batches) work on the vendor-native endpoint of an Anthropic LLM.
+
+The gateway checks each request in a batch:
+
+- The `params.model` of each request must be an allowed model of the LLM. If not, the gateway returns `403` with the `custom_id` of the request.
+- Batches need a direct grant for the LLM. A grant through a failover waterfall or a Model Router gets `403`. Plugin upstream overrides do not apply to batch calls.
+- The request filters of the LLM run on each request. If a filter blocks one request, the gateway refuses the full batch with `400`. The batch does not go to Anthropic.
+- The gateway refuses a body with a duplicate key with `400`, for example two `model` keys, or `messages` and `Messages`.
+    - The same rule applies to a synchronous `/v1/messages` call.
+    - Keys that differ only in case inside tool schemas or tool call inputs are allowed.
+- The response filters run on each line of the results. A blocked line comes back as an `errored` result with the same `custom_id`.
+- On an LLM with response plugins, a results download returns `501`. A plugin that changes response bodies cannot process a streamed results file.
+
+The gateway forwards only the `anthropic-version`, `anthropic-beta`, `content-type`, `accept`, and `x-request-id` headers, and only the `beta` query parameter. For workspaces, refer to [Anthropic Workspace](/ai-management/ai-studio/how-to-configure-llm-provider#anthropic-workspace).
+
+The gateway records usage and applies budgets:
+
+- A batch create goes through the same [budget check](/ai-management/ai-studio/budgeting#batches-and-native-api-operations) as a synchronous call.
+- The gateway records the usage of a batch one time, when a client first downloads the results. If no client downloads them, a background reconciler on the gateway that created the batch records the usage.
+- The gateway prices the usage at the [batch tier](/ai-management/ai-studio/model-prices#service-tiers).
+- The gateway never charges a batch two times. If the database connection drops just after the gateway marks a batch as recorded, the gateway can lose its usage.
+
+The gateway that created a batch owns it:
+
+- On Edge Gateways, `list` shows only the batches that the edge created. Only the edge that created a batch can delete it. Other gateways return `409`.
+- AI Studio replicas share one list.
+- You cannot delete a batch that is in progress (`409`). For an ended batch, the gateway records the usage first, then deletes the batch.
+
+The `results_url` of a batch points to the gateway, and the gateway streams the results line by line. To get an absolute URL, set [PROXY_URL](#native-api-settings) on AI Studio or [GATEWAY_PUBLIC_URL](#native-api-settings) on the Edge Gateway. Without these variables, `results_url` is a path such as `/v1/messages/batches/{id}/results`, which the Python and TypeScript SDKs resolve against their base URL.
+
+AI Studio signs batch IDs with the signing key of the LLM. To revoke open IDs, rotate the signing key. Refer to [Rotate the Native API Signing Key](/ai-management/ai-studio/how-to-configure-llm-provider#rotate-the-native-api-signing-key). Standalone Edge Gateways sign with the API key.
+
+## Anthropic Token Counting
+
+Claude Code calls `client.messages.count_tokens` before most turns. The gateway checks these calls in the same way as a synchronous call:
+
+- The `model` must be an allowed model (`403` if not).
+- The request filters of the LLM run on the request.
+- The gateway logs the call. The call does not count against budgets.
+
+## OpenAI Responses and Conversations
+
+For OpenAI LLMs, the vendor-native endpoint supports these SDK methods:
+
+- [Responses API](https://platform.openai.com/docs/api-reference/responses): `client.responses.create`, `retrieve`, `cancel`, `delete`, and `input_items.list`
+- Conversations API: `client.conversations.create`, `retrieve`, `update`, `delete`, and `items`
+
+The gateway signs response and conversation IDs for the App and the LLM, for example `resp_67cc….t1k3f2a9c1d.9b…`. The signed `id` and `previous_response_id` appear in JSON responses and in every streamed event. Use them exactly as the gateway returns them.
+
+- A request that uses the response of another App gets `404`, and the request does not go to OpenAI. This applies to `previous_response_id`, to retrieve, cancel, and delete, and to `responses.input_tokens` and `responses.compact`.
+- The gateway does not accept response IDs from versions before 2.3.0 as `previous_response_id`. Start a new chain.
+- Each Responses call must contain `model`, because the gateway checks the model against the allowed models of the LLM. A call without `model` gets `400` (`model field is required`). This includes a call that uses the model of a stored prompt, or that names only a conversation.
+- The gateway removes the `OpenAI-Organization` and `OpenAI-Project` headers from every Responses request. Responses always stay in the project of the API key of the LLM.
+
+Filters and guardrails read these fields of a request:
+
+- `instructions`
+- A string `input`, or the text of each input item: messages, tool call outputs, tool call arguments, and the text of built-in items such as MCP call results, code interpreter logs, and reasoning summaries
+- `prompt` variables
+
+A redaction goes back into the same field. The filters also screen items when a client stores them in a conversation.
+
+- On an LLM with request filters, the gateway refuses some requests with `400`. This applies when the gateway cannot read the prompt fields, or to an unknown input item type.
+- The filters do not screen attached files. `input_file` parts, including base64 PDFs, pass without a check. The gateway sends a `file_id` in an `input_file` or `input_image` part to OpenAI without a check.
+
+The gateway prices a synchronous or streamed response from its `usage`, with cached input tokens at the cache price. For a background response (`background: true`), the gateway that created it records the usage one time, when the response ends:
+
+- A background reconciler polls the response. If you delete the response, the gateway records the usage first.
+- Only the gateway that created a background response can delete it, after it ends (`409` if not). Any gateway can delete other responses.
+- The gateway does not support a resumed background stream (`retrieve(..., stream=True)`) and returns `400`. Poll the response instead.
+
+For OpenAI LLMs, the filters also read the text of `/v1/embeddings`, `/v1/completions`, and `/v1/moderations` requests (`input`, `prompt`, and `suffix`). The filters cannot screen inputs in token array format. On an LLM with request filters, the gateway refuses these inputs with `400`.
+
+## OpenAI Batches and Files
+
+For OpenAI LLMs, the [Batch API](https://platform.openai.com/docs/guides/batch) works on the vendor-native endpoint with these SDK methods:
+
+- `client.files.create(file=..., purpose="batch")`, `content`, `retrieve`, `list`, and `delete`. The gateway ignores the `purpose` and `order` parameters of `files.list`.
+- `client.batches.create`, `retrieve`, `list`, and `cancel`
+
+The gateway checks each request in the file when a client uploads the file:
+
+- The upload size limit is [NATIVE_API_MAX_BODY_BYTES](#native-api-settings). On an LLM with filters, the file can contain at most [NATIVE_API_MAX_FILTERED_ITEMS](#native-api-settings) requests.
+- The `body.model` of each request must be an allowed model. If not, the gateway returns `403` with the `custom_id`.
+- The request filters of the LLM run on each body. If a filter blocks one request, the gateway refuses the upload.
+- The gateway refuses a line with a duplicate key, an unsupported `url`, or a method other than `POST` with `400`.
+- The gateway accepts only `purpose="batch"` uploads, in the multipart format that the OpenAI SDKs send. It refuses other multipart encodings with `400`. It also refuses a file name that contains a backslash or a double quote.
+
+An App can create a batch only from its own file. A batch runs only under the filters that checked its file. On an LLM with filters, the gateway refuses a batch create with `400` in these cases:
+
+- The request filters changed after the upload, for example when an administrator attached or edited a guardrail.
+- A client uploaded the file before v2.3.0.
+- On Edge Gateways, the batch create goes to a different edge from the upload. Create the batch through the edge that received its file.
+
+To recover, upload the file again, and create the batch from the new file ID.
+
+The gateway that created a batch records its usage one time, at the [batch tier](/ai-management/ai-studio/model-prices#service-tiers), after the batch ends. You cannot delete an output file before the gateway records the usage of its batch (`409`). On Edge Gateways, only the edge that created a file or batch lists and deletes it.
+
+## Native API Settings
+
+These environment variables apply to AI Studio and to the Edge Gateway. An unset value or `0` keeps the default.
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| [PROXY_URL](/ai-management/ai-studio/ai-studio-env#proxy_url) (AI Studio), [GATEWAY_PUBLIC_URL](/ai-management/ai-studio/edge-gateway-env#gateway_public_url) (Edge Gateway) | Not set | The public base URL for the `results_url` of a batch. When not set, `results_url` is a relative path. |
+| [NATIVE_API_MAX_BODY_BYTES](/ai-management/ai-studio/ai-studio-env#native_api_max_body_bytes) | `67108864` (64 MiB) | The size limit of a batch create or a batch file upload. The maximum is 256 MiB. |
+| [NATIVE_API_MAX_CONCURRENT_CREATES](/ai-management/ai-studio/ai-studio-env#native_api_max_concurrent_creates) | `4` | The number of batch creates that the gateway handles at the same time. |
+| [NATIVE_API_MAX_FILTERED_ITEMS](/ai-management/ai-studio/ai-studio-env#native_api_max_filtered_items) | `10000` | The maximum number of requests in a batch or file when the LLM has request filters. |
+| [NATIVE_API_MAX_GUARDRAIL_CALLS](/ai-management/ai-studio/ai-studio-env#native_api_max_guardrail_calls) | `10000` | The maximum number of remote guardrail provider calls for one batch create or upload. |
+| [NATIVE_API_MAX_IN_PROGRESS_PER_APP](/ai-management/ai-studio/ai-studio-env#native_api_max_in_progress_per_app) | `0` (no limit) | The maximum number of batches in progress for each App and LLM. |
+| [NATIVE_API_RECONCILE_INTERVAL](/ai-management/ai-studio/ai-studio-env#native_api_reconcile_interval) | `30s` | The interval between two passes of the reconciler. |
+| [NATIVE_API_RECONCILE_BATCH](/ai-management/ai-studio/ai-studio-env#native_api_reconcile_batch) | `50` | The number of batches that the reconciler checks in one pass. |
+| [NATIVE_API_RECONCILE_WORKERS](/ai-management/ai-studio/ai-studio-env#native_api_reconcile_workers) | `4` | The number of batches that the reconciler processes at the same time. |
+| [NATIVE_API_POLL_INTERVAL](/ai-management/ai-studio/ai-studio-env#native_api_poll_interval) | `2m` | The time before the gateway polls an unfinished batch again. |
+| [NATIVE_API_POLL_MAX_BACKOFF](/ai-management/ai-studio/ai-studio-env#native_api_poll_max_backoff) | `30m` | The longest wait after failed polls. |
+
+For the Edge Gateway, refer to [NATIVE_API_*](/ai-management/ai-studio/edge-gateway-env#native_api_) in the Edge Gateway environment variables.
+
+The `aistudio_native_*` metrics count these operations. Refer to [Prometheus and OpenTelemetry Metrics](/ai-management/ai-studio/analytics#prometheus-and-opentelemetry-metrics).
