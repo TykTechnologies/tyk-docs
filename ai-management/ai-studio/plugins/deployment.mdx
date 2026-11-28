@@ -74,7 +74,7 @@ curl -X POST http://localhost:3000/api/v1/plugins \
 ❌ /usr/local/bin/my-plugin  # Missing file:// prefix
 ```
 
-AI Studio runs plugin binaries only from allowed directories: `/usr/bin/`, `/bin/`, `/usr/local/bin/`, and `/opt/plugins/`. To add directories, set `AI_STUDIO_PLUGIN_ALLOWED_DIRS` to a colon-separated list.
+AI Studio runs plugin binaries only from allowed directories. For the built-in directories and [AI_STUDIO_PLUGIN_ALLOWED_DIRS](/ai-management/ai-studio/ai-studio-env#ai_studio_plugin_allowed_dirs), refer to [Restrict Plugin Sources](/ai-management/ai-studio/plugins/security#restrict-plugin-sources).
 
 ### Docker Deployment
 
@@ -308,33 +308,17 @@ Both runtimes use the same `OCI_PLUGINS_REGISTRY_*` environment variables for au
 | Setting | AI Studio | Edge Gateway |
 |---------|-----------|-------------|
 | **Enable OCI** | `AI_STUDIO_OCI_CACHE_DIR=/path` | `OCI_PLUGINS_CACHE_DIR=/path` (default: `/var/lib/microgateway/plugins`) |
-| **Require signatures** | `AI_STUDIO_OCI_REQUIRE_SIGNATURE` (default `true`) | `OCI_PLUGINS_REQUIRE_SIGNATURE` (default `true`) |
 | **Registry auth** | `OCI_PLUGINS_REGISTRY_*` (shared) | `OCI_PLUGINS_REGISTRY_*` (shared) |
 
 **Important**: `AI_STUDIO_OCI_CACHE_DIR` must be set for OCI plugin support to be enabled in AI Studio. Without it, OCI plugins cannot be installed or loaded, and registry auth configuration is ignored.
 
 #### Plugin Size Limit
 
-AI Studio and the Edge Gateway stream plugin layers directly from the registry. The maximum layer size is 512 MB by default. To change it, set `AI_STUDIO_OCI_MAX_PLUGIN_SIZE` (AI Studio) or `OCI_PLUGINS_MAX_PLUGIN_SIZE` (Edge Gateway).
+AI Studio and the Edge Gateway stream plugin layers directly from the registry. To change the maximum layer size, set [AI_STUDIO_OCI_MAX_PLUGIN_SIZE](/ai-management/ai-studio/ai-studio-env#ai_studio_oci_max_plugin_size) on AI Studio or [OCI_PLUGINS_MAX_PLUGIN_SIZE](/ai-management/ai-studio/edge-gateway-env#oci_plugins_max_plugin_size) on the Edge Gateway.
 
 #### Signature Verification
 
-From Tyk AI Studio 2.3.0, AI Studio and the Edge Gateway require a valid signature on each OCI plugin by default (Enterprise Edition). The Helm charts also require signatures by default. An unsigned plugin, or a plugin signed with a key that is not configured, does not load.
-
-The host verifies the signature in its own process, with the registry authentication of the plugin (`OCI_PLUGINS_REGISTRY_*`). You do not need the `cosign` binary or a Docker credential store.
-
-The host always trusts the Tyk signing key. To trust your own key or the key of a publisher, add it on AI Studio and on each Edge Gateway:
-
-```bash
-# Public key for verifying plugin signatures (PEM content)
-OCI_PLUGINS_PUBKEY_ACME="-----BEGIN PUBLIC KEY-----..."
-# Or a path to the key file
-OCI_PLUGINS_PUBKEY_FILE_ACME=/path/to/cosign.pub
-```
-
-To load unsigned plugins while you develop a plugin, set `AI_STUDIO_OCI_REQUIRE_SIGNATURE=false` on AI Studio and `OCI_PLUGINS_REQUIRE_SIGNATURE=false` on the Edge Gateway.
-
-For key selection with `?pubkey=`, the signature formats, the transparency log policy, key settings and Community Edition behavior, refer to [Signature Verification](/ai-management/ai-studio/plugins/security#signature-verification). To sign a plugin, refer to [Sign the Plugin](/ai-management/ai-studio/plugins/publishing#sign-the-plugin).
+From Tyk AI Studio 2.3.0, AI Studio and the Edge Gateway require a valid signature on each OCI plugin by default (Enterprise Edition). The Helm charts also require signatures by default. For the signature settings, the public keys, and how to load unsigned plugins during development, refer to [Signature Verification](/ai-management/ai-studio/plugins/security#signature-verification). To sign a plugin, refer to [Sign the Plugin](/ai-management/ai-studio/plugins/publishing#sign-the-plugin).
 
 #### Cloudsmith-Specific Notes
 
@@ -371,11 +355,11 @@ OCI plugins are pulled and cached locally:
 # AI Studio
 AI_STUDIO_OCI_CACHE_DIR=/var/cache/ai-studio/plugins
 
-# Edge Gateway (defaults to /var/lib/microgateway/plugins)
+# Edge Gateway
 OCI_PLUGINS_CACHE_DIR=/var/cache/microgateway/plugins
 ```
 
-From Tyk AI Studio 2.3.0, the host checks each cached binary against its SHA-256 hash. After an upgrade, the host fetches each OCI plugin again on its first load, so the registry must be available. Refer to [Cached Plugin Binaries](/ai-management/ai-studio/plugins/security#cached-plugin-binaries).
+From Tyk AI Studio 2.3.0, the host checks each cached binary against its SHA-256 hash. For the effect on the first load after an upgrade, refer to [Cached Plugin Binaries](/ai-management/ai-studio/plugins/security#cached-plugin-binaries).
 
 ## Security Considerations
 
@@ -386,7 +370,7 @@ Plugins run as separate processes with the privileges of the host. Install only 
 The platform validates plugin commands:
 
 1. **Absolute Paths**: `file://` commands must use absolute paths. The path must be in an allowed directory ([AI_STUDIO_PLUGIN_ALLOWED_DIRS](/ai-management/ai-studio/ai-studio-env#ai_studio_plugin_allowed_dirs)).
-2. **Internal Hosts**: AI Studio and the Edge Gateway refuse `oci://` registries and `grpc://` hosts at internal addresses. Refer to [Internal Network Access](#internal-network-access). [PLUGIN_BLOCK_INTERNAL_URLS](/ai-management/ai-studio/ai-studio-env#plugin_block_internal_urls) is deprecated.
+2. **Internal Hosts**: Refer to [Internal Network Access](#internal-network-access). [PLUGIN_BLOCK_INTERNAL_URLS](/ai-management/ai-studio/ai-studio-env#plugin_block_internal_urls) is deprecated.
 3. **Allowlist**: [PLUGIN_COMMAND_ALLOWLIST](/ai-management/ai-studio/ai-studio-env#plugin_command_allowlist) is advisory. The host logs a warning for a command that does not match it, but it still accepts the command. Its entries are comma-separated substrings.
 
 ### Production Security
@@ -401,13 +385,7 @@ The GitHub RAG ingest plugin reads `GITHUB_RAG_SECRET_ENCRYPTION_KEY` and `GITHU
 
 ### Plugin Message Size
 
-The host and the plugin exchange each hook call as one gRPC message. The message holds the body, the headers and the context. From Tyk AI Studio 2.3.0, plugins built on the 2.3.0 SDK accept the host limit below.
-
-| Variable | Default | Description |
-| :--- | :--- | :--- |
-| [PLUGIN_GRPC_MAX_MSG_BYTES](/ai-management/ai-studio/ai-studio-env#plugin_grpc_max_msg_bytes) | `67108864` (64 MiB) | Largest message, in bytes, between the host and its plugins. Set it on the host. The host passes it to each plugin that it starts. |
-
-For the Edge Gateway, refer to [PLUGIN_GRPC_MAX_MSG_BYTES](/ai-management/ai-studio/edge-gateway-env#plugin_grpc_max_msg_bytes) in the Edge Gateway environment variables.
+The host and the plugin exchange each hook call as one gRPC message. The message holds the body, the headers and the context. From Tyk AI Studio 2.3.0, plugins built on the 2.3.0 SDK accept the host limit. Set the limit on the host with [PLUGIN_GRPC_MAX_MSG_BYTES](/ai-management/ai-studio/ai-studio-env#plugin_grpc_max_msg_bytes) on AI Studio or [PLUGIN_GRPC_MAX_MSG_BYTES](/ai-management/ai-studio/edge-gateway-env#plugin_grpc_max_msg_bytes) on the Edge Gateway. The host passes it to each plugin that it starts.
 
 On an Edge Gateway LLM with `pre_auth`, `auth` or `post_auth` plugins, the gateway refuses a request body over this limit with `413`.
 
