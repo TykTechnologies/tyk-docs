@@ -26,13 +26,13 @@ The primary goals of the Budget Control system are:
 Budgets are typically configured by administrators and applied at specific levels:
 
 *   **Organization Level:** A global budget limit for all LLM usage within the organization.
-*   **LLM Configuration Level:** A specific budget limit tied to a particular LLM setup (e.g., a dedicated budget for a high-cost `gpt-4` configuration).
+*   **LLM Configuration Level:** A budget limit for one LLM setup (e.g., a dedicated budget for a high-cost `gpt-4` configuration).
 *   **App Level:** A budget limit for one App.
 *   **Team Level:** A budget for all the Apps of a Team. Refer to [Team Budgets](#team-budgets).
 
 **Configuration Parameters:**
 
-*   **Limit Amount:** The maximum monetary value allowed (e.g., $500).
+*   **Limit Amount:** The maximum monetary value allowed (e.g., `$500`).
 *   **Currency:** The currency the budget is defined in (e.g., USD).
 *   **Time Period:** The reset interval for the budget, typically monthly (e.g., resets on the 1st of each month).
 *   **Scope:** Which entity the budget applies to (Organization, specific LLM Configuration ID, etc.).
@@ -46,7 +46,7 @@ Administrators configure these budgets via the Tyk AI Studio UI or API.
 A budget can be empty or a number. These two values have different meanings:
 
 *   **No limit** (empty, or `null` in the API): AI Studio does not limit spending.
-*   **$0**: AI Studio blocks all spending. The gateway refuses requests with HTTP 403.
+*   **`$0`**: AI Studio blocks all spending. The gateway refuses requests with HTTP 403.
 *   **Any other amount**: The gateway refuses requests when the spend in the current period reaches that amount.
 
 In the UI, the budget field has two options: **No limit** and **Fixed amount**. On a new App, the first option is **Default**. The default is the allocation from the App's Team, if the Team has a budget pool. If not, the default is the platform default (`DEFAULT_APP_BUDGET`). If there is no platform default, the App has no limit.
@@ -64,11 +64,11 @@ Budget enforcement primarily occurs at the **[Proxy & API Gateway](/ai-managemen
 Most deployments serve traffic through Edge Gateways. The embedded gateway in AI Studio applies the same rules. On the embedded gateway, the cost of a request counts against its budgets immediately when AI Studio records the request. The next request is then checked against the new total. AI Studio reads the spend from other AI Studio instances and from Edge Gateways a few seconds after it reaches the database. Only requests that run at the same time can take an App over its budget.
 
 1.  **Request Received:** The Proxy receives a request destined for an LLM.
-2.  **Cost Estimation:** Before forwarding the request, the Proxy might estimate the potential maximum cost (or rely on post-request cost calculation).
-3.  **Budget Check:** The Proxy checks the current spending against all applicable budgets (e.g., the specific LLM config budget AND the overall organization budget) for the current time period.
+2.  **Cost Estimation:** The Proxy can estimate the maximum cost before it forwards the request. It can also use the cost after the request.
+3.  **Budget Check:** The Proxy checks the current spending against all applicable budgets for the current time period. For example, it checks the budget of the LLM configuration AND the budget of the organization.
 4.  **Allow or Deny (Enterprise Edition):**
-    *   If the current spending plus the estimated/actual cost of the request does *not* exceed the limit(s), the request is allowed to proceed.
-    *   If the request *would* cause a budget limit to be exceeded, the request is blocked with HTTP 403, and an error is returned to the caller.
+    *   If the current spending plus the estimated or actual cost of the request does *not* exceed the limits, the request continues.
+    *   If the request *would* exceed a budget limit, the Proxy blocks it with HTTP 403. It returns an error to the caller.
 
 On the OpenAI-compatible endpoints (`/ai/...` and `/v1/...`), the error is an OpenAI error object:
 
@@ -84,24 +84,24 @@ From v2.3.0, a batch create through a [native API operation](/ai-management/ai-s
 
 ## Distributed Budget Control (Multi-Gateway)
 
-When running multiple Edge Gateways in a hub-and-spoke architecture, budget tracking faces a split-brain challenge — each gateway only has local visibility into its own spend. Tyk AI Studio solves this with a **budget pulse** mechanism:
+In a hub-and-spoke architecture with multiple Edge Gateways, each gateway sees only its own spend. Tyk AI Studio solves this split-brain problem with a **budget pulse** mechanism:
 
 1. **Analytics batching:** All Edge Gateways send analytics records (including cost data) back to AI Studio in regular batches. This gives AI Studio a **complete view** of token spend across the entire estate.
 
-2. **Budget pulse:** AI Studio periodically sends a budget pulse to each gateway containing the **total spend** for each access token across all gateways.
+2. **Budget pulse:** AI Studio periodically sends a budget pulse to each gateway. The pulse contains the **total spend** of each access token across all gateways.
 
 3. **Local update:** Each gateway updates its local spend counter if Studio's reported number is higher than what it has locally.
 
-4. **Blocks:** The same pulse lists the Apps that every gateway must refuse, whatever its local numbers are. These are Apps with a budget of $0, and Apps whose [Team](#team-budgets) has spent a blocking Team budget. Gateways keep this list when they restart.
+4. **Blocks:** The same pulse lists the Apps that every gateway must refuse, whatever its local numbers are. These are Apps with a budget of `$0`, and Apps whose [Team](#team-budgets) has spent a blocking Team budget. Gateways keep this list when they restart.
 
-5. **LLM budgets (Enterprise):** From v2.3.0, the pulse also carries the spend of each LLM with a monthly budget, for its budget period, and the LLMs that every gateway must refuse ($0 budget or budget spent). A gateway refuses a request to an LLM at or over its budget. It uses the higher of the AI Studio figure and its own spend since then. The refusal is the same `403` as an App budget refusal.
+5. **LLM budgets (Enterprise):** From v2.3.0, the pulse also carries the current-period spend of each LLM with a monthly budget. It also lists the LLMs that every gateway must refuse (`$0` budget or budget spent). A gateway refuses a request to an LLM at or over its budget. It uses the higher of the AI Studio figure and its own spend since then. The refusal is the same `403` as an App budget refusal.
     *   A change to an LLM budget in AI Studio gets to the gateways with the next pulse. A configuration push is not necessary.
     *   Gateways keep the list of refused LLMs when they restart. A restarted gateway gets the spend of the other LLMs with the next pulse (30 seconds by default).
     *   AI Studio and the gateways must all run v2.3.0 or later. An older AI Studio sends no LLM budgets.
 
 6. **Alerts:** For each pulse, AI Studio finds the Apps whose spend changed at the gateways. It checks these Apps against their App, LLM, and Team budgets. For this reason, the 80% and 100% alerts also occur for gateway traffic.
 
-This provides **eventually-accurate** budget control. There may be a slight overrun window under very high concurrent load across multiple gateways, but the system converges quickly and prevents sustained overspending.
+This gives **eventually-accurate** budget control. Under very high concurrent load across multiple gateways, a small overrun is possible. The system converges quickly and prevents sustained overspending.
 
 > **Note:** Budget *enforcement* (blocking requests at the limit) is an Enterprise Edition feature. In Community Edition, budgets are tracked and visible in dashboards but requests are not blocked.
 
@@ -113,8 +113,8 @@ Team budgets are an Enterprise Edition feature.
 
 You can also set a budget for each [Team](/ai-management/ai-studio/teams). A Team budget has two functions:
 
-*   **A ceiling:** The maximum that all the Apps of the Team can spend together in a month. When the Team reaches the ceiling, AI Studio can send an alert only, or it can also block the Apps of the Team.
-*   **An allocation pool:** When a member of the Team creates an App, the App gets a default allocation from the pool. The allocation cannot be more than the amount that is left. When the pool is empty, the App gets nothing, and the gateway refuses its requests until an administrator gives it an allocation. When you delete an App, its allocation goes back to the pool. The money that the App already spent this month still counts for the Team.
+*   **A ceiling:** The maximum that all the Apps of the Team can spend together in a month. When the Team reaches the ceiling, AI Studio sends an alert. It can also block the Apps of the Team.
+*   **An allocation pool:** When a Team member creates an App, the App gets a default allocation from the pool. The allocation cannot be more than the amount that is left. When the pool is empty, the App gets nothing. The gateway then refuses its requests until an administrator gives it an allocation. When you delete an App, its allocation goes back to the pool. The money that the App already spent this month still counts for the Team.
 
 ### Which Team an App Belongs To
 
@@ -138,7 +138,7 @@ Team budgets are off by default. To turn them on, an administrator sets the **Te
 
 AI Studio reports the spend of every Team, also Teams without a budget:
 
-*   The **Team Costs** table on the dashboard shows the cost, share, tokens, and requests of each Team for the selected date range. It also shows spend that AI Studio cannot connect to a Team.
+*   The dashboard **Team Costs** table shows the cost, share, tokens, and requests of each Team in the date range. It also shows spend that AI Studio cannot connect to a Team.
 *   The page of each Team shows its budget, spend, allocations, and a breakdown by App for the current period.
 *   The API endpoint `GET /api/v1/analytics/team-costs` returns the same data, for a maximum range of 366 days.
 
@@ -153,7 +153,7 @@ Edge Gateways receive the list of Apps that a Team blocks with each budget pulse
 ## Integration with Other Systems
 
 *   **[Analytics & Monitoring](/ai-management/ai-studio/analytics):** The Analytics system provides the cost data used to track spending against budgets. The current spent amount for a budget period is derived from aggregated analytics data.
-*   **[Model Pricing](/ai-management/ai-studio/ai-studio#model-pricing):** The pricing definitions are essential for the Analytics system to calculate costs accurately, which in turn feeds the Budget Control system.
+*   **[Model Pricing](/ai-management/ai-studio/ai-studio#model-pricing):** The Analytics system uses the pricing definitions to calculate costs. These costs feed the Budget Control system.
 *   **[Notification System](/ai-management/ai-studio/notifications):** Budgets trigger notifications when spending reaches defined thresholds. AI Studio sends alerts at **80%** (warning) and **100%** (limit reached) of the budget. It sends each alert one time in each budget period, to the App owner and to administrators.
 
 ## Benefits
