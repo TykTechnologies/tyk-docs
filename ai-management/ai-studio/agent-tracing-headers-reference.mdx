@@ -1,0 +1,82 @@
+---
+title: "Agent Tracing Request Headers in Tyk AI Studio"
+description: "The Tyk and compatible request headers, baggage keys, and body fields that Tyk AI Studio reads to group agent calls into sessions and turns, and their precedence."
+keywords: "AI Studio, AI Management, Agent Call Tracing, traceparent, X-Tyk-Session-Id, Headers, Helicone, Portkey, Baggage"
+type: reference
+sidebarTitle: "Request Headers Reference"
+---
+
+## Availability
+
+| Edition | Deployment Type |
+| :------------- | :---------------------- |
+| [Enterprise](/ai-management/ai-studio/overview#enterprise-edition) | Self-Managed |
+
+Agent Call Tracing is available from Tyk AI Studio 2.3.0.
+
+Request headers are optional. They let the gateway group calls exactly, instead of inferring the groups. Refer to [Sessions, Turns, and Correlation](/ai-management/ai-studio/agent-tracing#sessions-turns-and-correlation).
+
+## Tyk Headers
+
+| Header | Sets | Limits |
+| :--- | :--- | :--- |
+| `traceparent`, `tracestate` | The W3C trace id and parent span. The trace is one turn. | W3C format |
+| `X-Tyk-Session-Id` | The session | Printable ASCII, 200 characters |
+| `X-Tyk-Session-Name` | A display name for the session | 120 characters |
+| `X-Tyk-Agent-Name` | The agent that makes the call | 120 characters |
+| `X-Tyk-Agent-Path` | The position of the agent in a hierarchy, such as `/planner/researcher` | Starts with `/`, 512 bytes |
+| `X-Tyk-Agent-Id` | A stable agent id | ASCII, 200 characters |
+| `X-Tyk-User-Id` | The end user for whom the agent acts | 200 characters |
+| `X-Tyk-Trace-Id`, `X-Tyk-Span-Id`, `X-Tyk-Parent-Span-Id` | The trace context, if the client cannot send `traceparent` | 32 and 16 lowercase hex characters |
+| `X-Tyk-Trace-Capture` | The content mode that the request asks for | `off`, `metadata`, `hashed`, `redacted`, or `full`, up to the [request ceiling](/ai-management/ai-studio/agent-tracing#how-ai-studio-selects-the-content-mode) |
+
+The gateway ignores a header that is sent two times or that has an incorrect value.
+
+By default, the gateway removes the `X-Tyk-*` tracing headers before it sends the request upstream. To keep them, set [AGENT_TRACING_FORWARD_TYK_HEADERS](/ai-management/ai-studio/ai-studio-env#agent_tracing_forward_tyk_headers) to `true`.
+
+Do not put personal data, such as an email address, in a session id. Refer to [Privacy and Erasure](/ai-management/ai-studio/how-to-export-agent-traces#privacy-and-erasure).
+
+This example declares a session and an agent path:
+
+```bash
+curl https://studio.example.com/llm/rest/my-llm/v1/chat/completions \
+  -H "Authorization: Bearer $APP_KEY" \
+  -H "traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" \
+  -H "X-Tyk-Session-Id: ticket-48213" \
+  -H "X-Tyk-Agent-Path: /triage/researcher" \
+  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Summarize ticket 48213"}]}'
+```
+
+## Compatible Headers
+
+The gateway also reads the headers of other AI gateways. Clients that send these headers need no changes.
+
+| Source | Headers |
+| :--- | :--- |
+| Helicone | `Helicone-Session-Id`, `Helicone-Session-Name`, `Helicone-Session-Path` |
+| Portkey | `X-Portkey-Trace-Id`, `X-Portkey-Span-Id`, `X-Portkey-Parent-Span-Id` |
+| OpenRouter and OpenCode | `X-Session-Id` |
+| Bifrost | `X-Bf-Session-Id` |
+| Agent Router | `Agent-Session-Id` |
+| Amazon Bedrock AgentCore | `X-Amzn-Bedrock-Agentcore-Runtime-Session-Id` |
+| Cloudflare AI Gateway | `Cf-Aig-Otel-Trace-Id`, `Cf-Aig-Otel-Parent-Span-Id` |
+
+The gateway also reads these sources:
+
+- These W3C baggage keys: `session.id`, `gen_ai.conversation.id`, `user.id`, `gen_ai.agent.name`, `tyk.agent.parent`
+- The request body fields `conversation`, `metadata.session_id`, and `user`
+- The session headers of Claude Code 2.1.0 and later, Codex CLI 0.160.0 and later, and OpenCode 1.18.0 and later
+
+To select which sources the gateway reads, use [AGENT_TRACING_COMPAT_HEADERS](/ai-management/ai-studio/ai-studio-env#agent_tracing_compat_headers) and [AGENT_TRACING_HARNESS_SESSION_HEADERS](/ai-management/ai-studio/ai-studio-env#agent_tracing_harness_session_headers).
+
+On an Edge Gateway, set [AGENT_TRACING_COMPAT_HEADERS](/ai-management/ai-studio/edge-gateway-env#agent_tracing_compat_headers) and [AGENT_TRACING_HARNESS_SESSION_HEADERS](/ai-management/ai-studio/edge-gateway-env#agent_tracing_harness_session_headers).
+
+## Precedence
+
+When a request sends more than one source, the source with the lowest number wins:
+
+| Value | Order |
+| :--- | :--- |
+| Trace id and parent span | 1. MCP `_meta.traceparent` (MCP calls only)<br/>2. `traceparent`<br/>3. `X-Tyk-Trace-Id` and `X-Tyk-Parent-Span-Id`<br/>4. Portkey headers<br/>5. Cloudflare headers |
+| Session | 1. `X-Tyk-Session-Id`<br/>2. Compatible headers<br/>3. Baggage<br/>4. Body fields<br/>5. Coding agent headers |
+| Session name, end user, agent name, and agent path | 1. `X-Tyk-*` header<br/>2. Compatible header<br/>3. Baggage<br/>4. Body field |
