@@ -37,6 +37,9 @@ This table shows what the platform controls and what it does not control:
 
 AI Studio and the Edge Gateway can verify the cosign signature of each OCI plugin before they load it. Signature verification is an Enterprise Edition feature.
 
+- The Community Edition does not verify signatures. The signature settings have no effect. OCI plugins load, and AI Studio records them as unverified. The host logs a warning once at startup.
+- In the Enterprise Edition, when signatures are required and no verifier is available, the host refuses the plugin. It never loads the plugin unverified.
+
 From 2.3.0, both AI Studio and the Edge Gateway require signatures by default. Before 2.3.0, the default for AI Studio was `false`. Unsigned plugins and plugins signed with an unknown key also do not load.
 
 The host verifies signatures in its own process. You do not need the `cosign` binary at runtime, so verification also works in the distroless images. Use the cosign CLI only to sign plugins. The host reads signatures from the registry with the same registry authentication (`OCI_PLUGINS_REGISTRY_*`) as the plugin itself.
@@ -75,9 +78,11 @@ OCI_PLUGINS_PUBKEY_1="$(cat /path/to/cosign.pub)"
 OCI_PLUGINS_PUBKEY_FILE_CI=/path/to/ci-cosign.pub
 ```
 
-The host selects the key as follows:
+The plugin command controls which key the host uses:
 
-- **Command without `?pubkey=`:** The host tries each configured key, and the Tyk key first. The plugin loads if one key verifies it. Marketplace installations use this behavior. To trust a new publisher, add the key. You do not change the install command.
+- **Command without `?pubkey=`:** The host tries each configured key, and the Tyk key first. The plugin loads if one key verifies it.
+  - Marketplace installations use this behavior.
+  - To trust a new publisher, add the key. You do not change the install command.
 - **Command with `?pubkey=<key>`:** The host uses only that key. For example, `oci://registry.example.com/plugins/my-plugin@sha256:<digest>?pubkey=CI`.
 
 When you remove a key, the plugins that it verified stop loading. This includes cached copies.
@@ -98,12 +103,6 @@ Keep `required`. With `optional`, a user who can write to your registry can remo
 
 If you run a private Sigstore deployment, set `AI_STUDIO_OCI_TRUSTED_ROOT_FILE` and `OCI_PLUGINS_TRUSTED_ROOT_FILE` to its `trusted_root.json`. Use the same setting after a Rekor key rotation.
 
-### Community Edition Behavior
-
-The Community Edition does not verify signatures. The signature settings have no effect. OCI plugins load, and AI Studio records them as unverified. The host logs a warning once at startup.
-
-In the Enterprise Edition, when signatures are required and no verifier is available, the host refuses the plugin. It never loads the plugin unverified.
-
 ## Restrict Plugin Sources
 
 You can refuse complete plugin deployment types. AI Studio and each Edge Gateway apply their own setting.
@@ -113,7 +112,7 @@ You can refuse complete plugin deployment types. AI Studio and each Edge Gateway
 | [AI_STUDIO_PLUGIN_ALLOWED_SOURCES](/ai-management/ai-studio/ai-studio-env#ai_studio_plugin_allowed_sources) | AI Studio | The accepted sources: `oci`, `file`, `grpc`. Case and spaces are ignored. |
 | [PLUGINS_ALLOWED_SOURCES](/ai-management/ai-studio/edge-gateway-env#plugins_allowed_sources) | Edge Gateway | The same list for the Edge Gateway. |
 
-An unknown value, such as `ocii`, stops the process at startup. A list without a source, such as `,`, also stops the process. Thus a typo cannot allow all sources or refuse all sources. The host logs a restricted policy at startup.
+An unknown value, such as `ocii`, stops the process at startup. A list without a source, such as `,`, also stops the process. Thus, a typo cannot allow all sources or refuse all sources. The host logs a restricted policy at startup.
 
 The host classifies a plugin command by its prefix. The prefixes are case-sensitive:
 
@@ -125,7 +124,8 @@ The host classifies a plugin command by its prefix. The prefixes are case-sensit
 
 When a source is not allowed:
 
-- AI Studio refuses to create or update a plugin with that command. The API returns `400`. This includes marketplace installations and upgrades. AI Studio does not fetch the OCI plugin or its manifest, and it does not load the plugin.
+- AI Studio refuses to create or update a plugin with that command, including marketplace installations and upgrades. The API returns `400`.
+  - AI Studio does not fetch the OCI plugin or its manifest, and it does not load the plugin.
 - The AI Studio UI shows only the allowed types. When `oci` is not allowed, AI Studio turns off marketplace installations.
 - The Edge Gateway does not load the plugin. This applies even when AI Studio sends the plugin. The refusal shows in the plugin health and the logs of the Edge Gateway.
 - Existing plugins with that source stay in the database. You can read, edit or delete them. They do not load, and you cannot save them with that command.
@@ -154,7 +154,11 @@ To make plugin loads repeatable, pin each OCI plugin by digest (`@sha256:<digest
 
 ## Internal Registries and Hosts
 
-From 2.3.0, AI Studio and the Edge Gateway refuse a plugin whose host is an internal address. This applies to the registry of an `oci://` plugin and to the host of a `grpc://` plugin. It also applies to plugins that are already installed and cached. For the list of internal addresses, refer to [Outbound Network Policy](/ai-management/ai-studio/outbound-network-policy). A host name that does not resolve also counts as internal.
+From 2.3.0, AI Studio and the Edge Gateway refuse a plugin whose host is an internal address. For the list of internal addresses, refer to [Outbound Network Policy](/ai-management/ai-studio/outbound-network-policy).
+
+- The check applies to the registry of an `oci://` plugin and to the host of a `grpc://` plugin.
+- It also applies to plugins that are already installed and cached.
+- A host name that does not resolve also counts as internal.
 
 The host checks the address at connection time too. A DNS answer that changes later cannot reach an internal address. The error message starts with `plugin host "<host>" is an internal address`.
 
@@ -205,7 +209,9 @@ A `grpc://` plugin runs outside the host. Its environment is the environment of 
 
 AI Studio does not encrypt plugin configuration. Administrators with plugin access can read it. AI Studio sends it to each Edge Gateway, and the plugin receives it in plain text. Do not put a literal credential in plugin configuration.
 
-To give a plugin a credential, store it in [Secrets](/ai-management/ai-studio/secrets). Then set a top-level configuration value to exactly `$SECRET/NAME`. AI Studio resolves the reference before it starts the plugin. For a plugin that runs on an Edge Gateway, AI Studio sends the value encrypted. The stored configuration keeps the reference.
+To give a plugin a credential, store it in [Secrets](/ai-management/ai-studio/secrets). Then set a top-level configuration value to exactly `$SECRET/NAME`.
+
+AI Studio resolves the reference before it starts the plugin. For a plugin that runs on an Edge Gateway, AI Studio sends the value encrypted. The stored configuration keeps the reference.
 
 - AI Studio does not resolve a reference inside a longer string, an array or an object.
 - AI Studio does not resolve `$ENV/NAME` for plugins.
@@ -235,7 +241,9 @@ If a `before_*` hook returns an object where a credential is still `[redacted]`,
 
 AI Studio and the Edge Gateway cache each pulled OCI plugin binary. The cache directory is `AI_STUDIO_OCI_CACHE_DIR` on AI Studio and `OCI_PLUGINS_CACHE_DIR` on the Edge Gateway.
 
-When the host fetches a binary, it records the SHA-256 hash. Each time the plugin loads, the host compares the cached binary with the recorded hash. If the binary changed on disk, the host does not use the cached copy. It fetches the plugin from the registry again and verifies the signature again. If that fetch fails, the plugin does not load.
+When the host fetches a binary, it records the SHA-256 hash. Each time the plugin loads, the host compares the cached binary with the recorded hash.
+
+If the binary changed on disk, the host does not use the cached copy. It fetches the plugin from the registry again and verifies the signature again. If that fetch fails, the plugin does not load.
 
 After an upgrade to 2.3.0, entries from older releases have no recorded hash. The host fetches each OCI plugin again on its first load, so make sure that the registry is available. The host logs `Cached OCI plugin failed its integrity check, fetching it again` for each plugin. These warnings are normal.
 
